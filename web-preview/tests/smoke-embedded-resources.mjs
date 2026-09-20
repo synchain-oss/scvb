@@ -29,11 +29,12 @@
 //   ⑥c [SL-370→SL-402] 占位的 C++ 真源 == tokens.css 的 --page-gradient —— SL-370 当时
 //      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
 //      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
-//   ⑦ [SL-370 / SL-429] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
+//   ⑦ [SL-370 / SL-429 / SL-437] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
 //      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
 //      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
 //      回落路与保险定时器都在,**且保险的回调直接发信号、不绕两层 rAF**(见 (d));
-//      [SL-430 前半] 载荷里那个诊断字段的**字段名与 C++ 真源逐字一致、算式真的接上了**(见 (e))。
+//      [SL-430 前半] 载荷里那个诊断字段的**字段名与 C++ 真源逐字一致、算式真的接上了**(见 (e));
+//      [SL-437] 撤网(sent=true / clearTimeout(guard))**排在 postMessage 之后**(见 (f))。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -759,7 +760,7 @@ function checkBackdropMatchesShell() {
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
  * 靠这条信号放回来(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
  * 只剩 3s 超时兜底)。机理只写在
- * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守四条形态:
+ * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守六条形态:
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
  *       本帧提交**之前**,比嵌套两层更早,信号更不可能落在已绘之后;
@@ -768,10 +769,16 @@ function checkBackdropMatchesShell() {
  *       只出现一次且在 catch 里)—— 断的是**生效**不是在场,理由见该处;
  *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场,**且保险的回调
  *       直接发信号、不绕两层 rAF**。⚠ 它**不**断「保险排在 try 之前」与「撤网落在 signal()
- *       里」—— 那两件事才是「信号不会永不发出」的前提,而这一格守不到,见该处。
+ *       里(而不是 armOnce() 里)」—— 那两件事才是「信号不会永不发出」的前提,而这一格
+ *       守不到,见该处。**「撤网在 signal() 里之后,具体排在哪一行」由 (f) 另断**。
  *   (e) [SL-430 前半] 载荷里的诊断字段**接上了**:字段名与 C++ 真源
  *       `kFirstFramePaintDeltaKey` 逐字一致(与 (a) 同一个 shape),且算式真的是
  *       `Math.round(performance.now() - paintStartMs)`、基线取自 paint 记录的 startTime。
+ *   (f) [SL-437] 撤网(`sent = true` + `clearTimeout(guard)`)在 `signal()` 里**排在
+ *       postMessage 之后**,不在 `__JUCE__` 存在性检查之前 —— 否则通道未就绪时网已撤、
+ *       消息却从没真正发出去,(d) 那个保险因此空转。源码级判据,不依赖浏览器;
+ *       页面级黑盒见 smoke-first-frame-page.mjs 的「B. [SL-437]」节,两条都留
+ *       (判例「源码正则 ≠ 可执行」—— 互为补充,不是替代)。
  *
  * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名、requestAnimationFrame 与
  * PerformanceObserver,不剥的话注释自己就能把这几条断言全顶替掉(#188 同族,连撞过三次)。
@@ -964,6 +971,57 @@ function checkFirstFrameSignal(role, entry) {
                 `**那与「页面确实走了回落路」在日志里逐字同形**,用户那份日志就分不出是哪一种`,
         );
 
+    // (f) [SL-437] 撤网(`sent = true` + `clearTimeout(guard)`)必须落在 `postMessage` **之后**,
+    // 不能落在 `__JUCE__` 存在性检查之前 —— 否则通道未就绪时网已撤、消息却从没真正发出去,
+    // 2.5s 保险(上面 (d) 那个 `setTimeout`)因此空转。
+    //
+    // 这是**源码级**顺序判据,不依赖浏览器(判例「源码正则 ≠ 可执行」—— 源码形态对、时序
+    // 生效错,正则照样全绿;所以这一格是**补充**,不是替代:页面级黑盒见
+    // smoke-first-frame-page.mjs 的「B. [SL-437]」节,两条都留)。
+    //
+    // 用文本位置判序,不做完整的花括号配平解析:`block` 已经是**只含这一个事件的那个
+    // <script> 块**(见上面 rawBlock 的筛选)。
+    // ⚠ [SL-437 复审第 2 轮] 「三个串在这个块里各自只出现一次」上一版只是**写在注释里的
+    // 前提**,没有断言——复审指出这挡不住将来有人在块里多写一处同名串(比如手滑复制了一份
+    // `sent = true;`):indexOf 只取**第一个**命中,多出来的那份不会被看见,判据会静默失效。
+    // 现在把它**断出来**:用 split().length-1 数每个串在块里的出现次数,必须恰好是 1
+    // (用 split 不用正则,三个串里 `postMessage(`/`clearTimeout(guard)` 都含括号,是正则
+    // 元字符,split 按字面量切分不用转义,更不容易再踩一次转义的坑)。
+    // ⚠ **这条前提只对 firstFrame 块成立,(f) 也只该跑在这个块上**:同一文件里的
+    // bootError 块(boot 守卫那段)没有 `clearTimeout(guard)`(它没有保险定时器这一层),
+    // 计数会是 0 不是 1,把 (f) 复用到那个块会**恒红**。想把这条判据复用到别的事件之前,
+    // 先确认那个事件的块里也有同名的三段、且各自恰好一次。
+    const countOccurrences = (s) => block.split(s).length - 1;
+    const postMessageCount = countOccurrences("postMessage(");
+    const sentTrueCount = countOccurrences("sent = true;");
+    const clearGuardCount = countOccurrences("clearTimeout(guard)");
+    const countsOk =
+        postMessageCount === 1 && sentTrueCount === 1 && clearGuardCount === 1;
+    if (!countsOk)
+        bad(
+            `${role}:${eventId} 的 postMessage(/sent = true;/clearTimeout(guard) 三串` +
+                `没有各自恰好出现一次([SL-437] (f) 的前提)—— 出现次数不是 1 时,` +
+                `下面按文本位置判序的结果不可信(indexOf 只看得见第一处);` +
+                `实得 postMessage(×${postMessageCount}、sent = true;×${sentTrueCount}、` +
+                `clearTimeout(guard)×${clearGuardCount}`,
+        );
+    const postMessageIdx = block.indexOf("postMessage(");
+    const sentTrueIdx = block.indexOf("sent = true;");
+    const clearGuardIdx = block.indexOf("clearTimeout(guard)");
+    const disarmAfterSend =
+        countsOk &&
+        postMessageIdx >= 0 &&
+        sentTrueIdx > postMessageIdx &&
+        clearGuardIdx > postMessageIdx;
+    if (countsOk && !disarmAfterSend)
+        bad(
+            `${role}:${eventId} 的撤网(sent = true / clearTimeout(guard))没有排在 ` +
+                `postMessage 之后([SL-437])—— __JUCE__ 缺席 / postMessage 不是函数时,` +
+                `两行会在消息从未真正发出的情况下执行,2.5s 保险因此空转;` +
+                `实得 postMessage@${postMessageIdx}、sent=true@${sentTrueIdx}、` +
+                `clearTimeout(guard)@${clearGuardIdx}(-1 = 没找到)`,
+        );
+
     // PASS 行的条件必须与上面几处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
     // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
     // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
@@ -972,10 +1030,12 @@ function checkFirstFrameSignal(role, entry) {
         paintGated &&
         hasFallback &&
         carriesPaintDelta &&
-        paintBaselineWired
+        paintBaselineWired &&
+        disarmAfterSend
     )
         console.log(
-            `  ${eventId} 在场:paint 记录到达后再嵌套两层 rAF 才发(带回落 + 保险)`,
+            `  ${eventId} 在场:paint 记录到达后再嵌套两层 rAF 才发(带回落 + 保险,` +
+                `撤网排在 postMessage 之后)`,
         );
 }
 

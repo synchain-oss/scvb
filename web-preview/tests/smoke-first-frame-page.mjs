@@ -30,6 +30,20 @@
 //      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
 //      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
 //
+// 【B. [SL-437] 撤网必须落在 postMessage **之后**,不能落在守卫检查之前】
+//   三份 index.html 的 signal() 曾经把 `sent = true` / `clearTimeout(guard)` 写在
+//   `__JUCE__` 存在性检查**之前**:守卫不满足(本格用「document 创建时 __JUCE__ 缺席」
+//   模拟这一档)时,两行仍然执行 ⇒ 网已经撤了,但 `postMessage` 从没被调用过 ——
+//   2.5s 保险(`guard` 那个 setTimeout)本该在网还没撤时再补一次机会,可它已经被清空,
+//   永远不会再触发。本格纯黑盒:不读页面内部的 `sent`/`guard` 变量(与本文件其余判据
+//   同一条红线),只看**外部可观测的结果**——`__JUCE__` 迟到时,信号最终有没有送到。
+//   ⚠ **三页都跑,不是挑一份代表**:这段逻辑是三份 index.html 各自独立写错的同一处
+//   顺序(复制粘贴出来的三份,不是共享代码),只测一页测不出另外两页各自被单独改回错误
+//   顺序 —— 判例「测接线不只测零件」+「删除式粒度要配得上判据粒度」。
+//   删除式:把某一份 index.html 的 `sent = true` / `clearTimeout(guard)` 挪回
+//   `postMessage` 调用之前,**只有那一页对应的这一格**必须由绿转红,另外两页仍应全绿
+//   (证明三页判据互不串台;见 PR 描述的删除式记录,三份逐一注入过)。
+//
 // 用法:node web-preview/tests/smoke-first-frame-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
 // 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(可选依赖缺席不判红,
@@ -490,8 +504,9 @@ await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE });
 // [SL-429] **三页都跑**。SL-370 那版只跑 output —— 而 output 恰好是三页里唯一
 // first-paint 天然早于信号的那个(页面重、画得早),所以它是**唯一测不出本缺陷的页面**。
 // ⚠ **别把这三页读成「符号 = 用户真机那三比一的判别式」**:本机 12 轮复测里 monitor 修前的
-// `信号 − first-paint` 是 −8 .. +73 ms(十有八九为正、且整段落在 C++ 那 32 ms 放行余量的
-// 量级里),按该模型它根本不该闪,可用户真机上它稳定闪 —— **monitor 的白没有被这条链解释**。
+// `信号 − first-paint` 是 −8 .. +73 ms(十有八九为正、且整段落在 C++ 那 kRevealSettleMs
+// 放行余量的量级里,[SL-436] 改到 64 ms 后余量更宽,结论不因此削弱),按该模型它根本不该闪,
+// 可用户真机上它稳定闪 —— **monitor 的白没有被这条链解释**。
 // 三档结论(input 机制已定 / output 天然免疫的对照组 / monitor 未被解释)写在
 // src/plugin-common/WebViewRevealGate.h 一处。本套要守的是那条**结构性质**本身:
 // 信号必须发在页面真的画过一帧之后。
@@ -629,6 +644,206 @@ for (const role of ["input", "output", "monitor"]) {
         );
     }
 }
+
+// ---------------------------------------------------------------- B. [SL-437]
+log(
+    "\nB. [SL-437] __JUCE__ 迟到时,信号必须靠 2.5s 保险补发,不能被提前撤掉的网吞掉",
+);
+// ⚠ **三份 index.html 都跑**,不是挑一份代表:SL-437 的缺陷是「三份文件各自独立写错了
+// 同一段逻辑」(复制粘贴出来的三份撤网顺序),不是「一处共享代码错了」。只测一页测不出
+// 另外两页各自被单独改回错误顺序 —— 判例「测接线不只测零件」+「删除式粒度要配得上判据
+// 粒度」,PR 描述里对三份文件各自做过删除式(改一份、只有那一份对应的这一格转红)。
+// 追加一段在文档创建时删掉 `window.__JUCE__` 的脚本 —— 上面 PROBE 已经把它注册在
+// 文档创建前,这一段注册得更晚,同一时机里跑在 PROBE **之后**,净效果是「先装 → 再拆」,
+// 把「守卫检查会失败」这个前提做成黑盒可控的。⚠ 用完必须 remove:`addScriptToEvaluateOnNewDocument`
+// 对整个 CDP 会话持久生效,不会因为导航结束就自动失效 —— 今天它排在最后一节、后面没有
+// 别人再导航才没露馅,**那是位置决定的安全,不是机制决定的**,下一节 C 若还要导航就会
+// 莫名其妙带着「删 __JUCE__」的尾巴。收下 identifier,循环结束后显式撤销。
+const { identifier: deleteJuceScriptId } = await cdp.send(
+    "Page.addScriptToEvaluateOnNewDocument",
+    { source: `delete window.__JUCE__;` },
+);
+// ⚠ [复审①,第 2 轮] 「guard 仍未到期」那格原来只查一次、不成立就直接判红 —— bot 指出
+// 触发它的多半是**测试环境本身在这一刻恰好慢**(waitFor 头注 SL-297/CI 那条已经记着
+// 「抢 CPU 的 runner 上超时是真实的」),不是 SL-437 真的回归,却会把一次环境抖动变成
+// required check 上的硬红。改成**有界重试**:前提不成立就重新导航整页再试一次(guard
+// 换一个全新的 2500ms 窗口),最多 `MAX_ATTEMPTS` 次;**全部**尝试都不成立才判红,且
+// 报错文案与「delivered」判据分开写清楚——那是「前提反复不成立」,不是 SL-437 回归本身。
+// ⚠ [复审①,第 3 轮] **上一版的重试是装饰性的**:就绪判据只查
+// `location.pathname.indexOf(role)>=0 && paintFrames>=0`,而**重试导航的是同一个 URL**,
+// pathname 在新旧文档之间完全相同 —— `waitFor` 可能在新文档真正提交之前,用**上一次那份
+// 还没卸载干净的旧文档**的状态算出「已就绪」,重试因此可能什么都没换掉就再判一次红。
+// 「换一个全新的 2500ms 窗口」这句注释当时**没有实现撑住**。
+// 修法(世代哨兵,与统筹核过的方案):**每次导航之前**,在当前文档上打一个世代标记
+// `window.__sl437Gen = attempt`;新文档是全新的 JS realm,不会带着旧文档的全局变量过来,
+// 所以新文档上这个标记必然是 `undefined`。就绪判据因此改成
+// `typeof window.__sl437Gen === "undefined" && pathname 匹配 && paintFrames>=0`——
+// 只有这三者同时成立,才说明「这是这一轮真正导航出来的新文档,不是上一轮剩下的」。
+// ⚠ **删除式钉不住,如实记录**(不是没做,是做了三次都没能构造出会红的输入):
+//   1. 导航两次到同一 URL,`await` 完第二次 `Page.navigate` 的 CDP ack 之后再对查
+//      旧判据(只查 pathname)与新判据(世代哨兵)—— 两者同为 false;
+//   2. 不 `await` navigate 的 ack、连续 20 次紧凑轮询两个判据 —— 只抓到一次
+//      `old=false, new=true` 的分歧(这是两次独立 evaluate 之间的时序噪声,方向反了,
+//      不是危险的那一种);
+//   3. 加 `Network.emulateNetworkConditions`(200ms 延迟 + 50kbps 限速)把新文档的
+//      加载窗口拉宽,再紧凑轮询 60 次 —— **全部 60 次都是 `[false, false]`**,危险方向
+//      `old=true && new=false`(旧判据误判"已就绪"、新判据知道还没换文档)一次没出现过。
+//   三次尝试指向同一个机制假说:**Chrome 摧毁旧文档 JS 上下文这一步,与 `Page.navigate`
+//   命令的处理几乎同步**——限速能拖慢新文档的资源加载(所以 paintFrames 迟迟不为真),
+//   但拖不慢"旧上下文消失"这一步,于是在 CDP 这一层,从来没有出现过"旧文档的全局变量
+//   还活着、而 pathname 又与新文档相同"这个真正危险的窗口。
+//   ⇒ 加这个哨兵**不是因为证实了一个可复现的竞态并把它堵上**,而是**让上面这句注释
+//   本身成为一句实现撑得住的话**(改之前那句"换一个全新的 2500ms 窗口"是宣称,没有
+//   实现支持;哨兵让它变成事实),代价是两行代码、零副作用。不代表这条判据以前真的会
+//   在生产环境里因为这个原因误判——那件事没有被证实过,也没有被证伪。
+// ⚠ 只重试这一个前提检查:paint / rafSettled 各自的等待窗口分别是 20000ms / 1500ms;
+// **1500ms 本身并不比 guard 的 2500ms 大**(上一版这里写反了,已订正)—— 但 rafSettled
+// 面对的不是同一种风险:它没有一个像 guard 那样"从导航起就已经在倒计时、缺席也照样到期"
+// 的外部固定时钟在跟它赛跑,它只是在等一个会自然发生的事件(两帧 rAF),这个事件本身完成
+// 得多快与我们的检查开销无关。若它也失败,那是「两帧 rAF 真的等了超过 1.5 秒」这种量级的
+// 反常,本身就值得直接曝出来,而不是静默重试掉。
+const MAX_ATTEMPTS = 2;
+for (const role of ["input", "output", "monitor"]) {
+    let paintedNoJuce = false;
+    let rafSettled = false;
+    let beforeInjectCount = -1;
+    let msSinceNav = Infinity;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // 世代哨兵:必须在**发出这次导航之前**、对**当前(即将被替换掉的)文档**打标记 ——
+        // 打在新文档上毫无意义(新文档还不存在),打在导航**之后**又可能与新文档的加载
+        // 竞速。first attempt 时当前文档是浏览器初始页或上一个 role 的页面,`evaluate`
+        // 在那上面一样能跑,不需要特判。
+        await evaluate(`(() => { window.__sl437Gen = ${attempt}; })()`);
+        await cdp.send("Page.navigate", {
+            url: `${base}/web/${role}/index.html`,
+        });
+        paintedNoJuce = await waitFor(
+            `(() => typeof window.__sl437Gen === "undefined" &&
+                location.pathname.indexOf("/web/${role}/") >= 0 &&
+                window.__scvbPaintFrames >= 0)()`,
+            20000,
+        );
+        if (!paintedNoJuce) break; // 与「guard 到期」无关的另一类失败,不必重试,直接往下报
+        // ⚠ [复审①②,第 1 轮] 下面这步原来是裸 `sleep(300)`,把「armOnce() 的正常路径
+        // 已经因 `__JUCE__` 缺席而尝试过 signal() 并提前 return」这条前置**假设**成立,
+        // 没有观测它。改成等一个真正可观测的量:paint 之后**再多两帧**(与上面 A 段
+        // Δ帧>=2 同一个信号,双层 rAF 保证已经跑完一次)。
+        // ⚠ **老实说清楚这一步能钉住什么、钉不住什么**:「signal() 提前 return」这个分支
+        // 在改动前后的代码里**逐字相同**(`if (!juce || ...) return;` 两版一样),所以
+        // **没有任何新旧结果不同的可观测量能证明这条前置**——按「找不到就明说钉不住」
+        // 处理,这一步只是把等待时长从「猜一个常数」换成「等一个真事件」,让前置更可能
+        // 成立,不代表它被钉住了。真正的新旧判别力全部在下面「guard 仍未到期」+
+        // 「delivered」这两格上。
+        rafSettled = await waitFor(
+            `(() => (window.__scvbFrames - window.__scvbPaintFrames) >= 2)()`,
+            1500,
+        );
+        // ⚠ [复审③] 只数 `__scvb__firstFrame`,不数整个 `__scvbSignals` 数组的长度 ——
+        // 同一份 PROBE 里 boot 守卫的 `__scvb__bootError` 也会走同一条 `window.__JUCE__
+        // .postMessage`(见 A 段头注「两个事件共存」),混进来会让这一步与下面的
+        // `delivered`/`afterInject` 都读错数。与上面 A 段的 eventId 过滤同一个口径。
+        beforeInjectCount = await evaluate(
+            `(() => (window.__scvbSignals || []).filter(
+                (m) => (JSON.parse(m.raw) || {}).eventId === "__scvb__firstFrame",
+            ).length)()`,
+        );
+        // 代理量:`performance.now()` 相对本页 navigationStart 计时,guard 是**一发性**
+        // `setTimeout`,在页面加载早期注册、注册后 2500ms 触发**一次**(不是"周期触发"——
+        // 三份 index.html 与本文件其余注释都写着"一次性",这里不该写反)。
+        // `performance.now()` 明显小于 2500 时 guard**大概率**还没到点(500ms 安全边际:
+        // 上面两步的正常耗时在几十到几百毫秒量级,远够不到 2000)——这不是对 guard 状态的
+        // 直接断言(黑盒规则不许读页面内部变量),只是把它推得足够可信;真正判断"是否被
+        // 空转过"的落点仍在下面的 `delivered`。
+        msSinceNav = await evaluate("(() => performance.now())()");
+        if (msSinceNav < 2000) break;
+        if (attempt < MAX_ATTEMPTS)
+            log(
+                `  ${role}:B: 第 ${attempt} 次尝试代理观测超阈值` +
+                    `(performance.now()=${Math.round(msSinceNav)}ms)—— 疑似测试环境这一刻` +
+                    "繁忙,重新导航整页再试一次",
+            );
+    }
+    check(
+        paintedNoJuce,
+        `${role}:B:__JUCE__ 缺席时页面仍然画出了首帧(first-paint 记录取到了)`,
+    );
+    if (!paintedNoJuce) continue;
+    check(
+        rafSettled,
+        `${role}:B:paint 之后双层 rAF 已有机会跑完(实得 Δ帧=` +
+            `${await evaluate("(() => window.__scvbFrames - window.__scvbPaintFrames)()")});` +
+            " 前提没跑够时,下面的判据什么都证明不了",
+    );
+    check(
+        beforeInjectCount === 0,
+        `${role}:B:__JUCE__ 缺席期间没有 __scvb__firstFrame 信号被记录(实得 ` +
+            `${beforeInjectCount} 条;这一步只是确认没有意外路径抢先发出信号,` +
+            "不证明 signal() 真的被调用过 —— 见上面注释)",
+    );
+    // ⚠ [复审①,第 2 轮] 前提在 MAX_ATTEMPTS 次尝试后仍不成立 —— 这是**测试前提反复
+    // 不成立**(疑似 CI runner 持续繁忙),与 SL-437 回归本身是两回事,文案上明确分开,
+    // 且这一档判负之后**跳过**下面的 delivered 判据(那一格在前提不成立时什么都证明不了,
+    // 硬跑只会把两种红混在一起)。
+    check(
+        msSinceNav < 2000,
+        `${role}:B:代理观测在 ${MAX_ATTEMPTS} 次尝试后仍显示 guard(2.5s 保险)大概率已到期` +
+            `(最后一次 performance.now()=${Math.round(msSinceNav)}ms)—— **这是测试前提` +
+            "反复不成立,不是 SL-437 回归本身**;下面的 delivered 判据本次不跑",
+    );
+    if (!(msSinceNav < 2000)) continue;
+    // 补上一个能用的 __JUCE__ —— 模拟「controller 建好、__JUCE__ 真正就位」比两层 rAF
+    // 晚到达的那种时序。之后**不再**主动调用页面里的任何函数,只等 guard 的 2.5s
+    // setTimeout 自己触发。
+    await evaluate(`(() => {
+        window.__JUCE__ = {
+            postMessage: function (s) {
+                window.__scvbSignals.push({
+                    raw: String(s),
+                    frames: window.__scvbFrames,
+                    ms: performance.now(),
+                });
+            },
+        };
+    })()`);
+    // guard 是 2500ms;给够余量等它触发,同时别把上界拉到会拖慢 CI 的地步。
+    // ⚠ [复审③] 同上,只数 __scvb__firstFrame,不数整个数组长度。
+    const delivered = await waitFor(
+        `(() => (window.__scvbSignals || []).filter(
+            (m) => (JSON.parse(m.raw) || {}).eventId === "__scvb__firstFrame",
+        ).length > 0)()`,
+        4000,
+    );
+    check(
+        delivered,
+        `${role}:B:__JUCE__ 迟到之后,2.5s 保险最终还是把信号送出去了(实得:` +
+            "delivered=" +
+            delivered +
+            ";红 = 撤网提前发生,保险已经空转,信号永远发不出去了 —— 正是 SL-437 那个缺陷)",
+    );
+    if (delivered) {
+        // 取**全部**信号的 eventId(不预先过滤),既要看到 __scvb__firstFrame 那一条,
+        // 也要能抓到「混进了别的事件」这种情况(比如 boot 守卫意外也报了一次)。
+        // ⚠ [复审④] 它今天为什么恒绿,说清楚而不是留一句隐式耦合:本套跑的三份页面在
+        // 正常路径下不会触发任何资源加载失败 / 未捕获异常(那才是 boot 守卫 report() 的
+        // 触发条件),所以 __scvb__bootError **今天不会真的发生**——这一断言目前只是
+        // 「预防将来出现真的混入」的哨兵,不是「已经验证过混入场景会被抓住」的判据;
+        // 要验证后者需要单独造一次 boot 守卫触发,本套没有做。
+        const afterInject = await evaluate(
+            `(() => (window.__scvbSignals || []).map((m) => (JSON.parse(m.raw) || {}).eventId))()`,
+        );
+        eq(
+            afterInject,
+            ["__scvb__firstFrame"],
+            `${role}:B:补发的信号**恰好一条**、且是 __scvb__firstFrame(不是重复发送,` +
+                "也不是别的事件)",
+        );
+    }
+}
+// [复审④] 撤销上面注册的「删 __JUCE__」脚本 —— 不撤的话它对整个 CDP 会话持久生效,
+// 后面任何人再加一节要导航的判据都会莫名其妙带着这条尾巴。
+await cdp.send("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: deleteJuceScriptId,
+});
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,
 // 拿它判负会把一条与本判据无关的失败混进来。
