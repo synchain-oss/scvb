@@ -187,6 +187,12 @@
                         // ⚠ [SL-376] 起兜底只剩这一条(pageFinishedLoading 不再放行,
                         // 因为它不保证任何一帧已经合成)—— 所以这条信号丢了的代价是
                         // 「每次开窗多等 3 秒占位」,不是「少等几毫秒」。别把它当可有可无。
+                        // ⚠ [SL-437 复审] 若 `postMessage` 在**载荷已经投递之后**才抛(比如
+                        // 宿主那侧的回调抛错),这里会把异常吞掉、`sent` 仍是 false ⇒ 2.5s
+                        // 保险会把这条信号**重发一次**。机制:C++ 侧 `RevealGate::onFirstFrame()`
+                        // 对重复调用是**幂等**的 —— `settling_` 已为 true 时整段直接跳过,
+                        // 不会重置 `settleAtMs_`/`settleTicksSeen_`(见 WebViewRevealGate.h)。
+                        // 故意不改成别的写法:这里选的是「可能重发」,不是「可能丢失」。
                     }
                 }
                 function arm() {

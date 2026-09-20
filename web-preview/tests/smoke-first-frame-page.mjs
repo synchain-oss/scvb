@@ -655,10 +655,14 @@ log(
 // 粒度」,PR 描述里对三份文件各自做过删除式(改一份、只有那一份对应的这一格转红)。
 // 追加一段在文档创建时删掉 `window.__JUCE__` 的脚本 —— 上面 PROBE 已经把它注册在
 // 文档创建前,这一段注册得更晚,同一时机里跑在 PROBE **之后**,净效果是「先装 → 再拆」,
-// 把「守卫检查会失败」这个前提做成黑盒可控的。只需注册一次,对三次导航都生效。
-await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `delete window.__JUCE__;`,
-});
+// 把「守卫检查会失败」这个前提做成黑盒可控的。⚠ 用完必须 remove:`addScriptToEvaluateOnNewDocument`
+// 对整个 CDP 会话持久生效,不会因为导航结束就自动失效 —— 今天它排在最后一节、后面没有
+// 别人再导航才没露馅,**那是位置决定的安全,不是机制决定的**,下一节 C 若还要导航就会
+// 莫名其妙带着「删 __JUCE__」的尾巴。收下 identifier,循环结束后显式撤销。
+const { identifier: deleteJuceScriptId } = await cdp.send(
+    "Page.addScriptToEvaluateOnNewDocument",
+    { source: `delete window.__JUCE__;` },
+);
 for (const role of ["input", "output", "monitor"]) {
     await cdp.send("Page.navigate", {
         url: `${base}/web/${role}/index.html`,
@@ -672,16 +676,49 @@ for (const role of ["input", "output", "monitor"]) {
         paintedNoJuce,
         `${role}:B:__JUCE__ 缺席时页面仍然画出了首帧(first-paint 记录取到了)`,
     );
-    // 留出双层 rAF 的时间,让 armOnce() 的正常路径真的尝试过 signal()(此刻必然因为
-    // `__JUCE__` 缺席而提前 return)。这一步只是把前提做实,还不是判据本身。
-    await sleep(300);
+    // ⚠ [复审①②] 下面这步原来是裸 `sleep(300)`,把「armOnce() 的正常路径已经因
+    // `__JUCE__` 缺席而尝试过 signal() 并提前 return」这条前置**假设**成立,没有观测它。
+    // 改成等一个真正可观测的量:paint 之后**再多两帧**(与上面 A 段 Δ帧>=2 同一个信号,
+    // 双层 rAF 保证已经跑完一次)。
+    // ⚠ **老实说清楚这一步能钉住什么、钉不住什么**:「signal() 提前 return」这个分支在
+    // 改动前后的代码里**逐字相同**(`if (!juce || ...) return;` 两版一样),所以**没有任何
+    // 新旧结果不同的可观测量能证明这条前置**——按「找不到就明说钉不住」处理,这一步只是
+    // 把等待时长从「猜一个常数」换成「等一个真事件」,让前置更可能成立,不代表它被钉住了。
+    // 真正的新旧判别力全部在下面「guard 仍未触发」+「delivered」这两格上。
+    const rafSettled = await waitFor(
+        `(() => (window.__scvbFrames - window.__scvbPaintFrames) >= 2)()`,
+        1500,
+    );
+    check(
+        rafSettled,
+        `${role}:B:paint 之后双层 rAF 已有机会跑完(实得 Δ帧=` +
+            `${await evaluate("(() => window.__scvbFrames - window.__scvbPaintFrames)()")});` +
+            " 前提没跑够时,下面的判据什么都证明不了",
+    );
     const beforeInject = await evaluate(
         `(() => (window.__scvbSignals || []).length)()`,
     );
     check(
         beforeInject === 0,
         `${role}:B:__JUCE__ 缺席期间没有任何信号被记录(实得 ${beforeInject} 条;` +
-            "这一步只是确认前提成立,不是本格的判据本身)",
+            "这一步只是确认没有意外路径抢先发出信号,不证明 signal() 真的被调用过 —— 见上面注释)",
+    );
+    // ⚠ [复审①] 注入前必须先检查一个**代理观测**(不是直接读 `guard` 那个变量,黑盒规则
+    // 不许读页面内部状态)—— guard 是一发性 `setTimeout`,若它在 `__JUCE__` 仍缺席时就已经
+    // 触发(比如本机这一轮异常卡顿),它自己会因为 `__JUCE__` 缺席而空转掉这**唯一**一次
+    // 机会,而这个失败形态与 SL-437 真缺陷(撤网提前发生、保险被清空)**完全同形**——
+    // 不查这个代理量,下面的红分不清是「真缺陷」还是「测试环境比 2.5s 还慢」。
+    // 代理量:`performance.now()` 相对本页 navigationStart 计时,guard 在页面加载早期
+    // 注册、以 2500ms 为周期触发,`performance.now()` 明显小于 2500 时 guard**大概率**还没
+    // 到点(500ms 安全边际:上面两步的正常耗时在几十到几百毫秒量级,远够不到 2000)——
+    // 这不是对 guard 状态的直接断言,只是把它推得足够可信;真正判断“是否被空转过”的
+    // 落点仍在下面的 `delivered`。
+    const msSinceNav = await evaluate("(() => performance.now())()");
+    check(
+        msSinceNav < 2000,
+        `${role}:B:代理观测显示 guard(2.5s 保险)大概率仍未到期(实得 performance.now()=` +
+            `${Math.round(msSinceNav)}ms,应 < 2000ms;≥2000 说明测试环境本身太慢,` +
+            "guard 可能已经在 __JUCE__ 缺席时自己空转过一次,下面的红/绿不可信,先查环境)",
     );
     // 补上一个能用的 __JUCE__ —— 模拟「controller 建好、__JUCE__ 真正就位」比两层 rAF
     // 晚到达的那种时序。之后**不再**主动调用页面里的任何函数,只等 guard 的 2.5s
@@ -721,6 +758,11 @@ for (const role of ["input", "output", "monitor"]) {
         );
     }
 }
+// [复审④] 撤销上面注册的「删 __JUCE__」脚本 —— 不撤的话它对整个 CDP 会话持久生效,
+// 后面任何人再加一节要导航的判据都会莫名其妙带着这条尾巴。
+await cdp.send("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: deleteJuceScriptId,
+});
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,
 // 拿它判负会把一条与本判据无关的失败混进来。
