@@ -25,7 +25,9 @@
 //   ② **豁免矩阵 × 真 closest**:在页内 import 真的 `web/shared/context-menu.js`,
 //      对**真造出来的**元素逐格判定 —— text / number / 缺省无 type 放行(回归格,
 //      防止收窄把立意一起收掉),range / checkbox / select / contenteditable="false"
-//      拦截;并对**生产页上那 10 个真控件**逐个核一遍(4 收回 + 6 保留);
+//      拦截;并对**生产页上那 10 个真控件**逐个核一遍
+//      (**本卡收回 3 + 1 回归格 + 6 保留** —— 那个回归格是档位下拉:base 上的闸按
+//       tagName 判,`<select>` 本来就不在豁免面内,本卡对它**零行为改动**);
 //      外加 select 在右键那一侧仍放行(两处用途正当不同,别被「统一」掉);
 //   ③ **真键路径**:CDP `Input.dispatchKeyEvent` 发真 Ctrl+Z,焦点先落到各类控件上
 //      (发之前断言 `activeElement` 真的是它 —— 焦点没进去的话这一格测的是 `<body>`,
@@ -40,19 +42,30 @@
 //      `idx >= cur.length` 早退会**替版本闸兜住**提交,只看计数的判据分辨不出闸在不在;
 //   ⑥ 每段零 console.error、零未捕获异常。
 //
-// 删除式网格(**注入未提交**,逐格实跑过;15 格全部按设计转红,且红在设计接住它的
-// 那条断言上 —— 不是「红了就算」)。被注入的是**产品代码**,不是本文件:
+// 删除式网格(**注入未提交**,逐格实跑过;**24 格全部按设计转红 / 0 格未红**,且红在
+// 设计接住它的那条断言上 —— 不是「红了就算」)。被注入的是**产品代码**,不是本文件。
+// ⚠ 这个数按**最近一次整套实跑**(gates r6 那一轮)同步:本文件此前写着「15 格」,
+//   而判据面在复审轮 1/2/3 各扩过一次,15 是轮 1 的旧数 —— **头注是本卡删除式验证的
+//   唯一书面口径,它漂了就没有第二处能对出来**。改判据面之后必须连这个数一起更新。
+//   下面分组按 24 格展开:
 //   白名单本体(8 格,红在 ②③):range / checkbox / select 各自放回文本族白名单;
 //     删掉 `input:not([type])` / `input[type=number]` / `input[type=text]` 三条回归项;
 //     contenteditable 三条换成裸 `[contenteditable]`(`="false"` 被放行);
 //     `EDITABLE_SELECTOR` 丢掉 `, select`(拆分把右键那不该动的一半也动了)。
 //   Ctrl+Z 闸接线(1 格,红在 ③):判据换回 `a.tagName === "INPUT"` 旧形态。
-//   abortEdit 的四件事 + 两条触发路径(6 格,红在 ④④b⑤):摘掉 runHistory 里的
-//     `abortEdit()`;`abortEdit()` 里逐条去掉 `dragging=false` / `clearTimeout` /
-//     `releasePointerCapture` / `dragPoints=null`;摘掉 `render()` 里的版本闸
-//     (⇒ ⑦ 的 (h6)(h7)(h9) 转红);摘掉 `switchVersion()` 发前的 abortEdit
-//     (⇒ ⑥ 两臂转红);滚轮 / Q 滑杆各自不记 `pendingVersion`(⇒ 各自的**对照臂**
-//     (g6c) / (f1) 转红 —— 单写者注入只红对应那一格)。
+//   中止在飞编辑那一族(13 格,红在 ④④b④c④d⑤⑥⑦⑧):
+//     · 摘掉 runHistory 里的 `abortEdit()`;
+//     · `abortEdit()` 里逐条去掉 `dragging=false` / `clearTimeout` /
+//       `releasePointerCapture` / `dragPoints=null`(4 格,各红各的);
+//     · 摘掉 `render()` 里的版本闸(⇒ ⑦ 的 (h6)(h7)(h9));
+//     · 把 `render()` 闸的条件退回只看 `dragging`(⇒ ⑧ 的 (k10));
+//     · 摘掉 `switchVersion()` 发前的 abortEdit(⇒ ⑥ 两臂);
+//     · 滚轮 / Q 滑杆各自不记 `pendingVersion`(⇒ 各自的**对照臂** (g6c) / (f1));
+//     · 滚轮 / Q 滑杆的防抖回调各自不清 `commitTimer`(⇒ (j4) / (i4));
+//     · `onPointerUp` 里提前把 `pendingVersion` 清成哨兵 0(⇒ ⑧ 的 (k4)(k6))。
+//   node 侧源码不变式(2 格,判据 = smoke-undo-redo.mjs):旧 `tagName` 形态回来;
+//     `EDITABLE_SELECTOR` 不再由 `EDITABLE_TEXT_SELECTOR` 派生。
+//   ⇒ 8 + 1 + 13 + 2 = **24**。
 //   ⚠ **一处订正(复审轮 3)**:这里曾写着「C8(把 render 闸退回只看 `dragging`)
 //     钉不住、造不出确定性输入」——**那句是假的,已删**。真因是 mock 的桥**纯微任务
 //     解析**、commit 的在途窗几乎不存在,于是没有任何一格观测得到那半边。
@@ -588,7 +601,7 @@ try {
             }
         }
 
-        // ---- 生产页上的真控件:4 个该收回 + 6 个该保留,逐个核 ----
+        // ---- 生产页上的真控件:**本卡收回 3 + 1 回归格 + 6 保留**,逐个核 ----
         // 这一组与上面的矩阵**不重复**:矩阵钉的是「哪些 type 该拦」,这一组钉的是
         // 「本页面上那些控件确实是那些 type」——枚举漂了(有人把 Q 滑杆换成 number
         // 输入框、把勾选框换成 div)上面全绿、这里才红。
@@ -600,10 +613,15 @@ try {
                 return el ? m.isEditableTextTarget(el) : "缺失";
             };
             return {
-                // ---- 该收回(4)----
+                // ---- 本卡收回的(3)----
                 qSlider: pick('[data-curve-q]'),
                 autostop: pick('.wave-autostop__input'),
                 dontShow: pick('[data-gb="guide-overlay-dontshow"]'),
+                // ---- 回归格(1)----
+                // ⚠ [复审轮 4 记账订正] scaleSelect **不是本卡收回的**:base 上那道闸是
+                // \`tagName === "INPUT" || "TEXTAREA" || isContentEditable\`,而 <select>
+                // 的 tagName 是 SELECT ⇒ **它本来就不在豁免面内、本来就被拦截**。
+                // 本卡对它**零行为改动**,这一格钉的是「改成白名单之后它仍被拦」。
                 scaleSelect: pick('[data-gb="settings-scale-select"]'),
                 // ---- 该保留(6:豁免的立意本身)----
                 verRename: pick('.ver-rename__input'),
@@ -623,9 +641,15 @@ try {
                 `(b0)生产控件 ${k} 在页面上找得到(实得 ${JSON.stringify(v)})`,
             );
         }
-        for (const k of ["qSlider", "autostop", "dontShow", "scaleSelect"]) {
+        for (const k of ["qSlider", "autostop", "dontShow"]) {
             eq(PROD[k], false, `(b1)生产控件 ${k}:Ctrl+Z **拦截**(本卡收回)`);
         }
+        // 回归格:本卡对它零行为改动 —— base 上就不在豁免面内(见上面 PROD 里的注释)。
+        eq(
+            PROD.scaleSelect,
+            false,
+            "(b1r)生产控件 scaleSelect:Ctrl+Z **仍拦截**(**回归格**,不是本卡收回的)",
+        );
         for (const k of [
             "verRename",
             "tcStart",

@@ -476,10 +476,14 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         "runHistory 在 await call(kind) **之前**中止在飞的曲线编辑",
     );
     {
-        const ce = src("web/output/canvas/curve-editor.js");
+        // ⚠ [复审轮 4] `ce` 一律**先剥注释**:`curve-editor.js` 的注释里正逐字写着
+        // `local.pendingVersion = 0`(轮 3 那段解释「为什么不能在 onPointerUp 清」),
+        // 不剥的话下面那条写者计数会被**它要检查的东西的说明文字**凑数。
+        // 同一形态本卡已撞过两次(app.js 的旧 tagName 形态、context-menu.js 的选择器字面量)。
+        const ce = stripComments(src("web/output/canvas/curve-editor.js"));
         const body = ce.slice(
             ce.indexOf("function abortEdit()"),
-            ce.indexOf("// ---- 拖拽 ---"),
+            ce.indexOf("function onPointerDown("),
         );
         check(body.length > 100, "定位到 abortEdit() 函数体");
         for (const [re, why] of [
@@ -520,12 +524,30 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
             );
         }
         // 三类写者都要在推出抄本那一刻记 pendingVersion —— 少一处,render 的闸就认不出它。
-        check(
-            (ceFlat.match(/local\.pendingVersion = /g) || []).length >= 3,
-            "拖动 / 滚轮 / Q 滑杆三类写者都写了 pendingVersion(实得 " +
-                (ceFlat.match(/local\.pendingVersion = /g) || []).length +
-                " 处赋值)",
-        );
+        //
+        // ⚠ [复审轮 4【重要】] 这里原先数的是**所有** `local.pendingVersion = ` 赋值、判
+        // `>= 3` —— 那是**恒真的死判据**:轮 3 把清零从 1 处扩到 5 处之后,文件里共 8 处
+        // 赋值(3 写者 + 5 清零),**把三个写者全删光仍剩 5 处 ≥ 3**。标签写着「三类写者
+        // 都写了」,判定面却是「赋值总数」—— 标签与判据脱钩,而它永远红不了。
+        // 这一格是轮 3 那个修法(清零挪到五处)的副作用:分母被撑爆了。
+        //
+        // 改成**只数写入、不数清零**,并用 `=== 3` 而不是 `>= 3`:多出第四个写者同样该有
+        // 人问一句「它记 pendingVersion 了吗、谁钉着它」——否则它会像轮 2 那条滚轮死行一样
+        // 从落地起没人看管。
+        //
+        // ⚠ 今天没有因此假绿:那三条写者各自被**行为面**钉着 ——
+        // 拖动 `(e2)`、滚轮对照臂 `(g6c)`、Q 滑杆对照臂 `(f1)`;本格是文本侧的第二道。
+        {
+            const writers = (
+                ceFlat.match(
+                    /local\.pendingVersion = (?:activeVersion\(\)|srcVersion)/g,
+                ) || []
+            ).length;
+            check(
+                writers === 3,
+                `拖动 / 滚轮 / Q 滑杆三类写者都写了 pendingVersion(只数写入、不数清零;实得 ${writers} 处)`,
+            );
+        }
     }
 }
 
