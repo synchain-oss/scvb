@@ -800,10 +800,17 @@ try {
             "(d8)Ctrl+Z ⇒ abortEdit() 确实认领了这一次(计数 +1)",
         );
 
-        eq(
-            await evaluate(IN(`return w.__undoScopeLostCapture === true;`)),
-            true,
-            "(d8b)Ctrl+Z ⇒ 指针捕获已被显式放掉(**松手之前**就读,隐式释放还没轮到)",
+        // ⚠ 用**有界 waitFor**、不用即刻读:`lostpointercapture` 按规范是**排一个任务**
+        // 派发的,不在 releasePointerCapture() 那一行同步发出。即刻读会把「事件还在队列里」
+        // 读成「没放捕获」—— 删除式网格里一个与捕获无关的注入(去掉丢弃抄本那一行)
+        // 就把它带红过一次,那是假红。仍然是有牙的断言:真不放捕获的话,松手之前这个
+        // 闩锁永远合不上,3s 到点转红(C4 那一格实测如此)。
+        check(
+            await waitFor(
+                IN(`return w.__undoScopeLostCapture === true;`),
+                3000,
+            ),
+            "(d8b)Ctrl+Z ⇒ 指针捕获已被显式放掉(**松手之前**就判定,隐式释放还没轮到)",
         );
 
         // 关键的一记:松手。旧行为在这里把陈旧抄本整表提交上去,把 undo 抹掉。
