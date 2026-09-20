@@ -52,13 +52,17 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     const auto now = scvb::steadyNowMs();
     session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                      static_cast<scvb::u32>(srcChannels_), now);
-    // [SL-19 复发/UI 未回滚] 同一类同步:这是工程加载后的**首次**真实 claim 尝试(setStateInformation
-    // 那次因 !prepared_ 而跳过,注释见那里),channelId_ 此前来自存档、还没经真实 claim 验证过——
-    // claim 失败(含补偿式回滚)时同样要把 channelId_ 收敛成 session_ 真正持有的那个号。
+    // [SL-446 第 2 轮] channelId_ 是**配置**镜像,不是**实际持有**镜像——两者在「配置了一个
+    // channel 但这次 claim 没拿到」时会分叉(工程存 5、加载时 5 被别人占着:配置仍是 5,
+    // 实际持有是 0)。`session_.channelId()` 在全部场景下(含补偿式回滚)都正确收敛成
+    // "用户配置的那个号";`session_.boundChannel()` 才是"现在真的绑定了哪个"。
+    // getStateInformation()(存档)与 ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」
+    // 判断都要读**配置**——这里同步的正是这个镜像,不是广播那个。广播(bridgeTickSnapshot)
+    // 单独直接读 session_.boundChannel(),不经这个镜像,见该函数注释。
     // ⚠ **这一处没有判据**(复审 SL-446 明确点过):setChannelId() 那处有源码级顺序判据
     // (tests/core/test_input_bridge_ipc.cpp),这里同模式的同步没有配对判据,只靠代码审读——
     // 别把它读成"和 setChannelId() 一样有机检守着"。
-    channelId_ = static_cast<int>(session_.boundChannel());
+    channelId_ = static_cast<int>(session_.channelId());
     rampSwitcher_.prepare(sampleRate_);
 
     // claim 未就绪(I6 未分配 / I2 冲突 / I0 / I1)→ 输出走直通档(人声不消失)。
@@ -353,6 +357,13 @@ void ScvbInputAudioProcessor::timerCallback()
     // 时间维(global.range)在 Output 侧收 —— 见 OutputSession::setFeatureGate。
     ensureCtrlOpen();
     bool armed = ctrl_.readGlobalInfo().capture_enabled != 0;
+    // ⚠ [SL-446 第 2 轮] 这里没有 session_.state()==kActive 守卫——channelId_ 现在是**配置**
+    // 镜像,配置了但没实际绑定时(比如启动期撞车),下面会拿**别的实例可能正在用**的那个
+    // channel 号去索引 bc.channels,算出来的 armed 可能是错的。今天没有可观测的坏后果,
+    // 是靠下游巧合兜住的,不是这里设计对:armed 最终经 session_.setCapturing(block.
+    // registrySlot, armed) 落地,而 block.registrySlot 来自 acquireBlock() 按**实际持有**
+    // 的 channel 取快照——没有实际绑定时这个指针是 null,setCapturing 对 null slot 直接
+    // 空操作。**这是巧合兜住,不是这处本身正确**,超出本卡范围,不在这一轮修。
     if (armed && channelId_ >= 1 && channelId_ <= kChannelIdMax)
     {
         scvb::CtrlBroadcastSnapshot bc;
@@ -515,10 +526,10 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-        // [SL-19 复发/UI 未回滚] 同一类同步:channelId_ 刚从存档字节写入(未经真实 claim 验证),
-        // 这次 re-claim 失败(含补偿式回滚)时同样要收敛成 session_ 真正持有的那个号。
+        // [SL-446 第 2 轮] 同上 prepareToPlay() 那句:channelId_ 是**配置**镜像,读
+        // session_.channelId(),不是 session_.boundChannel()(那是实际持有,给广播用)。
         // ⚠ **这一处同样没有判据**(见 prepareToPlay() 那句同款说明),只靠代码审读。
-        channelId_ = static_cast<int>(session_.boundChannel());
+        channelId_ = static_cast<int>(session_.channelId());
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {
             stageMachine_.forcePassthrough();
@@ -530,14 +541,16 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
 {
     channelId = juce::jlimit(0, kChannelIdMax, channelId);
     const juce::ScopedLock lock(lifecycleMutex_);
-    // ⚠ [SL-19 复发/UI 未回滚] 这里**曾经**在 CAS 结果出来之前就把 channelId_ 写成请求值——
-    // CAS 是否成功由下面的 session_.prepare() 决定,而 channelId_ 是 bridgeTickSnapshot()
-    // (广播给 UI 的 scvb.state)与 getStateInformation()(工程存档)的直接数据源:不管冲不冲突,
-    // 下一次周期广播 / 下一次存档都会把"刚才想要的那个号"发出去或写进工程文件——UI 显示
-    // "转移成功了"、存档记的是一个从未 claim 到的通道号,都是这一处抢跑的直接后果。
-    // 现在改成:先让 session 走完整个 claim(含 InputSession::prepare() 的补偿式回滚),
-    // 再用 session_.boundChannel()(会话真正持有的那个 channel,回滚成功时是旧 channel、
-    // 彻底失败时是 0)回填 channelId_ —— 广播与存档因此**只能**读到真实持有的号。
+    // ⚠ [SL-19 复发/UI 未回滚,第 1 轮] 这里**曾经**在 CAS 结果出来之前就把 channelId_ 写成
+    // 请求值——CAS 是否成功由下面的 session_.prepare() 决定。第 1 轮的修法(等 prepare() 跑完
+    // 再回填 session_.boundChannel())在广播上是对的,但**存档也读同一个镜像字段**,把
+    // "实际持有"和"用户配置"这两件事混成了一件——[SL-446 第 2 轮] bot 抓到:工程存 5、
+    // 加载期撞车这种"配置了但没绑定"的场景,回填成 boundChannel()=0 会把用户存的 5**永久
+    // 擦掉**(下次保存工程就真的丢了),这与本卡要修的"存档写入抢失败的号"同族反向。
+    // 现在这个镜像字段固定读 session_.channelId()(配置,见 prepareToPlay() 头注的完整对照
+    // 表),取代 boundChannel()——getStateInformation()(存档)与 ensureCtrlOpen()/
+    // setGroupId() 的「channel_id=0 不建段」判断都靠它。**广播单独直接读
+    // session_.boundChannel()**,不经这个镜像,见 bridgeTickSnapshot() 那行注释。
     session_.setChannelId(static_cast<scvb::u32>(channelId));
     if (channelId == 0)
     {
@@ -549,7 +562,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
     const auto requestResult =
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-    channelId_ = static_cast<int>(session_.boundChannel());
+    channelId_ = static_cast<int>(session_.channelId());
     if (session_.state() != scvb::input::InputClaimState::kActive)
     {
         stageMachine_.forcePassthrough();
@@ -634,7 +647,10 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     const juce::ScopedLock lock(lifecycleMutex_);
     const auto now = scvb::steadyNowMs();
     BridgeTickSnapshot s;
-    s.channelId = channelId_;
+    // [SL-446 第 2 轮] 广播给 UI 的必须是**实际持有**的 channel,不是 channelId_ 那个"配置"
+    // 镜像(两者在"配置了但没绑定"时会分叉,见 setChannelId() 头注的完整对照表)——否则又
+    // 回到"UI 说转移成功了,其实没有"那个原始 bug。这里刻意绕开镜像字段,直接读 session_。
+    s.channelId = static_cast<int>(session_.boundChannel());
     s.groupId = groupId_;
     s.claimState = session_.state();
     s.conn = session_.connSnapshot(now);

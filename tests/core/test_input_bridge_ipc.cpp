@@ -559,9 +559,11 @@ TEST_CASE("SL-19 复发②(Processor 回归复刻):冲突后广播源读会话�
     REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
     other.heartbeat(100);
 
-    // 3) 等价修好后的 InputProcessor::setChannelId(5):先 session.setChannelId + prepare(),
-    //    再用 boundChannel() 回填镜像字段——不是像旧版那样在 prepare() 之前就把镜像字段
-    //    写成请求值(那正是本卡修的抢跑)。`channelIdMirror` 等价 Processor 的 channelId_。
+    // 3) 等价修好后的 InputProcessor::bridgeTickSnapshot():第 2 轮之后广播**直接**读
+    //    session_.boundChannel(),绕开 channelId_ 那个镜像字段(镜像现在固定是"配置",广播
+    //    要的是"实际持有",两者会分叉——见 InputProcessor.cpp bridgeTickSnapshot() 头注的
+    //    完整对照表)。`channelIdMirror` 这个变量名是历史遗留(第 1 轮镜像字段还兼着广播),
+    //    这里数值上等价直接读 boundChannel()。
     session.setChannelId(5);
     const auto requestResult = session.prepare(48000, 512, 1, 200);
     const int channelIdMirror = static_cast<int>(session.boundChannel());
@@ -588,7 +590,11 @@ TEST_CASE("SL-19 复发③(Processor 回归复刻):冲突后存档不记录抢�
 
     session.setChannelId(5);
     REQUIRE(session.prepare(48000, 512, 1, 200) == InputClaimState::kConflict);
-    const int channelIdMirror = static_cast<int>(session.boundChannel()); // 等价修好后的 channelId_
+    // 等价修好后的 channelId_ 镜像:第 2 轮之后镜像固定读 channelId()(配置),不是
+    // boundChannel()(实际持有)——这条场景里两者数值相同(回滚成功、channelId()==
+    // boundChannel()==3),但算法要照真实实现抄,不是抄一个巧合数值相等的旧算法
+    // (旧算法在"配置了但没绑定"场景会把用户配置错误地擦成 0,见 SL-446 第 2 轮)。
+    const int channelIdMirror = static_cast<int>(session.channelId());
 
     // 等价 InputProcessor::getStateInformation():用镜像字段(不是失败的请求值)填 InputState
     // 再编解码一遍,复刻工程存档的完整往返。
@@ -668,10 +674,20 @@ TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 
     // static_cast 的换行方式),只钉"这个函数体里,任何一次给 channelId_ 赋值都不能发生在
     // prepare() 调用之前"。这正是本卡要防的那处抢跑:旧版是 `channelId_ = channelId;` 排在
     // `session_.prepare(...)` **之前**。
+    // ⚠ 复审 4056697571 指出:"channelId_ =" 这个字面量同时是 "channelId_ ==" (比较,不是
+    // 赋值)的前缀——`if (channelId_ == 5)` 会被误当成一次赋值。用"匹配位置之后紧跟的那个
+    // 字符不是 '=' "把比较排除掉;`+=`/`-=` 等复合赋值语义上仍算"改写了 channelId_",这个
+    // 判据目前不需要额外收窄它们(生产代码里没有这种写法,加一条只判据本身不测的分支反而
+    // 会掩盖 fail-closed 的空匹配路径)。
     std::vector<std::size_t> assignPositions;
-    for (std::size_t pos = body.find("channelId_ ="); pos != std::string::npos;
-         pos = body.find("channelId_ =", pos + 1))
+    const std::string assignToken = "channelId_ =";
+    for (std::size_t pos = body.find(assignToken); pos != std::string::npos; pos = body.find(assignToken, pos + 1))
     {
+        const std::size_t afterToken = pos + assignToken.size();
+        if (afterToken < body.size() && body[afterToken] == '=')
+        {
+            continue; // "channelId_ ==":比较,不是赋值,跳过不计入
+        }
         assignPositions.push_back(pos);
     }
     REQUIRE_FALSE(assignPositions.empty()); // fail-closed:一次都找不到也判负,不是放过

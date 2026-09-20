@@ -87,7 +87,11 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
         // ⚠ 不是保证:回滚本身也是一次 openAndClaim,失败窗口只有两次 CAS 之间那几微秒,
         // 理论上仍可能被另一实例抢先——那种情况下退化成"确实未分配",如实反映现状,
         // 不假装拿到了什么没拿到的东西。
-        if (previousChannel != 0 && previousChannel != channelId_)
+        // 复审 4056695565:`previousChannel != channelId_` 这半句是恒真,删掉——走到这里已经
+        // 隐含它成立:previousChannel 非 0 时必然 sameGroup==true(见上面的赋值),而 sameGroup
+        // 为真时若 claimedChannel_(=previousChannel)== channelId_,早在第 55 行的快路径就
+        // return 了,不会走到这儿。留着这句比较容易被将来的改动误读成"这两个号真的可能相等"。
+        if (previousChannel != 0)
         {
             const u32 requestedChannel = channelId_;
             channelId_ = previousChannel; // 临时改回旧目标,复用同一条 claim 路径重新抢
@@ -100,7 +104,13 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
                 state_ = InputClaimState::kActive;
                 return failure;
             }
-            channelId_ = requestedChannel; // 回滚也没抢到:别留着一个我们其实没握住的号
+            // 复审 4056695543:这里不是"避免留着一个没握住的号"——回滚失败后 previousChannel(3)
+            // 和 requestedChannel(5)都没握住,这条理由站不住。真正的原因是:channelId_ 是"配置"
+            // 字段(InputProcessor 读它当"用户最近一次请求的号"),上面几行只是临时把它借用成
+            // previousChannel 好复用 openAndClaim() 的代码路径——回滚失败就要把这次临时借用
+            // 复原,让 channelId_ 照实落回用户真正请求的那个号(哪怕没抢到),不能让它停留在
+            // 一个纯粹为了复用代码路径而借用的旧值上。
+            channelId_ = requestedChannel;
         }
         state_ = failure;
         return state_;
