@@ -953,6 +953,62 @@ try {
     assertClean("④c 防抖落地后的空跑");
 
     // =========================================================================
+    log("=== ④d 同 ④c,但走**滚轮**那一处 arm(两处各验一次,不外推)===");
+    newBucket("滚轮防抖落地后的空跑");
+    {
+        // ⚠ 为什么不能只有 ④c:`local.commitTimer = 0;` 是**两处**分别加的
+        // (滚轮一处、Q 滑杆一处)。④c 只驱动 Q 滑杆 ⇒ 删掉**滚轮**那一行时
+        // ④c 照样绿。实测:删除式 C11 第一次跑就是这么漏过去的,而 C12 红了 ——
+        // 「只验一处就外推」当场现形。两处各给一格。
+        const wXY = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            return {
+                x: fr.left + r.left + r.width / 2,
+                y: fr.top + r.top + r.height / 2,
+            };
+        `),
+        );
+        const j0 = await curveDiag();
+        await cdp.send("Input.dispatchMouseEvent", {
+            type: "mouseWheel",
+            x: wXY.x,
+            y: wXY.y,
+            deltaX: 0,
+            deltaY: -120,
+        });
+        // 等那一发**真的落地**(commits 涨 + 回显清空),不是只等 140ms。
+        const landed = await waitFor(
+            IN(`return w.__SCVB_OUTPUT__.curve().commits > ${j0.commits};`),
+            5000,
+        );
+        check(landed, "(j1)滚轮那一发防抖提交确实落地了(commits 涨过)");
+        if (landed) {
+            check(
+                await waitFor(
+                    IN(
+                        `return w.__SCVB_OUTPUT__.curve().hasPreview === false;`,
+                    ),
+                    5000,
+                ),
+                "(j2)回显到位,本地抄本已清 —— 此刻什么都没在飞",
+            );
+            const j1 = await curveDiag();
+            await pressCtrlZ();
+            const j2 = await curveDiag();
+            eq(
+                j2.aborts - j1.aborts,
+                0,
+                "(j3)**滚轮路径落地后按 Ctrl+Z,abortEdit 空跑、aborts 不涨**(少滚轮那行 commitTimer=0 就红)",
+            );
+        }
+    }
+    assertClean("④d 滚轮防抖落地后的空跑");
+
+    // =========================================================================
     log("=== ⑤ 拖动中换版本 ⇒ V2 的点集一个字节都不许变 ===");
     newBucket("拖动中换版本");
     {
