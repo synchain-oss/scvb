@@ -169,6 +169,25 @@ TEST_CASE("T30 claimErrorEdgeChanged:五分量边沿键任一变化即重发(PR#
     CHECK_FALSE(claimErrorEdgeChanged("conflict", 3, 1, 48000, 48000, "conflict", 3, 1, 48000, 48000));
 }
 
+TEST_CASE("SL-446(第 2 轮补充):连续两次请求不同冲突通道,claim 态不变也要重发,ch 各自正确"
+          "(PR#273 复审)")
+{
+    // ⚠ 这条钉的是"channelId 分量必须是**请求值**,不是实际持有值"这件事本身的必要性——
+    // 若这一位喂的是实际持有(硬冲突场景下恒为 0),连续两次请求不同通道时键的五元组会一模
+    // 一样(claim 都是 "conflict"、channelId 都是 0),第二次会被判成"没变化"而漏发。
+    // 这一格只钉算法(纯函数输入输出关系);InputEditor.cpp 是否真的喂了请求值而不是实际持有值,
+    // 由 tests/core/test_input_bridge_ipc.cpp 里的源码级判据钉(那一格能读到真实调用点的实参)。
+    CHECK(claimErrorEdgeChanged("conflict", 5, 1, 48000, 48000, "", -1, -1, -1, -1)); // 首次冲突,请求 5
+
+    // 第二次请求 7,claim 仍是 "conflict"(实际持有全程是 0,没体现在这个键里)——
+    // 请求值从 5 变成 7,边沿必须成立。
+    CHECK(claimErrorEdgeChanged("conflict", 7, 1, 48000, 48000, "conflict", 5, 1, 48000, 48000));
+
+    // 对照组:若这一位真的喂了实际持有值(两次都是 0),同一个 claim 下五元组不变 → 无边沿,
+    // 第二次请求会被吞掉——这正是复审指出的回归形态,写在这里当反面参照,不是要通过的用例。
+    CHECK_FALSE(claimErrorEdgeChanged("conflict", 0, 1, 48000, 48000, "conflict", 0, 1, 48000, 48000));
+}
+
 TEST_CASE("T30 advanceConfigSeq:隐藏不推进基线,恢复可见重发(PR#54 R7)")
 {
     scvb::u32 last = 0;

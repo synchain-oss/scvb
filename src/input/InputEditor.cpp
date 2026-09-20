@@ -85,7 +85,9 @@ juce::var InputEditor::buildSnapshot()
     lastErrorJson_.clear();
     lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
     lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
-    lastErrorChannelId_ = snap.channelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
+    // [SL-446 第 2 轮补充] 边沿键的 channel 分量走 configuredChannelId(配置/请求值),不是
+    // channelId(实际持有)——与 emitTick() 里那次判据同源,理由见 BridgeTickSnapshot 头注。
+    lastErrorChannelId_ = snap.configuredChannelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
     lastErrorGroupId_ = snap.groupId; // error 边沿键的 group 分量(同基线)
     lastErrorInputSr_ = juce::roundToInt(snap.sampleRate); // error 边沿键的 inputSr 分量(同基线)
     lastErrorOutputSr_ = static_cast<int>(snap.globalInfo.output_sample_rate); // error 边沿键的 outputSr 分量(同基线)
@@ -167,16 +169,22 @@ void InputEditor::emitTick()
     // (inputSr/outputSr 陈旧)都须刷新(PR#54 R6)。
     // 基线仅在边沿已消费(emitClaimError 返回 true)后推进:编辑器隐藏时 error 事件被丢弃,基线
     // 保持旧值,恢复可见后下一 tick 因边沿仍成立而重发(PR#54 R5,与 advanceEmitCache 同口径)。
+    // [SL-446 第 2 轮补充] 边沿键与 payload 的 channel 分量都用 configuredChannelId(配置/请求
+    // 值),不是上面 scvb.state 用的那个 channelId(实际持有)——两者本 PR 之前恒等,现在会分叉
+    // (硬冲突时 channelId 是 0)。若这里错用 channelId:① payload 的 ch 会报成 0 而不是用户
+    // 真正请求的号;② 更隐蔽的是边沿键会退化成"同一冲突态下连续两次不同请求号"分辨不出来
+    // (键的五元组一模一样,第二次请求被判成"没变化"而漏发)。见 BridgeTickSnapshot 头注与
+    // test_input_bridge.cpp 里"连续两次请求不同冲突通道"那格判据。
     const int inputSr = juce::roundToInt(snap.sampleRate);
     const int outputSr = static_cast<int>(snap.globalInfo.output_sample_rate);
-    if (bridge::claimErrorEdgeChanged(claim, snap.channelId, snap.groupId, inputSr, outputSr, lastClaim_,
+    if (bridge::claimErrorEdgeChanged(claim, snap.configuredChannelId, snap.groupId, inputSr, outputSr, lastClaim_,
                                       lastErrorChannelId_, lastErrorGroupId_, lastErrorInputSr_, lastErrorOutputSr_))
     {
         const juce::String prev = lastClaim_;
-        if (emitClaimError(claim, prev, snap.channelId, snap.groupId, inputSr, outputSr))
+        if (emitClaimError(claim, prev, snap.configuredChannelId, snap.groupId, inputSr, outputSr))
         {
             lastClaim_ = claim;
-            lastErrorChannelId_ = snap.channelId;
+            lastErrorChannelId_ = snap.configuredChannelId;
             lastErrorGroupId_ = snap.groupId;
             lastErrorInputSr_ = inputSr;
             lastErrorOutputSr_ = outputSr;

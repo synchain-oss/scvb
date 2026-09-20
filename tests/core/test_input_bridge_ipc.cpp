@@ -698,6 +698,82 @@ TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 
     }
 }
 
+TEST_CASE("SL-446(第 2 轮补充):源码级判据 —— InputEditor.cpp 的 emitTick() 里,scvb.error 走"
+          "配置/请求值,scvb.state/scvb.config 仍走实际持有",
+          "[input][bridge]")
+{
+    // ⚠ InputEditor 依赖真 WebView2,不能像 InputProcessor 那样直接实例化真对象做行为级判据
+    // (见 tests/webview/test_input_bridge.cpp 头注:"InputEditor 依赖真 WebView2,留待 gate 8
+    // 真机 GUI pluginval")。这一格补的是"接线对不对"那一半:pure function
+    // claimErrorEdgeChanged()/buildErrorPayload() 算法本身对不对,tests/webview/test_input_bridge.cpp
+    // 已有判据;但算法对不代表 InputEditor.cpp 真的把正确的实参递给它——这正是本卡"消费者列全"
+    // 那轮复审抓到的洞:同一个 snap.channelId 四处消费,两种语义,传错源不会在算法层面报错,
+    // 只会在"这个值到底该从哪个字段读"这件事上悄悄读错。
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/src/input/InputEditor.cpp";
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // 剥注释,理由与手法同上面那格(注释里同样会出现这些关键词,不剥会把断言顶替掉)。
+    std::string stripped;
+    stripped.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            stripped.push_back(raw[i]);
+            ++i;
+        }
+    }
+
+    // 只在 emitTick() 函数体内判——InputEditor.cpp 里 snap.channelId 这个字面量在别处(比如
+    // requestInitialState())也出现,不隔离会把别的函数的用法混进来判负/判正都不可信。
+    const std::string beginMarker = "void InputEditor::emitTick()";
+    const auto beginPos = stripped.find(beginMarker);
+    REQUIRE(beginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
+    const std::string endMarker = "void InputEditor::handleSetLang(";
+    const auto endPos = stripped.find(endMarker, beginPos);
+    REQUIRE(endPos != std::string::npos);
+    const std::string body = stripped.substr(beginPos, endPos - beginPos);
+
+    // 消费者①②(scvb.state / scvb.config):必须仍是 snap.channelId(实际持有),不能被"统一"
+    // 成配置值——否则 scvb.config 会拿配置号去索引广播数组、在硬冲突时越界或读到别的实例的配置
+    // (见 InputBridgeLogic.cpp buildConfigPayload() 里 haveOwn 判断的头注)。
+    // ⚠ 这四条与下面 ③④ 那两条**都用 CHECK,不用 REQUIRE**——四条互相独立,任何一条单独出问题
+    // 都不该让其余三条失去被执行、被观测到"仍绿"的机会(REQUIRE 会在第一条失败时直接掐断当前
+    // 测试用例,后面的断言根本不会跑,删除式验证"只改一处、另一处仍绿"就无从核起)。
+    CHECK(body.find("buildStatePayload(snap.channelId") != std::string::npos);
+    CHECK(body.find("cfg.channelId = snap.channelId") != std::string::npos);
+
+    // 消费者③④(scvb.error 的边沿键 + payload):必须是 snap.configuredChannelId(配置/请求值),
+    // 且两处用的是同一个字面量——键与 payload 不同源,会出现"键判负、payload却报错号"的分裂。
+    const auto edgeKeyPos = body.find("claimErrorEdgeChanged(claim, snap.configuredChannelId");
+    CHECK(edgeKeyPos != std::string::npos);
+    const auto payloadPos = body.find("emitClaimError(claim, prev, snap.configuredChannelId");
+    CHECK(payloadPos != std::string::npos);
+
+    // fail-closed:上面四个 find 任一失败已经 REQUIRE 过;这里再确认 emitTick() 里**不**残留
+    // 直接把 snap.channelId 递给这两个函数的旧写法(防止"加了新行但没删旧行"的半吊子改法)。
+    CHECK(body.find("claimErrorEdgeChanged(claim, snap.channelId") == std::string::npos);
+    CHECK(body.find("emitClaimError(claim, prev, snap.channelId") == std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // T37 三轮 C 族回归:Output→Input 配置广播链路。
 // 真机症状:「Input 侧优先级恒 0,Output 显示 5;Output 改 5→6,Input 不动;lead 开关也不同步」。

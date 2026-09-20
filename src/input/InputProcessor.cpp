@@ -54,14 +54,18 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
                      static_cast<scvb::u32>(srcChannels_), now);
     // [SL-446 第 2 轮] channelId_ 是**配置**镜像,不是**实际持有**镜像——两者在「配置了一个
     // channel 但这次 claim 没拿到」时会分叉(工程存 5、加载时 5 被别人占着:配置仍是 5,
-    // 实际持有是 0)。`session_.channelId()` 在全部场景下(含补偿式回滚)都正确收敛成
-    // "用户配置的那个号";`session_.boundChannel()` 才是"现在真的绑定了哪个"。
-    // getStateInformation()(存档)与 ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」
-    // 判断都要读**配置**——这里同步的正是这个镜像,不是广播那个。广播(bridgeTickSnapshot)
-    // 单独直接读 session_.boundChannel(),不经这个镜像,见该函数注释。
-    // ⚠ **这一处没有判据**(复审 SL-446 明确点过):setChannelId() 那处有源码级顺序判据
-    // (tests/core/test_input_bridge_ipc.cpp),这里同模式的同步没有配对判据,只靠代码审读——
-    // 别把它读成"和 setChannelId() 一样有机检守着"。
+    // 实际持有是 0)。`session_.boundChannel()` 是"现在真的绑定了哪个",广播
+    // (bridgeTickSnapshot)单独直接读它,不经这个镜像,见该函数注释。
+    // ⚠ [SL-446 第 2 轮补充] `session_.channelId()` **不是**在所有场景下都收敛成同一件事——
+    // 补偿式回滚**成功**那条支上它会变成旧 channel(见 InputSession.h prepare() 头注),这对
+    // "这次 prepareToPlay() 该不该继续用旧 channel 工作"是对的语义(会话确实还在旧 channel 上
+    // 活着),但**不能**当成"用户配置的那个号"的通用定义去套别处——setStateInformation() 加载
+    // 工程那条路就不能这样读,理由与做法见该函数里对应赋值点的头注,那里不是"漏改的同一处",
+    // 是刻意不同的处理。
+    // ⚠ 这一处没有**源码级顺序判据**(不像 setChannelId() 那处有 tests/core/test_input_bridge_ipc.cpp
+    // 钉着赋值顺序)——但 tests/host/test_host_harness.cpp 的"加载期冲突"用例反向验证过:
+    // 把这一行改回读 boundChannel() 会让该用例的存档断言变红,说明这一行**已经被那格用例间接
+    // 兜住**,只是兜法是行为级的,不是文本级的,别把两者混为一谈。
     channelId_ = static_cast<int>(session_.channelId());
     rampSwitcher_.prepare(sampleRate_);
 
@@ -526,10 +530,23 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-        // [SL-446 第 2 轮] 同上 prepareToPlay() 那句:channelId_ 是**配置**镜像,读
-        // session_.channelId(),不是 session_.boundChannel()(那是实际持有,给广播用)。
-        // ⚠ **这一处同样没有判据**(见 prepareToPlay() 那句同款说明),只靠代码审读。
-        channelId_ = static_cast<int>(session_.channelId());
+        // [SL-446 第 2 轮补充] ⚠ 这里**故意不**照 prepareToPlay()/setChannelId() 的样子在 prepare()
+        // 之后把 channelId_ 重新同步成 session_.channelId()——那两处的重新同步是对的,这里是错的,
+        // 差别不是"这行代码本身有问题",是**两类调用者对"配置"这个字段的期望不一样**:
+        //   · setChannelId():配置 = "用户这次想要哪个号"。请求 5 没抢到、补偿式回滚留在旧号 3,
+        //     "配置"收敛成 3 是对的——用户确实还在用 3,存档存 3 反映的是真实情况。
+        //   · 这里(加载工程):配置 = "工程文件里存的是哪个号"。工程写着 5,这次载入撞了冲突,
+        //     不管回滚抢没抢到、抢到了哪个号,工程文件本身没有变过——它仍然是那份写着 5 的文件。
+        //     `session_.channelId()` 在补偿式回滚**成功**那条支上会收敛成旧 channel(见
+        //     InputSession.h prepare() 头注),对 setChannelId() 是对的,对这里会把刚从工程字节
+        //     解出来的 5 悄悄改写成旧号,下次保存就把用户工程里的配置真的改掉了(SL-446 第 2 轮
+        //     bot 抓到的红旗,同族反向:第 1 轮是"擦成 0",这条是"改成不相关的旧号")。
+        // channelId_ 在本函数一开始(decodeInputState 之后)已经赋成 s.channelId 那份"工程里的
+        // 号",这里不再触碰它,让它在本函数生命周期里只被赋值这一次——这样"加载工程不改变
+        // 存的号"是结构性成立的,不依赖 session_ 内部哪条分支恰好没被走到。
+        // ⚠ 反过来也要记住:prepareToPlay()/setChannelId() 里那两处 `channelId_ =
+        // session_.channelId()` 是**有意保留**的,不是这次漏改的"同一个缺陷的另一实例"——
+        // 复审已经把这两类调用者的语义差异确认过一遍,别再顺手"统一"改掉。
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {
             stageMachine_.forcePassthrough();
@@ -651,6 +668,11 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     // 镜像(两者在"配置了但没绑定"时会分叉,见 setChannelId() 头注的完整对照表)——否则又
     // 回到"UI 说转移成功了,其实没有"那个原始 bug。这里刻意绕开镜像字段,直接读 session_。
     s.channelId = static_cast<int>(session_.boundChannel());
+    // [SL-446 第 2 轮补充] 另开一路给 scvb.error 用(payload 的 ch + 边沿键,两处必须同源,
+    // 语义与限制见 BridgeTickSnapshot::configuredChannelId 的头注)——不能复用上面那个
+    // channelId 字段,否则"同一冲突状态、换了个请求号"这种组合会被边沿键的五元组判成
+    // "没变化"而漏发(连续两次请求不同冲突通道,第二次的提示会消失)。
+    s.configuredChannelId = channelId_;
     s.groupId = groupId_;
     s.claimState = session_.state();
     s.conn = session_.connSnapshot(now);

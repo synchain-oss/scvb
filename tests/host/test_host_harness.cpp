@@ -843,6 +843,67 @@ TEST_CASE("SL-446(第 2 轮,集成,真 Processor):setGroupId/ensureCtrlOpen —�
     victim.releaseResources();
 }
 
+TEST_CASE("SL-446(第 2 轮补充,集成,真 Processor):已绑定实例载入不同工程、加载期冲突回滚——"
+          "存档号是工程里原本的号,不是回滚抢回来的旧号",
+          "[host][input][sl446]")
+{
+    // ⚠ 复审 4057661131 抓到的场景:宿主复用一个已经 prepared_ 的实例(切 preset / 复制轨道后
+    // load state 都走这条路),该实例这时已经 bind 在某个通道上(与即将载入的工程无关),载入
+    // 的工程字节说的是另一个号。若加载触发的 prepare() 撞了冲突、补偿式回滚抢回了实例原来
+    // 那个号,存档绝不能把工程里的号悄悄改写成这个"抢回来的旧号"——工程文件本身没有变过。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    // occupant 占住 channel 5,构成"工程要载入的那个号被占用"的条件。
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    // victim:先在**与即将载入的工程无关**的 channel 3 上站稳(等价"这个实例之前的状态")。
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive);
+
+    // 构造"工程里存的是 channel 5"的字节(与 victim 当前实际持有的 3 无关)。
+    scvb::state::InputState saved;
+    saved.channelId = 5;
+    saved.groupId = static_cast<std::uint32_t>(kTestGroup);
+    saved.uiScale = 100;
+    saved.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(saved, payload));
+    scvb::state::StateChunks chunksOut;
+    chunksOut.abi = scvb::state::kCurrentAbi;
+    chunksOut.set(scvb::state::kFourccCfgs, payload);
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunksOut, blob));
+
+    // victim 已 prepared_==true,setStateInformation() 会立即触发 re-claim(不必等下一次
+    // prepareToPlay())——真实撞上 occupant 占的 5,补偿式回滚抢回 victim 释放前那个 3。
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    // 存档:必须是工程里原本写的 5,不是回滚抢回来的 3、也不是 0。
+    juce::MemoryBlock stateBlob;
+    victim.getStateInformation(stateBlob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()),
+                                         stateBlob.getSize(), chunks) == scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfg != nullptr);
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+    CHECK(loaded.channelId == 5); // 工程里原本的号,原样留着
+    CHECK(loaded.channelId != 3); // 不是回滚抢回来的旧号
+    CHECK(loaded.channelId != 0); // 也不是被擦成未分配
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
 TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
 {
     Rig r;

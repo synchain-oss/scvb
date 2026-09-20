@@ -169,6 +169,11 @@ juce::var buildConfigPayload(const ConfigSnapshot& s)
     // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 participate_in_auto_pan 报成
     // false([J83] 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
     const bool haveBroadcast = s.broadcastValid && s.broadcast.config_seq != 0;
+    // [SL-446 第 2 轮] s.channelId 是**实际持有**(session_.boundChannel(),见 InputEditor.cpp
+    // emitTick() 的分组表)——本 PR 之前配置值恒 ≥1(未分配才是 0),现在硬冲突时它可以合法是 0。
+    // ⚠ 下面 `s.channelId - 1` 直接当数组下标用:这条 `>= 1` 判断是唯一挡住越界的地方,别为了
+    // "统一"把这里换成配置/请求值那个字段——换了会在硬冲突时拿配置号索引广播数组,读到"别的
+    // 实例 channel 5 的配置"冒充成"本实例的配置",而本实例根本没绑定任何 channel。
     const bool haveOwn = haveBroadcast && s.channelId >= 1 && s.channelId <= static_cast<int>(kMaxChannels);
 
     if (haveOwn)
