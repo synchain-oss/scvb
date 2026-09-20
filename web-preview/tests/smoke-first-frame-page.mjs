@@ -663,63 +663,96 @@ const { identifier: deleteJuceScriptId } = await cdp.send(
     "Page.addScriptToEvaluateOnNewDocument",
     { source: `delete window.__JUCE__;` },
 );
+// ⚠ [复审①,第 2 轮] 「guard 仍未到期」那格原来只查一次、不成立就直接判红 —— bot 指出
+// 触发它的多半是**测试环境本身在这一刻恰好慢**(waitFor 头注 SL-297/CI 那条已经记着
+// 「抢 CPU 的 runner 上超时是真实的」),不是 SL-437 真的回归,却会把一次环境抖动变成
+// required check 上的硬红。改成**有界重试**:前提不成立就重新导航整页再试一次(guard
+// 换一个全新的 2500ms 窗口),最多 `MAX_ATTEMPTS` 次;**全部**尝试都不成立才判红,且
+// 报错文案与「delivered」判据分开写清楚——那是「前提反复不成立」,不是 SL-437 回归本身。
+// ⚠ 只重试这一个前提检查:paint / rafSettled 各自的等待窗口已经相当宽松(20000ms /
+// 1500ms,远大于 guard 那个卡死点的 2500ms),不受同一种「快到 2.5s 线」的竞速风险,
+// 没有必要跟着重试。
+const MAX_ATTEMPTS = 2;
 for (const role of ["input", "output", "monitor"]) {
-    await cdp.send("Page.navigate", {
-        url: `${base}/web/${role}/index.html`,
-    });
-    const paintedNoJuce = await waitFor(
-        `(() => location.pathname.indexOf("/web/${role}/") >= 0 &&
-            window.__scvbPaintFrames >= 0)()`,
-        20000,
-    );
+    let paintedNoJuce = false;
+    let rafSettled = false;
+    let beforeInjectCount = -1;
+    let msSinceNav = Infinity;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        await cdp.send("Page.navigate", {
+            url: `${base}/web/${role}/index.html`,
+        });
+        paintedNoJuce = await waitFor(
+            `(() => location.pathname.indexOf("/web/${role}/") >= 0 &&
+                window.__scvbPaintFrames >= 0)()`,
+            20000,
+        );
+        if (!paintedNoJuce) break; // 与「guard 到期」无关的另一类失败,不必重试,直接往下报
+        // ⚠ [复审①②,第 1 轮] 下面这步原来是裸 `sleep(300)`,把「armOnce() 的正常路径
+        // 已经因 `__JUCE__` 缺席而尝试过 signal() 并提前 return」这条前置**假设**成立,
+        // 没有观测它。改成等一个真正可观测的量:paint 之后**再多两帧**(与上面 A 段
+        // Δ帧>=2 同一个信号,双层 rAF 保证已经跑完一次)。
+        // ⚠ **老实说清楚这一步能钉住什么、钉不住什么**:「signal() 提前 return」这个分支
+        // 在改动前后的代码里**逐字相同**(`if (!juce || ...) return;` 两版一样),所以
+        // **没有任何新旧结果不同的可观测量能证明这条前置**——按「找不到就明说钉不住」
+        // 处理,这一步只是把等待时长从「猜一个常数」换成「等一个真事件」,让前置更可能
+        // 成立,不代表它被钉住了。真正的新旧判别力全部在下面「guard 仍未到期」+
+        // 「delivered」这两格上。
+        rafSettled = await waitFor(
+            `(() => (window.__scvbFrames - window.__scvbPaintFrames) >= 2)()`,
+            1500,
+        );
+        // ⚠ [复审③] 只数 `__scvb__firstFrame`,不数整个 `__scvbSignals` 数组的长度 ——
+        // 同一份 PROBE 里 boot 守卫的 `__scvb__bootError` 也会走同一条 `window.__JUCE__
+        // .postMessage`(见 A 段头注「两个事件共存」),混进来会让这一步与下面的
+        // `delivered`/`afterInject` 都读错数。与上面 A 段的 eventId 过滤同一个口径。
+        beforeInjectCount = await evaluate(
+            `(() => (window.__scvbSignals || []).filter(
+                (m) => (JSON.parse(m.raw) || {}).eventId === "__scvb__firstFrame",
+            ).length)()`,
+        );
+        // 代理量:`performance.now()` 相对本页 navigationStart 计时,guard 在页面加载
+        // 早期注册、以 2500ms 为周期触发,`performance.now()` 明显小于 2500 时 guard
+        // **大概率**还没到点(500ms 安全边际:上面两步的正常耗时在几十到几百毫秒量级,
+        // 远够不到 2000)——这不是对 guard 状态的直接断言(黑盒规则不许读页面内部变量),
+        // 只是把它推得足够可信;真正判断"是否被空转过"的落点仍在下面的 `delivered`。
+        msSinceNav = await evaluate("(() => performance.now())()");
+        if (msSinceNav < 2000) break;
+        if (attempt < MAX_ATTEMPTS)
+            log(
+                `  ${role}:B: 第 ${attempt} 次尝试代理观测超阈值` +
+                    `(performance.now()=${Math.round(msSinceNav)}ms)—— 疑似测试环境这一刻` +
+                    "繁忙,重新导航整页再试一次",
+            );
+    }
     check(
         paintedNoJuce,
         `${role}:B:__JUCE__ 缺席时页面仍然画出了首帧(first-paint 记录取到了)`,
     );
-    // ⚠ [复审①②] 下面这步原来是裸 `sleep(300)`,把「armOnce() 的正常路径已经因
-    // `__JUCE__` 缺席而尝试过 signal() 并提前 return」这条前置**假设**成立,没有观测它。
-    // 改成等一个真正可观测的量:paint 之后**再多两帧**(与上面 A 段 Δ帧>=2 同一个信号,
-    // 双层 rAF 保证已经跑完一次)。
-    // ⚠ **老实说清楚这一步能钉住什么、钉不住什么**:「signal() 提前 return」这个分支在
-    // 改动前后的代码里**逐字相同**(`if (!juce || ...) return;` 两版一样),所以**没有任何
-    // 新旧结果不同的可观测量能证明这条前置**——按「找不到就明说钉不住」处理,这一步只是
-    // 把等待时长从「猜一个常数」换成「等一个真事件」,让前置更可能成立,不代表它被钉住了。
-    // 真正的新旧判别力全部在下面「guard 仍未触发」+「delivered」这两格上。
-    const rafSettled = await waitFor(
-        `(() => (window.__scvbFrames - window.__scvbPaintFrames) >= 2)()`,
-        1500,
-    );
+    if (!paintedNoJuce) continue;
     check(
         rafSettled,
         `${role}:B:paint 之后双层 rAF 已有机会跑完(实得 Δ帧=` +
             `${await evaluate("(() => window.__scvbFrames - window.__scvbPaintFrames)()")});` +
             " 前提没跑够时,下面的判据什么都证明不了",
     );
-    const beforeInject = await evaluate(
-        `(() => (window.__scvbSignals || []).length)()`,
-    );
     check(
-        beforeInject === 0,
-        `${role}:B:__JUCE__ 缺席期间没有任何信号被记录(实得 ${beforeInject} 条;` +
-            "这一步只是确认没有意外路径抢先发出信号,不证明 signal() 真的被调用过 —— 见上面注释)",
+        beforeInjectCount === 0,
+        `${role}:B:__JUCE__ 缺席期间没有 __scvb__firstFrame 信号被记录(实得 ` +
+            `${beforeInjectCount} 条;这一步只是确认没有意外路径抢先发出信号,` +
+            "不证明 signal() 真的被调用过 —— 见上面注释)",
     );
-    // ⚠ [复审①] 注入前必须先检查一个**代理观测**(不是直接读 `guard` 那个变量,黑盒规则
-    // 不许读页面内部状态)—— guard 是一发性 `setTimeout`,若它在 `__JUCE__` 仍缺席时就已经
-    // 触发(比如本机这一轮异常卡顿),它自己会因为 `__JUCE__` 缺席而空转掉这**唯一**一次
-    // 机会,而这个失败形态与 SL-437 真缺陷(撤网提前发生、保险被清空)**完全同形**——
-    // 不查这个代理量,下面的红分不清是「真缺陷」还是「测试环境比 2.5s 还慢」。
-    // 代理量:`performance.now()` 相对本页 navigationStart 计时,guard 在页面加载早期
-    // 注册、以 2500ms 为周期触发,`performance.now()` 明显小于 2500 时 guard**大概率**还没
-    // 到点(500ms 安全边际:上面两步的正常耗时在几十到几百毫秒量级,远够不到 2000)——
-    // 这不是对 guard 状态的直接断言,只是把它推得足够可信;真正判断“是否被空转过”的
-    // 落点仍在下面的 `delivered`。
-    const msSinceNav = await evaluate("(() => performance.now())()");
+    // ⚠ [复审①,第 2 轮] 前提在 MAX_ATTEMPTS 次尝试后仍不成立 —— 这是**测试前提反复
+    // 不成立**(疑似 CI runner 持续繁忙),与 SL-437 回归本身是两回事,文案上明确分开,
+    // 且这一档判负之后**跳过**下面的 delivered 判据(那一格在前提不成立时什么都证明不了,
+    // 硬跑只会把两种红混在一起)。
     check(
         msSinceNav < 2000,
-        `${role}:B:代理观测显示 guard(2.5s 保险)大概率仍未到期(实得 performance.now()=` +
-            `${Math.round(msSinceNav)}ms,应 < 2000ms;≥2000 说明测试环境本身太慢,` +
-            "guard 可能已经在 __JUCE__ 缺席时自己空转过一次,下面的红/绿不可信,先查环境)",
+        `${role}:B:代理观测在 ${MAX_ATTEMPTS} 次尝试后仍显示 guard(2.5s 保险)大概率已到期` +
+            `(最后一次 performance.now()=${Math.round(msSinceNav)}ms)—— **这是测试前提` +
+            "反复不成立,不是 SL-437 回归本身**;下面的 delivered 判据本次不跑",
     );
+    if (!(msSinceNav < 2000)) continue;
     // 补上一个能用的 __JUCE__ —— 模拟「controller 建好、__JUCE__ 真正就位」比两层 rAF
     // 晚到达的那种时序。之后**不再**主动调用页面里的任何函数,只等 guard 的 2.5s
     // setTimeout 自己触发。
@@ -735,8 +768,11 @@ for (const role of ["input", "output", "monitor"]) {
         };
     })()`);
     // guard 是 2500ms;给够余量等它触发,同时别把上界拉到会拖慢 CI 的地步。
+    // ⚠ [复审③] 同上,只数 __scvb__firstFrame,不数整个数组长度。
     const delivered = await waitFor(
-        `(() => (window.__scvbSignals || []).length > 0)()`,
+        `(() => (window.__scvbSignals || []).filter(
+            (m) => (JSON.parse(m.raw) || {}).eventId === "__scvb__firstFrame",
+        ).length > 0)()`,
         4000,
     );
     check(
@@ -747,6 +783,8 @@ for (const role of ["input", "output", "monitor"]) {
             ";红 = 撤网提前发生,保险已经空转,信号永远发不出去了 —— 正是 SL-437 那个缺陷)",
     );
     if (delivered) {
+        // 取**全部**信号的 eventId(不预先过滤),既要看到 __scvb__firstFrame 那一条,
+        // 也要能抓到「混进了别的事件」这种情况(比如 boot 守卫意外也报了一次)。
         const afterInject = await evaluate(
             `(() => (window.__scvbSignals || []).map((m) => (JSON.parse(m.raw) || {}).eventId))()`,
         );

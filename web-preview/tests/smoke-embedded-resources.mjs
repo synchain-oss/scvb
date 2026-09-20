@@ -980,21 +980,40 @@ function checkFirstFrameSignal(role, entry) {
     // smoke-first-frame-page.mjs 的「B. [SL-437]」节,两条都留)。
     //
     // 用文本位置判序,不做完整的花括号配平解析:`block` 已经是**只含这一个事件的那个
-    // <script> 块**(见上面 rawBlock 的筛选),`postMessage(` / `sent = true;` /
-    // `clearTimeout(guard)` 在 **firstFrame 这个块里**各自只出现一次(都在 signal() 函数
-    // 体内),用 indexOf 取位置足够、不需要更重的解析。
+    // <script> 块**(见上面 rawBlock 的筛选)。
+    // ⚠ [SL-437 复审第 2 轮] 「三个串在这个块里各自只出现一次」上一版只是**写在注释里的
+    // 前提**,没有断言——复审指出这挡不住将来有人在块里多写一处同名串(比如手滑复制了一份
+    // `sent = true;`):indexOf 只取**第一个**命中,多出来的那份不会被看见,判据会静默失效。
+    // 现在把它**断出来**:用 split().length-1 数每个串在块里的出现次数,必须恰好是 1
+    // (用 split 不用正则,三个串里 `postMessage(`/`clearTimeout(guard)` 都含括号,是正则
+    // 元字符,split 按字面量切分不用转义,更不容易再踩一次转义的坑)。
     // ⚠ **这条前提只对 firstFrame 块成立,(f) 也只该跑在这个块上**:同一文件里的
     // bootError 块(boot 守卫那段)没有 `clearTimeout(guard)`(它没有保险定时器这一层),
-    // 把 (f) 复用到那个块会因为 `clearGuardIdx` 恒为 -1 而**恒红**。想把这条判据复用到
-    // 别的事件之前,先确认那个事件的块里也有同名的三段。
+    // 计数会是 0 不是 1,把 (f) 复用到那个块会**恒红**。想把这条判据复用到别的事件之前,
+    // 先确认那个事件的块里也有同名的三段、且各自恰好一次。
+    const countOccurrences = (s) => block.split(s).length - 1;
+    const postMessageCount = countOccurrences("postMessage(");
+    const sentTrueCount = countOccurrences("sent = true;");
+    const clearGuardCount = countOccurrences("clearTimeout(guard)");
+    const countsOk =
+        postMessageCount === 1 && sentTrueCount === 1 && clearGuardCount === 1;
+    if (!countsOk)
+        bad(
+            `${role}:${eventId} 的 postMessage(/sent = true;/clearTimeout(guard) 三串` +
+                `没有各自恰好出现一次([SL-437] (f) 的前提)—— 出现次数不是 1 时,` +
+                `下面按文本位置判序的结果不可信(indexOf 只看得见第一处);` +
+                `实得 postMessage(×${postMessageCount}、sent = true;×${sentTrueCount}、` +
+                `clearTimeout(guard)×${clearGuardCount}`,
+        );
     const postMessageIdx = block.indexOf("postMessage(");
     const sentTrueIdx = block.indexOf("sent = true;");
     const clearGuardIdx = block.indexOf("clearTimeout(guard)");
     const disarmAfterSend =
+        countsOk &&
         postMessageIdx >= 0 &&
         sentTrueIdx > postMessageIdx &&
         clearGuardIdx > postMessageIdx;
-    if (!disarmAfterSend)
+    if (countsOk && !disarmAfterSend)
         bad(
             `${role}:${eventId} 的撤网(sent = true / clearTimeout(guard))没有排在 ` +
                 `postMessage 之后([SL-437])—— __JUCE__ 缺席 / postMessage 不是函数时,` +
