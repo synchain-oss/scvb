@@ -890,8 +890,8 @@ TEST_CASE("SL-446(第 2 轮补充,集成,真 Processor):已绑定实例载入不
     juce::MemoryBlock stateBlob;
     victim.getStateInformation(stateBlob);
     scvb::state::StateChunks chunks;
-    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()),
-                                         stateBlob.getSize(), chunks) == scvb::state::DecodeStatus::Ok);
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                         chunks) == scvb::state::DecodeStatus::Ok);
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
     REQUIRE(cfg != nullptr);
     scvb::state::InputState loaded;
