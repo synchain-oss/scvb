@@ -883,7 +883,10 @@ export function createCurveEditor(opts) {
      *   ④ `dragPoints = null`(连同 `pendingVersion = 0`)—— 丢掉预览态,下一帧
      *      draw()/render() 直接退回 store。
      *
-     * @returns {boolean} 本次是否真的中止了一段在飞拖动(纯诊断用,生产路径不看)。
+     * @returns {boolean} 本次是否真的中止了一段在飞**拖动**(纯诊断用,生产路径不看)。
+     *   ⚠ 口径与下面的 `local.aborts++` **不同**,别读成同一个:返回值只认拖动,
+     *   **防抖路径的中止(滚轮 / Q 滑杆)返回 `false`**;而 `aborts` 计的是**所有真正
+     *   做了事的中止**(早退已在函数开头挡掉空跑)。判据读的是 `aborts`,不是返回值。
      */
     function abortEdit() {
         const wasDragging = local.dragging;
@@ -929,8 +932,17 @@ export function createCurveEditor(opts) {
             local.dragPoints = points().slice();
             // [SL-450] 抄本属于**哪个版本**要一起记下来:§1.17 的 setPanCurve 写的是
             // 「当前激活版本」、载荷里不带版本号,拖到一半换了版本再提交 = 把 V1 的
-            // 点集整表写进 V2。判据在 render() 里(换版本不一定由本地点击发起 ——
-            // `version_active` 也会经 §2.1 `scvb.state` 推过来)。
+            // 点集整表写进 V2。
+            // ⚠ 判据**不在这一处、也不只一处** —— 今天由**三层**挡,删掉任意一层都不等价:
+            //   ① `app.js::switchVersion()` 在**发出切换之前** abortEdit(本地那一路,
+            //      用户点 chip 是最常见的路径,在源头关死);
+            //   ② 本文件 `render()` 的回声闸(**远端**那一路 —— 换版本不一定由本地点击
+            //      发起,`version_active` 也会经 §2.1 `scvb.state` 推过来);
+            //   ③ `commit()` 里的消费点守卫(唯一落地点上的最后一道)。
+            // 详见 `pendingVersion` 字段声明处的注释(本文件搜 `pendingVersion:`)。
+            // ⚠ 此处早期版本把这件事说成「只由 render() 那一道闸管、一个钩子盖住全部
+            // 触发路径」—— 那版认知在复审轮 1 就被推翻了(那道闸当时只看 `local.dragging`,
+            // 两条 140ms 防抖路径根本看不见),留着会让人照错的模型改代码。
             local.dragPointerId = e.pointerId;
             local.pendingVersion = activeVersion();
             select(i);
