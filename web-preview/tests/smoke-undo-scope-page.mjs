@@ -941,6 +941,16 @@ try {
                 "(i2)回显到位,本地抄本已清 —— 此刻**什么都没在飞**",
             );
             const i1 = await curveDiag();
+            // ⚠ [复审轮 3 后补] 测量窗必须覆盖**拨滑杆 -> 落地**这一整段,不能只跨
+            // Ctrl+Z 那一下:若 commitTimer 开火后没清零,render() 的版本闸会在
+            // 在途窗里**自己先开一次火**并顺手把 commitTimer 清掉 —— 等测到 Ctrl+Z
+            // 那一步时现场已经打扫干净,只跨 Ctrl+Z 的判据读到 0、当成「没事」。
+            // 实测:删除式 C12 在只跨 Ctrl+Z 的写法下 rc=0 不红。
+            eq(
+                i1.aborts - i0.aborts,
+                0,
+                "(i4)**拨滑杆 -> 落地全程零中止**(在途窗里版本闸不许自己开火)",
+            );
             await pressCtrlZ();
             const i2 = await curveDiag();
             eq(
@@ -997,6 +1007,12 @@ try {
                 "(j2)回显到位,本地抄本已清 —— 此刻什么都没在飞",
             );
             const j1 = await curveDiag();
+            // 同 (i4):测量窗覆盖「滚轮 -> 落地」全程,理由见那一格的注释。
+            eq(
+                j1.aborts - j0.aborts,
+                0,
+                "(j4)**滚轮 -> 落地全程零中止**(在途窗里版本闸不许自己开火)",
+            );
             await pressCtrlZ();
             const j2 = await curveDiag();
             eq(
