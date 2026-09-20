@@ -430,7 +430,12 @@ export function createCurveEditor(opts) {
         // pointerdown 写 —— 那是错的:在飞编辑**不只拖动一种**,滚轮与 Q 滑杆也会
         // 造出一份挂着 140ms 防抖的待提交抄本,而它们当初根本没记版本,于是
         // render() 那道闸(只看 dragging)对它们视而不见。泛化成 pendingVersion,
-        // 三类写者一律在**推出抄本的那一刻**写它。
+        // 三类写者(拖动 / 滚轮 / Q 滑杆)一律在**推出抄本的那一刻**写它。
+        // ⚠ 跨版本覆盖今天由**三层**挡,不是一层 —— 别只看这一个字段就以为判据在某一处:
+        //   ① `app.js::switchVersion()` 在**发出切换之前** abortEdit(本地那一路,源头关死);
+        //   ② 本文件 `render()` 的回声闸(远端那一路,回声到达那一刻);
+        //   ③ `commit()` 里的消费点守卫(唯一落地点上的最后一道)。
+        // 删掉任意一层都不等价,各自的可达路径与删除式见 smoke-undo-scope-page.mjs 头注。
         pendingVersion: 0,
         shift: false,
         commitTimer: 0,
@@ -861,14 +866,22 @@ export function createCurveEditor(opts) {
      * 拖动期本来就没有声音变化,所以这件事在界面上察觉不到。
      * ⚠ 这一层**只能落在 web 侧**:C++ 不知道有人正按着鼠标。
      *
-     * 三件事缺一不可:
-     *   ① `clearTimeout(commitTimer)` —— `dragPoints` 不只被拖动写:Q 滑杆与键盘微调
-     *      也写它,并挂 140ms 防抖提交。只把 `dragPoints` 置空、不停表,那个定时器
-     *      照样会拿着**闭包里捕获的** next 提交(它不读 `local.dragPoints`),
-     *      于是「拨完 Q 滑杆 140ms 内按 Ctrl+Z」原样复现同一个缺陷;
+     * **四件事**缺一不可(此前写作「三件事」而下面列了四项,已订正):
+     *   ① `clearTimeout(commitTimer)` —— `dragPoints` 不只被拖动写:**Q 滑杆(`buildToolbar`
+     *      里那个 `input` 监听)与滚轮(`onWheel`)**也写它,并各挂一个 140ms 防抖提交。
+     *      ⚠ 此前这句写的是「Q 滑杆与**键盘微调**」——**错的**:键盘微调(`onKeyDown`)走
+     *      **同步**路径,推表与提交在同一个 tick、既不写 `dragPoints` 也不挂防抖。
+     *      挂防抖的第三个写者是**滚轮**。留着那句错话,下一个人会去键盘路径找第三处
+     *      `commitTimer = 0`,而真正的两处在 `onWheel` 与 `buildToolbar`(复审轮 2 的
+     *      C11 差点就漏在这上面)。
+     *      只把 `dragPoints` 置空、不停表,那个定时器照样会拿着**闭包里捕获的** next
+     *      提交(它不读 `local.dragPoints`),于是「拨完 Q 滑杆 / 滚完滚轮 140ms 内按
+     *      Ctrl+Z」原样复现同一个缺陷;
      *   ② `releasePointerCapture` —— 捕获不放掉,指针事件会一直被这块 canvas 吃住;
      *   ③ `dragging=false` —— 随后那记 pointerup 由它挡住(onPointerUp 首行早退),
-     *      这才是「不再提交那份陈旧抄本」的落点。
+     *      这才是「不再提交那份陈旧抄本」的落点;
+     *   ④ `dragPoints = null`(连同 `pendingVersion = 0`)—— 丢掉预览态,下一帧
+     *      draw()/render() 直接退回 store。
      *
      * @returns {boolean} 本次是否真的中止了一段在飞拖动(纯诊断用,生产路径不看)。
      */
@@ -946,8 +959,13 @@ export function createCurveEditor(opts) {
         // [SL-450] 这一行同时是「在飞拖动已被 abortEdit() 中止」的落点:中止后
         // `dragging` 已是 false,这记松手就不会再把陈旧抄本提交上去。
         if (!local.dragging) return;
-        // [SL-450] 版本要在下面把 dragVersion 清零**之前**取走 —— 这份抄本是
-        // pointerdown 那一刻从这一版推出来的,消费点的守卫要拿它去核。
+        // [SL-450] 取走**这份抄本所属的版本**(pointerdown 那一刻的 activeVersion),
+        // 消费点守卫要拿它去核。
+        // ⚠ [复审轮 5 订正] 此前这句写的是「要在下面把 **dragVersion** 清零**之前**取走」——
+        // 两处都过时了:字段自复审轮 1 起已更名 `pendingVersion`;而复审轮 3 把
+        // 「在 onPointerUp 里清零」整个删掉了(哨兵 0 会让版本闸在在途窗里恒真),
+        // 现在它与 `dragPoints` 一起在 `commit()` 的三条退出路径上清 ⇒ **不存在「下面那次清零」**,
+        // 这里取值也就没有时序上的先后要求了。留着旧理由会让人去找一个已经不在的清零点。
         const pendingVersionAtDown = local.pendingVersion;
         local.dragging = false;
         const idx = local.dragIndex;
@@ -978,8 +996,9 @@ export function createCurveEditor(opts) {
         // .slice() 出的新数组,必须先把 dragPoints 重新指向它,否则 finally 永远不清,
         // 拖后 draw() 一直读旧数组(切版本不刷新 / side 改向显示错 / 键盘微调不可见)。
         local.dragPoints = next;
-        // [SL-450] **延迟路径**:这份抄本是 pointerdown 那一刻从 dragVersion 那一版推出来的,
-        // 中间可能已经换过版本 —— 必须传**捕获时**的版本,不是现在的。
+        // [SL-450] **延迟路径**:这份抄本是 pointerdown 那一刻从 `pendingVersion` 记下的
+        // 那一版推出来的(旧名 dragVersion,复审轮 1 已更名),中间可能已经换过版本
+        // —— 必须传**捕获时**的版本,不是现在的。
         commit(next, pendingVersionAtDown);
         local.selected = idx;
         syncToolbar();

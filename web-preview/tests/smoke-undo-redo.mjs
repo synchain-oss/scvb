@@ -489,7 +489,9 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         for (const [re, why] of [
             [
                 /clearTimeout\(local\.commitTimer\)/,
-                "掐掉 Q 滑杆/键盘微调的 140ms 防抖提交(它拿的是闭包里的 next,不读 dragPoints)",
+                // [复审轮 5 订正] 此前写作「Q 滑杆/**键盘微调**」——错的:键盘微调走
+                // 同步路径,不写 dragPoints、不挂防抖。挂防抖的两处是 Q 滑杆与**滚轮**。
+                "掐掉 Q 滑杆 / **滚轮** 的 140ms 防抖提交(定时器拿的是闭包里的 next,不读 dragPoints)",
             ],
             [/releasePointerCapture\(/, "放掉指针捕获"],
             [
