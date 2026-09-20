@@ -933,6 +933,18 @@ function noteRejectedPrinting() {
 }
 
 async function switchVersion(v) {
+    // [SL-450 复审轮 1] **发出切换之前**先中止在飞的曲线编辑。
+    //
+    // 为什么必须在**发之前**、不能只靠 curve-editor 的 render() 闸兜着:
+    // 引擎收到 setVersionActive 是**同步**切的,而 `scvb.state` 回声**异步**到。
+    // 这一窗口里 UI 的 `version_active` 还是旧值 —— 一份挂着 140ms 防抖的待提交抄本
+    // 若在窗口内到点开火,`setPanCurve`(§1.17 载荷**不带版本号**)就落到**新版本**上,
+    // 把另一版的曲线整表覆盖掉,而 UI 侧任何基于自己那个版本号的判据都比不出来
+    // (实测过:滚轮 / Q 滑杆两条路各把 V1 的值写进过 V2)。
+    // 在源头掐掉,这一路(用户点 chip,最常见)就根本不存在那个窗口。
+    // ⚠ 远端推来的切换掐不到源头 —— 那一路由 curve-editor 的 render() 闸在回声
+    // 到达的那一刻兜;两者合起来仍留一档残余,见 curve-editor.js 里 commit() 的注释。
+    curveEditor.abortEdit();
     const res = await call("setVersionActive", v);
     if (res && res.rejected === "printing") noteRejectedPrinting();
     requestRender();

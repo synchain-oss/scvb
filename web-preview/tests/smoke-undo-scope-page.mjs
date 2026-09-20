@@ -979,7 +979,7 @@ try {
             dragging2.dragging === true,
             `(e1)pointerdown 后确实进了拖动态(实得 ${JSON.stringify(dragging2)})`,
         );
-        eq(dragging2.dragVersion, 1, "(e2)抄本记下了它属于 V1");
+        eq(dragging2.pendingVersion, 1, "(e2)抄本记下了它属于 V1");
         await mouse("mouseMoved", where3.x + 20, where3.y - 10);
 
         // 换版本。用 chip 的 click()(直达 switchVersion):此刻画布持着 pointer
@@ -1036,6 +1036,177 @@ try {
         );
     }
     assertClean("⑤ 拖动中换版本");
+
+    // =========================================================================
+    log("=== ⑥ 跨版本落地守卫:**每一类在飞写者各一格** ===");
+    newBucket("跨版本守卫逐写者");
+    {
+        // 为什么要逐写者:`local.dragPoints` 有**三类**能跨版本在飞的写者 ——
+        // 拖动(抄本在 pointerdown 捕获)、滚轮 140ms 防抖、Q 滑杆 140ms 防抖。
+        // ⑤ 只走了拖动那一条,而**第一版的版本闸正是只盖住了它**(闸挂在
+        // `local.dragging` 上,两条防抖路径它根本看不见)。只测拖动就是上一轮漏掉
+        // 这两条的原因,所以这里各给一格。
+        //
+        // 同步写者(addAt / deleteAt / onKeyDown / setShape / setSide / setSlope)
+        // **不在此列,且不是漏测**:它们推表与提交在同一个 tick 里,JS 单线程下
+        // 版本不可能中途改变 —— 没有可跨的窗口,造不出会红的输入。这一句是结论,
+        // 不是省略:要它们也红,得先造出一个它们并不存在的异步窗口。
+        const armSwitchBack = async (toV) =>
+            evaluate(
+                IN(`const c = gb("header-version-chip-${toV}");
+                    if (!c || c.getAttribute("data-disabled") === "1") return false;
+                    c.click();
+                    return true;`),
+            );
+
+        // 现在停在 V2(⑤ 的尾态)。先回 V1,并确认 V1 上有可选中的点。
+        check(await armSwitchBack(1), "(g0)切回 V1");
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                6000,
+            ),
+            "(g1)激活版本 = V1",
+        );
+
+        // 选中一个点,让工具条(Q 滑杆)出来 —— 两条防抖路径都要它。
+        const pXY = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            const p = { angle: -50, gain_db: -12 };
+            return {
+                x: fr.left + r.left + (m.angleToX(p.angle) / m.PLOT_W) * r.width,
+                y: fr.top + r.top + (m.dbToY(p.gain_db) / m.PLOT_H) * r.height,
+            };
+        `),
+        );
+
+        // ---- 写者 B:滚轮 140ms 防抖 --------------------------------------
+        {
+            const b0 = await curveDiag();
+            // 滚轮要先有选中点:点一下(pointerdown+up 会提交一次,计入基线之后再取)
+            await mouse("mousePressed", pXY.x, pXY.y);
+            await mouse("mouseReleased", pXY.x, pXY.y);
+            await sleep(400);
+            const b1 = await curveDiag();
+            check(
+                b1.activeVersion === 1,
+                `(g2)滚轮臂:起手仍在 V1(实得 ${b1.activeVersion})`,
+            );
+            // 滚一下 ⇒ 排一个 140ms 的提交;**不等它到点**就换版本
+            await cdp.send("Input.dispatchMouseEvent", {
+                type: "mouseWheel",
+                x: pXY.x,
+                y: pXY.y,
+                deltaX: 0,
+                deltaY: -120,
+            });
+            check(await armSwitchBack(2), "(g3)滚轮臂:防抖在飞时切到 V2");
+            check(
+                await waitFor(
+                    IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 2;`),
+                    6000,
+                ),
+                "(g4)滚轮臂:激活版本 = V2",
+            );
+            const sigV2 = (await curveDiag()).curveSig;
+            await sleep(600); // 把 140ms 防抖窗整段走完,给它开火的机会
+            const b2 = await curveDiag();
+            // ⚠ 观测量是「**这一发被取消了**」,不是「消费点把它丢了」:本地点 chip 会走
+            // switchVersion(),它在**发出切换之前**就调了 abortEdit ⇒ 防抖定时器当场被
+            // clearTimeout,commit() 根本不会被调用。所以这里断 commits 不涨 + aborts 涨,
+            // 而 crossVersionDrops **本来就该是 0** —— 断它 +1 才是错的(我上一版就是这么写才红的)。
+            eq(
+                b2.commits - b1.commits,
+                0,
+                "(g5)**滚轮臂:那一发防抖提交被取消,commit() 没被调用过**",
+            );
+            check(
+                b2.aborts - b1.aborts >= 1,
+                `(g5b)滚轮臂:abortEdit 认领了这一次(aborts 实得 +${b2.aborts - b1.aborts})`,
+            );
+            eq(b2.curveSig, sigV2, "(g6)**滚轮臂:V2 的点集一个字节都没变**");
+        }
+
+        // ---- 写者 C:Q 滑杆 140ms 防抖 ------------------------------------
+        {
+            check(await armSwitchBack(1), "(g7)Q 滑杆臂:切回 V1");
+            check(
+                await waitFor(
+                    IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                    6000,
+                ),
+                "(g8)Q 滑杆臂:激活版本 = V1",
+            );
+            // 选中一个 bell 点(Q 滑杆只在非 cut 时可见)
+            const qXY = await evaluate(
+                IN_ASYNC(`
+                const m = await import("${base}/web/output/canvas/curve-editor.js");
+                const c = gb("master-pancurve-canvas");
+                const r = c.getBoundingClientRect();
+                const fr = f.getBoundingClientRect();
+                const p = { angle: -24, gain_db: 1.5 };
+                return {
+                    x: fr.left + r.left + (m.angleToX(p.angle) / m.PLOT_W) * r.width,
+                    y: fr.top + r.top + (m.dbToY(p.gain_db) / m.PLOT_H) * r.height,
+                };
+            `),
+            );
+            await mouse("mousePressed", qXY.x, qXY.y);
+            await mouse("mouseReleased", qXY.x, qXY.y);
+            await sleep(400);
+            const c0 = await curveDiag();
+            const ready = await evaluate(
+                IN(`const qs = q('[data-curve-q]');
+                    const wrap = q('.curve-toolbar__q');
+                    return qs && wrap && !wrap.hidden ? "ok" : "不可用";`),
+            );
+            check(ready === "ok", `(g9)Q 滑杆臂:滑杆可用(实得 ${ready})`);
+            if (ready === "ok") {
+                await evaluate(
+                    IN(`const qs = q('[data-curve-q]');
+                        qs.value = "4.5";
+                        qs.dispatchEvent(new w.Event("input", { bubbles: true }));
+                        return true;`),
+                );
+                check(
+                    await armSwitchBack(2),
+                    "(g10)Q 滑杆臂:防抖在飞时切到 V2",
+                );
+                check(
+                    await waitFor(
+                        IN(
+                            `return w.__SCVB_OUTPUT__.curve().activeVersion === 2;`,
+                        ),
+                        6000,
+                    ),
+                    "(g11)Q 滑杆臂:激活版本 = V2",
+                );
+                const sigV2b = (await curveDiag()).curveSig;
+                await sleep(600);
+                const c1 = await curveDiag();
+                // 同滚轮臂:观测量是「被取消」,不是「被消费点丢弃」。
+                eq(
+                    c1.commits - c0.commits,
+                    0,
+                    "(g12)**Q 滑杆臂:那一发防抖提交被取消,commit() 没被调用过**",
+                );
+                check(
+                    c1.aborts - c0.aborts >= 1,
+                    `(g12b)Q 滑杆臂:abortEdit 认领了这一次(aborts 实得 +${c1.aborts - c0.aborts})`,
+                );
+                eq(
+                    c1.curveSig,
+                    sigV2b,
+                    "(g13)**Q 滑杆臂:V2 的点集一个字节都没变**",
+                );
+            }
+        }
+    }
+    assertClean("⑥ 跨版本守卫逐写者");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

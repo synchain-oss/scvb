@@ -63,6 +63,18 @@ export const EDITABLE_SELECTOR = EDITABLE_TEXT_SELECTOR + ", select";
  * 不被拦截、直接漏给宿主撤销栈,到不了插件。
  * `contenteditable="false"` **不放行**(复审建议②):那是显式声明「这块不可编辑」,
  * 而裸 `[contenteditable]` 属性选择器会把它一起放过去。
+ *
+ * ⚠ **与旧的 `tagName` 版有两处极窄的语义差**([SL-450] 复审轮 1【建议】,**只记不改**):
+ *   ① 属性选择器 `[contenteditable="true"]` 的**值匹配是大小写敏感**的,而
+ *      `el.isContentEditable` 是浏览器算出来的布尔 —— 写成 `contenteditable="TRUE"`
+ *      时旧版放行、本版不放行。HTML 规范里该属性是枚举值、规范写法为小写,
+ *      而本仓 `web/` 里 **`contenteditable=` 这个属性零命中**(html 与 js 都没有任何
+ *      元素带它;字符串仅出现在几处 `isContentEditable` 属性读取与本注释)——
+ *      **今天无实例**;
+ *   ② `isContentEditable` 会沿**继承**算出「在可编辑容器内」,而本函数靠 `closest()`
+ *      往上找,两者在本仓的 DOM 形态下结论相同。
+ * 两条都不改行为:收窄成白名单本就是本卡的目的,而上面那两种写法在本仓不存在。
+ * 真出现了大写写法,该修的是那份 HTML(规范写法是小写),不是把判据放宽回去。
  */
 export function isEditableTextTarget(el) {
     if (!el || typeof el.closest !== "function") return false;
