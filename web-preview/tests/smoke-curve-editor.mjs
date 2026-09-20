@@ -469,10 +469,26 @@ console.log(
     );
     // onPointerUp 在 commit 前设 local.dragPoints = next(使 commit finally 的引用守卫
     // 成立;next 是 .slice() 出的新数组,不重指则 finally 永不清 → 拖后一直读旧数组)
-    check(
-        /local\.dragPoints = next;\s*commit\(next\)/.test(ceSrc),
-        "onPointerUp 在 commit 前设 local.dragPoints = next",
-    );
+    // [SL-450] 原本钉的是 `local.dragPoints = next;\s*commit(next)` 这个**字面相邻**形态。
+    // 本卡给 commit 加了第二个实参(srcVersion),并在两句之间插了注释 => 该模式当场失配,
+    // 而它要守的东西(赋值排在提交**之前**)一点没变。改成在 onPointerUp 函数体内按
+    // **下标比顺序**:中间再插什么都不误伤,顺序反了照样红。
+    {
+        const up = ceSrc.slice(
+            ceSrc.indexOf("function onPointerUp()"),
+            ceSrc.indexOf("function onWheel("),
+        );
+        const iAssign = up.indexOf("local.dragPoints = next;");
+        const iCommit = up.indexOf("commit(next,");
+        check(
+            up.length > 100 &&
+                iAssign >= 0 &&
+                iCommit >= 0 &&
+                iAssign < iCommit,
+            "onPointerUp 在 commit 前设 local.dragPoints = next" +
+                `(assign@${iAssign} / commit@${iCommit})`,
+        );
+    }
 }
 
 // =============================================================================
