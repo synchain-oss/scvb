@@ -39,8 +39,9 @@
 ## 变更内容
 
 **一句话**:`channel_id=0` 此前被契约定义成**等价于「未分配」**;#273 合并后它有了第二个成因
-(claim 请求被拒 / 段不可用),契约据此改成「**`channel_id` 报的是配置号,只在 claim 请求被拒或
-段不可用时为 `0`;是不是『未分配』一律看 `claim`,不得由 `channel_id=0` 反推**」。
+(claim 请求被拒 / 段不可用),契约据此改成「**`channel_id` 报的是配置(选中)的通道号
+(未选过通道时它本就是 `0`);此外只在 claim 请求被拒或段不可用时为 `0`;是不是『未分配』
+一律看 `claim`,不得由 `channel_id=0` 反推**」。
 
 ### 这个组合在 base 上为什么不可能出现
 
@@ -48,13 +49,14 @@
 
 | | base(`44099f3^`) | 现在(`44099f3`) |
 | --- | --- | --- |
-| 快照来源 | `s.channelId = channelId_`(**配置 / 请求号**,`InputProcessor.cpp:614`) | `s.channelId = session_.boundChannel()`(**实际持有**,`InputProcessor.cpp:695`)+ 另开一路 `s.configuredChannelId = channelId_`(`:700`) |
+| 快照来源 | `s.channelId = channelId_`(**配置 / 请求号**,`InputProcessor.cpp:614`(**该行号属 base `44099f3^`,现树同位置是空行**)) | `s.channelId = session_.boundChannel()`(**实际持有**,`InputProcessor.cpp:695`)+ 另开一路 `s.configuredChannelId = channelId_`(`:700`) |
 | 两个出口 | `buildInputSnapshot(snap.channelId, …)` / `buildStatePayload(snap.channelId, …)` | 两处都经 `bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId)`(`InputEditor.cpp:121` / `:156`) |
 
 `bridge::displayChannelId()`(`src/input/InputBridgeLogic.cpp:53`)是:
 
 ```cpp
-return (claimState == kActive || claimState == kUnassigned) ? configuredChannelId : channelId;
+    return (claimState == InputClaimState::kActive || claimState == InputClaimState::kUnassigned) ? configuredChannelId
+                                                                                                  : channelId;
 ```
 
 base 上配置镜像在 CAS 之前就被写成了请求号,所以**无论 claim 成不成功,顶层 `channel_id` 都是那个
@@ -148,8 +150,8 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 
 | # | 文件:行 | 改前 | 改后 |
 | --- | --- | --- | --- |
-| ① | `SCVB_CONTRACT.md:598`(§3.1 语义格首句) | 「`channel_id=0` = **未分配**(不 claim 任何 slot,J01);Output 侧完全不可见该实例,不计入 `N/15` 计数,**不是错误态**」 | 「`channel_id` 报的是**配置(选中)的通道号**,只在 claim 请求被拒或段不可用时为 `0`」+ `openAndClaim()` 结构性保证的指路 + 两个成因(① `unassigned` 引导态/主动释放,**不是错误态**;② `conflict`/`abiMismatch`/`idle` 段不可用支,**claim 失败态**)+ **「一律以 `claim` 为准,不得由 `channel_id=0` 反推」** + 反向不成立那句 + **三个量的口径区分与分叉情形** |
-| ② | `SCVB_CONTRACT.md:677`(§4.1 字段纪律格) | 只写「`claim` 六态定义见 §5.2」,对 `channel_id` 一字未提 | 补一句显式取值语义并点明与 §3.1 是同一个字段(A-30 统一拼写)。**两处那句逐字相同**(`grep -cF` 命中数 = 2),订正一处时用它 grep 得到另一处 —— 写第二份而不是靠继承:A-30 的纪律就是两处逐字一致,只写一处将来必漂 |
+| ① | `SCVB_CONTRACT.md:598`(§3.1 语义格首句) | 「`channel_id=0` = **未分配**(不 claim 任何 slot,J01);Output 侧完全不可见该实例,不计入 `N/15` 计数,**不是错误态**」 | 「`channel_id` 报的是**配置(选中)的通道号**(未选过通道时它本就是 `0`);**此外**只在 claim 请求被拒或段不可用时为 `0`」(逐字取落地文本,含 `3cb4d7c` 补上的那半句)+ `openAndClaim()` 结构性保证的指路 + 两个成因(① `unassigned` 引导态/主动释放,**不是错误态**;② `conflict`/`abiMismatch`/`idle` 段不可用支,**claim 失败态**)+ **「一律以 `claim` 为准,不得由 `channel_id=0` 反推」** + 反向不成立那句 + **三个量的口径区分与分叉情形** |
+| ② | `SCVB_CONTRACT.md:677`(§4.1 字段纪律格) | 只写「`claim` 六态定义见 §5.2」,对 `channel_id` 一字未提 | 补一句显式取值语义并点明与 §3.1 是同一个字段(A-30 统一拼写)。**两处那一串逐字相同**(`grep -cF` 命中数 = 2;其余分句两处语序不同,别拿整句去 grep),订正一处时用它 grep 得到另一处 —— 写第二份而不是靠继承:A-30 的纪律就是两处逐字一致,只写一处将来必漂 |
 | ③ | `SCVB_CONTRACT.md:738`(§5.2 `unassigned` 行) | 「`channel_id=0`,未 claim 任何 slot(**引导态,非错误**;…)」 | **只去掉假的那半**(`unassigned ⟹ channel_id=0`),换成「**本态下 `channel_id` 未必为 `0`**:它镜像的是配置号,`releaseResources()` 之后可以为非 `0`;反过来 `channel_id=0` 也不蕴含本态」+ 指回 §3.1 |
 
 > ① 的两成因共有那一半(未占用任何 `InputSlot` ⇒ Output 侧完全不可见、不计入 `N/15`)**原样保留**。
@@ -162,7 +164,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 ## 兼容性影响
 
 - **载荷形状 / 枚举 / abi / golden:零变化**。§7 manifest 的
-  `"claimState": ["unassigned","idle","active","conflict","abiMismatch","srMismatch"]`(`:908`)
+  `"claimState": ["unassigned", "idle", "active", "conflict", "abiMismatch", "srMismatch"],`(`:908`)
   一字未动,`node scripts/check-bridge-parity.mjs` 照常绿(它只解析 §7 那个 json 围栏块)。
   ipc abi 不升、state 容器 abi 不升、段名不升 v2、`tests/golden/` 一份未动。
 - **本 PR 的行为面:零变化**。不动 `src/` 与 `web/`。
@@ -171,7 +173,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
   base 上该态 `channel_id` = 请求号,走不到 `web/input/app.js:647` 那道闸(`if (channelId === 0 || channelId == null || claim === "unassigned")`);
   现在为 `0`,被它拦下。**判为更对**(那一刻确实一个通道也没握住),且 §5.2 `conflict` 行的
   「UI 落点」列本来只写了「卡片抖动 + `ch.occupied` toast」、没写 pill ⇒ 无文字矛盾,本 PR 不改它。
-- **页面端两处 `channel_id` 消费面复核过,都不做反向推导**:
+- **页面端两处 `channel_id` 消费面复核过**(⚠ 它们**写法上都是按 `channel_id` 反推**—— 下面第一条就是 `channel_id===0 ⇒ "unassigned"`;逐条核过的是**它们反推出的结论与按 `claim` 判定一致**,故本卡不动它们;不是「它们没有反推」):
   - `web/input/app.js:440` `priorityBlockReason()`:`channel_id===0 ⇒ "unassigned"`。桥面
     `channel_id=0` 的态**全都非活跃** ⇒ C++ 侧 `bridge::priorityRejection()` 不是走
     `kUnassigned` 就是走 `kNotActive`,两条都回 `reason:"unassigned"`,两侧同结论。
@@ -255,7 +257,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 冻结表面本次零改动,manifest 与版本行都无可同步之处,`check-bridge-parity.mjs` 照常绿。
 文件头 `:3` 的 `> **版本**:1.0(已冻结)` 因此不动。
 
-⚠ **成例 [J90] 只覆盖「零语义改动的纯文字对齐」**(`20260828-j90-contract-text-align.md:114-117`
+⚠ **成例 [J90] 只覆盖「零语义改动的纯文字对齐」**(`20260828-j90-contract-text-align.md:111-117`
 自己写明「函数名 / 签名 / 返回字段 / 事件名 / 载荷字段零改动」「本次零表面改动」),与本次前提
 不同 —— 它**只能**用来支持上面那句「§9.0 第 4 条不触发」,**不能**用来论证「禁止面没被碰」。
 
