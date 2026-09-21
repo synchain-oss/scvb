@@ -18,10 +18,23 @@
       §4.1 `scvb.state` 的「字段纪律」格(`:677`)、§5.2 六值表的 `unassigned` 行(`:738`)。
 - [ ] tests/golden/(golden 快照)—— **不动**。无布局、无 abi、无编码变化。
 
-> **触发确认**:`.github/workflows/branch-gate.yml:169` 的冻结契约 path guard 正则是
+> **guard 的覆盖面与「本 PR 会不会触发它」是两件事。**
+> 覆盖面:`.github/workflows/branch-gate.yml:169` 的冻结契约 path guard 正则
 > `^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|docs/SCVB_CONTRACT\.md|tests/golden/)`
-> —— `docs/SCVB_CONTRACT.md` **在**这个列表上,所以本 PR **会**触发 guard,本文档与
-> `status/frozen-contract` 标签都是它的硬要求,不是自选项。
+> **确实**含 `docs/SCVB_CONTRACT.md`。
+> **但本 PR 不触发它**:该 workflow 只挂 `on: pull_request: branches: [dev]`
+> (`branch-gate.yml:11-14`),而本 PR 的 base 是 `feature/v1` ⇒ **整个 workflow 不启动**,
+> `:169` 一次都不执行。`CLAUDE.md:79` 写的是同一件事:子 PR
+> 「**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO 与冻结契约
+> path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。
+> 改冻结契约的子 PR 别指望机器拦你。」
+> guard 将在 `feature/v1 → dev` 收口 PR 上第一次生效 —— 届时本文档相对 `dev` 是
+> `added`,能满足它的 `^docs/contract-changes/[0-9]{8}-.+\.md$` 检查。
+>
+> ⇒ **义务不变**(CLAUDE.md §5 是无条件的:四份冻结文档 + `tests/golden/` 的任何改动
+> 都要变更文档 + `status/frozen-contract` 标签,本 PR 两样都做了),
+> **但这一版没有任何机检兜底**,全靠人工裁定 —— 这与下文
+> `contractVersion` 那一节的处境直接相关。
 
 ## 变更内容
 
