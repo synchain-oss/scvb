@@ -370,7 +370,7 @@ void ScvbInputAudioProcessor::timerCallback()
     // 是靠下游巧合兜住的,不是这里设计对:armed 最终经 session_.setCapturing(block.
     // registrySlot, armed) 落地,而 block.registrySlot 来自 acquireBlock() 按**实际持有**
     // 的 channel 取快照——没有实际绑定时这个指针是 null,setCapturing 对 null slot 直接
-    // 空操作。**这是巧合兜住,不是这处本身正确**,超出本卡范围,不在这一轮修。
+    // 空操作。**这是巧合兜住,不是这处本身正确**,已记 **SL-453**,不在这一轮修。
     if (armed && channelId_ >= 1 && channelId_ <= kChannelIdMax)
     {
         scvb::CtrlBroadcastSnapshot bc;
@@ -566,7 +566,7 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         // 而 state() 仍是 kActive 的窗口——bridgeRemoteSetPriority() 在这个窗口里可能把优先级
         // 投给别人正占着的命令环。这条窗口在 main 上就成立,不是本卡引入的回归,触发面比第 3
         // 轮那次窄得多(drainFpReports()/timerCallback() 此时都还没启动,窗口在下一次
-        // prepareToPlay() 的重新同步处自行关闭),不在本卡修——另立卡跟踪。
+        // prepareToPlay() 的重新同步处自行关闭),不在本卡修——已记 **SL-455**,不阻断本卡合并。
         channelId_ = static_cast<int>(session_.channelId());
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {

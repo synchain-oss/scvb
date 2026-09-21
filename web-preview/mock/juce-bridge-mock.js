@@ -2277,7 +2277,7 @@ function buildInputBackend(ctx) {
                 // 核对真桥行为(见上面注释),不能靠跑一遍 web-smoke 判断。要钉住它需要一个
                 // 新夹具:先给用户留一个未占用的通道能成功绑定,再让他点一个别的、已占用的
                 // 通道触发这条分支;`ALL_CHANNELS_MASK` 被 6-7 个不同夹具共用,不能为了这
-                // 一条直接改掉,需要新增专门的夹具/URL 参数(已转卡,工具链卡,默认不派工)。
+                // 一条直接改掉,需要新增专门的夹具/URL 参数(已记 **SL-456**,工具链卡,默认不派工)。
                 const hadPreviousChannel = model.snapshot.channel_id > 0;
                 const claim = hadPreviousChannel
                     ? claimStateFor(model.snapshot.channel_id)
