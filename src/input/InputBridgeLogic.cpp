@@ -33,14 +33,25 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
 
 int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId)
 {
-    // kConflict 是唯一"这次请求被拒、什么都没绑定"的态(见 claimValue() 六值映射)——这一态下
-    // configuredChannelId 停在被拒的请求号,channelId(=boundChannel())如实是 0,走 channelId。
-    // 别的四态**不是**"用哪个都一样"——kUnassigned 下两值可能分叉(releaseResources() 之后
-    // channelId=0 但 configuredChannelId 原样留着,必须用 configuredChannelId,这正是这条
-    // 分支存在的理由),kActive 下两值本就相等,kAbiMismatch/kUnavailable 下走 configuredChannelId
-    // 才能保留用户配置的号。五态逐条理由见 InputBridgeLogic.h 声明处头注,含 CHANGELOG.md 里
-    // 那句已发版承诺的出处。
-    return claimState == InputClaimState::kConflict ? channelId : configuredChannelId;
+    // [轮 9 复审【重要】订正] 上一版只把 kConflict 摘出来走 channelId,漏了"不持有任何
+    // slot"这一半——InputSession::openAndClaim()(src/core/input/InputSession.cpp:343-
+    // 386)在"首次/换 channel"这条路上失败时,除了 kConflict(通道被占)还会落到
+    // kAbiMismatch(registry.changeGroup()/open() 返回 abi 不符)与 kUnavailable(段打不开/
+    // 映射失败/claimInput 非 kConflict 的失败/createSegments 失败)——**这三个失败态走的是
+    // 同一条代码路径**,previousChannel==0(没有旧 channel 可回滚)时 channelId_(配置)同样
+    // 停在被拒的请求号、claimedChannel_(实际持有)同样是 0,与 kConflict 结构完全相同,只是
+    // 失败原因不同。原判据只摘 kConflict,会把 kAbiMismatch/kUnavailable 这两个同样"请求被
+    // 拒、什么都没绑定"的态误判成"用哪个都一样",实际后果是把被拒的通道显示成"已选中 +
+    // 已连接"——可达路径,不是理论场景。
+    // 改成按"是不是活跃/未配置"分流,而不是"是不是 kConflict"分流:kActive(两值本就相等)
+    // 与 kUnassigned(releaseResources() 之后 channelId=0 但 configuredChannelId 原样留着,
+    // 必须用 configuredChannelId,这正是本函数存在的理由)这两态走 configuredChannelId;
+    // 其余三态(kConflict/kAbiMismatch/kUnavailable,统一含义:配置了但没有任何一个 slot
+    // 被实际持有)走 channelId(=boundChannel(),此时必为 0)。这三态下 claimedChannel_
+    // 恒为 0 是 openAndClaim() 的结构性保证(每条失败分支要么从未 store 过、要么显式
+    // store(0)),不是巧合,别再按"只挑 kConflict"的思路加回去。
+    return (claimState == InputClaimState::kActive || claimState == InputClaimState::kUnassigned) ? configuredChannelId
+                                                                                                  : channelId;
 }
 
 PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active)

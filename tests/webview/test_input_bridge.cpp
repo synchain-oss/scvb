@@ -102,8 +102,8 @@ TEST_CASE("T30 srMismatch 推导:仅 claim active ∧ Output SR 非零 ∧ ≠ �
     CHECK_FALSE(srMismatch(InputClaimState::kAbiMismatch, 44100, 48000));
 }
 
-TEST_CASE("SL-446(合并前独立复核):displayChannelId —— 只有 kConflict 走实际持有(=0,如实"
-          "未分配),别的态走配置/请求值")
+TEST_CASE("SL-446(合并前独立复核 + 轮 9 复审订正):displayChannelId —— kActive/kUnassigned 走"
+          "配置/请求值,kConflict/kAbiMismatch/kUnavailable 三态统一走实际持有(=0,如实未分配)")
 {
     // 场景 1(表格 #1):releaseResources() 之后 —— session_ 落 kUnassigned(不是 kConflict),
     // boundChannel() 清 0,但配置(configuredChannelId)原样留着。顶层 channel_id 该显示配置号,
@@ -123,10 +123,14 @@ TEST_CASE("SL-446(合并前独立复核):displayChannelId —— 只有 kConflic
     // 确认这条不变式成立时函数确实回传那个共同值,不是"删掉分支也会绿"的那种钉不住。
     CHECK(displayChannelId(InputClaimState::kActive, /*channelId=*/3, /*configuredChannelId=*/3) == 3);
 
-    // kAbiMismatch/kUnavailable:与 kUnassigned 同类,不是"这次请求被拒、什么都没绑定"的态,
-    // 走配置值(这两态下两个字段是否分叉不在本卡讨论范围,但函数本身的分流规则必须一致)。
-    CHECK(displayChannelId(InputClaimState::kAbiMismatch, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
-    CHECK(displayChannelId(InputClaimState::kUnavailable, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
+    // [轮 9 复审【重要】订正] kAbiMismatch/kUnavailable 此前被当成"与 kUnassigned 同类"走配置
+    // 值——这是假的。InputSession::openAndClaim() 失败时,previousChannel==0(没有旧 channel
+    // 可回滚)这条路径上 kConflict/kAbiMismatch/kUnavailable 三个失败码走的是同一段代码,
+    // channelId(bound)同样如实是 0、configuredChannelId 同样停在被拒的请求号——与 kConflict
+    // 结构完全相同,只是失败原因不同(注册表 abi 不符 / 段打不开,不是通道被占)。这两态必须
+    // 和 kConflict 一样显示 0,不能显示被拒的号——可达路径,不是理论场景。
+    CHECK(displayChannelId(InputClaimState::kAbiMismatch, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+    CHECK(displayChannelId(InputClaimState::kUnavailable, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
 }
 
 TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > notActive > ringFull(§3.4/§5.6)")

@@ -27,22 +27,25 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
 // (configuredChannelId)还是实际持有(channelId,=boundChannel())——五态逐个给理由,别笼统
 // 归成"其余都一样"(那句话此前是假的,见下面 kUnassigned 那条的订正):
 //   kActive:两值本就相等(不变式:kActive ⟹ configuredChannelId==channelId,见 InputSession.h
-//     prepare() 头注),走哪个字段结果都一样。
+//     prepare() 头注),走哪个字段结果都一样,选它是因为它和 kUnassigned 共用同一个分支。
 //   kUnassigned:⚠ 两值**可能分叉**,不是"用哪个都一样"——releaseResources() 之后
 //     claimedChannel_(=channelId)清 0,但该函数全程不碰 channelId_,配置值原样留着;这一态
 //     必须用 configuredChannelId,否则宿主换音频设备/改缓冲区/冻结禁用轨道这类会短暂
 //     releaseResources() 的常见操作就会把选中态清空、重弹首启空态引导——**这正是这条分支
 //     存在的理由**,本次合并前独立复核抓到的用户可见回归就是这一态。
-//   kAbiMismatch/kUnavailable:channelId(bound)是 0,configuredChannelId 是用户配置的号;
-//     走 configuredChannelId 才能让界面同时显示"用户配的哪个号"+对应的错误提示,走 bound
-//     会把配置也一起显示成未分配,与这两态"配置有效、只是这一路走不通"的语义不符。
-//   kConflict:**唯一**摘出来走 channelId(=0)的态——它是"这次请求被拒、什么都没绑定"的态
-//     (见 claimValue() 的六值映射),releaseResources() 落的是 kUnassigned 不是 kConflict,
-//     两者可分辨,不需要新字段。
-// ⚠ kConflict 这条分支不是可选的复杂度,删掉它会在"首次绑定、点了一个被占通道"这个场景
-// 重新打开 SL-19/SL-446 本身要堵的洞:界面会把被拒的那个号显示成"已选中"。CHANGELOG.md 里
-// SL-446 那条已发版的文案("抢回也失败的极罕见情况下……才会如实显示未分配")说的正是
-// kConflict 这一态,是已经对用户承诺过的行为,不是这里新加的判断。
+//   kConflict/kAbiMismatch/kUnavailable:⚠ [轮 9 复审【重要】订正] 这三态统一走
+//     channelId(=0),**不是**只挑 kConflict——InputSession::openAndClaim() 的失败分支
+//     (src/core/input/InputSession.cpp:343-386)里,previousChannel==0(没有旧 channel
+//     可回滚)时这三个失败码走的是完全同一条代码路径:channelId_(配置)同样停在被拒的请求
+//     号,claimedChannel_(实际持有)同样是 0——kAbiMismatch/kUnavailable 与 kConflict 只是
+//     失败原因不同(注册表 abi 不符/段打不开 vs 通道被占),"配置了但什么都没绑定"这件事
+//     完全一样。上一版只摘 kConflict、把 kAbiMismatch/kUnavailable 归进"用哪个都一样"是
+//     假的,会把这两态下被拒的号显示成"已选中 + 已连接"——可达路径,不是理论场景。
+// ⚠ "kConflict/kAbiMismatch/kUnavailable 走 channelId"这条分支不是可选的复杂度,删掉/收窄
+// 它会在"首次绑定、点了一个被占通道(或段打不开/abi 不符)"这个场景重新打开 SL-19/SL-446
+// 本身要堵的洞:界面会把被拒的那个号显示成"已选中"。CHANGELOG.md 里 SL-446 那条已发版的
+// 文案("抢回也失败的极罕见情况下……才会如实显示未分配")说的正是 kConflict 这一态,
+// kAbiMismatch/kUnavailable 是同一条承诺在另外两个失败原因上的自然延伸,不是这里新加的判断。
 int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId);
 
 // --- remoteSetPriority 拒绝判定(§3.4/§5.6)-----------------------------------------
