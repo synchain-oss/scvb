@@ -97,7 +97,7 @@ $ grep -rn "displayChannelId" --include=*.cpp --include=*.h --include=*.js --inc
 | `kActive` | `srMismatch` / `active` / `idle`(按 `srMismatch`、`maskBit` 分流) | 配置号(该态下与实际持有**本就相等**),**必非 0** |
 | `kConflict` | `conflict` | **`0`** ← 新 |
 | `kAbiMismatch` | `abiMismatch` | **`0`** ← 新 |
-| `kUnavailable`(I0 段未打开 / 映射失败) | **`idle`** | **`0`** ← 新,**立卡时未点名的那一个** |
+| `kUnavailable`(I0 **段不可用**,四项:段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败) | **`idle`** | **`0`** ← 新,**立卡时未点名的那一个** |
 
 所以新组合是 **`conflict` / `abiMismatch` / `idle`(段不可用那一支)** 三个,不是两个。
 `srMismatch` 与 `active` 只在 `kActive` 上成立 ⇒ 不在集合里。
@@ -297,7 +297,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
    另记一笔供开卡时先看:对一个明明选了通道、只是撞了车的实例回「未分配」,`reason` 这个
    **串本身**可能才是问题(用户可见文案口径),开卡时先查 UI 侧怎么消费它。
 2. **[SL-466] —— §5.2 `idle` 行的定义句不覆盖 `kUnavailable`**(`:739`)。现文写「已选 channel,
-   slot 已声明但 Output 尚未健康读取」,而 `kUnavailable`(段未打开 / 映射失败)既没有已声明的
+   slot 已声明但 Output 尚未健康读取」,而 `kUnavailable`(**段不可用**,四项见上表)既没有已声明的
    slot、UI 落点也不是它写的「pill『等待 Output』」(`channel_id=0` 会先被
    `web/input/app.js:647` 那道闸拦到灰 pill「未选择通道」)。两个时间点要分开记:
    **定义句不覆盖 `kUnavailable` 是既存的**(`kUnavailable → idle` 的映射早于 #273);
