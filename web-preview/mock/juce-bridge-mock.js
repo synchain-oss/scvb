@@ -2269,6 +2269,15 @@ function buildInputBackend(ctx) {
                 // 所以真桥这条路径不发 scvb.error。只有从未绑定过(channel_id 当前是 0,没有
                 // 旧通道可回滚)才会真的停在 "conflict"——这种硬失败场景下 claim 确实持续
                 // 停在 "conflict"(不会自己变回别的态),边沿检测能捕捉到,scvb.error 才会发。
+                // ⚠ [已知限制,未被任何夹具验证] `hadPreviousChannel === true` 这条分支
+                // 今天**没有任何夹具能走到**——`state-driver.js` 的 `channel-conflict` 夹具把
+                // `caps.occupiedMask` 设成 `ALL_CHANNELS_MASK`(全部 15 个通道都标记占用),
+                // 用户在这个夹具下永远无法先成功绑定任何一个通道,`model.snapshot.channel_id`
+                // 因此恒为 0,这个分支恒走不到。**这条分支改错了也不会红**——谁动它都得手工
+                // 核对真桥行为(见上面注释),不能靠跑一遍 web-smoke 判断。要钉住它需要一个
+                // 新夹具:先给用户留一个未占用的通道能成功绑定,再让他点一个别的、已占用的
+                // 通道触发这条分支;`ALL_CHANNELS_MASK` 被 6-7 个不同夹具共用,不能为了这
+                // 一条直接改掉,需要新增专门的夹具/URL 参数(已转卡,工具链卡,默认不派工)。
                 const hadPreviousChannel = model.snapshot.channel_id > 0;
                 const claim = hadPreviousChannel
                     ? claimStateFor(model.snapshot.channel_id)
