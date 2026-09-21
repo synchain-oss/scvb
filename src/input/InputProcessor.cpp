@@ -63,9 +63,12 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     // 工程那条路就不能这样读,理由与做法见该函数里对应赋值点的头注,那里不是"漏改的同一处",
     // 是刻意不同的处理。
     // ⚠ 这一处没有**源码级顺序判据**(不像 setChannelId() 那处有 tests/core/test_input_bridge_ipc.cpp
-    // 钉着赋值顺序)——但 tests/host/test_host_harness.cpp 的"加载期冲突"用例反向验证过:
-    // 把这一行改回读 boundChannel() 会让该用例的存档断言变红,说明这一行**已经被那格用例间接
-    // 兜住**,只是兜法是行为级的,不是文本级的,别把两者混为一谈。
+    // 钉着赋值顺序)。[SL-446 第 6 轮订正] 上面这句自述在第 5 轮之后已经过期——第 5 轮把
+    // getStateInformation() 的存档取值源换成了 savedChannelId_,这一行不再影响存档,"改回读
+    // boundChannel() 会让存档断言变红" 这句(第 4 轮时是真的)现在是假的。这一行真正承重的
+    // 是 ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」判断与 scvb.error 的 ch 字段
+    // (经 configuredChannelId),已改用行为级判据直接钉这两个消费者(见"加载期冲突"用例
+    // 补的 CHECK(bridgeTickSnapshot().configuredChannelId == 5)),不再依赖存档这条间接路径。
     channelId_ = static_cast<int>(session_.channelId());
     rampSwitcher_.prepare(sampleRate_);
 

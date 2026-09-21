@@ -779,6 +779,13 @@ TEST_CASE("SL-446(第 2 轮,集成,真 Processor):加载期冲突 —— 存档=
 
     // 两个出口必须给出不同的值。
     CHECK(victim.bridgeTickSnapshot().channelId == 0); // 广播:实际没绑定
+    // [SL-446 第 6 轮] prepareToPlay() 的 channelId_ 重新同步(:69)此前没有任何判据钉着——
+    // 配置了但没绑定时(state()!=kActive),它若被误写成 boundChannel()==0,ensureCtrlOpen()
+    // 会早退不开段、setGroupId() 会把"配置了"误判成"未分配",scvb.error 的 ch(经
+    // configuredChannelId)也会变成 0。这条断言只依赖那一行的取值源,改回读 boundChannel()
+    // 必红,读 session_.channelId() 才对(此刻硬失败、previousChannel==0,没被回滚改过,
+    // 仍是请求值 5)。
+    CHECK(victim.bridgeTickSnapshot().configuredChannelId == 5); // 配置镜像:读 session_.channelId()
     juce::MemoryBlock blob2;
     victim.getStateInformation(blob2);
     scvb::state::StateChunks chunks2;
@@ -898,6 +905,14 @@ TEST_CASE("SL-446(第 5 轮,集成,真 Processor):已绑定实例载入不同工
     // victim 已 prepared_==true,setStateInformation() 会立即触发 re-claim(不必等下一次
     // prepareToPlay())——真实撞上 occupant 占的 5,补偿式回滚抢回 victim 释放前那个 3。
     victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    // [SL-446 第 6 轮] 载入之后宿主通常还会再 prepareToPlay() 一次(走带停走 / 设备重启 /
+    // 缓冲区变更)。那一次会重新同步 channelId_(必须的,见 InputProcessor.cpp :69/:557 头注),
+    // 但**不得**顺带改到 savedChannelId_——第 3/4 轮翻车两次的正是这条时序:第 5 轮之所以不
+    // 污染存档,唯一原因是 :69 那行不碰 savedChannelId_,而这一点此前没有任何判据钉着。这里
+    // 补一次调用,把它纳入覆盖。下面三条 CHECK 与不变式断言原样成立(此刻 session_.channelId()
+    // 与 boundChannel() 都是 3),纯增覆盖,不改任何期望值。
+    victim.prepareToPlay(kSr, kBlock);
 
     // 存档:第 5 轮修好之后的正确行为——记工程里原本写的 5,不是回滚抢回来的旧号 3。
     juce::MemoryBlock stateBlob;
