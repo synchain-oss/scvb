@@ -1262,7 +1262,7 @@ function buildOutputBackend(ctx) {
             // `conn.channels` 应当回到全空闲、段表应当为空。这里只翻了 `group_id` 与只读位,
             // 15 轨连接与旧组段表原样留着。本卡的判据面(锁面 / 只读位 / 横幅②)不碰这两样,
             // 而把它们做真要连带 `segByCh` / `coveragePct` 一起按组重置,超出本卡范围 ——
-            // 已单列备忘。**拿本 fixture 截图或验收「改组后的连接数 / 段表」时,那是假的。**
+            // 已记 **SL-459**。**拿本 fixture 截图或验收「改组后的连接数 / 段表」时,那是假的。**
             return observer ? OBSERVER() : OK();
         },
 
