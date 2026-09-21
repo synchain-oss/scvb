@@ -3587,6 +3587,12 @@ export function createTabWave(opts) {
         root.addEventListener("keydown", (e) => {
             if (!isPanelActive()) return;
             const a = root.activeElement;
+            // [SL-450] 指路(**本卡不改**,统筹已记卡):这条与 Output 的 Ctrl+Z 闸
+            // 是同一形态的 `tagName === "INPUT"` 宽豁免,而那一处已收窄成
+            // `context-menu.js` 的 `isEditableTextTarget()`。这里**不是同一个缺陷**:
+            // Tab3 没有任何 `<input type="range">`(自定义滑杆是 role="slider" 的 div,
+            // 已被下面的 onControl 排除),残余影响只是「焦点在自动停勾选框上时
+            // Delete/Backspace 快捷键不触发」——不丢数据,量级远低于本卡。
             const inField =
                 a &&
                 (a.tagName === "INPUT" ||
