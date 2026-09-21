@@ -14,6 +14,15 @@
 //   ③ 源码不变式:两钮在 header 内、落在 spacer 之前(不挤 Version 区)、点击接线
 //      走同一个 runHistory()、键盘钩子仍在且仍 preventDefault、置灰 data-disabled +
 //      aria-disabled 双写并叠只读观察态、Input 页零改动;
+//      **[SL-450] 追加**:Ctrl+Z 闸不再是 `tagName === "INPUT"` 那份、改走
+//      `isEditableTextTarget`;文本族白名单由 `EDITABLE_TEXT_SELECTOR` 单一真源派生
+//      且三条回归项(text/number/缺省无 type)还在、收回的两类没悄悄回来;
+//      `runHistory` 在写调用之前中止在飞的曲线编辑,`abortEdit()` 的四件事与
+//      `render()` 的版本闸都在。**行为面不在本套** —— 豁免矩阵与「松手不再提交
+//      陈旧抄本」要真 DOM / 真焦点 / 真 pointer capture,归
+//      `smoke-undo-scope-page.mjs`(页面级)。本段的删除式(注入未提交,实跑过):
+//      把 `isEditableTextTarget(a)` 换回 `a.tagName === "INPUT"` ⇒ 前两格转红;
+//      把 `EDITABLE_SELECTOR` 改成不由 `EDITABLE_TEXT_SELECTOR` 派生 ⇒ 单一真源那格转红;
 //   ④ 词条:`header.*` 五条三语齐备、非空、05 §5 禁词零命中。
 //
 // 用法:node web-preview/tests/smoke-undo-redo.mjs [仓库根绝对路径]
@@ -321,9 +330,18 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
     // 只读观察态:点击那条已被 data-disabled 拦住,键盘那条根本不看按钮属性 ——
     // 判据必须落在两个入口共用的 runHistory 里,否则 Ctrl+Z 能干成鼠标干不成的写操作。
     check(
-        /async function runHistory\(kind\) \{[\s\S]{0,600}?if \(isReadOnly\(store\)\) return;[\s\S]{0,40}?const res = await call\(kind\);/.test(
-            appJs,
-        ),
+        // [SL-450] 这里原先是 `…return;[\s\S]{0,40}?const res = await call(…)`。
+        // 那个 40 字符的窗口只是「紧挨着」的近似写法,而本条要钉的其实是**顺序**
+        // (只读闸排在写调用之前)。SL-450 在两者之间插了 abortEdit() 与它的注释,
+        // 窗口当场撑爆、一条与本卡无关的判据变红。改成按下标比顺序 —— 与本文件
+        // 下面 `historyAfterSegments` vs `segmentsEventApplies` 那格同一口径,
+        // 中间再插什么都不会误伤,而顺序反了照样红。
+        (() => {
+            const h = appJs.slice(appJs.indexOf("async function runHistory("));
+            const iRo = h.indexOf("if (isReadOnly(store)) return;");
+            const iCall = h.indexOf("const res = await call(kind);");
+            return iRo >= 0 && iCall >= 0 && iRo < iCall;
+        })(),
         "只读观察态在 runHistory 开头直接返回 —— 键盘路径(Ctrl+Z)同样不发写调用",
     );
     check(
@@ -378,6 +396,161 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         !/header-undo|header-redo/.test(inputHtml),
         "Input 页零改动(撤销栈是 Output 侧的,§1.25/§1.26 只在 Output 桥面)",
     );
+
+    // ---- [SL-450] 撤销的**作用面**:豁免收窄 + 中止在飞编辑 ------------------
+    // 行为面归 smoke-undo-scope-page.mjs(要真 DOM / 真焦点 / 真 pointer capture);
+    // 这里只钉「接线还在、旧形态没回来」这两件文本上看得出来的事。
+    // ⚠ **先剥注释再查**:下面几条查的是「旧判据 / 被收回的选择器的**字面形态**还在
+    // 不在」,而注释里往往正**逐字引用**它们来解释为什么换掉 —— 不剥注释的话,判据会被
+    // 自己要治的那句说明文字点亮,永远红,于是它唯一的下场是被删掉。
+    // [SL-450 复审轮 3] 原先只对 `appJs` 剥了,**context-menu.js 这一侧没跟进** ——
+    // 同一个概念落在两处、只改了一处(本卡今天第三次撞这个形状)。两侧现已同口径。
+    const stripComments = (s) =>
+        s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const cmJs = stripComments(src("web/shared/context-menu.js"));
+    const appCode = stripComments(appJs);
+    // 再压平空白:prettier 按行宽决定哪一句断行,把换行写进模式 = 把判据钉在**排版**上
+    // (行宽一变就红,而代码一个字都没改 —— 本卡里 render() 那道版本闸就这么红过一次)。
+    // 下面凡是跨行的形态一律查这一份。
+    const appFlat = appCode.replace(/\s+/g, " ");
+
+    // 第一条模式故意是**旧判据本身的字面形态** —— 它可能被别处逐字抄过去。
+    check(
+        !/a\.tagName === "INPUT"/.test(appCode),
+        'Ctrl+Z 闸不再用 `a.tagName === "INPUT"`(那把 range/checkbox 一起豁免了)',
+    );
+    check(
+        /const a = document\.activeElement; if \(isEditableTextTarget\(a\)\) return;/.test(
+            appFlat,
+        ),
+        "Ctrl+Z 闸改走 isEditableTextTarget(document.activeElement)",
+    );
+    check(
+        /isEditableTextTarget,? \} from "\.\.\/shared\/context-menu\.js";/.test(
+            appFlat,
+        ),
+        "isEditableTextTarget 从 shared/context-menu.js 引(不另造第二份判定)",
+    );
+    // 文本族必须只有一个真源:右键那份由它**派生**,不是各写一遍。
+    check(
+        /export const EDITABLE_SELECTOR = EDITABLE_TEXT_SELECTOR \+ ", select";/.test(
+            cmJs,
+        ),
+        "EDITABLE_SELECTOR 由 EDITABLE_TEXT_SELECTOR 派生(文本族单一真源)",
+    );
+    for (const t of ['input\\[type="range"\\]', 'input\\[type="checkbox"\\]']) {
+        check(
+            !new RegExp(t).test(cmJs),
+            `白名单里没有 ${t.replace(/\\/g, "")}(收回的那两类不许悄悄回来)`,
+        );
+    }
+    // 三条回归格:收窄很容易把豁免的**立意**一起收掉。
+    for (const t of [
+        'input\\[type="text"\\]',
+        'input\\[type="number"\\]',
+        '"input:not\\(\\[type\\]\\)"',
+    ]) {
+        check(
+            new RegExp(t).test(cmJs),
+            `文本族仍含 ${t.replace(/\\/g, "")}(豁免的立意本身,别连它一起收掉)`,
+        );
+    }
+    // 泳道收焦点那个消费点仍用**含 select** 的那一份 —— 拆分不许顺手改到它。
+    check(
+        /import \{ isEditableTarget \} from "\.\.\/shared\/context-menu\.js";/.test(
+            src("web/output/tab-wave.js"),
+        ),
+        "tab-wave 仍引 isEditableTarget(含 select 的那一份;两处用途正当不同)",
+    );
+
+    // 中止在飞编辑:接线 + 四件事都在。
+    // 「之前」按**下标**比,不按「紧挨着」比:中间将来再插什么都不会误伤,顺序反了照样红
+    // (与上面只读闸那一格同一口径 —— 那一格正是被本卡插进去的一行撑爆过)。
+    check(
+        (() => {
+            const h = appJs.slice(appJs.indexOf("async function runHistory("));
+            const iAbort = h.indexOf("curveEditor.abortEdit();");
+            const iCall = h.indexOf("const res = await call(kind);");
+            return iAbort >= 0 && iCall >= 0 && iAbort < iCall;
+        })(),
+        "runHistory 在 await call(kind) **之前**中止在飞的曲线编辑",
+    );
+    {
+        // ⚠ [复审轮 4] `ce` 一律**先剥注释**:`curve-editor.js` 的注释里正逐字写着
+        // `local.pendingVersion = 0`(轮 3 那段解释「为什么不能在 onPointerUp 清」),
+        // 不剥的话下面那条写者计数会被**它要检查的东西的说明文字**凑数。
+        // 同一形态本卡已撞过两次(app.js 的旧 tagName 形态、context-menu.js 的选择器字面量)。
+        const ce = stripComments(src("web/output/canvas/curve-editor.js"));
+        const body = ce.slice(
+            ce.indexOf("function abortEdit()"),
+            ce.indexOf("function onPointerDown("),
+        );
+        check(body.length > 100, "定位到 abortEdit() 函数体");
+        for (const [re, why] of [
+            [
+                /clearTimeout\(local\.commitTimer\)/,
+                // [复审轮 5 订正] 此前写作「Q 滑杆/**键盘微调**」——错的:键盘微调走
+                // 同步路径,不写 dragPoints、不挂防抖。挂防抖的两处是 Q 滑杆与**滚轮**。
+                "掐掉 Q 滑杆 / **滚轮** 的 140ms 防抖提交(定时器拿的是闭包里的 next,不读 dragPoints)",
+            ],
+            [/releasePointerCapture\(/, "放掉指针捕获"],
+            [
+                /local\.dragging = false;/,
+                "落 dragging=false(松手那条早退就靠它)",
+            ],
+            [/local\.dragPoints = null;/, "丢弃本地预览抄本"],
+        ]) {
+            check(re.test(body), `abortEdit() 里仍有:${why}`);
+        }
+        // ⚠ 先把空白压平再查:prettier 会按行宽决定这一句断不断行(它当前就断在
+        // `activeVersion())` 之后),把换行写进模式等于把判据钉在**排版**上 ——
+        // 下一次行宽一变它就红,而代码一个字都没改。
+        const ceFlat = ce.replace(/\s+/g, " ");
+        check(
+            /if \(hasPendingEdit\(\) && local\.pendingVersion !== activeVersion\(\)\) abortEdit\(\);/.test(
+                ceFlat,
+            ),
+            "render() 有版本闸,且条件是 hasPendingEdit()(不是只看 dragging —— 那漏掉两条防抖路径)",
+        );
+        // [SL-450 复审轮 1] 本地那一路在**源头**关死:switchVersion 发出切换**之前**中止。
+        // 按下标比顺序,不比「紧挨着」——中间将来插注释/日志都不该误伤。
+        {
+            const app = appJs.slice(
+                appJs.indexOf("async function switchVersion("),
+            );
+            const iAbort = app.indexOf("curveEditor.abortEdit();");
+            const iCall = app.indexOf('await call("setVersionActive", v)');
+            check(
+                iAbort >= 0 && iCall >= 0 && iAbort < iCall,
+                'switchVersion 在 call("setVersionActive") **之前**中止在飞编辑(本地那一路关在源头)',
+            );
+        }
+        // 三类写者都要在推出抄本那一刻记 pendingVersion —— 少一处,render 的闸就认不出它。
+        //
+        // ⚠ [复审轮 4【重要】] 这里原先数的是**所有** `local.pendingVersion = ` 赋值、判
+        // `>= 3` —— 那是**恒真的死判据**:轮 3 把清零从 1 处扩到 5 处之后,文件里共 8 处
+        // 赋值(3 写者 + 5 清零),**把三个写者全删光仍剩 5 处 ≥ 3**。标签写着「三类写者
+        // 都写了」,判定面却是「赋值总数」—— 标签与判据脱钩,而它永远红不了。
+        // 这一格是轮 3 那个修法(清零挪到五处)的副作用:分母被撑爆了。
+        //
+        // 改成**只数写入、不数清零**,并用 `=== 3` 而不是 `>= 3`:多出第四个写者同样该有
+        // 人问一句「它记 pendingVersion 了吗、谁钉着它」——否则它会像轮 2 那条滚轮死行一样
+        // 从落地起没人看管。
+        //
+        // ⚠ 今天没有因此假绿:那三条写者各自被**行为面**钉着 ——
+        // 拖动 `(e2)`、滚轮对照臂 `(g6c)`、Q 滑杆对照臂 `(f1)`;本格是文本侧的第二道。
+        {
+            const writers = (
+                ceFlat.match(
+                    /local\.pendingVersion = (?:activeVersion\(\)|srcVersion)/g,
+                ) || []
+            ).length;
+            check(
+                writers === 3,
+                `拖动 / 滚轮 / Q 滑杆三类写者都写了 pendingVersion(只数写入、不数清零;实得 ${writers} 处)`,
+            );
+        }
+    }
 }
 
 // =============================================================================

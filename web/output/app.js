@@ -72,7 +72,10 @@ import {
     shouldAutoShowTourAsk,
 } from "./tour.js";
 import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
-import { disableNativeContextMenu } from "../shared/context-menu.js";
+import {
+    disableNativeContextMenu,
+    isEditableTextTarget,
+} from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
 import { installShellFit } from "../shared/shell-fit.js";
 
@@ -930,6 +933,25 @@ function noteRejectedPrinting() {
 }
 
 async function switchVersion(v) {
+    // [SL-450 复审轮 1] **发出切换之前**先中止在飞的曲线编辑。
+    //
+    // 为什么必须在**发之前**、不能只靠 curve-editor 的 render() 闸兜着:
+    // 引擎收到 setVersionActive 是**同步**切的,而 `scvb.state` 回声**异步**到。
+    // 这一窗口里 UI 的 `version_active` 还是旧值 —— 一份挂着 140ms 防抖的待提交抄本
+    // 若在窗口内到点开火,`setPanCurve`(§1.17 载荷**不带版本号**)就落到**新版本**上,
+    // 把另一版的曲线整表覆盖掉,而 UI 侧任何基于自己那个版本号的判据都比不出来
+    // (实测过:滚轮 / Q 滑杆两条路各把 V1 的值写进过 V2)。
+    // 在源头掐掉,这一路(用户点 chip,最常见)就根本不存在那个窗口。
+    // ⚠ 远端推来的切换掐不到源头 —— 那一路由 curve-editor 的 render() 闸在回声
+    // 到达的那一刻兜;两者合起来仍留一档残余,见 curve-editor.js 里 commit() 的注释。
+    //
+    // ⚠ **这一步会丢掉用户的一次真实编辑**,说清楚而不是含糊过去:若此刻正有一发
+    // Q 滑杆 / 滚轮的 140ms 防抖提交在飞,它会被**直接丢弃**,不会补发。
+    // 取舍是有意的 —— 宁可丢一次 Q 微调(用户看得见滑杆弹回、可以再拨一次),
+    // 也不让它写进**错误的版本**(那是另一版整条曲线被覆盖,且不在这一步的撤销范围里)。
+    // 「先冲刷再切」(把在飞的那一发按**旧版本**提交完再发切换)是可行的,
+    // 只是需要让 switchVersion 等一次上行往返 —— **留作后续**,不在本卡范围内。
+    curveEditor.abortEdit();
     const res = await call("setVersionActive", v);
     if (res && res.rejected === "printing") noteRejectedPrinting();
     requestRender();
@@ -1163,6 +1185,15 @@ async function runHistory(kind) {
     // 按 `!roNow` 写),但 Ctrl/Cmd+Z 那条根本不看按钮属性 —— 键盘能干成鼠标干不成的
     // 写操作。两个入口共用的这一层是唯一堵得住的地方。
     if (isReadOnly(store)) return;
+    // [SL-450] 发 undo/redo **之前**先中止在飞的曲线编辑。
+    // 曲线编辑器在 pointerdown 时把点集抄进本地,pointerup 提交的是那份抄本 ——
+    // 「按住不放 → Ctrl+Z → 松手」会让那记松手把刚撤销掉的那一笔整表写回去,
+    // 撤销当场被抹掉(拖动期没有声音变化,所以界面上察觉不到)。
+    // ⚠ 只能堵在 web 侧:C++ 不知道有人正按着鼠标。
+    // 放在只读闸**之后**:只读态根本不发 undo,没有要中止的东西;
+    // 放在 `await call(kind)` **之前**:中止必须先于撤销落地,否则中间这一窗
+    // 仍然可能被那份抄本提交上去。
+    curveEditor.abortEdit();
     const res = await call(kind);
     // call() 在「桥没接上 / 调用抛错」时回 null —— 那是**没有证据**,不是栈空,
     // 保持原样(置灰会把一次通信故障变成一个永久灰掉的按钮)。
@@ -1190,16 +1221,22 @@ document.addEventListener(
     "keydown",
     (e) => {
         if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
-        // 焦点在文本输入框时不拦截(05 §1.3)
+        // 焦点在**可编辑文本**控件上时不拦截(05 §1.3)——那里的 Ctrl+Z 该撤销的是
+        // 正在打的字,不是插件的上一笔编辑。
+        //
+        // [SL-450] 这道闸原先写作 `a.tagName === "INPUT" || "TEXTAREA" ||
+        // a.isContentEditable`。**只看 tagName 太宽**:`<input type="range">`(曲线
+        // 工具条的 Q 滑杆)与 `<input type="checkbox">`(自动停 / 导览「不再显示」)
+        // 也是 INPUT ⇒ 焦点停在滑杆或勾选框上按 Ctrl+Z 会直接漏给**宿主撤销栈**,
+        // 到不了插件。滑杆与勾选框上没有任何「文本撤销」可言,豁免它们纯属误伤。
+        // 改走 context-menu.js 的既有白名单(本仓前一次解同一道题,[SL-207]):
+        // 它按 `closest()` 匹配文本族选择器,顺带补上两件 tagName 版做不到的事 ——
+        // 缺省无 type 的 `<input>` 算文本、`contenteditable="false"` **不**豁免。
+        // ⚠ 用 `isEditableTextTarget`(不含 `select`)而不是 `isEditableTarget`
+        // (含 `select`):下拉没有文本撤销语义,右键那一侧放行它是为了给宿主系统菜单
+        // —— 两处用途正当不同,故白名单拆成两份、文本族仍只有一个真源。
         const a = document.activeElement;
-        if (
-            a &&
-            (a.tagName === "INPUT" ||
-                a.tagName === "TEXTAREA" ||
-                a.isContentEditable)
-        ) {
-            return;
-        }
+        if (isEditableTextTarget(a)) return;
         e.preventDefault(); // 防止冒泡到宿主撤销栈
         runHistory(e.shiftKey ? "redo" : "undo");
     },
@@ -2211,6 +2248,12 @@ async function bootInner() {
 // 事件驱动的实现里那个数恒为 0。靠采样撞动画中段的覆盖等于没有覆盖(SL-192 教训)。
 window.__SCVB_OUTPUT__ = {
     distMotion: () => tabMaster.distDiag(),
+    // [SL-450] 曲线编辑器的在飞编辑态 + **提交尝试计数**。为什么需要它:本卡要断的是
+    // 「Ctrl+Z 之后那一记 pointerup **没有**提交陈旧抄本」—— 一件**没有发生**的事,
+    // 页外量不到。看画面不行:曲线长什么样还受 store 回显影响,分辨不出「没提交」
+    // 与「提交了但回显还没到」。计数一格就能分辨,而且配得上一个「本该 +1」的对照臂
+    // (同样的拖动**不按** Ctrl+Z ⇒ commits 必须 +1,否则这套测的是它自己的哑火)。
+    curve: () => curveEditor.diag(),
     // [SL-356] hostEcho 闩锁的只读快照。为什么需要它:页面级冒烟要断「快速起停时徽标
     // 全程不灭」,而这条断言只有在**采样窗真的跨过了停走档 900ms** 时才有牙 —— 不然
     // 修前修后都绿。窗口跨没跨过去取决于「最后一帧 hostEcho:true 到底什么时候来的」,
