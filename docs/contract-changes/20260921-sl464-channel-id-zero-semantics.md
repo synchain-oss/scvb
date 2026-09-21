@@ -64,8 +64,11 @@ base 上配置镜像在 CAS 之前就被写成了请求号,所以**无论 claim 
 
 ### 「只有两个出口」这个全称句的依据
 
-本条款写了「**唯一的例外**」,而那句的成立依赖「顶层 `channel_id` 只有两个出口、且两个都经
-`displayChannelId()`」。据以确认的两条命令与命中数:
+§3.1 / §4.1 落地的那句是「**此外**只在 claim 请求被拒或段不可用时为 `0`」——
+它的成立依赖「顶层 `channel_id` 只有两个出口、且两个都经 `displayChannelId()`」。
+(⚠ 本节早先引的是草稿里的「唯一的例外」,那句**从未落进** `docs/SCVB_CONTRACT.md`
+—— 全 `docs/` grep「唯一的例外」只命中两份旧变更文档与本行,契约正文零命中;
+已按落地文本改正,#275 复审【建议】。)据以确认的两条命令与命中数:
 
 ```
 $ grep -rn "buildInputSnapshot(\|buildStatePayload(" --include=*.cpp --include=*.h src/      # 9 命中
@@ -165,16 +168,21 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 - **本 PR 的行为面:零变化**。不动 `src/` 与 `web/`。
 - **#273 带来的一处用户可见行为改变,在此照实登记**(不是本 PR 引入,但契约读者会问):
   `conflict` 态下 Header pill 从「等待 Output / 已连接」那一档变成了灰色「未选择通道」——
-  base 上该态 `channel_id` = 请求号,走不到 `web/input/app.js:646` 那道 `channelId === 0` 的闸;
+  base 上该态 `channel_id` = 请求号,走不到 `web/input/app.js:647` 那道闸(`if (channelId === 0 || channelId == null || claim === "unassigned")`);
   现在为 `0`,被它拦下。**判为更对**(那一刻确实一个通道也没握住),且 §5.2 `conflict` 行的
   「UI 落点」列本来只写了「卡片抖动 + `ch.occupied` toast」、没写 pill ⇒ 无文字矛盾,本 PR 不改它。
 - **页面端两处 `channel_id` 消费面复核过,都不做反向推导**:
   - `web/input/app.js:440` `priorityBlockReason()`:`channel_id===0 ⇒ "unassigned"`。桥面
     `channel_id=0` 的态**全都非活跃** ⇒ C++ 侧 `bridge::priorityRejection()` 不是走
     `kUnassigned` 就是走 `kNotActive`,两条都回 `reason:"unassigned"`,两侧同结论。
-  - `web/input/app.js:646` `pillState()`:`abiMismatch` / `srMismatch` 两条红 pill 排在
-    `channelId === 0` 那道闸**之前**,所以 §5.2 `abiMismatch` 行的「红 pill『版本不匹配』」
-    仍然成立。
+  - `web/input/app.js:647` `pillState()`:那道闸的完整判据是
+    `if (channelId === 0 || channelId == null || claim === "unassigned")` —— 它**不只看
+    `channelId`,也看 `claim`**,比「`channelId === 0` 的闸」宽。两点后果:
+    ① `abiMismatch` / `srMismatch` 两条红 pill 排在这道闸**之前**,所以 §5.2 `abiMismatch`
+    行的「红 pill『版本不匹配』」仍然成立;
+    ② **§5.2 本次新写的反向句在页面上是兜住的** —— 「`claim="unassigned"` 而
+    `channel_id ≠ 0`」那一支(`releaseResources()` 之后)会被闸里 `claim === "unassigned"`
+    那一项接住、照样落灰 pill「未选择通道」,不会漏到后面的绿 pill 分支。
 - **Bridge 仓零影响**:`channel_id` / `channelId` / `scvb.state` 在那边零命中(统筹 2026-09-21 核实)。
 
 ### `contractVersion` 保持 `1.0` —— 用户已裁「豁免」(SL-468)
@@ -188,12 +196,34 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 > 版本号**现在就能升**,该不该升是另一回事。**留此痕而不删净**:一条被有效反驳后撤回的
 > 论证,正是后人最该看见的那种。
 
-保持 `1.0` 的理由因此只剩两条,且**第二条是决定性的**:
+> ~~**理由②(原文):改动面 —— 升 2.0 要按 §9.0 第 3 条连带更新 mock 后端 + C++ 常量表 +
+> `check-bridge-parity.mjs`,本卡会从 3 个 `.md` 涨成跨 `web/` + `src/` + `scripts/`。**~~
+> **已撤回**(#275 复审【重要】,2026-09-21)。实测:
+>
+> ```
+> $ grep -rn "contractVersion|contract_version|kContractVersion" src/ web/ web-preview/ tests/
+> (零命中)
+> ```
+>
+> `contractVersion` 这个**值**只存在于 `docs/SCVB_CONTRACT.md:3`(版本行)与 `:817`
+> (§7 manifest);`scripts/check-bridge-parity.mjs:302-334` 只是**读出来打印一行**
+> (`"manifest JSON 可解析;contractVersion = " + String(...)`),**不与任何一侧对拍**,
+> 也没有硬编码 `"1.0"`。⇒ 升 2.0 的真实改动面 = **`docs/SCVB_CONTRACT.md` 两行**,
+> `web/` / `src/` / `scripts/` 零改动。
+> 原句是把 §9.0 第 3 条那半句「须同批更新 mock 后端、C++ 常量表与
+> `check-bridge-parity.mjs`」读成了「版本号写在那三处」;它实际约束的是**导致破坏性变更的
+> 那些改名/删除/收窄本身**(名字集合两侧必须同步),而本卡**一个名字都没改**。
 
-1. **改动面。** 升 2.0 要按 §9.0 第 3 条连带更新 mock 后端 + C++ 常量表 +
-   `check-bridge-parity.mjs`,本卡会从 3 个 `.md` 涨成跨 `web/` + `src/` + `scripts/`。
-2. **授权范围(决定性)。** 用户批的是「SL-464 契约文字追认,前提没风险」;
-   **主版本号 +1 是对外的破坏性声明,超出该批准**。统筹无权代为决定。
+**⇒ 保持 `1.0` 的理由只剩一条**(不为凑数再造第三条):
+
+1. **授权范围(决定性)。** 用户批的是「SL-464 契约文字追认,前提没风险」;
+   **主版本号 +1 是对外的破坏性声明,超出该批准**。统筹无权代为决定 ——
+   而用户行使的正是这一条,**裁定结论因此不受上面那次撤回影响**。
+
+> **同一把尺子**(#275 复审【重要】顺带提的,一并写死):§9.0 第 3 / 第 4 条都按
+> 「**没东西可同步 ⇒ 该条为 no-op**」读。本次零表面改动、零名字改动 ⇒ 两条都无可同步。
+> 早先对第 3 条用「要连带更新三处 = 改动面很大」、对第 4 条用「无可同步 = 不触发」,
+> 是两把尺子,已统一。
 
 ### 用户裁定(2026-09-21):取**豁免**
 
@@ -202,11 +232,15 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 **豁免的是 §0.1 规则 3** ——「触碰禁止面(含『改既有字段语义』)= 契约破坏性变更,
 `contractVersion` 主版本号 +1」这一条。
 
-**理由**(裁定时摆在用户面前的两条,第二条是决定性的):
+**理由** —— 裁定时摆在用户面前的是两条,但**其中一条事后被证伪**,照实记:
 
-1. 升 `2.0` 要按 §9.0 第 3 条连带更新 mock 后端 / C++ 常量表 / `check-bridge-parity.mjs`,
-   本卡从 3 个 `.md` 涨成跨 `web/` + `src/` + `scripts/`;
-2. 主版本号 +1 是**对外的破坏性声明**,而本次只是文字追认 —— 用户据此选择豁免。
+1. ~~升 `2.0` 要按 §9.0 第 3 条连带更新 mock 后端 / C++ 常量表 /
+   `check-bridge-parity.mjs`,本卡从 3 个 `.md` 涨成跨 `web/` + `src/` + `scripts/`~~
+   —— **已撤回**(实测升 2.0 = `docs/SCVB_CONTRACT.md` 两行,见上节的删除线块)。
+   ⚠ **这条当时确实是决策输入之一**,而「两行 `.md`」与「跨三棵目录」不是同一个输入,
+   照实登记而不抹去。
+2. **主版本号 +1 是对外的破坏性声明**,而本次只是文字追认 —— **用户行使的正是这一条**,
+   它独立成立、且本文档一直标它为决定性 ⇒ **裁定结论不受第 1 条撤回的影响**。
 
 ⚠ **被豁免的事实本身不变**:禁止面**已由 #273 触及**,`channel_id` 在 `conflict` /
 `abiMismatch` / `idle` 三态上的取值语义确实变了。豁免的是「**因此要升版本号**」这条
@@ -221,7 +255,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 冻结表面本次零改动,manifest 与版本行都无可同步之处,`check-bridge-parity.mjs` 照常绿。
 文件头 `:3` 的 `> **版本**:1.0(已冻结)` 因此不动。
 
-⚠ **成例 [J90] 只覆盖「零语义改动的纯文字对齐」**(`20260828-j90-contract-text-align.md:113-117`
+⚠ **成例 [J90] 只覆盖「零语义改动的纯文字对齐」**(`20260828-j90-contract-text-align.md:114-117`
 自己写明「函数名 / 签名 / 返回字段 / 事件名 / 载荷字段零改动」「本次零表面改动」),与本次前提
 不同 —— 它**只能**用来支持上面那句「§9.0 第 4 条不触发」,**不能**用来论证「禁止面没被碰」。
 
@@ -263,7 +297,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 2. **[SL-466] —— §5.2 `idle` 行的定义句不覆盖 `kUnavailable`**(`:739`)。现文写「已选 channel,
    slot 已声明但 Output 尚未健康读取」,而 `kUnavailable`(段未打开 / 映射失败)既没有已声明的
    slot、UI 落点也不是它写的「pill『等待 Output』」(`channel_id=0` 会先被
-   `web/input/app.js:646` 那道闸拦到灰 pill「未选择通道」)。两个时间点要分开记:
+   `web/input/app.js:647` 那道闸拦到灰 pill「未选择通道」)。两个时间点要分开记:
    **定义句不覆盖 `kUnavailable` 是既存的**(`kUnavailable → idle` 的映射早于 #273);
    **这一支 `channel_id` 变成 `0` 是 #273 新引入的** —— 是后者把前者从「读起来别扭」变成
    「UI 落点写错了」。本 PR 只在 §3.1/§4.1 把这一支**点名**,不动 `idle` 行本身:改它要先裁
