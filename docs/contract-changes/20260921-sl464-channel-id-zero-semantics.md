@@ -116,17 +116,17 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 | **配置镜像** | `channelId_`(= `session_.channelId()`) | **是** —— 桥面 `channel_id` 在 `active` / `unassigned` 两态报的就是它 |
 | **工程存档** | `savedChannelId_`(`InputProcessor.cpp:441` 存 / `:508` 载入 / `:607` 用户主动改配置时同步) | 否;落 `docs/STATE_SCHEMA.md` §二 |
 
-**能分辨的具体情形**(核过 `InputSession::prepare()` 的补偿式回滚两条支):
+**能分辨的具体情形**(核过 `InputSession::prepare()` 的补偿式回滚三条路):
 
-- **回滚失败、或没有可回滚的旧通道**(`previousChannel == 0`,即首次绑定就撞车):
-  `channelId_` 落回**用户真正请求的那个号**(`InputSession.cpp:113` `channelId_ = requestedChannel`),
-  `state_ = kConflict` ⇒ 桥面 `channel_id` = **`0`**,而 `savedChannelId_`
-  (`InputProcessor.cpp:607`,在 `prepare()` 之后同步)= **那个被拒的号**。**两者分叉。**
-- **补偿式回滚成功**(`previousChannel != 0` 且重抢到旧槽):`channelId_` 停在**旧号**、
-  `state_ = kActive`(`InputSession.cpp:104-105`,返回值仍是 `failure`)⇒ 桥面与存档**都是旧号**,
-  **不分叉**。
+| 路径 | `channelId_` 最终值 | 机制 | 桥面 `channel_id` / 工程存档 |
+| --- | --- | --- | --- |
+| **没有可回滚的旧通道**(`previousChannel == 0`,首次绑定就撞车) | 请求号 | **不进** `if (previousChannel != 0)` 块(`InputSession.cpp:94`)—— `channelId_` 从头到尾就是请求号,**没有任何「落回」动作** | `0` / **被拒的那个号** ⇒ **分叉** |
+| **回滚失败**(`previousChannel != 0`,重抢旧槽也没抢到) | 请求号 | 进块;`channelId_` 先被临时借用成 `previousChannel` 以复用 `openAndClaim()`,再经 `InputSession.cpp:113` `channelId_ = requestedChannel` **复原** | `0` / **被拒的那个号** ⇒ **分叉** |
+| **回滚成功**(`previousChannel != 0`,重抢到旧槽) | **旧号** | 进块;`InputSession.cpp:104-105` 置 `state_ = kActive` 并提前 `return failure`,**不执行** `:113` | 旧号 / 旧号 ⇒ **不分叉** |
 
-两条支不能合成一句话说 —— 这正是 §3.1 那句口径区分要给出的分辨点。
+前两路的**结果相同**(桥面 `0`、存档记被拒的号,`savedChannelId_` 由 `InputProcessor.cpp:607` 在 `prepare()` 之后同步),但 **机制不同** —— 只有「回滚失败」那一路经过 `:113`;`previousChannel == 0` 时那一整块根本不执行。**把两路合成一句「都落回 `:113`」会给其中一条路径安上一个它不会执行的机制**。
+
+三条路不能合成一句话说 —— §3.1 那句口径区分只写**结果**(分不分叉取决于回滚成不成功)、**不写行号与机制**,就是为了不把一个只在其中一条路上执行的机制写成契约。
 
 ### 三处逐条改法
 
@@ -209,7 +209,7 @@ bound channel,**破的是 §3.1 的条款,而不只是一个函数的内部约�
 
 ⚠ 这张表的「零命中」取决于**模式的字符变体**与 `grep` 的**目录/后缀集**,两者都不在 `wc -l`
 的输出里,所以命令原样写在上面。另确认过本文件全篇的括号 / 逗号 / 分号是 **ASCII** 半角
-(全仓 `U+FF08/FF09/FF0C/FF1B/FF1A` 计数均为 0),所以不存在「全角变体没扫到」这一路。
+(`docs/SCVB_CONTRACT.md` 全篇的 `U+FF08/FF09/FF0C/FF1B/FF1A` 计数均为 0 —— **只量过这一个文件**,仓里别的 md(`CLAUDE.md` / `docs/constitution/*.md` / `CHANGELOG.md` 等)是有全角的),所以不存在「全角变体没扫到」这一路。
 
 ## 照实登记:本次**不改**的两处发现(已各自立卡)
 
