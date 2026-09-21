@@ -657,8 +657,11 @@ TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 
     }
 
     // 只在 setChannelId() 这一个函数体内判序——prepareToPlay()/setStateInformation() 里也各
-    // 有一次同模式的 "channelId_ = .../session_.prepare(",不隔离会把别的函数的顺序混进来
-    // (那两处目前**没有**判据,是本卡明确留白的一半,见 PR 描述,不在这一格里冒充覆盖)。
+    // 有一次同模式的 "channelId_ = .../session_.prepare(",不隔离会把别的函数的顺序混进来。
+    // [轮 8 复审【重要】订正] 上一版说"那两处目前没有判据、见 PR 描述"——PR 描述是仓外指针,
+    // 合并后没有下文,而且这句话本身在第 6 轮之后已经过期:那两处**没有源码级顺序判据**,
+    // 但行为层已经被新用例间接兜住(与 InputProcessor.cpp:64-70 prepareToPlay() 头注同一个
+    // 口径——"改回读 boundChannel() 会让相应用例的存档/快照断言变红",不是"完全没人管")。
     const std::string beginMarker = "ScvbInputAudioProcessor::setChannelId(int channelId)";
     const auto beginPos = stripped.find(beginMarker);
     REQUIRE(beginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
@@ -749,26 +752,20 @@ TEST_CASE("SL-446(第 2 轮补充 + 合并前独立复核):源码级判据 —�
     }
 
     // [合并前独立复核订正] displayChannelId(...) 调用点参数较长,clang-format 会视行宽把它
-    // 折成多行——find() 的字面量只在同一行内可靠,折行位置又会随参数改名/加参数漂移。这里把
-    // 连续空白(空格/制表/换行/回车)一律折成单个空格再判据,让"折在哪一行"不影响能不能匹配到
-    // (只要参数出现顺序与相邻关系不变即可),同时仍然是精确字面量匹配,不是模糊搜索。
+    // 折成多行——find() 的字面量只在同一行内可靠,折行位置又会随参数改名/加参数漂移。
+    // ⚠ [轮 8 复审【重要】订正] 上一版把连续空白**折成单个空格**,搜索串里因此固定写了一个
+    // 空格(比如 "buildInputSnapshot( bridge::displayChannelId(")——这把"这里必须有换行"这件
+    // 排版细节钉死进了判据:clang-format 如果哪天把这处折行去掉(整行放得下了),折出来的空白
+    // 就是零个字符而不是一个,判据会**误报红**(单向假红,产品代码没错,判据自己先垮)。现在
+    // 改成把空白**整个删掉**(而不是折成一个),搜索串同步删掉所有空格——两边都不含空白,
+    // 折不折行、折在哪都不影响能不能匹配到,仍然是精确字面量匹配,不是模糊搜索。
     std::string normalized;
     normalized.reserve(stripped.size());
-    bool lastWasSpace = false;
     for (const char c : stripped)
     {
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-        {
-            if (!lastWasSpace)
-            {
-                normalized.push_back(' ');
-            }
-            lastWasSpace = true;
-        }
-        else
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
         {
             normalized.push_back(c);
-            lastWasSpace = false;
         }
     }
     stripped = normalized;
@@ -776,13 +773,17 @@ TEST_CASE("SL-446(第 2 轮补充 + 合并前独立复核):源码级判据 —�
     // 分两段扫描:buildSnapshot()(首帧/reload)与 emitTick()(周期性增量)各自隔离——两者都有
     // 一份"顶层 channel_id vs 嵌套 cfg.channelId"的消费点,同一个字面量在两个函数体里各出现
     // 一次,不分段会把两处的用法混进同一个 body,find() 只找得到第一处,后一处判正判负都不可信。
-    const std::string snapshotBeginMarker = "juce::var InputEditor::buildSnapshot()";
+    // ⚠ 这三个标记字面量也要跟着去空白(haystack 现在一个空白字符都不留)——"juce::var
+    // InputEditor" 中间那个空格是 C++ 语法要求的、不是排版可选项,但去空白之后 haystack 里
+    // 同样没有它,标记字面量必须原样跟上,否则连起始位置都定不到(REQUIRE 会先炸,比赛道
+    // 判据本身更早失效)。
+    const std::string snapshotBeginMarker = "juce::varInputEditor::buildSnapshot()";
     const auto snapshotBeginPos = stripped.find(snapshotBeginMarker);
     REQUIRE(snapshotBeginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
-    const std::string tickBeginMarker = "void InputEditor::emitTick()";
+    const std::string tickBeginMarker = "voidInputEditor::emitTick()";
     const auto tickBeginPos = stripped.find(tickBeginMarker, snapshotBeginPos);
     REQUIRE(tickBeginPos != std::string::npos);
-    const std::string endMarker = "void InputEditor::handleSetLang(";
+    const std::string endMarker = "voidInputEditor::handleSetLang(";
     const auto endPos = stripped.find(endMarker, tickBeginPos);
     REQUIRE(endPos != std::string::npos);
     const std::string snapshotBody = stripped.substr(snapshotBeginPos, tickBeginPos - snapshotBeginPos);
@@ -800,41 +801,41 @@ TEST_CASE("SL-446(第 2 轮补充 + 合并前独立复核):源码级判据 —�
     // 无条件用它会重新打开 SL-19/SL-446 的洞(见 InputBridgeLogic.h displayChannelId() 头注)。
     // 正确写法经 displayChannelId() 按 claimState 分流,这里钉的是"调用点确实把这一层判断接
     // 上了",分流算法本身的对错由 tests/webview/test_input_bridge.cpp 的纯函数判据钉。
-    CHECK(snapshotBody.find("buildInputSnapshot( bridge::displayChannelId(snap.claimState, snap.channelId, "
+    CHECK(snapshotBody.find("buildInputSnapshot(bridge::displayChannelId(snap.claimState,snap.channelId,"
                             "snap.configuredChannelId)") != std::string::npos);
     CHECK(snapshotBody.find("buildInputSnapshot(snap.channelId") == std::string::npos);
     CHECK(snapshotBody.find("buildInputSnapshot(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
     // 嵌套 cfg.channelId(scvb.config 里那份,供 buildConfigPayload() 索引广播数组)必须仍是
     // 实际持有,不能被"统一"成配置值——否则会在硬冲突时越界或读到别的实例的配置。
-    CHECK(snapshotBody.find("cfg.channelId = snap.channelId") != std::string::npos);
+    CHECK(snapshotBody.find("cfg.channelId=snap.channelId") != std::string::npos);
     // error 基线复位同样走配置值(与 emitTick() 里那次判据同源;这一处不经 displayChannelId,
     // error 边沿键从来不受 kConflict 特判影响——见 InputBridgeLogic.h 头注,error 本就该在
     // kConflict 时报出被拒的号,不是分流对象)。
-    CHECK(snapshotBody.find("lastErrorChannelId_ = snap.configuredChannelId") != std::string::npos);
+    CHECK(snapshotBody.find("lastErrorChannelId_=snap.configuredChannelId") != std::string::npos);
 
     // ---- emitTick():周期性增量事件 ----
     // 消费者①②(scvb.state / scvb.config):
     // [合并前独立复核 🚩 用户可见回归,base 没有] scvb.state 顶层 channel_id 此前用实际持有,
     // releaseResources() 之后广播清 0、界面误报"未分配"。同上,经 displayChannelId() 按
     // claimState 分流,不能直连 configuredChannelId(kConflict 态会重开 SL-19 的洞)。
-    CHECK(tickBody.find("buildStatePayload( bridge::displayChannelId(snap.claimState, snap.channelId, "
+    CHECK(tickBody.find("buildStatePayload(bridge::displayChannelId(snap.claimState,snap.channelId,"
                         "snap.configuredChannelId)") != std::string::npos);
     CHECK(tickBody.find("buildStatePayload(snap.channelId") == std::string::npos);
     CHECK(tickBody.find("buildStatePayload(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
     // 嵌套 cfg.channelId 必须仍是实际持有,不能被"统一"成配置值——理由同上(见
     // InputBridgeLogic.cpp buildConfigPayload() 里 haveOwn 判断的头注)。
-    CHECK(tickBody.find("cfg.channelId = snap.channelId") != std::string::npos);
+    CHECK(tickBody.find("cfg.channelId=snap.channelId") != std::string::npos);
 
     // 消费者③④(scvb.error 的边沿键 + payload):必须是 snap.configuredChannelId(配置/请求值),
     // 且两处用的是同一个字面量——键与 payload 不同源,会出现"键判负、payload却报错号"的分裂。
-    CHECK(tickBody.find("claimErrorEdgeChanged(claim, snap.configuredChannelId") != std::string::npos);
-    CHECK(tickBody.find("emitClaimError(claim, prev, snap.configuredChannelId") != std::string::npos);
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim,snap.configuredChannelId") != std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim,prev,snap.configuredChannelId") != std::string::npos);
     // fail-closed:再确认 emitTick() 里**不**残留直接把 snap.channelId 递给这两个函数的旧写法
     // (防止"加了新行但没删旧行"的半吊子改法)。
-    CHECK(tickBody.find("claimErrorEdgeChanged(claim, snap.channelId") == std::string::npos);
-    CHECK(tickBody.find("emitClaimError(claim, prev, snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim,snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim,prev,snap.channelId") == std::string::npos);
     // error 基线回写同样走配置值。
-    CHECK(tickBody.find("lastErrorChannelId_ = snap.configuredChannelId") != std::string::npos);
+    CHECK(tickBody.find("lastErrorChannelId_=snap.configuredChannelId") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

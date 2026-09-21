@@ -1031,6 +1031,50 @@ TEST_CASE("SL-446(第 5 轮):用户主动 setChannelId() 成功后,存档跟着�
     p.releaseResources();
 }
 
+TEST_CASE("SL-446(轮 8 复审【重要】):releaseResources() 之后 configuredChannelId 原样留着——"
+          "displayChannelId() 整套设计唯一的支点",
+          "[host][input][sl446]")
+{
+    // [合并前独立复核后的轮 8 复审] displayChannelId()(InputBridgeLogic.h/.cpp)按 claimState
+    // 分流、releaseResources() 之后仍显示配置值这整套设计,唯一的支点是一个从未被判据钉住的
+    // 前提:releaseResources() ⇒ session_.state()==kUnassigned ∧ bridgeTickSnapshot().channelId
+    // ==0 ∧ configuredChannelId **原样留着**(不被清零)。这个前提今天成立是因为
+    // InputSession::release() 只清 claimedChannel_、不碰 channelId_,InputProcessor::
+    // releaseResources() 也没有任何一行碰 channelId_——但这是"没人写"造成的成立,不是有判据
+    // 钉住的成立。顺手给 release() 加一句清 channelId_(比如"顺便把配置也清掉,反正都释放
+    // 了"这种直觉性的"清理"),今天没有任何一格判据会变红,而 displayChannelId() 整套分流
+    // 就会全塌:releaseResources() 之后配置值也变 0,又退回本卡最初要修的"常见操作后误报未
+    // 分配"那个用户可见回归。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor p;
+    p.setGroupId(kTestGroup);
+    p.setPlayHead(&ph);
+    p.prepareToPlay(kSr, kBlock);
+    REQUIRE(p.setChannelId(6) == scvb::input::InputClaimState::kActive);
+
+    p.releaseResources();
+
+    const auto snap = p.bridgeTickSnapshot();
+    CHECK(snap.claimState == scvb::input::InputClaimState::kUnassigned); // release() 落的态
+    CHECK(snap.channelId == 0); // 实际持有(boundChannel())如实清 0
+    CHECK(snap.configuredChannelId == 6); // ⚠ 这一行就是本格的全部意义:配置值必须原样留着
+    // [轮 8 复审【重要】① 的数据源]:web/input/app.js 的远程只读摘要行改用 conn.maskBit
+    // 当闸(理由见那边注释:cfg.channelId 撞契约冻结、claim==="active" 会被 srMismatch 吃掉)。
+    // maskBit 的计算(InputSession::connSnapshot())只看 claimedChannel_(实际持有),release()
+    // 之后必然是 false——这里钉住的是 JS 闸消费的那个数据源本身在这个场景下确实是 false,
+    // 不是钉 JS 接线本身(JS 端因 mock 桥的 model 目前把 channel_id 与 maskBit 耦合在同一个
+    // 值上、无法独立模拟"配置留着但未持有"这个分叉场景,没有自动化端到端判据——material
+    // 已给统筹,材料同 SL-456/459 那一族"mock 结构性覆盖不到")。
+    CHECK_FALSE(snap.conn.maskBit);
+
+    // displayChannelId() 本身按 claimState 分流:kUnassigned 走 configuredChannelId。
+    // 这里直接调用生产代码里那个真实分流函数,而不是重新写一遍它的逻辑——否则这一格测的是
+    // "我以为分流该怎么做",不是"分流实际怎么做"。
+    CHECK(scvb::input::bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId) == 6);
+}
+
 TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
 {
     Rig r;
