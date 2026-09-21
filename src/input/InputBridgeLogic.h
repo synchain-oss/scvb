@@ -23,6 +23,19 @@ juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch);
 // srMismatch 推导(§4.1):claim 态为 kActive ∧ Output 已报非零 SR ∧ ≠ 本机 SR。
 bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate);
 
+// [SL-446 合并前独立复核] scvb.state/首帧快照顶层 channel_id 该显示哪个源:配置/请求值
+// (configuredChannelId)还是实际持有(channelId,=boundChannel())——两者只在 kConflict 这一
+// 态会分叉,其余四态(kUnassigned/kActive/kAbiMismatch/kUnavailable)要么本就相等(kActive:
+// 配置==实际,见 InputSession.h prepare() 头注的不变式)要么用哪个都一样(kUnassigned 下两者
+// 恒为 0)。kConflict 单独摘出来走 channelId(=0)而不是 configuredChannelId,是因为它是
+// **唯一**"这次请求被拒、什么都没绑定"的态(见 claimValue() 的六值映射)——releaseResources()
+// 落的是 kUnassigned,不是 kConflict,两者可分辨,不需要新字段。
+// ⚠ 这条分支不是可选的复杂度,删掉它会在"首次绑定、点了一个被占通道"这个场景重新打开
+// SL-19/SL-446 本身要堵的洞:界面会把被拒的那个号显示成"已选中"。CHANGELOG.md 里 SL-446 那条
+// 已发版的文案("抢回也失败的极罕见情况下……才会如实显示未分配")说的正是 kConflict 这一态,
+// 是已经对用户承诺过的行为,不是这里新加的判断。
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId);
+
 // --- remoteSetPriority 拒绝判定(§3.4/§5.6)-----------------------------------------
 // 判定顺序(全部不满足 = 投递):channel_id==0 → unassigned;Output 离线 → outputOffline;
 // 非活跃态(conflict/abiMismatch/unavailable,不持有 slot)→ unassigned(§5.2 未 claim 任何 slot;

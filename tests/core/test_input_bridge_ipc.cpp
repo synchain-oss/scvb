@@ -698,8 +698,9 @@ TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 
     }
 }
 
-TEST_CASE("SL-446(第 2 轮补充):源码级判据 —— InputEditor.cpp 的 emitTick() 里,scvb.error 走"
-          "配置/请求值,scvb.state/scvb.config 仍走实际持有",
+TEST_CASE("SL-446(第 2 轮补充 + 合并前独立复核):源码级判据 —— InputEditor.cpp 的 buildSnapshot()/"
+          "emitTick() 里,scvb.state 顶层 channel_id 走配置/请求值,scvb.config 里嵌套的 channelId "
+          "仍走实际持有,scvb.error 走配置/请求值",
           "[input][bridge]")
 {
     // ⚠ InputEditor 依赖真 WebView2,不能像 InputProcessor 那样直接实例化真对象做行为级判据
@@ -707,8 +708,13 @@ TEST_CASE("SL-446(第 2 轮补充):源码级判据 —— InputEditor.cpp 的 em
     // 真机 GUI pluginval")。这一格补的是"接线对不对"那一半:pure function
     // claimErrorEdgeChanged()/buildErrorPayload() 算法本身对不对,tests/webview/test_input_bridge.cpp
     // 已有判据;但算法对不代表 InputEditor.cpp 真的把正确的实参递给它——这正是本卡"消费者列全"
-    // 那轮复审抓到的洞:同一个 snap.channelId 四处消费,两种语义,传错源不会在算法层面报错,
+    // 那轮复审抓到的洞:同一个 snap.channelId 多处消费,两种语义,传错源不会在算法层面报错,
     // 只会在"这个值到底该从哪个字段读"这件事上悄悄读错。
+    // [合并前独立复核 🚩] 此前这格判据只扫 emitTick() 一个函数,漏了 buildSnapshot()——那是
+    // WebView 首帧/reload 时发的完整快照,顶层 channel_id 与 emitTick() 里 scvb.state 的
+    // channel_id 是同一个消费者类别(同一份 UI 状态、同一个字段语义),此前一个用了配置值
+    // 判据、另一个完全没人钉。现在两个函数各自的两条消费点(顶层 channel_id / 嵌套
+    // cfg.channelId)都分别隔离扫描。
     const std::string path = std::string(SCVB_SOURCE_DIR) + "/src/input/InputEditor.cpp";
     std::ifstream file(path, std::ios::binary);
     REQUIRE(file.is_open());
@@ -742,36 +748,93 @@ TEST_CASE("SL-446(第 2 轮补充):源码级判据 —— InputEditor.cpp 的 em
         }
     }
 
-    // 只在 emitTick() 函数体内判——InputEditor.cpp 里 snap.channelId 这个字面量在别处(比如
-    // requestInitialState())也出现,不隔离会把别的函数的用法混进来判负/判正都不可信。
-    const std::string beginMarker = "void InputEditor::emitTick()";
-    const auto beginPos = stripped.find(beginMarker);
-    REQUIRE(beginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
-    const std::string endMarker = "void InputEditor::handleSetLang(";
-    const auto endPos = stripped.find(endMarker, beginPos);
-    REQUIRE(endPos != std::string::npos);
-    const std::string body = stripped.substr(beginPos, endPos - beginPos);
+    // [合并前独立复核订正] displayChannelId(...) 调用点参数较长,clang-format 会视行宽把它
+    // 折成多行——find() 的字面量只在同一行内可靠,折行位置又会随参数改名/加参数漂移。这里把
+    // 连续空白(空格/制表/换行/回车)一律折成单个空格再判据,让"折在哪一行"不影响能不能匹配到
+    // (只要参数出现顺序与相邻关系不变即可),同时仍然是精确字面量匹配,不是模糊搜索。
+    std::string normalized;
+    normalized.reserve(stripped.size());
+    bool lastWasSpace = false;
+    for (const char c : stripped)
+    {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+        {
+            if (!lastWasSpace)
+            {
+                normalized.push_back(' ');
+            }
+            lastWasSpace = true;
+        }
+        else
+        {
+            normalized.push_back(c);
+            lastWasSpace = false;
+        }
+    }
+    stripped = normalized;
 
-    // 消费者①②(scvb.state / scvb.config):必须仍是 snap.channelId(实际持有),不能被"统一"
-    // 成配置值——否则 scvb.config 会拿配置号去索引广播数组、在硬冲突时越界或读到别的实例的配置
-    // (见 InputBridgeLogic.cpp buildConfigPayload() 里 haveOwn 判断的头注)。
-    // ⚠ 这四条与下面 ③④ 那两条**都用 CHECK,不用 REQUIRE**——四条互相独立,任何一条单独出问题
-    // 都不该让其余三条失去被执行、被观测到"仍绿"的机会(REQUIRE 会在第一条失败时直接掐断当前
-    // 测试用例,后面的断言根本不会跑,删除式验证"只改一处、另一处仍绿"就无从核起)。
-    CHECK(body.find("buildStatePayload(snap.channelId") != std::string::npos);
-    CHECK(body.find("cfg.channelId = snap.channelId") != std::string::npos);
+    // 分两段扫描:buildSnapshot()(首帧/reload)与 emitTick()(周期性增量)各自隔离——两者都有
+    // 一份"顶层 channel_id vs 嵌套 cfg.channelId"的消费点,同一个字面量在两个函数体里各出现
+    // 一次,不分段会把两处的用法混进同一个 body,find() 只找得到第一处,后一处判正判负都不可信。
+    const std::string snapshotBeginMarker = "juce::var InputEditor::buildSnapshot()";
+    const auto snapshotBeginPos = stripped.find(snapshotBeginMarker);
+    REQUIRE(snapshotBeginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
+    const std::string tickBeginMarker = "void InputEditor::emitTick()";
+    const auto tickBeginPos = stripped.find(tickBeginMarker, snapshotBeginPos);
+    REQUIRE(tickBeginPos != std::string::npos);
+    const std::string endMarker = "void InputEditor::handleSetLang(";
+    const auto endPos = stripped.find(endMarker, tickBeginPos);
+    REQUIRE(endPos != std::string::npos);
+    const std::string snapshotBody = stripped.substr(snapshotBeginPos, tickBeginPos - snapshotBeginPos);
+    const std::string tickBody = stripped.substr(tickBeginPos, endPos - tickBeginPos);
+
+    // ⚠ 下面所有判据(两段各自的正/反共十条)都用 CHECK,不用 REQUIRE——互相独立,任何一条单独
+    // 出问题都不该让其余的失去被执行、被观测到"仍绿"的机会(REQUIRE 会在第一条失败时直接掐断
+    // 当前测试用例,后面的断言根本不会跑,删除式验证"只改一处、另一处仍绿"就无从核起)。
+
+    // ---- buildSnapshot():WebView 首帧/reload 时发的完整快照 ----
+    // 顶层 channel_id(buildInputSnapshot 的第一个实参)与 emitTick() 的 scvb.state 同类:
+    // [合并前独立复核] releaseResources() 之后 boundChannel()==0,若这里仍用实际持有,首帧
+    // 快照会报"未分配",与随后 emitTick() 的增量事件互相矛盾。
+    // [合并前独立复核订正] 不能直接用 configuredChannelId——kConflict 态下它停在被拒的请求号,
+    // 无条件用它会重新打开 SL-19/SL-446 的洞(见 InputBridgeLogic.h displayChannelId() 头注)。
+    // 正确写法经 displayChannelId() 按 claimState 分流,这里钉的是"调用点确实把这一层判断接
+    // 上了",分流算法本身的对错由 tests/webview/test_input_bridge.cpp 的纯函数判据钉。
+    CHECK(snapshotBody.find("buildInputSnapshot( bridge::displayChannelId(snap.claimState, snap.channelId, "
+                            "snap.configuredChannelId)") != std::string::npos);
+    CHECK(snapshotBody.find("buildInputSnapshot(snap.channelId") == std::string::npos);
+    CHECK(snapshotBody.find("buildInputSnapshot(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
+    // 嵌套 cfg.channelId(scvb.config 里那份,供 buildConfigPayload() 索引广播数组)必须仍是
+    // 实际持有,不能被"统一"成配置值——否则会在硬冲突时越界或读到别的实例的配置。
+    CHECK(snapshotBody.find("cfg.channelId = snap.channelId") != std::string::npos);
+    // error 基线复位同样走配置值(与 emitTick() 里那次判据同源;这一处不经 displayChannelId,
+    // error 边沿键从来不受 kConflict 特判影响——见 InputBridgeLogic.h 头注,error 本就该在
+    // kConflict 时报出被拒的号,不是分流对象)。
+    CHECK(snapshotBody.find("lastErrorChannelId_ = snap.configuredChannelId") != std::string::npos);
+
+    // ---- emitTick():周期性增量事件 ----
+    // 消费者①②(scvb.state / scvb.config):
+    // [合并前独立复核 🚩 用户可见回归,base 没有] scvb.state 顶层 channel_id 此前用实际持有,
+    // releaseResources() 之后广播清 0、界面误报"未分配"。同上,经 displayChannelId() 按
+    // claimState 分流,不能直连 configuredChannelId(kConflict 态会重开 SL-19 的洞)。
+    CHECK(tickBody.find("buildStatePayload( bridge::displayChannelId(snap.claimState, snap.channelId, "
+                        "snap.configuredChannelId)") != std::string::npos);
+    CHECK(tickBody.find("buildStatePayload(snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("buildStatePayload(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
+    // 嵌套 cfg.channelId 必须仍是实际持有,不能被"统一"成配置值——理由同上(见
+    // InputBridgeLogic.cpp buildConfigPayload() 里 haveOwn 判断的头注)。
+    CHECK(tickBody.find("cfg.channelId = snap.channelId") != std::string::npos);
 
     // 消费者③④(scvb.error 的边沿键 + payload):必须是 snap.configuredChannelId(配置/请求值),
     // 且两处用的是同一个字面量——键与 payload 不同源,会出现"键判负、payload却报错号"的分裂。
-    const auto edgeKeyPos = body.find("claimErrorEdgeChanged(claim, snap.configuredChannelId");
-    CHECK(edgeKeyPos != std::string::npos);
-    const auto payloadPos = body.find("emitClaimError(claim, prev, snap.configuredChannelId");
-    CHECK(payloadPos != std::string::npos);
-
-    // fail-closed:上面四个 find 任一失败已经 REQUIRE 过;这里再确认 emitTick() 里**不**残留
-    // 直接把 snap.channelId 递给这两个函数的旧写法(防止"加了新行但没删旧行"的半吊子改法)。
-    CHECK(body.find("claimErrorEdgeChanged(claim, snap.channelId") == std::string::npos);
-    CHECK(body.find("emitClaimError(claim, prev, snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim, snap.configuredChannelId") != std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim, prev, snap.configuredChannelId") != std::string::npos);
+    // fail-closed:再确认 emitTick() 里**不**残留直接把 snap.channelId 递给这两个函数的旧写法
+    // (防止"加了新行但没删旧行"的半吊子改法)。
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim, snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim, prev, snap.channelId") == std::string::npos);
+    // error 基线回写同样走配置值。
+    CHECK(tickBody.find("lastErrorChannelId_ = snap.configuredChannelId") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

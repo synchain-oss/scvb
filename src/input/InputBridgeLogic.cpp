@@ -31,6 +31,16 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
     return state == InputClaimState::kActive && outputSampleRate != 0 && outputSampleRate != localSampleRate;
 }
 
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId)
+{
+    // kConflict 是唯一"这次请求被拒、什么都没绑定"的态(见 claimValue() 六值映射)——这一态下
+    // configuredChannelId 停在被拒的请求号,channelId(=boundChannel())如实是 0。别的四态要么
+    // 两值本就相等(kActive,见 InputSession.h prepare() 头注的不变式),要么用哪个都一样
+    // (kUnassigned 下两者恒为 0)。releaseResources() 落的是 kUnassigned 不是 kConflict,与这里
+    // 可分辨——头注见 InputBridgeLogic.h 声明处,含 CHANGELOG.md 里那句已发版承诺的出处。
+    return claimState == InputClaimState::kConflict ? channelId : configuredChannelId;
+}
+
 PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active)
 {
     if (channelId == 0)

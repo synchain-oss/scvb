@@ -906,41 +906,68 @@ TEST_CASE("SL-446(第 5 轮,集成,真 Processor):已绑定实例载入不同工
     // prepareToPlay())——真实撞上 occupant 占的 5,补偿式回滚抢回 victim 释放前那个 3。
     victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
 
-    // [SL-446 第 6 轮] 载入之后宿主通常还会再 prepareToPlay() 一次(走带停走 / 设备重启 /
-    // 缓冲区变更)。那一次会重新同步 channelId_(必须的,见 InputProcessor.cpp :69/:557 头注),
-    // 但**不得**顺带改到 savedChannelId_——第 3/4 轮翻车两次的正是这条时序:第 5 轮之所以不
-    // 污染存档,唯一原因是 :69 那行不碰 savedChannelId_,而这一点此前没有任何判据钉着。这里
-    // 补一次调用,把它纳入覆盖。下面三条 CHECK 与不变式断言原样成立(此刻 session_.channelId()
-    // 与 boundChannel() 都是 3),纯增覆盖,不改任何期望值。
-    victim.prepareToPlay(kSr, kBlock);
+    // [合并前独立复核 🚩 判据恒真订正] 第 6 轮曾在这里(setStateInformation() 之后、不变式断言
+    // 之前)插一次 prepareToPlay() 来覆盖 ②(见下段),但插在这个位置会让下面的不变式断言失去
+    // 对 InputProcessor.cpp :570(setStateInformation() 里 prepared_==true 分支的重新同步)的
+    // 分辨力——:72(prepareToPlay() 自己的重新同步)跑在这次 setStateInformation() 之后,把
+    // channelId_ 又同步了一遍(快路径,此刻已经claim在 3 上,效果与 :570 重叠),即使删掉
+    // :570,这里的不变式看起来仍然成立(复核员实测五种注入全绿)。现在把 :72 的覆盖挪到不变式
+    // 断言与存档断言**之后**,拆成两处独立的删除式判据:① 紧接着这里先钉 :570;② 后面单开
+    // 一段再钉 :72,互不重叠、各自可分辨。
 
     // 存档:第 5 轮修好之后的正确行为——记工程里原本写的 5,不是回滚抢回来的旧号 3。
-    juce::MemoryBlock stateBlob;
-    victim.getStateInformation(stateBlob);
-    scvb::state::StateChunks chunks;
-    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
-                                         chunks) == scvb::state::DecodeStatus::Ok);
-    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
-    REQUIRE(cfg != nullptr);
-    scvb::state::InputState loaded;
-    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
-    CHECK(loaded.channelId == 5); // 工程里原本的号,原样留着(savedChannelId_ 不受这次重新认领影响)
-    CHECK(loaded.channelId != 3); // 不是回滚抢回来的旧号
-    CHECK(loaded.channelId != 0); // 也没有被擦成未分配
+    {
+        juce::MemoryBlock stateBlob;
+        victim.getStateInformation(stateBlob);
+        scvb::state::StateChunks chunks;
+        REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                             chunks) == scvb::state::DecodeStatus::Ok);
+        const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+        REQUIRE(cfg != nullptr);
+        scvb::state::InputState loaded;
+        REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+        CHECK(loaded.channelId == 5); // 工程里原本的号,原样留着(savedChannelId_ 不受这次重新认领影响)
+        CHECK(loaded.channelId != 3); // 不是回滚抢回来的旧号
+        CHECK(loaded.channelId != 0); // 也没有被擦成未分配
+    }
 
     // 广播/实际持有仍然正确:victim 真的活跃在 3 上。
     CHECK(victim.bridgeTickSnapshot().channelId == 3);
 
-    // 不变式(直接断言快照,不经存档这个中间人——存档现在读的是 savedChannelId_,不再是
+    // ①不变式(直接断言快照,不经存档这个中间人——存档现在读的是 savedChannelId_,不再是
     // channelId_,拿存档值去核这条不变式在语义上已经不对了):`state()==kActive` 时
     // `configuredChannelId`(=channelId_,寻址/配置用途)必须等于 `channelId`(=boundChannel(),
     // 实际持有)。这条不变式**只在 state()==kActive 时才有意义**——硬失败那条路
     // (state()==kConflict,没有旧 channel 可回滚)前件为假,不受这条不变式约束,那条路
     // channelId_ 合法地保留请求值、boundChannel()==0,两者不相等是设计如此,不是违反了这条
     // 不变式(见 InputSession.h prepare() 头注的不变式完整说明)。
-    const auto snap = victim.bridgeTickSnapshot();
-    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive);
-    CHECK(snap.configuredChannelId == snap.channelId); // 不变式本身:活跃 ⟹ 配置镜像==实际持有
+    // [合并前独立复核] 这里钉的正是 :570——删掉那一行,channelId_ 会停在解码时写入的 5
+    // (:503),不再跟 boundChannel()(3)一致,这里必红。
+    {
+        const auto snap = victim.bridgeTickSnapshot();
+        REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive);
+        CHECK(snap.configuredChannelId == snap.channelId); // 不变式本身:活跃 ⟹ 配置镜像==实际持有
+    }
+
+    // ②[SL-446 第 6 轮,合并前独立复核订正位置] 宿主载入之后通常还会再 prepareToPlay() 一次
+    // (带停走 / 设备重启 / 缓冲区变更)。这次调用会重新同步 channelId_(:72,必须的,理由见
+    // 该行头注),但**不得**顺带改到 savedChannelId_——第 3/4 轮翻车两次的正是这条时序:第 5
+    // 轮之所以不污染存档,唯一原因是 :72 那行不碰 savedChannelId_,而这一点此前没有任何判据
+    // 钉着。这里补一次调用,再重新读一次存档,单独钉住 :72 不写 savedChannelId_ 这件事本身——
+    // 挪到这里(不再跟①共用同一次不变式断言)是这一轮复核订正的地方,理由见上面那段注释。
+    victim.prepareToPlay(kSr, kBlock);
+    {
+        juce::MemoryBlock stateBlob2;
+        victim.getStateInformation(stateBlob2);
+        scvb::state::StateChunks chunks2;
+        REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob2.getData()),
+                                             stateBlob2.getSize(), chunks2) == scvb::state::DecodeStatus::Ok);
+        const scvb::state::Chunk* cfg2 = chunks2.find(scvb::state::kFourccCfgs);
+        REQUIRE(cfg2 != nullptr);
+        scvb::state::InputState loaded2;
+        REQUIRE(scvb::state::decodeInputState(cfg2->payload.data(), cfg2->payload.size(), loaded2));
+        CHECK(loaded2.channelId == 5); // :72 跑过之后存档依旧是 5,没被顺带改写成 savedChannelId_
+    }
 
     occupant.releaseResources();
     victim.releaseResources();

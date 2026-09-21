@@ -32,6 +32,7 @@ using scvb::input::bridge::claimErrorEdgeChanged;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
+using scvb::input::bridge::displayChannelId;
 using scvb::input::bridge::parseIntArg;
 using scvb::input::bridge::PriorityReject;
 using scvb::input::bridge::priorityRejection;
@@ -99,6 +100,33 @@ TEST_CASE("T30 srMismatch 推导:仅 claim active ∧ Output SR 非零 ∧ ≠ �
     CHECK_FALSE(srMismatch(InputClaimState::kUnassigned, 44100, 48000));
     CHECK_FALSE(srMismatch(InputClaimState::kConflict, 44100, 48000));
     CHECK_FALSE(srMismatch(InputClaimState::kAbiMismatch, 44100, 48000));
+}
+
+TEST_CASE("SL-446(合并前独立复核):displayChannelId —— 只有 kConflict 走实际持有(=0,如实"
+          "未分配),别的态走配置/请求值")
+{
+    // 场景 1(表格 #1):releaseResources() 之后 —— session_ 落 kUnassigned(不是 kConflict),
+    // boundChannel() 清 0,但配置(configuredChannelId)原样留着。顶层 channel_id 该显示配置号,
+    // 不是 0——这是这一轮独立复核抓到的用户可见回归本体。
+    CHECK(displayChannelId(InputClaimState::kUnassigned, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
+
+    // 场景 2(表格 #2,本轮**新增覆盖**,此前没有任何判据钉着):硬冲突——从未绑定过、点了一个
+    // 被占用的通道,没有旧 channel 可回滚,session_ 落在 kConflict,channelId(bound)如实是 0,
+    // configuredChannelId 停在被拒的请求号。这里必须显示 0(如实未分配),不能显示被拒的号——
+    // 显示被拒的号就是重新打开 SL-19/SL-446 本身要堵的洞(CHANGELOG.md 里"抢回也失败的极罕见
+    // 情况下才会如实显示未分配"就是在描述这一态)。
+    CHECK(displayChannelId(InputClaimState::kConflict, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+
+    // 场景 3(表格 #3):回滚成功——session_ 落回 kActive,两个源头本就相等(不变式:kActive ⟹
+    // configuredChannelId==channelId,见 InputSession.h prepare() 头注),这一格**钉不住**
+    // "该走哪个字段"这件事本身——不管 displayChannelId() 内部选哪个,结果都一样,这里只是
+    // 确认这条不变式成立时函数确实回传那个共同值,不是"删掉分支也会绿"的那种钉不住。
+    CHECK(displayChannelId(InputClaimState::kActive, /*channelId=*/3, /*configuredChannelId=*/3) == 3);
+
+    // kAbiMismatch/kUnavailable:与 kUnassigned 同类,不是"这次请求被拒、什么都没绑定"的态,
+    // 走配置值(这两态下两个字段是否分叉不在本卡讨论范围,但函数本身的分流规则必须一致)。
+    CHECK(displayChannelId(InputClaimState::kAbiMismatch, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
+    CHECK(displayChannelId(InputClaimState::kUnavailable, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
 }
 
 TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > notActive > ringFull(§3.4/§5.6)")
