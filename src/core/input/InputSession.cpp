@@ -51,8 +51,8 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
     }
 
     // 已 active 且同 channel+group:仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
-    if (registry_.isOpen() && claimedChannel_.load(std::memory_order_relaxed) == channelId_ &&
-        registry_.group() == groupId_)
+    const bool sameGroup = registry_.isOpen() && registry_.group() == groupId_;
+    if (sameGroup && claimedChannel_.load(std::memory_order_relaxed) == channelId_)
     {
         registry_.updateOwnedInputSlot(channelId_, pid_, sampleRate, maxBlock);
         // 纯块长变化不触碰几何/提取器(避免与音频线程并发重置;SR/布局变化属宿主停止音频的重配置)。
@@ -67,12 +67,52 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
         return state_;
     }
 
+    // [SL-19 复发/UI 未回滚] 换 channel 前先记住"换之前真正持有的那个 channel"——下面失败时
+    // 补偿式回滚要用。只在**组没变**的前提下才有意义:组同时也在变属于理论上可能、但
+    // InputProcessor 的实际调用面从不这样用(setChannelId 只改 channel;换组走 changeGroup()
+    // 那条独立路径,行为由它自己的测试钉着,本卡不碰)。两者同时变时按原样处理(失败即未分配),
+    // 不引入一个只覆盖一半场景的补偿。
+    const u32 previousChannel = sameGroup ? claimedChannel_.load(std::memory_order_relaxed) : 0;
+
     // 首次/换 channel/换 group:释放旧资源 → 新 claim → 建段。
     releaseSlot();
     releaseSegments();
     state_ = InputClaimState::kUnassigned;
     if (!openAndClaim(sampleRate, maxBlock, channels, nowMs))
     {
+        const InputClaimState failure = state_; // 这次请求本身的失败原因,回滚成不成功都要报它
+
+        // [SL-19 复发/UI 未回滚] 补偿式回滚:CAS 新槽失败时,尝试把刚释放的旧槽抢回来,
+        // 让会话继续在旧 channel 上正常工作,不把"转移失败"变成"连旧的也丢了"。
+        // ⚠ 不是保证:回滚本身也是一次 openAndClaim,失败窗口只有两次 CAS 之间那几微秒,
+        // 理论上仍可能被另一实例抢先——那种情况下退化成"确实未分配",如实反映现状,
+        // 不假装拿到了什么没拿到的东西。
+        // 复审 4056695565:`previousChannel != channelId_` 这半句是恒真,删掉——走到这里已经
+        // 隐含它成立:previousChannel 非 0 时必然 sameGroup==true(见上面的赋值),而 sameGroup
+        // 为真时若 claimedChannel_(=previousChannel)== channelId_,早在第 55 行的快路径就
+        // return 了,不会走到这儿。留着这句比较容易被将来的改动误读成"这两个号真的可能相等"。
+        if (previousChannel != 0)
+        {
+            const u32 requestedChannel = channelId_;
+            channelId_ = previousChannel; // 临时改回旧目标,复用同一条 claim 路径重新抢
+            const bool rolledBack = openAndClaim(sampleRate, maxBlock, channels, nowMs);
+            if (rolledBack)
+            {
+                // 会话确实还活着(只是回到了旧 channel):心跳/采集布防等内部逻辑都该按
+                // "活跃"走;但这次用户请求的那个新 channel 本身没有拿到,报给调用方的
+                // 仍然是 failure,UI 的冲突提示(抖动 + 红 toast)不受回滚影响。
+                state_ = InputClaimState::kActive;
+                return failure;
+            }
+            // 复审 4056695543:这里不是"避免留着一个没握住的号"——回滚失败后 previousChannel(3)
+            // 和 requestedChannel(5)都没握住,这条理由站不住。真正的原因是:channelId_ 是"配置"
+            // 字段(InputProcessor 读它当"用户最近一次请求的号"),上面几行只是临时把它借用成
+            // previousChannel 好复用 openAndClaim() 的代码路径——回滚失败就要把这次临时借用
+            // 复原,让 channelId_ 照实落回用户真正请求的那个号(哪怕没抢到),不能让它停留在
+            // 一个纯粹为了复用代码路径而借用的旧值上。
+            channelId_ = requestedChannel;
+        }
+        state_ = failure;
         return state_;
     }
     state_ = InputClaimState::kActive;

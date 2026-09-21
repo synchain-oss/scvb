@@ -76,7 +76,15 @@ public:
     };
     struct BridgeTickSnapshot
     {
-        int channelId = 0;
+        int channelId = 0; // 实际持有(session_.boundChannel())——scvb.state / scvb.config 用它
+        // [SL-446 第 2 轮补充] 配置/请求值(session_.channelId(),即 InputProcessor::channelId_
+        // 镜像)——**只给 scvb.error 用**(payload 的 ch 与边沿键都要用它,两处必须同源,否则
+        // "同一冲突状态、不同请求号"这种组合会被边沿键误判成"没变化"而漏发)。
+        // ⚠ 这个值不是"用户最近一次请求"的严格同义词,只在"emitClaimError 真的会触发"的那两条
+        // 路径(硬失败 / 回滚也失败)上二者恰好相等——补偿式回滚**成功**那条路上它会收敛成旧
+        // channel,但那条路 session_.state() 早已变回 kActive,emitClaimError 根本不会看到
+        // claim=="conflict",所以这个分叉进不了这里。别把这个字段的名字读成"两者等价"的证明。
+        int configuredChannelId = 0;
         int groupId = 1;
         scvb::input::InputClaimState claimState = scvb::input::InputClaimState::kUnassigned;
         scvb::input::InputConnSnapshot conn;
@@ -164,6 +172,13 @@ private:
 
     // state(持久化经 T19 StateCodec + InputStateCodec;params-v0 §三)。
     int channelId_ = 0;
+    // [SL-446 第 5 轮] 工程存档里"channel_id 那个字段"该记的值——与 channelId_(配置/请求值
+    // 镜像,供寻址与 scvb.error 用)是两件事,只在"已绑定实例载入不同工程、这次加载触发的
+    // 重新认领撞了车"这一个场景下会分叉(见 getStateInformation()/setStateInformation() 的
+    // 头注)。⚠ 与 channelId_ 同初值(0),保证一个从未载入过工程、也没点过通道的全新实例,
+    // 存档字节与改动前逐字节相同——这不是随手定的默认值,是为了不在最常见的路径(新建轨道)
+    // 上引入静默的行为变化。
+    int savedChannelId_ = 0;
     int groupId_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";

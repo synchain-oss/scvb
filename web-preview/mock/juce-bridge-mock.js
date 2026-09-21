@@ -1262,7 +1262,7 @@ function buildOutputBackend(ctx) {
             // `conn.channels` 应当回到全空闲、段表应当为空。这里只翻了 `group_id` 与只读位,
             // 15 轨连接与旧组段表原样留着。本卡的判据面(锁面 / 只读位 / 横幅②)不碰这两样,
             // 而把它们做真要连带 `segByCh` / `coveragePct` 一起按组重置,超出本卡范围 ——
-            // 已单列备忘。**拿本 fixture 截图或验收「改组后的连接数 / 段表」时,那是假的。**
+            // 已记 **SL-459**。**拿本 fixture 截图或验收「改组后的连接数 / 段表」时,那是假的。**
             return observer ? OBSERVER() : OK();
         },
 
@@ -2260,14 +2260,38 @@ function buildInputBackend(ctx) {
                 ((model.caps.occupiedMask >>> (next - 1)) & 1) === 1 &&
                 next !== model.snapshot.channel_id;
             if (occupiedByOthers) {
-                patchState({ claim: "conflict" });
-                emit(
-                    "scvb.error",
-                    makeError("channelConflict", {
-                        ch: next,
-                        detail: { groupId: model.snapshot.group_id },
-                    }),
-                );
+                // [SL-446 mock 补齐] 真桥的补偿式回滚:已经绑定着某个通道时,转移被拒不会把
+                // 会话打回"未分配"——它会把原通道抢回来,claim 如实报**实际状态**(通常是
+                // active),不是冻结在 "conflict" 上。红 toast 来自这次 RPC 的返回值
+                // ({conflict:true},下面照样返回),不是 scvb.error——真桥的 scvb.error 是
+                // 按 tick 采样的 claim 边沿触发的,回滚在同一次调用内同步完成,claim 从未在
+                // 任意一次采样时刻停留在 "conflict" 上,边沿检测**根本捕捉不到这次冲突**,
+                // 所以真桥这条路径不发 scvb.error。只有从未绑定过(channel_id 当前是 0,没有
+                // 旧通道可回滚)才会真的停在 "conflict"——这种硬失败场景下 claim 确实持续
+                // 停在 "conflict"(不会自己变回别的态),边沿检测能捕捉到,scvb.error 才会发。
+                // ⚠ [已知限制,未被任何夹具验证] `hadPreviousChannel === true` 这条分支
+                // 今天**没有任何夹具能走到**——`state-driver.js` 的 `channel-conflict` 夹具把
+                // `caps.occupiedMask` 设成 `ALL_CHANNELS_MASK`(全部 15 个通道都标记占用),
+                // 用户在这个夹具下永远无法先成功绑定任何一个通道,`model.snapshot.channel_id`
+                // 因此恒为 0,这个分支恒走不到。**这条分支改错了也不会红**——谁动它都得手工
+                // 核对真桥行为(见上面注释),不能靠跑一遍 web-smoke 判断。要钉住它需要一个
+                // 新夹具:先给用户留一个未占用的通道能成功绑定,再让他点一个别的、已占用的
+                // 通道触发这条分支;`ALL_CHANNELS_MASK` 被 6-7 个不同夹具共用,不能为了这
+                // 一条直接改掉,需要新增专门的夹具/URL 参数(已记 **SL-456**,工具链卡,默认不派工)。
+                const hadPreviousChannel = model.snapshot.channel_id > 0;
+                const claim = hadPreviousChannel
+                    ? claimStateFor(model.snapshot.channel_id)
+                    : "conflict";
+                patchState({ claim });
+                if (!hadPreviousChannel) {
+                    emit(
+                        "scvb.error",
+                        makeError("channelConflict", {
+                            ch: next,
+                            detail: { groupId: model.snapshot.group_id },
+                        }),
+                    );
+                }
                 return { conflict: true };
             }
             const claim = claimStateFor(next);

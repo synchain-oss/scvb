@@ -8,6 +8,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <cstddef>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "input/InputSession.h"
@@ -518,6 +522,320 @@ TEST_CASE("T37 Processor 回归(deepseek):srMismatch 读对组 —— changeGrou
     scvb::CtrlPlane probe1(backend, 1);
     REQUIRE(probe1.open() == InitResult::kOk);
     CHECK(probe1.readGlobalInfo().output_sample_rate == 44100);
+}
+
+// ---------------------------------------------------------------------------
+// SL-446(SL-19 复发):Input 通道冲突时 UI 未回滚 + 存档写错通道号。
+// 真机路径在 ScvbInputAudioProcessor::setChannelId/bridgeTickSnapshot/getStateInformation
+// (依赖 WebView2,不可离线编入单测,同上 T37 那条注释的限制)——下面②③用 InputSession +
+// InputStateCodec 逐段复刻该编排,与 T37 系列同一个惯例(§436 起那条已有先例)。
+// 根因(已在 InputProcessor.cpp 修掉):`channelId_` 这个镜像字段此前在 CAS 结果出来**之前**
+// 就被写成请求值,而它正是 bridgeTickSnapshot(广播给 UI)与 getStateInformation(工程存档)
+// 的直接数据源;修法是把镜像字段的赋值挪到 session_.prepare() **之后**,读
+// session_.boundChannel()(真正持有的 channel)。②③ 两格分别对应这两个不同的出口——
+// ②绿不代表③绿,两条各自独立断言。
+// ⚠ **复审当场指出的一个洞,写清楚不要含糊**:②③里的 `channelIdMirror` 是测试自己按新
+// 公式算出来的本地变量,**不是从 InputProcessor.cpp 读出来的**——如果有人把
+// `setChannelId()` 改回旧版那种「prepare() 之前就把 channelId_ 写成请求值」,②③**不会变红**
+// (判例原文:「缺陷是『没被调用/没传下去』时,纯函数用例全绿」,这两格正是这个形态)。
+// ②③ 证明的是"这套算法本身是对的",不证明"生产代码真的在用这套算法"——后者靠下面
+// 新增的源码级顺序判据(不依赖浏览器/WebView2 那条判例的同款做法:剥注释、fail-closed、
+// 不钉排版,配删除式)。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SL-19 复发②(Processor 回归复刻):冲突后广播源读会话真实持有的 channel,不读请求值", "[input][bridge]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 1) 等价 InputProcessor 构造后首次 claim channel 3。
+    InputSession session(backend, 1001);
+    session.setChannelId(3);
+    REQUIRE(session.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+
+    // 2) 另一实例占住 channel 5(心跳新鲜,构成真冲突)。
+    InputSession other(backend, 2001);
+    other.setChannelId(5);
+    REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    other.heartbeat(100);
+
+    // 3) 等价修好后的 InputProcessor::bridgeTickSnapshot():第 2 轮之后广播**直接**读
+    //    session_.boundChannel(),绕开 channelId_ 那个镜像字段(镜像现在固定是"配置",广播
+    //    要的是"实际持有",两者会分叉——见 InputProcessor.cpp bridgeTickSnapshot() 头注的
+    //    完整对照表)。`channelIdMirror` 这个变量名是历史遗留(第 1 轮镜像字段还兼着广播),
+    //    这里数值上等价直接读 boundChannel()。
+    session.setChannelId(5);
+    const auto requestResult = session.prepare(48000, 512, 1, 200);
+    const int channelIdMirror = static_cast<int>(session.boundChannel());
+
+    CHECK(requestResult == InputClaimState::kConflict); // UI 侧仍然会看到冲突提示(抖动+红 toast)
+    CHECK(channelIdMirror == 3); // 广播源读到的是真实持有的 3,不是抢失败的目标 5
+}
+
+TEST_CASE("SL-19 复发③(Processor 回归复刻):冲突后存档不记录抢失败的 channel", "[input][bridge]")
+{
+    // ⚠ 这一格与②各自独立断言——②绿不代表这格绿,两者读的是 InputProcessor 里两个不同的
+    // 出口(bridgeTickSnapshot vs getStateInformation),复审明确要求分开钉。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession session(backend, 1001);
+    session.setChannelId(3);
+    REQUIRE(session.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+
+    InputSession other(backend, 2001);
+    other.setChannelId(5);
+    REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    other.heartbeat(100);
+
+    session.setChannelId(5);
+    REQUIRE(session.prepare(48000, 512, 1, 200) == InputClaimState::kConflict);
+    // 等价修好后的 channelId_ 镜像:第 2 轮之后镜像固定读 channelId()(配置),不是
+    // boundChannel()(实际持有)——这条场景里两者数值相同(回滚成功、channelId()==
+    // boundChannel()==3),但算法要照真实实现抄,不是抄一个巧合数值相等的旧算法
+    // (旧算法在"配置了但没绑定"场景会把用户配置错误地擦成 0,见 SL-446 第 2 轮)。
+    const int channelIdMirror = static_cast<int>(session.channelId());
+
+    // 等价 InputProcessor::getStateInformation():用镜像字段(不是失败的请求值)填 InputState
+    // 再编解码一遍,复刻工程存档的完整往返。
+    scvb::state::InputState st;
+    st.channelId = static_cast<std::uint32_t>(channelIdMirror);
+    st.groupId = session.groupId();
+    st.uiScale = 100;
+    st.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(st, payload));
+
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(payload.data(), payload.size(), loaded));
+
+    CHECK(loaded.channelId == 3); // 存档记的是真正 claim 到的 channel
+    CHECK(loaded.channelId != 5); // 不是那个抢失败的目标——这是本卡后果最重的一条(用户下次打开工程才发作)
+}
+
+TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 里 channelId_ 的赋值排在 "
+          "prepare() 之后",
+          "[input][bridge]")
+{
+    // 上面②③是"复刻"测试,证明不了 InputProcessor.cpp 真的在用这套算法(见上面头注那段
+    // 复审指出的洞)。这一格改成直接读 InputProcessor.cpp 的源码文本判序,补上②证明不了的
+    // 那一半——与 SL-437 那次给 web/*/index.html 加的源码级判据同一条纪律:先剥注释、
+    // fail-closed(串找不到判负,不是放过)、不钉排版(只认关键字与相对顺序,不认换行/空格)。
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/src/input/InputProcessor.cpp";
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // 剥注释(行注释 + 块注释):不剥的话,本文件自己写的说明文字里就出现过
+    // "channelId_ = ..." 与 "session_.prepare(" 这两个关键词,注释会把断言顶替掉
+    // (判例见上面②③头注引用的那条"源码正则 ≠ 可执行"同族坑)。
+    std::string stripped;
+    stripped.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            stripped.push_back(raw[i]);
+            ++i;
+        }
+    }
+
+    // 只在 setChannelId() 这一个函数体内判序——prepareToPlay()/setStateInformation() 里也各
+    // 有一次同模式的 "channelId_ = .../session_.prepare(",不隔离会把别的函数的顺序混进来。
+    // [轮 8 复审【重要】订正] 上一版说"那两处目前没有判据、见 PR 描述"——PR 描述是仓外指针,
+    // 合并后没有下文,而且这句话本身在第 6 轮之后已经过期:那两处**没有源码级顺序判据**,
+    // 但行为层已经被新用例间接兜住(与 InputProcessor.cpp:64-70 prepareToPlay() 头注同一个
+    // 口径——"改回读 boundChannel() 会让相应用例的存档/快照断言变红",不是"完全没人管")。
+    const std::string beginMarker = "ScvbInputAudioProcessor::setChannelId(int channelId)";
+    const auto beginPos = stripped.find(beginMarker);
+    REQUIRE(beginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
+    const std::string endMarker = "ScvbInputAudioProcessor::setGroupId(int groupId)";
+    const auto endPos = stripped.find(endMarker, beginPos);
+    REQUIRE(endPos != std::string::npos);
+    const std::string body = stripped.substr(beginPos, endPos - beginPos);
+
+    const auto prepareIdx = body.find("session_.prepare(");
+    REQUIRE(prepareIdx != std::string::npos);
+
+    // 扫描函数体里全部 "channelId_ =" 赋值位置——不钉右手边具体写法(那是排版细节,比如
+    // static_cast 的换行方式),只钉"这个函数体里,任何一次给 channelId_ 赋值都不能发生在
+    // prepare() 调用之前"。这正是本卡要防的那处抢跑:旧版是 `channelId_ = channelId;` 排在
+    // `session_.prepare(...)` **之前**。
+    // ⚠ 复审 4056697571 指出:"channelId_ =" 这个字面量同时是 "channelId_ ==" (比较,不是
+    // 赋值)的前缀——`if (channelId_ == 5)` 会被误当成一次赋值。用"匹配位置之后紧跟的那个
+    // 字符不是 '=' "把比较排除掉;`+=`/`-=` 等复合赋值语义上仍算"改写了 channelId_",这个
+    // 判据目前不需要额外收窄它们(生产代码里没有这种写法,加一条只判据本身不测的分支反而
+    // 会掩盖 fail-closed 的空匹配路径)。
+    std::vector<std::size_t> assignPositions;
+    const std::string assignToken = "channelId_ =";
+    for (std::size_t pos = body.find(assignToken); pos != std::string::npos; pos = body.find(assignToken, pos + 1))
+    {
+        const std::size_t afterToken = pos + assignToken.size();
+        if (afterToken < body.size() && body[afterToken] == '=')
+        {
+            continue; // "channelId_ ==":比较,不是赋值,跳过不计入
+        }
+        assignPositions.push_back(pos);
+    }
+    REQUIRE_FALSE(assignPositions.empty()); // fail-closed:一次都找不到也判负,不是放过
+
+    for (const auto pos : assignPositions)
+    {
+        CHECK(pos > prepareIdx);
+    }
+}
+
+TEST_CASE("SL-446(第 2 轮补充 + 合并前独立复核):源码级判据 —— InputEditor.cpp 的 buildSnapshot()/"
+          "emitTick() 里,scvb.state 顶层 channel_id 走配置/请求值,scvb.config 里嵌套的 channelId "
+          "仍走实际持有,scvb.error 走配置/请求值",
+          "[input][bridge]")
+{
+    // ⚠ InputEditor 依赖真 WebView2,不能像 InputProcessor 那样直接实例化真对象做行为级判据
+    // (见 tests/webview/test_input_bridge.cpp 头注:"InputEditor 依赖真 WebView2,留待 gate 8
+    // 真机 GUI pluginval")。这一格补的是"接线对不对"那一半:pure function
+    // claimErrorEdgeChanged()/buildErrorPayload() 算法本身对不对,tests/webview/test_input_bridge.cpp
+    // 已有判据;但算法对不代表 InputEditor.cpp 真的把正确的实参递给它——这正是本卡"消费者列全"
+    // 那轮复审抓到的洞:同一个 snap.channelId 多处消费,两种语义,传错源不会在算法层面报错,
+    // 只会在"这个值到底该从哪个字段读"这件事上悄悄读错。
+    // [合并前独立复核 🚩] 此前这格判据只扫 emitTick() 一个函数,漏了 buildSnapshot()——那是
+    // WebView 首帧/reload 时发的完整快照,顶层 channel_id 与 emitTick() 里 scvb.state 的
+    // channel_id 是同一个消费者类别(同一份 UI 状态、同一个字段语义),此前一个用了配置值
+    // 判据、另一个完全没人钉。现在两个函数各自的两条消费点(顶层 channel_id / 嵌套
+    // cfg.channelId)都分别隔离扫描。
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/src/input/InputEditor.cpp";
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // 剥注释,理由与手法同上面那格(注释里同样会出现这些关键词,不剥会把断言顶替掉)。
+    std::string stripped;
+    stripped.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            stripped.push_back(raw[i]);
+            ++i;
+        }
+    }
+
+    // [合并前独立复核订正] displayChannelId(...) 调用点参数较长,clang-format 会视行宽把它
+    // 折成多行——find() 的字面量只在同一行内可靠,折行位置又会随参数改名/加参数漂移。
+    // ⚠ [轮 8 复审【重要】订正] 上一版把连续空白**折成单个空格**,搜索串里因此固定写了一个
+    // 空格(比如 "buildInputSnapshot( bridge::displayChannelId(")——这把"这里必须有换行"这件
+    // 排版细节钉死进了判据:clang-format 如果哪天把这处折行去掉(整行放得下了),折出来的空白
+    // 就是零个字符而不是一个,判据会**误报红**(单向假红,产品代码没错,判据自己先垮)。现在
+    // 改成把空白**整个删掉**(而不是折成一个),搜索串同步删掉所有空格——两边都不含空白,
+    // 折不折行、折在哪都不影响能不能匹配到,仍然是精确字面量匹配,不是模糊搜索。
+    std::string normalized;
+    normalized.reserve(stripped.size());
+    for (const char c : stripped)
+    {
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+        {
+            normalized.push_back(c);
+        }
+    }
+    stripped = normalized;
+
+    // 分两段扫描:buildSnapshot()(首帧/reload)与 emitTick()(周期性增量)各自隔离——两者都有
+    // 一份"顶层 channel_id vs 嵌套 cfg.channelId"的消费点,同一个字面量在两个函数体里各出现
+    // 一次,不分段会把两处的用法混进同一个 body,find() 只找得到第一处,后一处判正判负都不可信。
+    // ⚠ 这三个标记字面量也要跟着去空白(haystack 现在一个空白字符都不留)——"juce::var
+    // InputEditor" 中间那个空格是 C++ 语法要求的、不是排版可选项,但去空白之后 haystack 里
+    // 同样没有它,标记字面量必须原样跟上,否则连起始位置都定不到(REQUIRE 会先炸,比赛道
+    // 判据本身更早失效)。
+    const std::string snapshotBeginMarker = "juce::varInputEditor::buildSnapshot()";
+    const auto snapshotBeginPos = stripped.find(snapshotBeginMarker);
+    REQUIRE(snapshotBeginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
+    const std::string tickBeginMarker = "voidInputEditor::emitTick()";
+    const auto tickBeginPos = stripped.find(tickBeginMarker, snapshotBeginPos);
+    REQUIRE(tickBeginPos != std::string::npos);
+    const std::string endMarker = "voidInputEditor::handleSetLang(";
+    const auto endPos = stripped.find(endMarker, tickBeginPos);
+    REQUIRE(endPos != std::string::npos);
+    const std::string snapshotBody = stripped.substr(snapshotBeginPos, tickBeginPos - snapshotBeginPos);
+    const std::string tickBody = stripped.substr(tickBeginPos, endPos - tickBeginPos);
+
+    // ⚠ 下面所有判据(两段各自的正/反共十条)都用 CHECK,不用 REQUIRE——互相独立,任何一条单独
+    // 出问题都不该让其余的失去被执行、被观测到"仍绿"的机会(REQUIRE 会在第一条失败时直接掐断
+    // 当前测试用例,后面的断言根本不会跑,删除式验证"只改一处、另一处仍绿"就无从核起)。
+
+    // ---- buildSnapshot():WebView 首帧/reload 时发的完整快照 ----
+    // 顶层 channel_id(buildInputSnapshot 的第一个实参)与 emitTick() 的 scvb.state 同类:
+    // [合并前独立复核] releaseResources() 之后 boundChannel()==0,若这里仍用实际持有,首帧
+    // 快照会报"未分配",与随后 emitTick() 的增量事件互相矛盾。
+    // [合并前独立复核订正] 不能直接用 configuredChannelId——kConflict 态下它停在被拒的请求号,
+    // 无条件用它会重新打开 SL-19/SL-446 的洞(见 InputBridgeLogic.h displayChannelId() 头注)。
+    // 正确写法经 displayChannelId() 按 claimState 分流,这里钉的是"调用点确实把这一层判断接
+    // 上了",分流算法本身的对错由 tests/webview/test_input_bridge.cpp 的纯函数判据钉。
+    CHECK(snapshotBody.find("buildInputSnapshot(bridge::displayChannelId(snap.claimState,snap.channelId,"
+                            "snap.configuredChannelId)") != std::string::npos);
+    CHECK(snapshotBody.find("buildInputSnapshot(snap.channelId") == std::string::npos);
+    CHECK(snapshotBody.find("buildInputSnapshot(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
+    // 嵌套 cfg.channelId(scvb.config 里那份,供 buildConfigPayload() 索引广播数组)必须仍是
+    // 实际持有,不能被"统一"成配置值——否则会在硬冲突时越界或读到别的实例的配置。
+    CHECK(snapshotBody.find("cfg.channelId=snap.channelId") != std::string::npos);
+    // error 基线复位同样走配置值(与 emitTick() 里那次判据同源;这一处不经 displayChannelId,
+    // error 边沿键从来不受 kConflict 特判影响——见 InputBridgeLogic.h 头注,error 本就该在
+    // kConflict 时报出被拒的号,不是分流对象)。
+    CHECK(snapshotBody.find("lastErrorChannelId_=snap.configuredChannelId") != std::string::npos);
+
+    // ---- emitTick():周期性增量事件 ----
+    // 消费者①②(scvb.state / scvb.config):
+    // [合并前独立复核 🚩 用户可见回归,base 没有] scvb.state 顶层 channel_id 此前用实际持有,
+    // releaseResources() 之后广播清 0、界面误报"未分配"。同上,经 displayChannelId() 按
+    // claimState 分流,不能直连 configuredChannelId(kConflict 态会重开 SL-19 的洞)。
+    CHECK(tickBody.find("buildStatePayload(bridge::displayChannelId(snap.claimState,snap.channelId,"
+                        "snap.configuredChannelId)") != std::string::npos);
+    CHECK(tickBody.find("buildStatePayload(snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("buildStatePayload(snap.configuredChannelId") == std::string::npos); // 不能绕过分流直连
+    // 嵌套 cfg.channelId 必须仍是实际持有,不能被"统一"成配置值——理由同上(见
+    // InputBridgeLogic.cpp buildConfigPayload() 里 haveOwn 判断的头注)。
+    CHECK(tickBody.find("cfg.channelId=snap.channelId") != std::string::npos);
+
+    // 消费者③④(scvb.error 的边沿键 + payload):必须是 snap.configuredChannelId(配置/请求值),
+    // 且两处用的是同一个字面量——键与 payload 不同源,会出现"键判负、payload却报错号"的分裂。
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim,snap.configuredChannelId") != std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim,prev,snap.configuredChannelId") != std::string::npos);
+    // fail-closed:再确认 emitTick() 里**不**残留直接把 snap.channelId 递给这两个函数的旧写法
+    // (防止"加了新行但没删旧行"的半吊子改法)。
+    CHECK(tickBody.find("claimErrorEdgeChanged(claim,snap.channelId") == std::string::npos);
+    CHECK(tickBody.find("emitClaimError(claim,prev,snap.channelId") == std::string::npos);
+    // error 基线回写同样走配置值。
+    CHECK(tickBody.find("lastErrorChannelId_=snap.configuredChannelId") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

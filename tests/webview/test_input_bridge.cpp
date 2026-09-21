@@ -32,6 +32,7 @@ using scvb::input::bridge::claimErrorEdgeChanged;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
+using scvb::input::bridge::displayChannelId;
 using scvb::input::bridge::parseIntArg;
 using scvb::input::bridge::PriorityReject;
 using scvb::input::bridge::priorityRejection;
@@ -101,6 +102,37 @@ TEST_CASE("T30 srMismatch 推导:仅 claim active ∧ Output SR 非零 ∧ ≠ �
     CHECK_FALSE(srMismatch(InputClaimState::kAbiMismatch, 44100, 48000));
 }
 
+TEST_CASE("SL-446(合并前独立复核 + 轮 9 复审订正):displayChannelId —— kActive/kUnassigned 走"
+          "配置/请求值,kConflict/kAbiMismatch/kUnavailable 三态统一走实际持有(=0,如实未分配)")
+{
+    // 场景 1(表格 #1):releaseResources() 之后 —— session_ 落 kUnassigned(不是 kConflict),
+    // boundChannel() 清 0,但配置(configuredChannelId)原样留着。顶层 channel_id 该显示配置号,
+    // 不是 0——这是这一轮独立复核抓到的用户可见回归本体。
+    CHECK(displayChannelId(InputClaimState::kUnassigned, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
+
+    // 场景 2(表格 #2,本轮**新增覆盖**,此前没有任何判据钉着):硬冲突——从未绑定过、点了一个
+    // 被占用的通道,没有旧 channel 可回滚,session_ 落在 kConflict,channelId(bound)如实是 0,
+    // configuredChannelId 停在被拒的请求号。这里必须显示 0(如实未分配),不能显示被拒的号——
+    // 显示被拒的号就是重新打开 SL-19/SL-446 本身要堵的洞(CHANGELOG.md 里"抢回也失败的极罕见
+    // 情况下才会如实显示未分配"就是在描述这一态)。
+    CHECK(displayChannelId(InputClaimState::kConflict, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+
+    // 场景 3(表格 #3):回滚成功——session_ 落回 kActive,两个源头本就相等(不变式:kActive ⟹
+    // configuredChannelId==channelId,见 InputSession.h prepare() 头注),这一格**钉不住**
+    // "该走哪个字段"这件事本身——不管 displayChannelId() 内部选哪个,结果都一样,这里只是
+    // 确认这条不变式成立时函数确实回传那个共同值,不是"删掉分支也会绿"的那种钉不住。
+    CHECK(displayChannelId(InputClaimState::kActive, /*channelId=*/3, /*configuredChannelId=*/3) == 3);
+
+    // [轮 9 复审【重要】订正] kAbiMismatch/kUnavailable 此前被当成"与 kUnassigned 同类"走配置
+    // 值——这是假的。InputSession::openAndClaim() 失败时,previousChannel==0(没有旧 channel
+    // 可回滚)这条路径上 kConflict/kAbiMismatch/kUnavailable 三个失败码走的是同一段代码,
+    // channelId(bound)同样如实是 0、configuredChannelId 同样停在被拒的请求号——与 kConflict
+    // 结构完全相同,只是失败原因不同(注册表 abi 不符 / 段打不开,不是通道被占)。这两态必须
+    // 和 kConflict 一样显示 0,不能显示被拒的号——可达路径,不是理论场景。
+    CHECK(displayChannelId(InputClaimState::kAbiMismatch, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+    CHECK(displayChannelId(InputClaimState::kUnavailable, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+}
+
 TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > notActive > ringFull(§3.4/§5.6)")
 {
     CHECK(priorityRejection(0, true, false, true) == PriorityReject::kUnassigned);
@@ -167,6 +199,25 @@ TEST_CASE("T30 claimErrorEdgeChanged:五分量边沿键任一变化即重发(PR#
 
     // 五分量全同 → 无边沿(不重发)。
     CHECK_FALSE(claimErrorEdgeChanged("conflict", 3, 1, 48000, 48000, "conflict", 3, 1, 48000, 48000));
+}
+
+TEST_CASE("SL-446(第 2 轮补充):连续两次请求不同冲突通道,claim 态不变也要重发,ch 各自正确"
+          "(PR#273 复审)")
+{
+    // ⚠ 这条钉的是"channelId 分量必须是**请求值**,不是实际持有值"这件事本身的必要性——
+    // 若这一位喂的是实际持有(硬冲突场景下恒为 0),连续两次请求不同通道时键的五元组会一模
+    // 一样(claim 都是 "conflict"、channelId 都是 0),第二次会被判成"没变化"而漏发。
+    // 这一格只钉算法(纯函数输入输出关系);InputEditor.cpp 是否真的喂了请求值而不是实际持有值,
+    // 由 tests/core/test_input_bridge_ipc.cpp 里的源码级判据钉(那一格能读到真实调用点的实参)。
+    CHECK(claimErrorEdgeChanged("conflict", 5, 1, 48000, 48000, "", -1, -1, -1, -1)); // 首次冲突,请求 5
+
+    // 第二次请求 7,claim 仍是 "conflict"(实际持有全程是 0,没体现在这个键里)——
+    // 请求值从 5 变成 7,边沿必须成立。
+    CHECK(claimErrorEdgeChanged("conflict", 7, 1, 48000, 48000, "conflict", 5, 1, 48000, 48000));
+
+    // 对照组:若这一位真的喂了实际持有值(两次都是 0),同一个 claim 下五元组不变 → 无边沿,
+    // 第二次请求会被吞掉——这正是复审指出的回归形态,写在这里当反面参照,不是要通过的用例。
+    CHECK_FALSE(claimErrorEdgeChanged("conflict", 0, 1, 48000, 48000, "conflict", 0, 1, 48000, 48000));
 }
 
 TEST_CASE("T30 advanceConfigSeq:隐藏不推进基线,恢复可见重发(PR#54 R7)")

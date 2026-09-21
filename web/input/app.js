@@ -858,11 +858,33 @@ function renderRemoteSummary() {
     const confirmOpen =
         store.local.pendingGroup !== 0 || store.local.pendingRelease;
     const cfg = store.config;
+    // [轮 8 复审【重要】订正] 这一行的 cfg(scvb.config 里的 label/priority/pair_id/freeze/
+    // participate_in_auto_pan)在 InputBridgeLogic.cpp buildConfigPayload() 里是按**实际
+    // 持有**的 channel(session_.boundChannel())算出来的,不是配置/请求值——见那边 haveOwn
+    // 判断的头注。而顶层 store.state.channel_id 这一批已经改成走 displayChannelId() 分流,
+    // 大多数态下显示的是**配置值**;releaseResources() 之后配置值原样留着但实际持有清 0,
+    // 若这里仍用 channel_id 当闸,会出现"闸开、cfg 却是默认值"——把 priority 0 / label "" /
+    // pair_id 0 / freeze 0 / participate true 这些默认值当成真实远程数据显示给用户。闸必须
+    // 换成和 cfg 同一个源(实际持有),不能继续用顶层那个已经改口径的字段。
+    // ⚠ 不用 cfg.channelId:scvb.config 的载荷是逐字冻结的九键(buildConfigPayload() 头注),
+    // 加一个新字段要走正式契约变更流程(参照 A-32 channelLabels 那次,SCVB_CONTRACT.md:1000),
+    // 不能在这一轮顺手加。
+    // ⚠ 不用 store.state.claim === "active":claimValue() 里 srMismatch 态会把 "active" 吃成
+    // "srMismatch"(InputBridgeLogic.cpp claimValue()),而 srMismatch 那一态我们确实持有
+    // channel、cfg 数据有效,用 claim 当闸会把这一行在 srMismatch 时也藏起来——那是本轮不该
+    // 引入的行为改变。
+    // 改用 conn.maskBit(§4.2,契约里已有的字段,零新增):它的计算(InputSession::
+    // connSnapshot(),src/core/input/InputSession.cpp:217-234)本来就是"outputOnline 且
+    // **实际持有**的 channel 在 Output 广播的 connected_mask 里置位"才为 true,与 cfg 同源。
+    // 代价:比"channelId>=1 且 haveOwn"严格一点点——还要求 Output 的 mask 已经把我们的心跳
+    // 位置上,claim 成功到 mask 置位之间有极短的窗口,这一行可能比"刚绑定"晚一拍才显示。
+    // 接受这个代价:这行摘要本来就该等到"真的 active"才有意义——claimValue() 判定 "active"
+    // 用的正是同一个 maskBit,两者本该同步显隐,不是新引入的不一致。
     const showRow =
         !!cfg &&
         conn.outputOnline === true &&
         !confirmOpen &&
-        (store.state.channel_id || 0) >= 1;
+        conn.maskBit === true;
     show($("input.remoteSummary"), showRow);
     if (!showRow || !cfg) return;
 

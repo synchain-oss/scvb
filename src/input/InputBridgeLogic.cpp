@@ -31,6 +31,29 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
     return state == InputClaimState::kActive && outputSampleRate != 0 && outputSampleRate != localSampleRate;
 }
 
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId)
+{
+    // [轮 9 复审【重要】订正] 上一版只把 kConflict 摘出来走 channelId,漏了"不持有任何
+    // slot"这一半——InputSession::openAndClaim()(src/core/input/InputSession.cpp:343-
+    // 386)在"首次/换 channel"这条路上失败时,除了 kConflict(通道被占)还会落到
+    // kAbiMismatch(registry.changeGroup()/open() 返回 abi 不符)与 kUnavailable(段打不开/
+    // 映射失败/claimInput 非 kConflict 的失败/createSegments 失败)——**这三个失败态走的是
+    // 同一条代码路径**,previousChannel==0(没有旧 channel 可回滚)时 channelId_(配置)同样
+    // 停在被拒的请求号、claimedChannel_(实际持有)同样是 0,与 kConflict 结构完全相同,只是
+    // 失败原因不同。原判据只摘 kConflict,会把 kAbiMismatch/kUnavailable 这两个同样"请求被
+    // 拒、什么都没绑定"的态误判成"用哪个都一样",实际后果是把被拒的通道显示成"已选中 +
+    // 已连接"——可达路径,不是理论场景。
+    // 改成按"是不是活跃/未配置"分流,而不是"是不是 kConflict"分流:kActive(两值本就相等)
+    // 与 kUnassigned(releaseResources() 之后 channelId=0 但 configuredChannelId 原样留着,
+    // 必须用 configuredChannelId,这正是本函数存在的理由)这两态走 configuredChannelId;
+    // 其余三态(kConflict/kAbiMismatch/kUnavailable,统一含义:配置了但没有任何一个 slot
+    // 被实际持有)走 channelId(=boundChannel(),此时必为 0)。这三态下 claimedChannel_
+    // 恒为 0 是 openAndClaim() 的结构性保证(每条失败分支要么从未 store 过、要么显式
+    // store(0)),不是巧合,别再按"只挑 kConflict"的思路加回去。
+    return (claimState == InputClaimState::kActive || claimState == InputClaimState::kUnassigned) ? configuredChannelId
+                                                                                                  : channelId;
+}
+
 PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active)
 {
     if (channelId == 0)
@@ -169,6 +192,11 @@ juce::var buildConfigPayload(const ConfigSnapshot& s)
     // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 participate_in_auto_pan 报成
     // false([J83] 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
     const bool haveBroadcast = s.broadcastValid && s.broadcast.config_seq != 0;
+    // [SL-446 第 2 轮] s.channelId 是**实际持有**(session_.boundChannel(),见 InputEditor.cpp
+    // emitTick() 的分组表)——本 PR 之前配置值恒 ≥1(未分配才是 0),现在硬冲突时它可以合法是 0。
+    // ⚠ 下面 `s.channelId - 1` 直接当数组下标用:这条 `>= 1` 判断是唯一挡住越界的地方,别为了
+    // "统一"把这里换成配置/请求值那个字段——换了会在硬冲突时拿配置号索引广播数组,读到"别的
+    // 实例 channel 5 的配置"冒充成"本实例的配置",而本实例根本没绑定任何 channel。
     const bool haveOwn = haveBroadcast && s.channelId >= 1 && s.channelId <= static_cast<int>(kMaxChannels);
 
     if (haveOwn)

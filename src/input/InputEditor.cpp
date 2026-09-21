@@ -85,7 +85,9 @@ juce::var InputEditor::buildSnapshot()
     lastErrorJson_.clear();
     lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
     lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
-    lastErrorChannelId_ = snap.channelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
+    // [SL-446 第 2 轮补充] 边沿键的 channel 分量走 configuredChannelId(配置/请求值),不是
+    // channelId(实际持有)——与 emitTick() 里那次判据同源,理由见 BridgeTickSnapshot 头注。
+    lastErrorChannelId_ = snap.configuredChannelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
     lastErrorGroupId_ = snap.groupId; // error 边沿键的 group 分量(同基线)
     lastErrorInputSr_ = juce::roundToInt(snap.sampleRate); // error 边沿键的 inputSr 分量(同基线)
     lastErrorOutputSr_ = static_cast<int>(snap.globalInfo.output_sample_rate); // error 边沿键的 outputSr 分量(同基线)
@@ -100,12 +102,25 @@ juce::var InputEditor::buildSnapshot()
     cfg.sourceChannels = snap.sourceChannels;
     cfg.configSeq = snap.configSeq;
     cfg.broadcastValid = snap.broadcastValid; // §4.3 数据源:ctrl 广播区实况
+    // cfg.channelId(嵌套在 scvb.config 里,给 buildConfigPayload() 索引广播数组用)必须仍是
+    // 实际持有——见 InputBridgeLogic.cpp buildConfigPayload() 头注,别为了"统一"改成配置值。
     cfg.channelId = snap.channelId;
     cfg.broadcast = snap.broadcast;
 
-    return bridge::buildInputSnapshot(snap.channelId, snap.groupId, conn, cfg, uiScale(), lang(),
-                                      processor_.bridgeUiGuideSeen(), scvb::uidefaults::guideSeenGlobalInput(),
-                                      pluginVersion_, snap.localAbi);
+    // [合并前独立复核 🚩] 顶层 channel_id(WebView 首帧/reload 时发的完整快照,与 emitTick() 里
+    // scvb.state 的 channel_id 是同一件事、同一个消费者类别)此前也用 snap.channelId(实际
+    // 持有)。releaseResources() 之后 boundChannel()==0 但配置(channelId_/savedChannelId_)
+    // 原样留着——若这里不跟着改,会出现"首帧快照报未分配,下一次 emitTick() 的增量事件又报回
+    // 配置号"的自相矛盾;界面短暂显示未分配、卡片状态闪烁。
+    // ⚠ 不能无条件改成 configuredChannelId——kConflict(首次绑定、点了一个被占通道,没有旧
+    // 通道可回滚)这一态下 configuredChannelId 停在被拒的请求号、channelId(=boundChannel())
+    // 如实是 0,无条件用配置值会把被拒的通道显示成"已选中",重新打开 SL-19/SL-446 本身要堵
+    // 的洞。displayChannelId() 按 claimState 分流,见 InputBridgeLogic.h 声明处头注(含
+    // CHANGELOG.md 里那句已发版承诺的出处)。
+    return bridge::buildInputSnapshot(
+        bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId), snap.groupId, conn, cfg,
+        uiScale(), lang(), processor_.bridgeUiGuideSeen(), scvb::uidefaults::guideSeenGlobalInput(), pluginVersion_,
+        snap.localAbi);
 }
 
 void InputEditor::emitTick()
@@ -118,14 +133,28 @@ void InputEditor::emitTick()
     const juce::String claim = bridge::claimValue(snap.claimState, snap.conn.maskBit, srMis);
 
     // scvb.state:变化即发(首帧必发;§4.1)。
+    // [合并前独立复核 🚩 用户可见回归,base 没有] channel_id 此前用 snap.channelId(实际持有=
+    // session_.boundChannel())。releaseResources()(换音频设备/改缓冲区/冻结或禁用轨道都会
+    // 触发)会把 boundChannel() 清成 0,但配置(channelId_/savedChannelId_)原样留着——界面
+    // 因此会在这些常见操作之后误报"未分配":卡片 aria-pressed 掉、首启空态引导重新弹出、
+    // 优先级滑杆被禁,而工程实际配置根本没变。
+    // ⚠ 不能无条件改成 configuredChannelId(与上面 buildSnapshot() 同一个坑)——kConflict
+    // (首次绑定、点了一个被占通道)这一态下 configuredChannelId 停在被拒的请求号、channelId
+    // (=boundChannel())如实是 0,无条件用配置值会把被拒的通道显示成"已选中",重新打开
+    // SL-19/SL-446 本身要堵的洞。displayChannelId() 按 claimState 分流,kConflict 单独走
+    // channelId,别的态走 configuredChannelId——见 InputBridgeLogic.h 声明处头注(含
+    // CHANGELOG.md 里那句已发版承诺的出处)。
+    // ⚠ 别碰下面 scvb.config 的 cfg.channelId——那处索引广播数组仍必须用实际持有,理由见
+    // InputBridgeLogic.cpp buildConfigPayload() 头注。
     juce::Optional<scvb::u32> abiRemote;
     if (claim == "abiMismatch" && snap.remoteAbi != 0)
     {
         abiRemote = snap.remoteAbi; // 探测不到 → 字段不存在(§4.1 字段纪律)
     }
     emitIfChanged(bridge::kEvState,
-                  bridge::buildStatePayload(snap.channelId, snap.groupId, claim, snap.localAbi, abiRemote, uiScale(),
-                                            lang(), processor_.bridgeUiGuideSeen()),
+                  bridge::buildStatePayload(
+                      bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId), snap.groupId,
+                      claim, snap.localAbi, abiRemote, uiScale(), lang(), processor_.bridgeUiGuideSeen()),
                   lastStateJson_);
 
     // scvb.conn:~4Hz diff-then-emit(§4.2;滞回窗口 = 不健康且目标仍为静音,J32)。
@@ -167,16 +196,22 @@ void InputEditor::emitTick()
     // (inputSr/outputSr 陈旧)都须刷新(PR#54 R6)。
     // 基线仅在边沿已消费(emitClaimError 返回 true)后推进:编辑器隐藏时 error 事件被丢弃,基线
     // 保持旧值,恢复可见后下一 tick 因边沿仍成立而重发(PR#54 R5,与 advanceEmitCache 同口径)。
+    // [SL-446 第 2 轮补充] 边沿键与 payload 的 channel 分量都用 configuredChannelId(配置/请求
+    // 值),不是上面 scvb.state 用的那个 channelId(实际持有)——两者本 PR 之前恒等,现在会分叉
+    // (硬冲突时 channelId 是 0)。若这里错用 channelId:① payload 的 ch 会报成 0 而不是用户
+    // 真正请求的号;② 更隐蔽的是边沿键会退化成"同一冲突态下连续两次不同请求号"分辨不出来
+    // (键的五元组一模一样,第二次请求被判成"没变化"而漏发)。见 BridgeTickSnapshot 头注与
+    // test_input_bridge.cpp 里"连续两次请求不同冲突通道"那格判据。
     const int inputSr = juce::roundToInt(snap.sampleRate);
     const int outputSr = static_cast<int>(snap.globalInfo.output_sample_rate);
-    if (bridge::claimErrorEdgeChanged(claim, snap.channelId, snap.groupId, inputSr, outputSr, lastClaim_,
+    if (bridge::claimErrorEdgeChanged(claim, snap.configuredChannelId, snap.groupId, inputSr, outputSr, lastClaim_,
                                       lastErrorChannelId_, lastErrorGroupId_, lastErrorInputSr_, lastErrorOutputSr_))
     {
         const juce::String prev = lastClaim_;
-        if (emitClaimError(claim, prev, snap.channelId, snap.groupId, inputSr, outputSr))
+        if (emitClaimError(claim, prev, snap.configuredChannelId, snap.groupId, inputSr, outputSr))
         {
             lastClaim_ = claim;
-            lastErrorChannelId_ = snap.channelId;
+            lastErrorChannelId_ = snap.configuredChannelId;
             lastErrorGroupId_ = snap.groupId;
             lastErrorInputSr_ = inputSr;
             lastErrorOutputSr_ = outputSr;

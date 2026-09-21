@@ -23,6 +23,31 @@ juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch);
 // srMismatch 推导(§4.1):claim 态为 kActive ∧ Output 已报非零 SR ∧ ≠ 本机 SR。
 bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate);
 
+// [SL-446 合并前独立复核] scvb.state/首帧快照顶层 channel_id 该显示哪个源:配置/请求值
+// (configuredChannelId)还是实际持有(channelId,=boundChannel())——五态逐个给理由,别笼统
+// 归成"其余都一样"(那句话此前是假的,见下面 kUnassigned 那条的订正):
+//   kActive:两值本就相等(不变式:kActive ⟹ configuredChannelId==channelId,见 InputSession.h
+//     prepare() 头注),走哪个字段结果都一样,选它是因为它和 kUnassigned 共用同一个分支。
+//   kUnassigned:⚠ 两值**可能分叉**,不是"用哪个都一样"——releaseResources() 之后
+//     claimedChannel_(=channelId)清 0,但该函数全程不碰 channelId_,配置值原样留着;这一态
+//     必须用 configuredChannelId,否则宿主换音频设备/改缓冲区/冻结禁用轨道这类会短暂
+//     releaseResources() 的常见操作就会把选中态清空、重弹首启空态引导——**这正是这条分支
+//     存在的理由**,本次合并前独立复核抓到的用户可见回归就是这一态。
+//   kConflict/kAbiMismatch/kUnavailable:⚠ [轮 9 复审【重要】订正] 这三态统一走
+//     channelId(=0),**不是**只挑 kConflict——InputSession::openAndClaim() 的失败分支
+//     (src/core/input/InputSession.cpp:343-386)里,previousChannel==0(没有旧 channel
+//     可回滚)时这三个失败码走的是完全同一条代码路径:channelId_(配置)同样停在被拒的请求
+//     号,claimedChannel_(实际持有)同样是 0——kAbiMismatch/kUnavailable 与 kConflict 只是
+//     失败原因不同(注册表 abi 不符/段打不开 vs 通道被占),"配置了但什么都没绑定"这件事
+//     完全一样。上一版只摘 kConflict、把 kAbiMismatch/kUnavailable 归进"用哪个都一样"是
+//     假的,会把这两态下被拒的号显示成"已选中 + 已连接"——可达路径,不是理论场景。
+// ⚠ "kConflict/kAbiMismatch/kUnavailable 走 channelId"这条分支不是可选的复杂度,删掉/收窄
+// 它会在"首次绑定、点了一个被占通道(或段打不开/abi 不符)"这个场景重新打开 SL-19/SL-446
+// 本身要堵的洞:界面会把被拒的那个号显示成"已选中"。CHANGELOG.md 里 SL-446 那条已发版的
+// 文案("抢回也失败的极罕见情况下……才会如实显示未分配")说的正是 kConflict 这一态,
+// kAbiMismatch/kUnavailable 是同一条承诺在另外两个失败原因上的自然延伸,不是这里新加的判断。
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId);
+
 // --- remoteSetPriority 拒绝判定(§3.4/§5.6)-----------------------------------------
 // 判定顺序(全部不满足 = 投递):channel_id==0 → unassigned;Output 离线 → outputOffline;
 // 非活跃态(conflict/abiMismatch/unavailable,不持有 slot)→ unassigned(§5.2 未 claim 任何 slot;

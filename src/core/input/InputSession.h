@@ -86,6 +86,18 @@ public:
     // prepare(消息线程/生命周期回调,持 lifecycleMutex):依 channel_id/group_id 走 claim 或 I6。
     // channels=1|2([J57],由宿主布局判定)。返回 claim 态。
     // 已 active 且同 channel+group → 仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
+    // ⚠ [SL-19 复发] 换 channel 时若新槽 CAS 失败,会**补偿式回滚**:尝试把刚释放的旧槽抢回来,
+    // 让会话继续在旧 channel 上正常工作(`boundChannel()` 与 `state()` 都会显示"仍然活跃在旧
+    // channel",不是"未分配")——但**返回值仍报这次请求本身的失败原因**(调用方仍应据此提示
+    // 冲突)。回滚不是保证:它本身也是一次 CAS,竞态窗口内仍可能失败;失败时 `state_` 如实退化
+    // 成 `openAndClaim()` 报出的那个具体失败码(`kConflict`/`kAbiMismatch`/`kUnavailable`,不是
+    // 恒为 `kUnassigned`——只有真正"没有 channel 可配"才是这个码,复审 4057653400 指出这里
+    // 原先写错)。这条**只覆盖"纯换 channel、组不变"**——组同时也变时不补偿,按原样处理
+    // (改组走 `changeGroup()` 那条独立路径,行为由它自己的测试钉着,未受影响)。
+    // ⚠ [SL-446 第 2 轮补充] 回滚**不是无损还原**:重新抢回旧槽走的还是 `openAndClaim()`,
+    // `createSegments()` 里 `allowOverwrite=true` ⇒ `write_head_samples` 清零、`epoch.fetch_add(1)`
+    // ——下游(01 §4.1)据 epoch 变化判定"这是一份新数据、旧代数据作废",回滚成功那一刻会有一次
+    // 可观测的 epoch 跳变,不是"什么都没发生过"。复审 4057661696。
     InputClaimState prepare(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
 
     // [M] 4Hz 心跳(kActive 才写)。
