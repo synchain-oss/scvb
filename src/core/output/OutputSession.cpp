@@ -140,6 +140,7 @@ void OutputSession::attachAudioRings()
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
         if (sources_[idx].bound())
         {
+            refreshAudioGeometry(idx); // [SL-486] 已绑定 ≠ 快照还对,见函数注释
             continue;
         }
         if (audioHandles_[idx].valid())
@@ -170,6 +171,38 @@ void OutputSession::attachAudioRings()
         audioHandles_[idx] = SegmentHandle(std::move(av), &backend_);
         sources_[idx].bind(ah, adata);
     }
+}
+
+void OutputSession::refreshAudioGeometry(std::size_t idx)
+{
+    // [SL-486](SL-482 的 Output 侧镜像)读侧几何快照必须跟着段头几何走。
+    // Input 侧的 rebuildAudioGeometry / createSegments 会**原地改写**共享段头的
+    // sample_rate/channels(J57 允许的合法操作,用户在 DAW 里把一条轨 mono⇄stereo 就会发生),
+    // 而 attachAudioRings 从前对「已 bound」的 channel 一律跳过、全仓唯一 unbind 的
+    // releaseSegments 只在改组/release/析构时调 —— Output 插件自己不会随 Input 重新 prepare
+    // 跟着重绑。于是 ShmRingMixSource 的 stride 一直用 bind 那一刻的旧 channels 解码新几何的
+    // 数据:用户听到的是真实的音频撕裂(升/降八度的噪音),不只是 ST 角标显示错;要恢复得重载
+    // Output 插件。InputSlot 里没有 channels 字段,evaluateChannels 的 srMatch 天生够不到这一维。
+    //
+    // 重绑在 [M] 线程做是安全的:ShmRingMixSource::bind 是「不可变快照 + release-store」发布,
+    // 旧绑定由 owned_ 保活到进程结束,音频线程 read() 每块 acquire 一次、靠**绑定指针变化**
+    // 自己重置代际状态 —— 音频线程仍然只读快照、一次都不回读段头几何(几何纪律未被放宽)。
+    const AudioRingBinding* b = sources_[idx].acquire();
+    if (b == nullptr || !b->bound || b->header == nullptr || b->data == nullptr)
+    {
+        return;
+    }
+    // 段头几何是三个 plain u32(非原子)。这里是 [M] 线程按值比对,不是音频线程回读:
+    // 理论上能读到 Input 正写到一半的撕裂组合(新 sr + 旧 channels)。该窗无害且自愈 ——
+    // 段恒按 stereo 容量创建、ring_frames 恒为 kDefaultRingFrames,所以 channels 读成 2 也不
+    // 越界(mono 只用前半);下一拍 25Hz(≤40ms)再比一次就纠正。相比修前的「错到 Output
+    // 卸载为止」是严格收敛。
+    if (b->header->sample_rate == b->geo.sampleRate && b->header->channels == b->geo.channels &&
+        b->header->ring_frames == b->geo.ringFrames)
+    {
+        return; // 快照仍与段头一致:不重绑(重绑会往 owned_ 里再压一份,只在真变了时才做)
+    }
+    sources_[idx].bind(b->header, b->data);
 }
 
 void OutputSession::attachFeatRings()

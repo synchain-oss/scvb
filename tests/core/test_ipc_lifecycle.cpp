@@ -1328,3 +1328,137 @@ TEST_CASE("updateOwnedInputSlot 非属主调用为空操作", "[ipc][lifecycle]"
     REQUIRE(a.inputSlot(3)->sample_rate == 44100);
     REQUIRE(a.inputSlot(3)->max_block == 1024);
 }
+
+// ===========================================================================
+// [SL-481] Input 侧属主位 —— SL-210 在 Output 侧修掉的那个洞的另一半。
+// 四条用例逐条对应 SL-210 的 Output 四条,只把「同 pid 的第二个 Output」换成
+// 「同 DAW 里的兄弟 Input 实例」(pid 同样来自 GetCurrentProcessId,恒等)。
+// ===========================================================================
+
+// 对应 SL-210 的「非属主 release 是空操作」。删掉 releaseInput 的 `ownedChannel_ == channel`
+// 前置 → 本用例当场红(兄弟实例把属主的 slot 释放成 Free)。
+TEST_CASE("[SL-481] 非属主 releaseInput 是空操作:同 pid 兄弟不得释放属主的 slot", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242; // 同一个 DAW 进程:所有 Input 实例共享这一个 pid
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimInput(3, kHostPid, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+
+    // 兄弟 B:什么都没认领过。只比 pid 的话 `s.pid == pid` 恒真 → 会把 A 的 ch3 释放掉。
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    b.releaseInput(3, kHostPid);
+    CHECK(a.inputSlot(3)->state.load() == kSlotActive);
+    CHECK(a.inputSlot(3)->pid == kHostPid);
+
+    // 兄弟 C:持有**别的** channel。前置必须比到「同一个 channel」,不能只判「持有点什么」。
+    scvb::Registry c(backend, 1);
+    REQUIRE(c.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(c.claimInput(7, kHostPid, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    c.releaseInput(3, kHostPid);
+    CHECK(a.inputSlot(3)->state.load() == kSlotActive);
+    CHECK(c.inputSlot(7)->state.load() == kSlotActive); // C 自己的槽也没被误伤
+}
+
+// 对应 SL-210 的「release 后属主位失效」。删掉 releaseInput 里清属主位那两行 → 本用例当场红
+// (`a.ownedInputChannel() == 0` 与析构后 B 的 slot 仍活跃这两处都会红)。
+TEST_CASE("[SL-481] release 成功即清属主位:兄弟接管后 changeGroup/析构不得释放兄弟的 slot", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242;
+
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+
+    {
+        scvb::Registry a(backend, 1);
+        REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.claimInput(3, kHostPid, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.ownedInputChannel() == 3);
+
+        // 宿主对 A 调 releaseResources() → InputSession::releaseSlot() → releaseInput 直调
+        // (**不经** releaseOwnedSlot)。属主位必须就地失效。
+        a.releaseInput(3, kHostPid);
+        REQUIRE(a.inputSlot(3)->state.load() == kSlotFree);
+        CHECK(a.ownedInputChannel() == 0);
+        CHECK(a.ownedPid() == 0);
+
+        // 兄弟 B(同 DAW 的另一个 Input,可能是复制轨道)认领同一个空槽。
+        REQUIRE(b.claimInput(3, kHostPid, 48000, 512, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(b.inputSlot(3)->state.load() == kSlotActive);
+    } // 复发路径一:A 析构走 releaseOwnedSlot,拿着陈旧属主位去释放
+
+    CHECK(b.inputSlot(3)->state.load() == kSlotActive);
+    CHECK(b.inputSlot(3)->pid == kHostPid);
+
+    // 复发路径二:A 不析构而是改组 —— changeGroup 第一件事也是 releaseOwnedSlot。
+    // 单开一个 channel 走,免得两条路径挤在同一个槽上互相掩盖。
+    scvb::Registry a2(backend, 1);
+    REQUIRE(a2.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a2.claimInput(9, kHostPid, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    a2.releaseInput(9, kHostPid);
+    REQUIRE(a2.inputSlot(9)->state.load() == kSlotFree);
+    // 用一个新的 Registry 实例接管:一个 Registry 只记一个 ownedChannel_,拿 b 去认领 ch9
+    // 会把它自己的 ch3 属主位顶掉,那会把两条路径搅在一起。
+    scvb::Registry b2(backend, 1);
+    REQUIRE(b2.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(b2.claimInput(9, kHostPid, 48000, 512, kT0 + 200) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a2.changeGroup(2) == scvb::Registry::ClaimResult::kClaimed);
+    CHECK(b2.inputSlot(9)->state.load() == kSlotActive);
+    CHECK(b2.inputSlot(9)->pid == kHostPid);
+}
+
+// 反向:属主自己释放后槽仍空时,重新认领必须照常成功(清属主位不能把正当续期一起挡死)。
+TEST_CASE("[SL-481] 反向:releaseInput 后槽仍空,同实例重新认领照常成功", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    a.releaseInput(3, 1001);
+    REQUIRE(a.inputSlot(3)->state.load() == kSlotFree);
+
+    // 无人抢占 → 走 kSlotFree 分支重新认领。
+    REQUIRE(a.claimInput(3, 1001, 48000, 512, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+    CHECK(a.inputSlot(3)->state.load() == kSlotActive);
+    CHECK(a.ownedInputChannel() == 3);
+    CHECK(a.inputSlot(3)->pid == 1001);
+}
+
+// [SL-481 回扫] 同一族的第三处:updateOwnedInputSlot 名字里写着 Owned,判据却只比 pid。
+// 上面那条老用例只试了**异 pid**,而真实 DAW 里兄弟实例 pid 恒等 —— 正是这个盲点。
+// 可达路径:A 持 ch3 → A 被兄弟 B 接管(A 的 InputSession 里 claimedChannel_/state_ 都还停在
+// active)→ 宿主再对 A 调 prepareToPlay,「已 active 且同 channel」快路径就会走到这里。
+// 删掉 updateOwnedInputSlot 的 `ownedChannel_ == channel` 前置 → 本用例当场红。
+TEST_CASE("[SL-481] updateOwnedInputSlot:同 pid 兄弟调用也是空操作", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimInput(3, kHostPid, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+
+    // 兄弟 B 持有别的 channel,拿着自己的几何去刷 A 的槽。
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(b.claimInput(7, kHostPid, 44100, 1024, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    b.updateOwnedInputSlot(3, kHostPid, 44100, 1024);
+    CHECK(a.inputSlot(3)->sample_rate == 48000);
+    CHECK(a.inputSlot(3)->max_block == 512);
+
+    // 反向:真属主 A 自己刷新照常生效(前置不能把正当路径挡死)。
+    a.updateOwnedInputSlot(3, kHostPid, 96000, 256);
+    CHECK(a.inputSlot(3)->sample_rate == 96000);
+    CHECK(a.inputSlot(3)->max_block == 256);
+}
