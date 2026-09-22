@@ -4407,6 +4407,62 @@ TEST_CASE("HOST J87②b:布防期未选轨的积压不得在撤防后被补拉",
 // 本用例必须在 harness 里做:两个 processor 真实同进程,pid 天然相同,in-process 单测
 // 里要手工传同一个 pid 才复现得出来(tests/core/test_output_session.cpp 的同名用例)。
 // ---------------------------------------------------------------------------
+// [SL-481] Input 侧的同一个洞:兄弟实例接手同一通道后,原实例析构把它的 slot 释放掉。
+//
+// 与 SL-210 一样,这条必须在 harness 里做 —— 两个 Input processor 真实同进程,pid 天然
+// 相同(GetCurrentProcessId),而 `releaseInput` 从前只比 pid,于是 `s.pid == pid` 对任何
+// 兄弟实例都恒真;in-process 单测里要手工传同一个 pid 才复现得出来
+// (tests/core/test_ipc_lifecycle.cpp 的 [SL-481] 四条)。
+//
+// 真机症状:一条 Input 轨被删掉(或改组)之后,同一个工程里另一条 Input 轨突然从 Output
+// 总线上消失,而它自己的界面仍显示「已连接」—— 因为它的 InputSession 状态没变,
+// 只是共享内存里的 slot 被别人释放成了 Free。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-481:兄弟 Input 接手同一通道后,原实例析构不得释放它的 slot", "[host][v56][SL481]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager(25Hz Timer 要它)
+
+    scvb::SegmentBackendWin32 backend;
+    scvb::Registry probe(backend, kTestGroup);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.inputSlot(kTestChannel) != nullptr);
+
+    auto second = std::make_unique<ScvbInputAudioProcessor>();
+    {
+        auto first = std::make_unique<ScvbInputAudioProcessor>();
+        first->setGroupId(kTestGroup);
+        first->setChannelId(kTestChannel);
+        // [SL-324] 读回断言(Input 侧没有 groupId() getter,经桥快照读回)。
+        REQUIRE(first->bridgeTickSnapshot().groupId == kTestGroup);
+        first->prepareToPlay(kSr, kBlock);
+        Rig::pumpMessages(300);
+        REQUIRE(probe.inputSlot(kTestChannel)->state.load() == scvb::kSlotActive);
+
+        // 宿主停用第一条轨(旁通 / 删除前的那一步):InputSession::release() 是 releaseInput
+        // 直调,**绕开**唯一会清属主位的 releaseOwnedSlot()。
+        first->releaseResources();
+        Rig::pumpMessages(100);
+        REQUIRE(probe.inputSlot(kTestChannel)->state.load() == scvb::kSlotFree);
+
+        // 同一个 DAW 里的另一条轨用同一个通道号接手这个空槽。
+        second->setGroupId(kTestGroup);
+        second->setChannelId(kTestChannel);
+        REQUIRE(second->bridgeTickSnapshot().groupId == kTestGroup); // [SL-324] 读回断言
+        second->prepareToPlay(kSr, kBlock);
+        Rig::pumpMessages(300);
+        REQUIRE(probe.inputSlot(kTestChannel)->state.load() == scvb::kSlotActive);
+    } // first 析构 → ~InputSession → ~Registry → releaseOwnedSlot:陈旧属主位在这里发作
+
+    Rig::pumpMessages(200);
+    // 兄弟的 slot 必须原样活着。删掉 releaseInput 里清属主位那两行 → 这里当场红
+    // (槽被 first 的析构释放成 kSlotFree,而 second 的 25Hz Timer 不做 claim 重试,
+    //  所以它不会自己好起来 —— 与真机「重开工程前无法恢复」对上)。
+    CHECK(probe.inputSlot(kTestChannel)->state.load() == scvb::kSlotActive);
+
+    second->releaseResources();
+    Rig::pumpMessages(50);
+}
+
 TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例", "[host][v56][SL210]")
 {
     Rig r; // r.out = 第一个 Output(主实例)

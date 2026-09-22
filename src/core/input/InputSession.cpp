@@ -431,6 +431,30 @@ bool InputSession::createSegments(u32 sampleRate, u32 channels)
     }
     float* adata = reinterpret_cast<float*>(ah + 1);
     audioHandle_ = SegmentHandle(std::move(av), &backend_);
+
+    // [SL-482] attach 到**存活的旧段**时上面那个 initData 一次都不跑,几何会停在上一实例的值。
+    // 段不消亡是常态:Output 常驻持着 audioHandles_[idx],所以只要 Output 没卸载,audio.chN
+    // 这个 section 就一直在。此时 createOrOpen 返回 created=false、magic 已有效,initHeader
+    // 走「attach 且 magic 就绪」分支直接 kOk —— 几何一个字节都没写。而下游校验够不到这一维:
+    // InputSession 只看 audioRing_.bound()(channels∈{1,2} 恒过),openAndClaim 随后把
+    // lastChannels_ 置成**本次请求**的真实值,于是此后任何 re-prepare 的快路径都判「布局没变」、
+    // 再也不会触发 rebuildAudioGeometry —— 错到 Output 卸载为止。
+    // 用户侧表现:mono 轨上的 Input 换成 stereo 轨上的 Input 且用同一通道号 ⇒ write() 按
+    // stride=1 把 LR 交错流当连续帧写,Output 按 mono 读 ⇒ 总线上是半速交替 L/R 的撕裂噪音。
+    // 修法:按值比对段头几何,与本次请求不一致就走 rebuildAudioGeometry 的同一条路
+    // (写定几何 → write_head 归零 → epoch+1 → 再发布绑定快照)。
+    // 按值比对而不是按 created 判分支,是因为 allowOverwrite=true 的 attach 还有第三条出路
+    // (自旋 500ms 仍 magic==0 → 覆盖式重初始化,initData 会跑);按值比对对三条出路都成立,
+    // 且 initData 真跑过时它恒为 no-op。
+    if (ah->sample_rate != sampleRate || ah->channels != channels || ah->ring_frames != kDefaultRingFrames)
+    {
+        ah->sample_rate = sampleRate;
+        ah->ring_frames = kDefaultRingFrames;
+        ah->channels = channels;
+        ah->write_head_samples.store(0, std::memory_order_release);
+        ah->epoch.fetch_add(1, std::memory_order_release); // 换代:读方丢弃旧代数据(01 §4.1)
+    }
+
     audioRing_.bind(ah, adata);
 
     // feat.chN。失败须释放已建的 audio 段(PR#51 泄漏修复)。

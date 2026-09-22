@@ -170,8 +170,11 @@ public:
     ClaimResult claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
     // v10:仅刷新【本实例自己持有】的 slot 字段(采样率切换重认领),非属主调用为空操作。
     // 仅 re-prepare 且音频停摆时调用(采样率切换重认领路径);音频运行中不得调(改几何不重建环)。
+    // [SL-481 回扫]「非属主」按 ownedChannel_ 判,不是按 pid —— 同 DAW 的兄弟实例 pid 相同。
     void updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock);
     // 释放本实例占用的 Input channel(析构/改组路径,消息线程)。
+    // [SL-481] 前置是 ownedChannel_ == channel(不是只比 pid:同 DAW 的兄弟 Input 实例共享 pid),
+    // 且 CAS 成功后就地清 ownedChannel_/ownedPid_ —— 与 releaseOutput 的 ownsOutput_ 完全同构。
     void releaseInput(u32 channel, u32 pid);
 
     // Output 占用 OutputSlot(同语义,ADR-002 第二个 Output 只读观察 = 同组内语义)。

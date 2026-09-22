@@ -1588,3 +1588,108 @@ TEST_CASE("SL-254:非实时标志可运行期切回,实时闸随即恢复", "[ou
     out.tick(1340); // 仍 < 200ms,但已宣告非实时 → 当拍注入
     REQUIRE((out.injectMask() & (1u << 2)) != 0);
 }
+
+// ===========================================================================
+// [SL-482] / [SL-486] audio 段几何换手 —— 写侧改写 + 读侧刷新,两端配套。
+//
+// 场景是用户在 DAW 里真做得出来的一件事:mono 轨上的 Input 删掉,同一个通道号换成
+// stereo 轨上的 Input。段不会在这中间消亡(Output 常驻持着 audioHandles_[idx]),
+// 于是新 Input 的 initHeader 走「attach 且 magic 已就绪」那条路,initData 一次不跑。
+// 修前:段头 channels 停在 1,Input 的 write() 用 stride=1 把 LR 交错流当连续帧写,
+// Output 按 mono 读 —— 总线上是半速交替 L/R 的撕裂噪音,直到 Output 卸载。
+// ===========================================================================
+TEST_CASE("[SL-482][SL-486] 新 Input 接手存活段:写侧改写几何,读侧跟着刷新快照", "[output][session][ipc]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kCh = 3;
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+
+    scvb::u64 epochMono = 0;
+    {
+        // 第一个 Input:mono 轨。
+        InputSession in1(backend, 1001);
+        in1.setChannelId(kCh);
+        REQUIRE(in1.prepare(48000, 512, /*channels=*/1, 1000) == InputClaimState::kActive);
+        in1.heartbeat(1010);
+
+        out.tick(1040); // Output attach 到 mono 段
+        REQUIRE(out.mixSource(kCh).bound());
+        REQUIRE(out.mixSource(kCh).channels() == 1);
+        epochMono = out.epoch(kCh);
+    } // in1 析构:释放 slot 与段句柄 —— 但 Output 仍持着 audioHandles_,section 不消亡
+
+    // Output 这边**没有**解绑:releaseSegments 只在改组/release/析构时调。
+    REQUIRE(out.mixSource(kCh).bound());
+
+    // 第二个 Input:同一个通道号,stereo 轨。
+    InputSession in2(backend, 1002);
+    in2.setChannelId(kCh);
+    REQUIRE(in2.prepare(48000, 512, /*channels=*/2, 1100) == InputClaimState::kActive);
+    in2.heartbeat(1110);
+
+    // [SL-482] 写侧:段头几何必须被改写成 stereo,并换代(读方据此丢弃旧代数据)。
+    // 删掉 createSegments 里那段「按值比对 → 回写几何」→ 下面三条当场红。
+    const scvb::AudioRingBinding* wb = in2.audioRing().acquire();
+    REQUIRE(wb != nullptr);
+    REQUIRE(wb->bound);
+    CHECK(wb->header->channels == 2); // 段头真身
+    CHECK(in2.audioRing().geometry().channels == 2); // 写侧快照
+    CHECK(out.epoch(kCh) > epochMono); // epoch 升:旧代数据作废
+
+    // [SL-486] 读侧:Output 的几何快照必须在下一拍 [M] 跟上,否则一直用 stride=1 解码
+    // stereo 数据。删掉 refreshAudioGeometry 的重绑(或它在 attachAudioRings 里的调用)
+    // → 下面这条当场红,而上面 SL-482 那三条**仍绿** —— 这一格证明的是「写侧的修法没有把
+    // 读侧一起代偿掉」。⚠ 反方向不可分:删掉写侧的几何回写,读侧这两条也会跟着红,因为
+    // 段头几何压根没变、读侧就没有可刷新的东西。两条缺陷本来就是一前一后串在一条链上,
+    // 只有「读侧删掉、写侧仍绿」这半边分得开,别把这一格读成双向隔离。
+    out.tick(1140);
+    CHECK(out.mixSource(kCh).channels() == 2);
+    CHECK(out.mixSource(kCh).bound()); // 重绑没有把这一路绑废
+
+    // 反向:几何没变时不得白重绑 —— 再 tick 两拍,快照恒定(也顺带保证 owned_ 不会每拍长一个)。
+    out.tick(1180);
+    out.tick(1220);
+    CHECK(out.mixSource(kCh).channels() == 2);
+    CHECK(out.mixSource(kCh).sampleRate() == 48000);
+}
+
+// [SL-482] 反向:attach 到几何**相同**的存活段时不得凭空换代。
+// 这条钉住的是「按值比对」而不是「attach 就无条件回写」:后者每次重新 attach 都会 epoch+1,
+// 读方每次都要重新等写方追上(primed_ 归零、validFrom_ 前移)—— 平白多出一段静音。
+// 走法是「换走再换回」,因为只有这条路才会真正再进一次 createSegments(纯块长变化
+// 走 prepare 的快路径,连 createSegments 都不进)。
+TEST_CASE("[SL-482] 反向:attach 到几何相同的存活段不换代", "[output][session][ipc]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kCh = 5;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(kCh);
+    REQUIRE(in.prepare(48000, 512, /*channels=*/2, 1000) == InputClaimState::kActive);
+    const scvb::AudioRingBinding* b0 = in.audioRing().acquire();
+    REQUIRE(b0 != nullptr);
+    REQUIRE(b0->bound);
+    scvb::AudioRingHeader* const h = b0->header; // 段在 in-process 后端里按名字常驻,指针不变
+    const scvb::u64 e0 = h->epoch.load();
+    REQUIRE(h->channels == 2);
+
+    // 换到别的 channel,再换回来 —— 换回来那次 createSegments 是 attach 到存活的旧段。
+    in.setChannelId(6);
+    REQUIRE(in.prepare(48000, 512, /*channels=*/2, 1100) == InputClaimState::kActive);
+    in.setChannelId(kCh);
+    REQUIRE(in.prepare(48000, 512, /*channels=*/2, 1200) == InputClaimState::kActive);
+
+    const scvb::AudioRingBinding* b1 = in.audioRing().acquire();
+    REQUIRE(b1 != nullptr);
+    REQUIRE(b1->bound);
+    REQUIRE(b1->header == h); // 确实 attach 回了同一个段(不是新建了一个)
+    CHECK(h->epoch.load() == e0); // 几何没变 → 不换代
+    CHECK(h->channels == 2);
+    CHECK(h->sample_rate == 48000);
+}
