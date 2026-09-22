@@ -268,7 +268,14 @@ void Registry::updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 ma
         return;
     }
     InputSlot& s = *slot;
-    if (s.pid == pid && s.state.load(std::memory_order_acquire) == kSlotActive)
+    // [SL-481 回扫] 只比 pid 不够,与 releaseInput / heartbeatInput 同口径:同一个 DAW 里的
+    // 兄弟 Input 实例共享 pid(GetCurrentProcessId),非属主的那个会把属主的 sample_rate /
+    // max_block 改写成自己的。可达性:修完 SL-481 后没有找到生产上可达的路径 —— 同 pid 兄弟
+    // 的陈旧接管要求 pid 探活失败(claimInput 的接管双条件),而同一个活着的 DAW 进程里探活
+    // 必然成功。所以这道前置是纵深防御,不是在堵一个现存的可达洞。
+    // ownedChannel_ 是**每个 Registry 实例自己**的持有位,恰好把「本实例采样率重认领」
+    // 与「同进程另一个实例」分开 —— 正是本函数名里 Owned 二字要表达的那件事。
+    if (ownedChannel_ == channel && s.pid == pid && s.state.load(std::memory_order_acquire) == kSlotActive)
     {
         s.sample_rate = sampleRate;
         s.max_block = maxBlock;
@@ -285,10 +292,25 @@ void Registry::releaseInput(u32 channel, u32 pid)
     InputSlot& s = *slot;
     // 仅当本实例确属 owner 时才释放,防误清他人 slot。
     u32 expected = kSlotActive;
-    if (s.pid == pid &&
+    // [SL-481] `ownedChannel_ == channel` 这一条不能省(与 releaseOutput 的 ownsOutput_ 同构,
+    // SL-210 修 Output 侧时漏掉了 Input 侧这半)。同一个 DAW 里的兄弟 Input 实例**共享 pid**
+    // (pid 来自 GetCurrentProcessId),只比 pid 的话 `s.pid == pid` 对任何兄弟实例都恒真:
+    // B 接管 A 的 channel 之后,A 析构(或 changeGroup 先调 releaseOwnedSlot)就会把 B 正
+    // 持有的 slot 释放成 Free。而 B 的 state_ 仍是 kActive、acquireBlock 逐块不校验 slot
+    // state ⇒ B 照旧写环,同时第三个实例可以合法认领同一个 channel —— 同环双生产者,
+    // 破坏 SPSC 单写前提。用户侧表现:一个 Input 被删除或改组后,同一 DAW 里另一个 Input
+    // 的轨突然从 Output 总线消失,而它自己的界面仍显示已连接。
+    if (ownedChannel_ == channel && s.pid == pid &&
         s.state.compare_exchange_strong(expected, kSlotFree, std::memory_order_acq_rel, std::memory_order_acquire))
     {
-        // 释放成功。
+        // [SL-481] 释放成功 → **就地清属主位**(与 releaseOutput 同款第二刀)。不清的话缺陷会在
+        // 相邻时序里原样复发:InputSession::releaseSlot() 与 release() 都是 releaseInput 直调,
+        // 绕开了唯一会清位的 releaseOwnedSlot(),于是宿主对 A 调 releaseResources() 后 A 的
+        // ownedChannel_ 残留;兄弟 B 认领同一 channel 成 kActive;此后 A 析构走 releaseOwnedSlot
+        // 就会拿着陈旧的 ownedChannel_ 把 B 的 slot 释放掉。清位不影响「同实例释放后重新
+        // prepare」的正常认领 —— 槽仍空时走 claimInput 的 kSlotFree 分支重新拿。
+        ownedChannel_ = 0;
+        ownedPid_ = 0;
     }
 }
 

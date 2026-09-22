@@ -5,6 +5,10 @@
 // bind() 一次性几何快照(sample_rate / ring_frames / channels,Registry.h 几何纪律);
 // read() 只读快照,绝不回读段头几何字段(宿主编排 mono⇄stereo 重建环时的撕裂防护)。
 // read() 逐行实现:covered 判定 → 读中换代弃用 → 套圈弃用 → 失准计数(01 §5.2)。
+// [SL-486] 上面那句「一次性」是**对音频线程**说的:段头几何被 Input 侧原地改写后,[M] 线程会
+// 拿同一个 header/data 再 bind 一次(OutputSession::refreshAudioGeometry),发布一份新的不可变
+// 快照 —— 音频线程该读的仍然只有快照,只是快照本身会在 [M] 侧换新。这是安全的:旧绑定由
+// owned_ 保活到进程结束,read() 靠绑定**指针变化**自行重置代际状态,不存在半新半旧的中间态。
 //
 // 跨线程发布协议(T16 DspArbiter / T23 AudioRing 同款 Snapshot 模式):
 //   绑定是「不可变快照 + std::atomic<const AudioRingBinding*>」发布 —— 消息线程 bind()/unbind()

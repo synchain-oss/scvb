@@ -256,6 +256,9 @@ public:
 private:
     OutputClaimState openAndClaim(u64 nowMs);
     void attachAudioRings();
+    // [SL-486] 已绑定 channel 的几何快照对账:段头几何被 Input 侧原地改写过(mono⇄stereo /
+    // 采样率重配置)时在 [M] 线程用同一 header/data 重绑,否则读侧一直用旧 stride 解码。
+    void refreshAudioGeometry(std::size_t idx);
     void attachFeatRings(); // 只读 attach 本组 feat 段并绑 FeatPuller(与 attachAudioRings 同构)
     void pullFeatures(); // [M] 25Hz 增量拉取 → frameStore_(只拉在线轨)
     void releaseSegments();
