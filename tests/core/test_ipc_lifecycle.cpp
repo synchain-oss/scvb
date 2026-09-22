@@ -1435,8 +1435,8 @@ TEST_CASE("[SL-481] 反向:releaseInput 后槽仍空,同实例重新认领照常
 
 // [SL-481 回扫] 同一族的第三处:updateOwnedInputSlot 名字里写着 Owned,判据却只比 pid。
 // 上面那条老用例只试了**异 pid**,而真实 DAW 里兄弟实例 pid 恒等 —— 正是这个盲点。
-// 可达路径:A 持 ch3 → A 被兄弟 B 接管(A 的 InputSession 里 claimedChannel_/state_ 都还停在
-// active)→ 宿主再对 A 调 prepareToPlay,「已 active 且同 channel」快路径就会走到这里。
+// 可达性:修完 SL-481 后没有找到生产上可达的路径(同 pid 陈旧接管要求 pid 探活失败,活着的
+// DAW 进程里不成立),这道前置是纵深防御;见 Registry.cpp 里 updateOwnedInputSlot 的注释。
 // 删掉 updateOwnedInputSlot 的 `ownedChannel_ == channel` 前置 → 本用例当场红。
 TEST_CASE("[SL-481] updateOwnedInputSlot:同 pid 兄弟调用也是空操作", "[ipc][lifecycle]")
 {

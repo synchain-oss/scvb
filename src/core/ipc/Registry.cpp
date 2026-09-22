@@ -270,9 +270,9 @@ void Registry::updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 ma
     InputSlot& s = *slot;
     // [SL-481 回扫] 只比 pid 不够,与 releaseInput / heartbeatInput 同口径:同一个 DAW 里的
     // 兄弟 Input 实例共享 pid(GetCurrentProcessId),非属主的那个会把属主的 sample_rate /
-    // max_block 改写成自己的。可达路径:A 持 ch3 → A 心跳陈旧被兄弟 B 接管(A 的
-    // claimedChannel_/state_ 都还停在 active)→ 宿主再对 A 调 prepareToPlay,
-    // InputSession 的「已 active 且同 channel」快路径就会带着 A 的几何走到这里。
+    // max_block 改写成自己的。可达性:修完 SL-481 后没有找到生产上可达的路径 —— 同 pid 兄弟
+    // 的陈旧接管要求 pid 探活失败(claimInput 的接管双条件),而同一个活着的 DAW 进程里探活
+    // 必然成功。所以这道前置是纵深防御,不是在堵一个现存的可达洞。
     // ownedChannel_ 是**每个 Registry 实例自己**的持有位,恰好把「本实例采样率重认领」
     // 与「同进程另一个实例」分开 —— 正是本函数名里 Owned 二字要表达的那件事。
     if (ownedChannel_ == channel && s.pid == pid && s.state.load(std::memory_order_acquire) == kSlotActive)
