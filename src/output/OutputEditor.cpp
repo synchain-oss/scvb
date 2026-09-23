@@ -75,6 +75,15 @@ juce::var observerResp()
     return o;
 }
 
+// [SL-478] §1.2/§1.3 的 `noTimeline` 拒绝态(§5.6 闭集里的那一值)。
+juce::var noTimelineResp()
+{
+    juce::var o = obj();
+    put(o, "ok", false);
+    put(o, "reason", "noTimeline");
+    return o;
+}
+
 // ---- 枚举 → 字符串 ----
 const char* rangeModeName(int mode)
 {
@@ -302,6 +311,9 @@ void OutputEditor::emitTick()
     // 所以「页面还没就绪 ⇒ emit 被 evaluateJavascript 丢掉」这一态到不了这里;剩下只有
     // **可见性**那一关,由 plan 的 `visibleNow` 管(载荷不可见即丢,且不推进闩锁)。
     emitNewerStateError();
+    // [SL-478] 横幅⑥ 的生产者。条件是 processor 定时器里去抖过的值(0.5s,与清注入 mask 同一判据),
+    // 所以这里逐拍调用不会让横幅随单块抖动翻转;边沿/撤销/不可见不记账由 plan 管。
+    emitNoTimelineError();
 }
 
 // ============================================================================
@@ -762,6 +774,19 @@ void OutputEditor::emitNewerStateError()
     newerStateShownAbi_ = plan.nextShownAbi;
 }
 
+// [SL-478] §2.9 `scvb.error` 的 `noTimeline` 一档(§5.1 琥珀横幅⑥)。
+// envelope:code + `detail:{}` + active,**不带 ch**(§5.1 表该行 `ch` 列为「—」,页级条件)。
+// 记账口径与 `emitNewerStateError` 同款(按 plan 已采到的可见性回填,理由见那一段)。
+void OutputEditor::emitNoTimelineError()
+{
+    const auto plan =
+        scvb::output::planConditionErrorEmit(processor_.hostTimelineMissing(), webView().isVisible(), noTimelineShown_);
+    if (!plan.send)
+        return;
+    emitError("noTimeline", 0, obj(), plan.active);
+    noTimelineShown_ = plan.nextShown;
+}
+
 // ============================================================================
 // 载荷构造
 // ============================================================================
@@ -1143,6 +1168,14 @@ void OutputEditor::handleSetCaptureEnabled(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
+    // [SL-478] §1.2 拒绝态:宿主持续不给时间线 ⇒ 不改 state。**开和关都拒**(契约原文「收到调用时
+    // 返回」不分方向;UI 侧此时两把开关都是 disabled,真走到这里的只有绕过 UI 的调用)。
+    // 判序:只读观察在前(observer 连配置都不许写,比「没有时间线」更根本),badArg 在后。
+    if (processor_.hostTimelineMissing())
+    {
+        c(noTimelineResp());
+        return;
+    }
     bool on = false;
     if (a.size() < 1 || !strictBool(a[0], on))
     {
@@ -1158,6 +1191,12 @@ void OutputEditor::handleSetOutputEnabled(const ArgList& a, Completion c)
     if (isReadOnly())
     {
         c(observerResp());
+        return;
+    }
+    // [SL-478] §1.3 拒绝态,判序与理由同 handleSetCaptureEnabled。
+    if (processor_.hostTimelineMissing())
+    {
+        c(noTimelineResp());
         return;
     }
     bool on = false;
@@ -2210,6 +2249,10 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
         reason = "noSelection";
     else if (isReadOnly())
         reason = "readOnly";
+    // [SL-478] §1.23 第四个 reason。排在最后,与 mock 的判序一致(`juce-bridge-mock.js` 的
+    // recaptureArm)。拒绝态照样走下面那条撤防路径。
+    else if (processor_.hostTimelineMissing())
+        reason = "noTimeline";
 
     if (reason != nullptr)
     {

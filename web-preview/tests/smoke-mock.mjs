@@ -265,6 +265,11 @@ await withSession("output", "fixture=second-output", async (b) => {
             "setAnalysisConfig",
             await b.setAnalysisConfig({ loudness_mode: "rms" }),
         ],
+        // [SL-478] §1.2/§1.3 的返回并集补上了 `{observer:true}`(SL-480),mock 两个 setter
+        // 同步加了只读闸 —— 这两行是 juce-bridge-mock.js 头注那份枚举新增两项的护栏。
+        // 传 `true`:拆掉只读闸时它会回 {ok:true}(不是 badArg),红得对得上因果。
+        ["setCaptureEnabled", await b.setCaptureEnabled(true)],
+        ["setOutputEnabled", await b.setOutputEnabled(true)],
         ["recaptureArm", await b.recaptureArm(1, 1, 5)],
     ];
     for (const [n, r] of rows) {

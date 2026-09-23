@@ -181,6 +181,11 @@ void ScvbOutputAudioProcessor::releaseResources()
     prepared_ = false;
     sampleRate_.store(
         0.0, std::memory_order_relaxed); // 复位:isPrepared()/sr 守卫在 release 后回到「未 prepare」(PR#55 第10轮缺陷1)
+    // [SL-478] 单块时间线标志只在 processBlock 里刷新。宿主先丢时间线、再停音频引擎的话,
+    // 它会冻在 0,hostTimelineMissing() 跟着冻在 true,而那时 §1.2/§1.3 连「关采集」都拒。
+    // 这里只复位这个 atomic,由定时器下一拍在消息线程上撤掉 timelineMissing_
+    // (releaseResources 不保证在消息线程,那个 bool 是 [M] 独占,不在这里直接写)。
+    timelineValid_.store(1, std::memory_order_relaxed);
 }
 
 void ScvbOutputAudioProcessor::rebindVersion()
@@ -889,7 +894,8 @@ void ScvbOutputAudioProcessor::timerCallback()
         if (++timelineInvalidTicks_ >= kTimelineInvalidTicks)
         {
             session_.forceClearMask();
-            timelineInvalidTicks_ = kTimelineInvalidTicks; // 钳住,避免重复清
+            timelineInvalidTicks_ = kTimelineInvalidTicks; // 钳住计数(只防溢出;条件持续期间上面的清 mask 每拍照调)
+            timelineMissing_ = true; // [SL-478] 上桥:scvb.error{noTimeline} + 两把开关/布防的拒绝分支
             // [J51] 诊断:上报连续无时间线期间累计的无效块数(timelineInvalidBlocks_ 接线落点)。
             DBG("SCVB Output: timeline invalid ≥0.5s, clearing inject mask ("
                 << timelineInvalidBlocks_.load(std::memory_order_relaxed) << " invalid blocks)");
@@ -898,6 +904,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     else
     {
         timelineInvalidTicks_ = 0;
+        timelineMissing_ = false; // [SL-478] 恢复即清(与清 mask 那一侧同款,不去抖)
     }
 
     // 打印器模式(03 §2.2 三态)。此前这里写死 Armed —— 当时的行注「T24 无分析曲线,

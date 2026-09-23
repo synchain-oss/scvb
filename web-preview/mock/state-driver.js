@@ -120,7 +120,7 @@ export const SCENARIO_MAP = Object.freeze({
     // 但 SCENARIO_MAP 从没接过线 —— 与 SL-177 之前的 `stale` 同一种「有名无实」。
     // 落在健康满配世界上(**要有段表**),横幅 ⑥ 与 ⑨ 的取舍才有得测:
     // ⑥ 说真因(没有时间线),⑨ 必须让位 —— 否则它会把停摆归因到采集开关上,
-    // 而那把开关此时恰恰是 disabled(写控件闸 = `readOnly || noTimeline`),用户照做也做不到。
+    // 而那把开关此时恰恰是 disabled(开关闸 `isSwitchBlocked()` = `readOnly || noTimeline`),用户照做也做不到。
     "no-timeline": "fifteen-tracks",
     // [SL-276 复审] 工程存的响度口径**不是**出厂默认(用户用过 rms 并按 rms 分析过)。
     // 这一档专治一个测试盲区:六个 fixture 的 analysis.loudness_mode 全是默认档

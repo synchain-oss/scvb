@@ -42,9 +42,10 @@
 //   锁定的段会在下一次重分析里凭空消失,而契约的 locked 保护恰恰要靠这条建模在 UI 侧预演。
 //
 // 场景化拒绝(fixture 定义见 state-driver.js,`caps` 由 world 传入):
-//   • `second-output`:`caps.readOnly=true` → **五个**写函数一律回 `{observer:true}` 且不改
+//   • `second-output`:`caps.readOnly=true` → **七个**写函数一律回 `{observer:true}` 且不改
 //     state —— setChannelConfig(§1.15)/ setTrackManual(§1.16)/ **setAnalysisConfig(§1.21)** /
-//     editSegment(§2.8)/ clearCoverage(§1.24);`recaptureArm` 回 `reason:"readOnly"`(§1.23)。
+//     editSegment(§2.8)/ clearCoverage(§1.24)/ **setCaptureEnabled(§1.2)/
+//     setOutputEnabled(§1.3)**([SL-478] 起,与真桥同款);`recaptureArm` 回 `reason:"readOnly"`(§1.23)。
 //     **`setGroupId` 不在这一族里**([SL-381]):契约 §5.6 把 `{observer:true}` 的两种出处
 //     并列写,它那一种的判据在**目标组**(§1.4 返回行:「新组 OutputSlot 已被占」),
 //     不是「本实例当下是不是观察者」。所以它**先落地** `group_id`,再按
@@ -55,7 +56,7 @@
 //     这份枚举的出处:照它把 `if (readOnly()) return OBSERVER();` 加回 `setGroupId`,
 //     SL-381 用户报的「界面全锁死、无法切成别的组」原样复发;照它少读一个,则会得出
 //     「`setAnalysisConfig` 本来就不该有 readOnly 闸」—— 同一形状的错读,换个落点。
-//     现在 `smoke-mock.mjs` 的 second-output 那族逐个断言这五个,枚举第一次有判据看着它。
+//     现在 `smoke-mock.mjs` 的 second-output 那族逐个断言这七个,枚举第一次有判据看着它。
 //   • `channel-conflict`:Input `setChannelId(n)` 命中 `caps.occupiedMask` 的位 →
 //     `{conflict:true}` + 推 `scvb.error{code:"channelConflict"}`。
 //   • `stereo-mixed&loop=none`:`caps.loopAvailable=false` → `setRange("daw_loop", …)`
@@ -996,7 +997,7 @@ function buildOutputBackend(ctx) {
         return model.caps.readOnly === true;
     }
 
-    /** 宿主未提供时间线(§5.1 `noTimeline`):采集/输出开关的唯一拒绝分支。 */
+    /** 宿主未提供时间线(§5.1 `noTimeline`):采集/输出开关在 observer 之外的拒绝分支。 */
     function noTimeline() {
         return model.caps.noTimeline === true;
     }
@@ -1159,6 +1160,8 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.2 -------------------------------------------------------------
         setCaptureEnabled(on) {
+            // [SL-478] 判序与真桥逐条同款:observer → noTimeline(§1.2 拒绝态行)。
+            if (readOnly()) return OBSERVER();
             if (noTimeline()) return { ok: false, reason: "noTimeline" };
             // [J87] 用户**显式**拧过这把闸 = 他接管了,撤防时不再替他动(与真桥
             // `ScvbOutputAudioProcessor::setCaptureEnabled` 同款)。
@@ -1179,6 +1182,7 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.3 -------------------------------------------------------------
         setOutputEnabled(on) {
+            if (readOnly()) return OBSERVER(); // [SL-478] 同 setCaptureEnabled
             if (noTimeline()) return { ok: false, reason: "noTimeline" };
             // [J92a] 反方向互斥:手动开跟随引擎 ⇒ 关采集,并视为用户**接管**采集闸
             // (清 recaptureAutoEnabledCapture,与真桥 §1.3 副作用逐条对应)。
@@ -1972,7 +1976,7 @@ function buildOutputBackend(ctx) {
             // 判序与真桥对齐:`handleRecaptureArm` 是 noTracks → noSelection → readOnly。
             // §1.23 没规定优先级,两边随便排都不违约 —— 但既然这轮在收「同款」,顺手对齐,
             // 免得将来某个用例同时满足两条时两侧报出不同的 reason(评审建议④)。
-            // noTimeline 是 mock 独有的能力位,排在最后。
+            // noTimeline 排在最后([SL-478] 起真桥 `handleRecaptureArm` 也有这一支,同序)。
             if (mask === 0) return reject("noTracks");
             if (!(s < e)) return reject("noSelection");
             if (readOnly()) return reject("readOnly");
