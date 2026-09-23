@@ -600,7 +600,7 @@ export function outputPhase(state, playhead) {
  * disabled + tooltip『打印中不可切组』」,契约 §1.4 `setGroupId` 的「拒绝态」一行写
  * 「PRINT 态由 UI 侧整组 disabled…C++ 侧不新增 `rejected` 码」。
  *
- * 所以本函数**刻意不并进 `isWriteBlocked()`**(那是 `readOnly || noTimeline`)。改组在
+ * 所以本函数**刻意不并进 `isWriteBlocked()`(只读)/ `isSwitchBlocked()`(只读或无时间线)**。改组在
  * 这两态下必须照走 —— 它是这两态**唯一的出口**:
  *   · 只读观察(§5.1 `secondOutput`):契约 §5.6 把 `{observer:true}` 的两种出处**分开**写,
  *     「Output `setGroupId`(新组已有主 Output)」与「只读观察态下的一切写函数」并列 ——
@@ -1097,14 +1097,14 @@ export function createTabMaster(opts) {
     // ---- ① 三件套 --------------------------------------------------------
     function wireFlow() {
         onActivate(el.capSwitch, () => {
-            if (isWriteBlocked()) return;
+            if (isSwitchBlocked()) return;
             const s = getStore().state;
             const on = !!(s.global && s.global.capture_enabled);
             call("setCaptureEnabled", !on);
         });
 
         onActivate(el.outSwitch, () => {
-            if (isWriteBlocked()) return;
+            if (isSwitchBlocked()) return;
             const s = getStore().state;
             const on = !!(s.global && s.global.output_enabled);
             if (on) {
@@ -1184,13 +1184,28 @@ export function createTabMaster(opts) {
     }
 
     /**
-     * 只读观察态(契约 §5.1 `secondOutput`)与无时间线(§5.1 `noTimeline`)下全写控件失效。
+     * 只读观察态(契约 §5.1 `secondOutput`)下全写控件失效。
+     *
+     * **[SL-478] 无时间线(§5.1 `noTimeline`)不在这道闸里**,它只挡采集/输出两把开关,
+     * 见下面的 `isSwitchBlocked()`。§5.1 该行的 UI 落点逐字是「采集/输出开关 disabled」,
+     * 契约 §1.6-§1.14 的参数/过渡/范围/分析也都没有 noTimeline 拒绝态,真桥照常受理。
+     * 这道闸此前写成 `readOnly || noTimeline`,因为 noTimeline 没有生产者、恒 false,
+     * 宽出来的那部分一直走不到;SL-478 把生产者接上后它才会生效,所以一并收窄。
      *
      * **[SL-381] ⓪ GROUP 卡不在这道闸下面**,别再把它接回来:改组是这两态**唯一的出口**,
      * 锁掉它用户就无路可退(用户 v5.6.11 实测 B22 报的正是这个)。组卡的判据是
      * `groupSelectorDisabled(phase)`,依据与反例都写在那个函数的头注里。
      */
     function isWriteBlocked() {
+        return !!getStore().readOnly;
+    }
+
+    /**
+     * [SL-478] 采集/输出两把开关的闸:只读观察 **或** 无时间线(§1.2/§1.3 拒绝态;
+     * §5.1 `noTimeline` 行的 UI 落点)。真桥此时对这两个函数回
+     * `{observer:true}` / `{ok:false, reason:"noTimeline"}`。
+     */
+    function isSwitchBlocked() {
         const st = getStore();
         return !!(st.readOnly || st.noTimeline);
     }
@@ -1394,7 +1409,8 @@ export function createTabMaster(opts) {
      * 且 `hostEcho` 是「最近一批」的标志:PRINT 停止后若值不再变(§0.4 值未变不发),
      * 按 hostEcho 禁操作会让四张参数卡**永久灰死**。
      *
-     * 真正该挡的只有写权限缺失:只读观察(§5.1 `secondOutput`)与无时间线(§5.1 `noTimeline`)。
+     * 真正该挡的只有写权限缺失:只读观察(§5.1 `secondOutput`)。无时间线(§5.1 `noTimeline`)
+     * 不挡参数卡([SL-478],理由见 `isWriteBlocked()` 头注)。
      */
     function isParamBlocked() {
         return isWriteBlocked();
@@ -1793,8 +1809,9 @@ export function createTabMaster(opts) {
             "data-analyze-nodata",
             analyzeNoData(p, totals.n) ? "1" : "0",
         );
-        // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读/无时间线)时
-        // 不能亮「当前范围内无采集数据」——真实原因由横幅②/⑥承载,原因句只留给 nodata。
+        // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读)时
+        // 不能亮「当前范围内无采集数据」——真实原因由横幅②承载,原因句只留给 nodata。
+        // [SL-478] 无时间线不再让分析按钮 disabled(§1.6 没有 noTimeline 拒绝态)。
         el.flow.setAttribute(
             "data-analyze-reason",
             an === "disabled" && isWriteBlocked() ? "blocked" : "nodata",
@@ -1802,7 +1819,7 @@ export function createTabMaster(opts) {
 
         for (const sw of [el.capSwitch, el.outSwitch]) {
             if (sw)
-                sw.setAttribute("data-disabled", isWriteBlocked() ? "1" : "0");
+                sw.setAttribute("data-disabled", isSwitchBlocked() ? "1" : "0");
         }
 
         // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**,

@@ -353,7 +353,7 @@ inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projec
 // **正题**:契约 §5.1 的 `noTimeline`(琥珀横幅⑥ + 采集/输出开关 disabled)**没有生产者**。
 // 生产侧的判据一直在(`OutputProcessor::timerCallback` 里「连续无时间线 ≥0.5s → 清注入
 // mask」那一段),但结论只落一行 `DBG`,从不进桥;而 web 侧的消费者(`app.js` 的
-// `err.has("noTimeline")`、`tab-master.js` 写控件闸)早就就绪 ⇒ 恒 false。
+// `err.has("noTimeline")`、`tab-master.js` 的开关闸)早就就绪 ⇒ 恒 false。
 //
 // 形态与上面的 `planNewerStateEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),只少了
 // 「换了一份工程 abi 要重发」那一维 —— `noTimeline` 的 `detail` 是 `{}`,屏上没有要跟着

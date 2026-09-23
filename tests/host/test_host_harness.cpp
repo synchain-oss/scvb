@@ -10036,4 +10036,19 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
     }
     CHECK(rig.ph.timeSamples < 0); // 前提:这 1s 确实都在负 t0 上跑(没越过 0)
     CHECK_FALSE(rig.out.hostTimelineMissing());
+
+    // T5:丢时间线后宿主停掉音频引擎(releaseResources,此后不再有 processBlock)⇒ 不得冻在 true。
+    // 冻住的话 §1.2/§1.3 会一直拒绝,连「关采集」都做不到(#278 复审建议 1)。
+    rig.ph.haveTime = false;
+    bool raisedAgain = false;
+    for (int waited = 0; waited < 3000 && !raisedAgain; waited += 40)
+    {
+        rig.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        raisedAgain = rig.out.hostTimelineMissing();
+    }
+    REQUIRE(raisedAgain); // 前提:确实进了 missing 态,否则这一格是白测
+    rig.out.releaseResources();
+    Rig::pumpMessages(200); // 约 5 拍,只要一拍就够
+    CHECK_FALSE(rig.out.hostTimelineMissing());
+    rig.out.prepareToPlay(kSr, kBlock); // 还给 Rig 析构一个已 prepare 的实例
 }

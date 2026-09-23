@@ -254,7 +254,8 @@ public:
     // 判据与 §4.2 [J51]「连续无时间线 ≥0.5s → 清注入 mask」**同一条**(timerCallback 里
     // `timelineInvalidTicks_` 那段),不另起一套:单块 `timelineValid_` 每块都刷新,直接上桥会
     // 让横幅⑥ 与两把开关的拒绝态随宿主抖动逐块翻转。负 t0 是有效时间线([J51]),不算。
-    // 恢复是**即时**的(下一拍看到有效块就清),与清 mask 那一侧同款。
+    // 恢复是**即时**的(下一拍看到有效块就清),与清 mask 那一侧同款。releaseResources 会把单块标志
+    // 复位成有效,所以宿主停掉音频引擎后它也会在下一拍撤掉,不会冻在 true。
     // 消费者:`OutputEditor` 的 `scvb.error{noTimeline}` 生产者,与 §1.2/§1.3/§1.23 三处拒绝分支。
     bool hostTimelineMissing() const noexcept { return timelineMissing_; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。

@@ -14,7 +14,7 @@
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)—— **不动**。`noTimeline` 是纯桥面事件,
       不碰段名、布局、abi。
 - [ ] docs/STATE_SCHEMA.md(state schema)—— **不动**。`hostTimelineMissing` 是运行期态,不落盘。
-- [x] docs/SCVB_CONTRACT.md(桥面契约)—— 五处文字 + manifest 两行,见下「逐条改法」。
+- [x] docs/SCVB_CONTRACT.md(桥面契约)—— §1.2/§1.3/§1.23/§5.1 文字 + manifest 三行,见下「逐条改法」与「复审轮改动」第 2 条。
       函数名 / 参数 / 事件名 / 载荷字段**零变化**,`reason` 十一值闭集**零变化**。
 - [ ] tests/golden/(golden 快照)—— **不动**。
 
@@ -58,6 +58,27 @@
 那一支回 `{ok:false, reason:"badArg"}`,契约同样没登。只补 observer 会让「返回」行照旧不全,
 与 §5.6 末句「每个函数条目的『返回』行按 §0.8 第 5 条写明本函数实际可能出现的取值」仍不符。
 
+### 复审轮改动(#278 第 1 轮,两家 bot)
+
+1. **Tab1 写闸收窄(用户可见,本 PR 引入)**。`tab-master.js` 的 `isWriteBlocked()` 此前是
+   `readOnly || noTimeline`,挡着两把开关、参数卡、过渡、范围档与「分析」按钮。noTimeline
+   没有生产者时它恒 false,宽出来的部分走不到;本 PR 接上生产者后,宿主不给时间线时 Tab1 会
+   大面积灰死,而真桥对这些函数照常受理。两家 bot 同指此条。收窄依据:§5.1 该行 UI 落点逐字
+   只有「采集/输出开关 disabled」,05 §2.0 横幅⑥ 同文,mock 只在两把开关与 `recaptureArm` 上拒,
+   Tab2(`tab-tracks.js`)与 Tab3(`tab-wave.js`)的写闸本来就只认 `readOnly`。现在
+   `isWriteBlocked()` 只认只读,两把开关改走新的 `isSwitchBlocked()`(只读或无时间线)。
+   页级冒烟 `smoke-output-stale-page.mjs` 的 `no-timeline` 档加两条:输出开关被挡、分析按钮
+   不是 disabled。**契约文字零改动**(本来就是这么写的)。
+   ⚠ 另有一处未对齐,本 PR 不处理:04 §2.6 写的是无时间线时「只允许全曲跟随(follow)」,即
+   范围档也该受限,而契约 §1.8 与 §5.1 都没有这一条。已报统筹另行定夺。
+2. **§1.23 返回行与 manifest 补 `{ok:false, reason:"badArg"}`**(`autoStop` 给了却不是严格
+   布尔)。与 §1.2/§1.3 补 badArg 同一类。这一支在撤防之前就返回,不撤防、不改 state,契约里写明了。
+3. **`releaseResources` 复位单块时间线标志**。宿主先丢时间线、再停音频引擎的话,标志会冻在
+   「无时间线」,`hostTimelineMissing()` 跟着冻在 true,两把开关一直被拒。现在由定时器下一拍
+   在消息线程上撤掉。host 用例加 T5 一格。
+4. 顺手订正 `OutputProcessor.cpp` 里「钳住,避免重复清」那句注释:钳住只防计数溢出,条件
+   持续期间清 mask 每拍照调。
+
 ## 兼容性影响
 
 - **不改名、不改参数、不删任何东西、不收窄取值域** —— §0.1 规则 3 的禁止面一条都没碰:
@@ -81,6 +102,6 @@ handler 的文档补登,零行为改动。
 
 ## 关联
 
-- 卡:[SL-478](P2)、[SL-480](P3),`masterPlan/review/suggestion-ledger.md`。
-- 消费侧(本次未改):`web/output/app.js` 横幅⑥ 与 `vs.noTimeline`;`web/output/tab-master.js`
-  的写控件闸 `readOnly || noTimeline`。
+- 卡:SL-478(P2)、SL-480(P3),`masterPlan/review/suggestion-ledger.md`。
+- 消费侧:`web/output/app.js` 横幅⑥ 与 `vs.noTimeline` 本次未改;`web/output/tab-master.js`
+  的写闸本次收窄,见上「复审轮改动」第 1 条。

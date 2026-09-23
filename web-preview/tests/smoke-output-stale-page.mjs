@@ -432,10 +432,19 @@ const PROBE = IN(`
             return n ? n.textContent.trim() : null;
         })(),
         // 采集开关的写闸在 DOM 上是 data-disabled(它是 div 不是表单控件,没有 .disabled)。
-        // tab-master.js 的 isWriteBlocked() = readOnly || noTimeline,两处都写这一位。
+        // tab-master.js 的 isSwitchBlocked() = readOnly || noTimeline,两处都写这一位([SL-478] 前叫 isWriteBlocked)。
         captureSwitchBlocked: (() => {
             const sw = gb("master-capture-toggle-switch");
             return !!sw && sw.getAttribute("data-disabled") === "1";
+        })(),
+        // [SL-478] 另一把开关与「分析」按钮:前者该被挡,后者不该(§5.1 noTimeline 只挡两把开关)。
+        outputSwitchBlocked: (() => {
+            const sw = gb("master-output-toggle-switch");
+            return !!sw && sw.getAttribute("data-disabled") === "1";
+        })(),
+        analyzeState: (() => {
+            const f = gb("master-flow");
+            return f ? f.getAttribute("data-analyze") : "(缺节点)";
         })(),
         pausedPresent: !!paused,
         paused: vis(paused),
@@ -637,7 +646,7 @@ try {
     //
     // 来自 #158 复审(deepseek)。与只读态**不同类**:只读态下「比对暂停是因为采集开着」
     // 仍然为真(只是他关不了),而 noTimeline 下真因是**没有时间线** —— ⑨ 若还在,
-    // 就把停摆归因到采集开关上,而那把开关此时是 disabled(写控件闸 = readOnly || noTimeline),
+    // 就把停摆归因到采集开关上,而那把开关此时是 disabled(开关闸 = readOnly || noTimeline),
     // 用户既关不掉也没得播,照做 ⚠ 也不会回来。
     log("=== ④ scenario=no-timeline:⑨ 让位给 ⑥(否则给的是做不到的动作)===");
     {
@@ -656,6 +665,17 @@ try {
             "前置:采集开关此时确实被写闸挡住(data-disabled=1)—— ⑨ 的「先关掉采集」做不到",
         );
         check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
+        // [SL-478] §5.1 noTimeline 的 UI 落点是「采集/输出开关 disabled」,只有这两把。
+        // 真桥对分析/参数/过渡/范围都照常受理,Tab1 的写闸此前把它们一并灰掉
+        // (那时 noTimeline 恒 false,走不到);生产者接上后必须收窄,否则 Tab1 大面积灰死。
+        check(
+            p.outputSwitchBlocked,
+            "[SL-478] 输出开关同样被挡(data-disabled=1)",
+        );
+        check(
+            p.analyzeState !== "disabled" && p.analyzeState !== "(缺节点)",
+            `[SL-478] 分析按钮不因 noTimeline 变 disabled(§1.6 无此拒绝态),实得 ${p.analyzeState}`,
+        );
         assertClean("scenario=no-timeline");
     }
 
