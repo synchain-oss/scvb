@@ -890,6 +890,7 @@ void ScvbOutputAudioProcessor::timerCallback()
         {
             session_.forceClearMask();
             timelineInvalidTicks_ = kTimelineInvalidTicks; // 钳住,避免重复清
+            timelineMissing_ = true; // [SL-478] 上桥:scvb.error{noTimeline} + 两把开关/布防的拒绝分支
             // [J51] 诊断:上报连续无时间线期间累计的无效块数(timelineInvalidBlocks_ 接线落点)。
             DBG("SCVB Output: timeline invalid ≥0.5s, clearing inject mask ("
                 << timelineInvalidBlocks_.load(std::memory_order_relaxed) << " invalid blocks)");
@@ -898,6 +899,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     else
     {
         timelineInvalidTicks_ = 0;
+        timelineMissing_ = false; // [SL-478] 恢复即清(与清 mask 那一侧同款,不去抖)
     }
 
     // 打印器模式(03 §2.2 三态)。此前这里写死 Armed —— 当时的行注「T24 无分析曲线,

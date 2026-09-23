@@ -60,6 +60,9 @@ private:
     // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
     // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
     void emitNewerStateError();
+    // [SL-478] §2.9 的 `noTimeline` 一档(横幅⑥)。判定走 `BridgeArgs.h` 的 `planConditionErrorEmit`,
+    // 条件取 processor 的去抖值 `hostTimelineMissing()`。
+    void emitNoTimelineError();
 
     // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
     struct AnalyzeScope
@@ -189,6 +192,9 @@ private:
     // `wasSegVisible_` 两位上**(`firstFrame_` 与各路 `last*Json_` 基线同理)。
     bool newerStateShown_ = false;
     std::uint32_t newerStateShownAbi_ = 0;
+    // [SL-478] `scvb.error{noTimeline}` 的闩锁(消息线程独占)。与上面 `newerStateShown_` 吃同一条
+    // 前提(`bridgeReady_` 单向),复位纪律一并适用。
+    bool noTimelineShown_ = false;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)

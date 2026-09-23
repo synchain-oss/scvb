@@ -250,6 +250,13 @@ public:
     void bridgeSetTourSeen(bool seen);
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
+    // [SL-478] 宿主**持续**不给时间线(§5.1 `noTimeline`;04 §2.6)。[M] 读写,消息线程独占。
+    // 判据与 §4.2 [J51]「连续无时间线 ≥0.5s → 清注入 mask」**同一条**(timerCallback 里
+    // `timelineInvalidTicks_` 那段),不另起一套:单块 `timelineValid_` 每块都刷新,直接上桥会
+    // 让横幅⑥ 与两把开关的拒绝态随宿主抖动逐块翻转。负 t0 是有效时间线([J51]),不算。
+    // 恢复是**即时**的(下一拍看到有效块就清),与清 mask 那一侧同款。
+    // 消费者:`OutputEditor` 的 `scvb.error{noTimeline}` 生产者,与 §1.2/§1.3/§1.23 三处拒绝分支。
+    bool hostTimelineMissing() const noexcept { return timelineMissing_; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
     bool isPrepared() const { return sampleRate_.load(std::memory_order_relaxed) > 0.0; }
     // CRVS 修订号:setStateInformation 替换 crvsData_ 后 +1;editor 据此重发 scvb.segments(PR#55 第8轮缺陷1)。
@@ -703,6 +710,7 @@ private:
     std::uint64_t lastOwnerLockRefreshMs_ = 0;
     bool ownerLockRefreshPrimed_ = false;
     int timelineInvalidTicks_ = 0;
+    bool timelineMissing_ = false; // [SL-478] 见 hostTimelineMissing() 头注([M] 独占)
     // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;
     // 已退休、但线程可能还没跑完的作业([M] 独占)。

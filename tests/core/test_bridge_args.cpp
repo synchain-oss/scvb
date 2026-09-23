@@ -589,3 +589,58 @@ TEST_CASE("planNewerStateEmit:newerState 的边沿/撤销/去重/丢弃四态", 
         CHECK(vLocal.toString() == juce::String(static_cast<int>(scvb::state::kCurrentAbi)));
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-478] `scvb.error{noTimeline}` 的**发送面判定**(`planConditionErrorEmit`)。
+//
+// 缺陷:契约 §5.1 的 `noTimeline` 没有生产者 —— processor 的 0.5s 判据只落 `DBG`,
+// web 侧 `err.has("noTimeline")` 恒 false。落纯函数的理由同上面 SL-412 那一组
+// (`OutputEditor` 编不进任何 C++ 测试目标);「条件真的会被置起来/撤下」由
+// `HOST SL-478` 在真 processor + 无时间线 playhead 上断,调用点由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的 [SL-478] 行形态钉子锁住。
+// ---------------------------------------------------------------------------
+TEST_CASE("planConditionErrorEmit:noTimeline 的边沿/撤销/去重/丢弃", "[output][bridge][SL478]")
+{
+    using scvb::output::planConditionErrorEmit;
+
+    SECTION("C1 条件成立 + 屏上还没有 ⇒ 发 active:true 并记账")
+    {
+        const auto p = planConditionErrorEmit(/*condition=*/true, /*visibleNow=*/true, /*alreadyShown=*/false);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShown);
+    }
+
+    SECTION("C2 条件持续 ⇒ 不重复发(不是 25Hz 心跳)")
+    {
+        const auto p = planConditionErrorEmit(true, true, true);
+        CHECK_FALSE(p.send);
+        CHECK(p.nextShown);
+    }
+
+    SECTION("C3 条件解除且屏上挂着 ⇒ 发 active:false 撤横幅")
+    {
+        const auto p = planConditionErrorEmit(false, true, true);
+        CHECK(p.send);
+        CHECK_FALSE(p.active);
+        CHECK_FALSE(p.nextShown);
+    }
+
+    SECTION("C4 条件解除且屏上本来就没有 ⇒ 不发空撤销帧")
+    {
+        const auto p = planConditionErrorEmit(false, true, false);
+        CHECK_FALSE(p.send);
+        CHECK_FALSE(p.nextShown);
+    }
+
+    SECTION("C5 不可见 ⇒ 一律不发,且不推进记账")
+    {
+        const auto raise = planConditionErrorEmit(true, /*visibleNow=*/false, false);
+        CHECK_FALSE(raise.send);
+        CHECK_FALSE(raise.nextShown); // 没发就不许记账,否则恢复可见后横幅再也不出现
+
+        const auto retract = planConditionErrorEmit(false, false, true);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShown); // 撤销帧没发出去,不许当成已撤
+    }
+}
