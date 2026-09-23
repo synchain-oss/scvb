@@ -1788,7 +1788,7 @@ export function createTabMaster(opts) {
         if (p !== null) fill(el.coverage, t, "master.step2.coverage", { p });
 
         // 分析按钮四态(单一状态源 = data-analyze)。
-        // **disabled 只表示写权限缺失**(只读观察 / 无时间线)。用户裁定(v5 P2-9):
+        // **disabled 只表示写权限缺失**(只读观察;[SL-478] 起无时间线不算,见下方原因面那段)。用户裁定(v5 P2-9):
         // 「无采集数据」不再作为前置把键锁死 —— 覆盖率要靠 §2.7 captureProgress 播出来,
         // 于是「必须先把播放头开进已采集范围,分析键才亮」成了一道谁也猜不到的门。
         // 现在键恒可点,没数据时由影响预览行的空态原因句作答(analyze 本身也会以

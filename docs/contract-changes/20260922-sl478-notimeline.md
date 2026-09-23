@@ -79,6 +79,16 @@
 4. 顺手订正 `OutputProcessor.cpp` 里「钳住,避免重复清」那句注释:钳住只防计数溢出,条件
    持续期间清 mask 每拍照调。
 
+**已知、本 PR 不处理**(#278 第 2 轮 bot 建议,已报统筹):
+
+- mock 的 `recaptureArm` 不校验 `autoStop`,真桥回 `{ok:false, reason:"badArg"}` 的那一格
+  mock 回布防成功。今天 UI 恒传严格布尔,不可达;`check-bridge-parity.mjs` 不比 `returns` 串,
+  这条分叉没有机检。
+- `processBlockBypassed` 不刷新单块时间线标志,宿主 bypass 期间 `hostTimelineMissing()`
+  冻在进 bypass 前的值。与上面第 3 条同属「宿主不再调 `processBlock`」一族。
+- 「写入双后果」确认板的「撤销」钮直调 `setOutputEnabled(false)`,不过开关闸;被拒时板子
+  照样收起。只读态下同样如此,是既有形态,不是本 PR 引入。
+
 ## 兼容性影响
 
 - **不改名、不改参数、不删任何东西、不收窄取值域** —— §0.1 规则 3 的禁止面一条都没碰:
