@@ -2,6 +2,7 @@
 #include "state/StateCodec.h"
 
 #include <algorithm>
+#include <cmath> // [SL-483] std::isfinite(段 pan/volDb 拒载)
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -372,6 +373,18 @@ bool decodeCrvs(const std::uint8_t* data, std::size_t size, CrvsData& out)
                 s.pan = r.f32();
                 s.volDb = r.f32();
                 s.flags = r.u32();
+                // [SL-483] 段的 pan/volDb 与下面 pan_curve 的三个 float 同属**不可信字节**,
+                // 而它们一路原样进实时混音(CurveEvaluator → DspArbiter → MixMath),下游没有
+                // 任何一道能挡 NaN:clampPan 用大小比较判界,对 NaN 恒假、直接穿透;dbToLinear
+                // 是裸 pow。一个坏轨的 NaN 会经 15 轨共享累加器污染整条母线。整份 state 拒载,
+                // 与 pan_curve 的 isPanCurvePointUsable 同口径(不静默夹取)。
+                // 先判有限、再判值域(§1.16:pan -100..100 / volDb -24..12)—— 值域比较对 NaN
+                // 恒假,只写后一句 NaN 会原样放行。产品内的段写入口都已夹到这个域,合法工程
+                // 不会撞上这道闸。
+                if (!std::isfinite(s.pan) || !std::isfinite(s.volDb))
+                    return false;
+                if (s.pan < -100.0f || s.pan > 100.0f || s.volDb < -24.0f || s.volDb > 12.0f)
+                    return false;
                 t.segments.push_back(s);
             }
 

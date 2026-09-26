@@ -285,6 +285,13 @@ void OutputSession::pullFeatures()
         if ((refreshed & (1u << (ch - 1))) != 0)
         {
             fpWatch_.resetChannel(ch);
+            // [SL-485] 同一个口径的另一半:这条轨的特征正在按**当前**采样率改写,采集采样率跟着
+            // 记成当前值 —— 否则从工程里读进来的旧采集率会一直挂着,「采样率已变 ⇒ 过期」
+            // (04 §4.5 硬失效)在用户照提示重采集之后也撤不下来。
+            if (sampleRate_ > 0)
+            {
+                frameStore_.channel(ch).setSampleRate(static_cast<double>(sampleRate_));
+            }
         }
     }
 }

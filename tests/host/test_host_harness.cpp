@@ -4144,6 +4144,69 @@ TEST_CASE("HOST SL-217:冻结 gesture 中途取 state,CRVS 仍完整", "[host][t
     CHECK_FALSE(r.out.hasCrvsNotRestored());
 }
 
+// ---------------------------------------------------------------------------
+// [SL-483] 段 pan 为 NaN 的工程:setStateInformation 整份拒载 CRVS,段表与曲线原样。
+//
+// core 的 STATE-CRVS-4c 钉的是 decodeCrvs 的判据原子;这一格钉**接线**:坏字节从宿主
+// 回灌进真 processor 时走的是「CRVS 解不开」那一支(SL-217 的保留旧表 + 诊断位),
+// 而不是把 NaN 装进 crvsData_ 再一路进混音。构造坏 blob 用真 codec:先取一份合法
+// state,解出 CRVS、往当前版本 ch1 放一段、重编码;坏版本只把那一段的 pan 换成 NaN。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-483:段 pan 为 NaN 的 CRVS 整份拒载,段表与曲线原样", "[host][sl483]")
+{
+    Rig r;
+
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    scvb::state::StateChunks base;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), base).status ==
+            scvb::state::StateLoadStatus::Ok);
+
+    const auto blobWithPan = [&](float pan) {
+        auto chunks = base;
+        bool found = false;
+        for (auto& c : chunks.chunks)
+        {
+            if (c.fourcc != scvb::state::kFourccCrvs)
+            {
+                continue;
+            }
+            scvb::state::CrvsData d;
+            REQUIRE(scvb::state::decodeCrvs(c.payload.data(), c.payload.size(), d));
+            auto& segs = d.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments;
+            segs.clear();
+            segs.push_back(scvb::state::Segment{
+                0, 480000, pan, -6.0f,
+                scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false)});
+            c.payload.clear();
+            REQUIRE(scvb::state::encodeCrvs(d, c.payload));
+            found = true;
+        }
+        REQUIRE(found);
+        std::vector<std::uint8_t> blob;
+        REQUIRE(scvb::state::encodeContainer(chunks, blob));
+        return blob;
+    };
+
+    // 前提:合法的那份照常装上(否则下面「原样」比的是空表对空表)。
+    const auto good = blobWithPan(30.0f);
+    r.out.setStateInformation(good.data(), static_cast<int>(good.size()));
+    Rig::pumpMessages(100);
+    const auto before = segmentsOfTrack(r.out, 1);
+    REQUIRE(before.size() == 1u);
+    REQUIRE(before[0].pan == 30.0f);
+    REQUIRE_FALSE(r.out.hasCrvsNotRestored());
+
+    const auto bad = blobWithPan(std::numeric_limits<float>::quiet_NaN());
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+
+    // ★ 拒载:段表逐字段不变(pan 仍是 30,不是 NaN)、曲线在、诊断位亮。
+    CHECK(sameSegments(segmentsOfTrack(r.out, 1), before));
+    CHECK(activeCurveOf(r.out, 1) != nullptr);
+    CHECK(r.out.hasCrvsNotRestored());
+}
+
 // ===========================================================================
 // [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
 //
@@ -6261,6 +6324,60 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     CHECK(spy.ends == spy.begins);
     CHECK(spy.begins == beginsBeforeClose); // 关输出不该再开新的
 
+    r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-489] releaseResources 之后打印器不得再开 gesture;prepareToPlay 之后照常恢复。
+//
+// 宿主停用 / 冻结 Output 所在轨时只调 releaseResources,不再推 processBlock ⇒ 播放头快照
+// 冻在最后一次 playing 的那一帧,打印器的三道防护(非 Print / 非 playing / 无时间线)对它
+// 全不开火。修前 releaseResources 只 endAllGestures、不停打印 Timer,下一拍 tick 就把
+// gesture 重新打开(且再也没人闭合)。
+//
+// 进 Print 档不走「采集 + 分析」:setTrackManual 在当前版本写一条覆盖全时间线的常值段
+// (§1.16 手动接管通道),打印区间据此成立,Rig 单轨几百毫秒就进档。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToPlay 后恢复", "[host][sl489][print]")
+{
+    GestureSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(8);
+
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+    // 先关输出再挂监听器(理由同 SL-231 那格的 ①②:outputEnabled_ 初值就是 true,不先关的话
+    // gesture 早已开着,begin 幂等 ⇒ 下面的 begins 恒 0;关输出走 endAllGestures 给出干净起点)。
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.addListener(&spy);
+    r.out.setOutputEnabled(true);
+
+    // 前提:确实进了 Print 并开了 gesture —— 否则下面「release 后不再开」恒真。
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    REQUIRE(spy.begins > 0);
+    REQUIRE_FALSE(spy.open.empty());
+
+    // ★ 停用:只 release,不再推块(宿主停用轨的真实形态)。
+    r.out.releaseResources();
+    CHECK(spy.open.empty()); // endAllGestures 当场闭合
+    const int beginsAtRelease = spy.begins;
+    Rig::pumpMessages(400); // 10 拍打印 tick 的时长
+    CHECK(spy.begins == beginsAtRelease); // ← 修前:冻结快照仍判 Print,下一拍重开
+    CHECK(spy.open.empty());
+
+    // 恢复:prepareToPlay 重启打印 Timer,续推块后照常开 gesture(stopPrinting 不是单程票)。
+    r.out.prepareToPlay(kSr, kBlock);
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins > beginsAtRelease);
+
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
     r.out.removeListener(&spy);
 }
 
@@ -10051,4 +10168,393 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
     Rig::pumpMessages(200); // 约 5 拍,只要一拍就够
     CHECK_FALSE(rig.out.hostTimelineMissing());
     rig.out.prepareToPlay(kSr, kBlock); // 还给 Rig 析构一个已 prepare 的实例
+}
+
+// ===========================================================================
+// [SL-487] 宿主块长超过 prepare 预告的上限(离线 bounce 放大块长 / 播放中超发)。
+//
+// Output 按 preparedMaxBlock_ 分段把整块处理完。修前 `n = jmin(numSamples, preparedMaxBlock_)`
+// 后只处理前 n 个样本,buffer 是就地处理 ⇒ 尾段原样留着宿主传入的干信号。
+//
+// ⚠ 本格只钉 **Output 侧**。Input 侧写环按 `planBlock` 的 captureSamples 夹取(采集/写环只写
+// 前 preparedMaxBlock 个样本),超长块的尾段在环里是洞,Output 读不到 —— 那半不在本卡范围。
+// 所以这里让 Input 按正常块长分段写同一段时间线,只把超长块喂给 Output,隔离出 Output 的行为。
+//
+// 判据形态照 SL-210:干信号用 L=+0.9 / R=-0.9 反相记号(混音是同一条正弦的 L≈R,不可能凑出
+// 这一对),尾段只要有一个样本没被替换就会原样露出它;另断尾段真的带着混音(不是被清成 0)。
+// 三格各钉一个落点:processBlock 的分段、processBlockBypassed 的分段、超长块之后的时间线推进
+// (按整块长推,不按夹取后的 n 推 —— 否则每块都被误判成跳变,epoch 连跳)。
+// ===========================================================================
+TEST_CASE("HOST SL-487:宿主块长超过 prepare 预算,整块含尾段都被替换(processBlock / bypass / epoch)",
+          "[host][sl487]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(40, 0.5f); // 跑稳:注入在、busXfade 稳在替换态(80ms = 7.5 块)
+
+    constexpr int kBig = kBlock * 4 + 100; // 非整数倍:最后一段不满,边界算错也会露出来
+    juce::AudioBuffer<float> outBig{2, kBig};
+
+    const auto feedBig = [&](bool bypassed) {
+        const std::int64_t t0 = r.ph.timeSamples;
+        // Input 按正常块长把 [t0, t0+kBig) 写进环(见头注:Input 侧超长块不在本卡范围)。
+        for (int off = 0; off < kBig; off += kBlock)
+        {
+            const int len = std::min(kBlock, kBig - off);
+            juce::AudioBuffer<float> chunk{2, len};
+            Rig::fillSine(chunk, 0.5f, t0 + off);
+            r.ph.timeSamples = t0 + off;
+            r.in.processBlock(chunk, r.midi);
+        }
+        r.ph.timeSamples = t0;
+        for (int i = 0; i < kBig; ++i)
+        {
+            outBig.getWritePointer(0)[i] = 0.9f; // 干信号记号
+            outBig.getWritePointer(1)[i] = -0.9f;
+        }
+        if (bypassed)
+        {
+            r.out.processBlockBypassed(outBig, r.midi);
+        }
+        else
+        {
+            r.out.processBlock(outBig, r.midi);
+        }
+        r.ph.timeSamples = t0 + kBig;
+    };
+    const auto countDry = [&] {
+        int nd = 0;
+        for (int i = 0; i < kBig; ++i)
+        {
+            if (outBig.getReadPointer(0)[i] == 0.9f && outBig.getReadPointer(1)[i] == -0.9f)
+            {
+                ++nd;
+            }
+        }
+        return nd;
+    };
+    const auto tailPeak = [&] {
+        float p = 0.0f;
+        for (int i = kBlock; i < kBig; ++i)
+        {
+            p = std::max(p, std::fabs(outBig.getReadPointer(0)[i]));
+        }
+        return p;
+    };
+
+    // ① processBlock:没有一个样本留着干信号,且尾段是混音(修前 [512, kBig) 全是记号)。
+    feedBig(/*bypassed=*/false);
+    CHECK(countDry() == 0);
+    CHECK(tailPeak() > 0.05f);
+
+    // ② 时间线推进:紧接着的第二个超长块是连续的,epoch 不得跳。
+    const auto epochBefore = r.out.playheadSnapshot().epoch;
+    feedBig(/*bypassed=*/false);
+    CHECK(r.out.playheadSnapshot().epoch == epochBefore);
+    CHECK(countDry() == 0);
+
+    // ③ processBlockBypassed:§5.4 unity 求和同样要盖满整块(有注入、有数据 ⇒ 替换)。
+    feedBig(/*bypassed=*/true);
+    CHECK(countDry() == 0);
+    CHECK(tailPeak() > 0.05f);
+}
+
+// ===========================================================================
+// [SL-488] 面板关轨:那一轨按 80ms 淡出离开母线,而不是在块边界上硬切一刀。
+//
+// 修前:inject 快照同时决定「读不读环」和「fade 目标」,刚离开 inject 的轨当块就不再读环,
+// hasData 恒假,混音循环整轨跳过 —— 淡出平滑器在空转,没乘在任何样本上。
+//
+// 机台:MonoMultiRig 三条 mono 轨,只有 ch1 喂正弦,ch2/ch3 喂静音。后两条留在 inject 里,
+// 所以关掉 ch1 之后 inject ≠ 0,走的是逐轨混音路径(不是「全关 ⇒ 总线级直通交叉」那一支,
+// 那一支不在本卡范围);而母线输出恰好等于 ch1 这一条的贡献。
+// ===========================================================================
+namespace
+{
+struct SoloBlock
+{
+    std::int64_t t0 = 0;
+    std::vector<float> l; // Output 这一块的 L 声道
+};
+
+SoloBlock soloBlock(MonoMultiRig& r, float amp, bool bypassed = false)
+{
+    SoloBlock b;
+    b.t0 = r.ph.timeSamples;
+    r.outBuf.clear();
+    for (int i = 0; i < MonoMultiRig::kCount; ++i)
+    {
+        if (i == 0)
+        {
+            Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
+        }
+        else
+        {
+            r.inBuf.clear();
+        }
+        r.ins[static_cast<std::size_t>(i)]->processBlock(r.inBuf, r.midi);
+    }
+    if (bypassed)
+    {
+        r.out.processBlockBypassed(r.outBuf, r.midi);
+    }
+    else
+    {
+        r.out.processBlock(r.outBuf, r.midi);
+    }
+    b.l.assign(r.outBuf.getReadPointer(0), r.outBuf.getReadPointer(0) + kBlock);
+    if (r.ph.playing)
+    {
+        r.ph.timeSamples += kBlock;
+    }
+    return b;
+}
+
+float peakOf(const std::vector<float>& v)
+{
+    float p = 0.0f;
+    for (const float s : v)
+    {
+        p = std::max(p, std::fabs(s));
+    }
+    return p;
+}
+
+// 与「从本块 t0 起继续走的 440Hz 正弦」的归一化相关。淡出乘的是一条正的包络 ⇒ 同相 ≈ 1;
+// 全零块 ⇒ 0(分母保护)。
+double corrWithSine(const SoloBlock& b)
+{
+    double xy = 0.0;
+    double xx = 0.0;
+    double yy = 0.0;
+    for (int i = 0; i < kBlock; ++i)
+    {
+        const double y = std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 * static_cast<double>(b.t0 + i) / kSr);
+        const double x = b.l[static_cast<std::size_t>(i)];
+        xy += x * y;
+        xx += x * x;
+        yy += y * y;
+    }
+    return (xx > 0.0 && yy > 0.0) ? xy / std::sqrt(xx * yy) : 0.0;
+}
+
+void setTrackEnabled(ScvbOutputAudioProcessor& out, int ch, bool on)
+{
+    out.runtime().channels[static_cast<std::size_t>(ch - 1)].enabled = on;
+    ++out.runtime().configSeq;
+}
+
+// 跑到 ch1 的声音稳定混进母线(注入延迟走完、fade 到 1、busXfade 稳在替换态)。返回最后一块。
+SoloBlock settleSolo(MonoMultiRig& r)
+{
+    SoloBlock last;
+    for (int round = 0; round < 60; ++round)
+    {
+        for (int k = 0; k < 4; ++k)
+        {
+            last = soloBlock(r, 0.5f);
+        }
+        MonoMultiRig::pump(8);
+        if (peakOf(last.l) > 0.1f && corrWithSine(last) > 0.99)
+        {
+            break;
+        }
+    }
+    return last;
+}
+} // namespace
+
+TEST_CASE("HOST SL-488:多轨在注入时面板关掉一轨,那一轨 80ms 淡出而不是块边界硬切", "[host][sl488]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    const SoloBlock last = settleSolo(r);
+    REQUIRE(peakOf(last.l) > 0.1f); // 前提:ch1 确实在母线上
+    REQUIRE(corrWithSine(last) > 0.99);
+
+    setTrackEnabled(r.out, 1, false);
+    MonoMultiRig::pump(100); // ≥2 拍 [M] tick,把启用位图推给 [A];期间不推块
+
+    // ① 关轨后的首块:仍是 ch1 的声音、与继续走的正弦同相(修前逐位为 0)。
+    const SoloBlock first = soloBlock(r, 0.5f);
+    CHECK(peakOf(first.l) > 0.05f);
+    CHECK(corrWithSine(first) > 0.9);
+    // ② 块边界连续:首样本与关轨前末样本之差在一个样本步进的量级(硬切 = 落差为整个幅度)。
+    CHECK(std::abs(first.l.front() - last.l.back()) < 0.05f);
+
+    // ③ 淡出真的走完:80ms = 3840 样本 = 7.5 块。之后 ch1 不再进母线(逐位 0),
+    //    且不再被读环 —— 电平表本轨落回地板(读环的判据若漏了「fade 已到 0 就停」,
+    //    本轨会一直被当成释放中读下去,电平表冻在 pre-fade 的电平上)。
+    std::vector<SoloBlock> tail;
+    for (int k = 0; k < 12; ++k)
+    {
+        tail.push_back(soloBlock(r, 0.5f));
+    }
+    CHECK(peakOf(tail[1].l) < peakOf(first.l)); // 在往下走,不是恒定
+    for (int k = 8; k < 12; ++k)
+    {
+        CHECK(peakOf(tail[static_cast<std::size_t>(k)].l) == 0.0f);
+    }
+    CHECK(r.out.meterSnapshot().trackPeak[0] == 0.0f);
+}
+
+TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当成释放中续读", "[host][sl488]")
+{
+    // 「上一段真混进过」的记账必须在每条早退路径上作废:早退不推进 fade,ch1 的 fade 冻在 1。
+    // 若记账跨过了直通段,恢复混音时 ch1 会被当成释放中、从 1 淡出 —— 一条已经关掉的轨
+    // 在母线上响 80ms。
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
+
+    // 三条全关 ⇒ inject == 0 ⇒ 总线直通(不推进逐轨 fade)。
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        setTrackEnabled(r.out, ch, false);
+    }
+    MonoMultiRig::pump(100);
+    for (int k = 0; k < 12; ++k)
+    {
+        soloBlock(r, 0.5f);
+    }
+
+    // 只把两条静音轨开回来 ⇒ inject ≠ 0、重回混音路径;ch1 仍关着,母线必须逐位为 0。
+    setTrackEnabled(r.out, 2, true);
+    setTrackEnabled(r.out, 3, true);
+    MonoMultiRig::pump(100);
+    for (int k = 0; k < 10; ++k)
+    {
+        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
+    }
+}
+
+TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被当成释放中续读", "[host][sl488]")
+{
+    // processBlockBypassed 也不推进逐轨 fade,同一条记账在那里同样要作废。
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
+
+    for (int k = 0; k < 4; ++k)
+    {
+        soloBlock(r, 0.5f, /*bypassed=*/true);
+    }
+    setTrackEnabled(r.out, 1, false);
+    MonoMultiRig::pump(100);
+    for (int k = 0; k < 2; ++k)
+    {
+        soloBlock(r, 0.5f, /*bypassed=*/true);
+    }
+
+    for (int k = 0; k < 10; ++k)
+    {
+        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
+    }
+}
+
+// ===========================================================================
+// [SL-485] 采样率变化 = 采集特征硬失效(04 §4.5「立即全局 stale」)。
+//
+// 段表只存样本数、特征只存 hop 序号,换采样率后按当前 sr 换算的秒数整体漂移(44.1k→48k
+// 约 8.8%),而此前没有任何提示。修法不改 CFGS/CRVS/FEAT 布局:FEAT 节本来就记着采集采样率,
+// restoreFeatures 也逐轨写进了 FrameStore,只是没人读。现在:
+//   ① 有覆盖的轨,采集采样率 ≠ 当前采样率 ⇒ captureStale(§2.8 channels[].stale,既有的 ⚠);
+//   ② 保存时 FEAT 写采集采样率,不写当前值(否则存一次判据就永久丢了);
+//   ③ 该轨在当前采样率下重采(拉到新特征)⇒ 采集采样率跟着更新、提示撤下
+//      (与 fingerprint 失配「拉到新特征即作废」同一个口径)。
+// 用例按落点各有一行 CHECK;运行期改采样率走同一判据,顺带钉住「改回原采样率即撤」。
+// ===========================================================================
+namespace
+{
+std::uint32_t savedFeatSampleRate(ScvbOutputAudioProcessor& out)
+{
+    juce::MemoryBlock blob;
+    out.getStateInformation(blob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* feat = chunks.find(scvb::state::kFourccFeat);
+    REQUIRE(feat != nullptr);
+    const auto dec = scvb::state::decodeFeatures(feat->payload.data(), feat->payload.size());
+    REQUIRE(dec.ok);
+    REQUIRE(dec.embedded);
+    return dec.features.sampleRate;
+}
+} // namespace
+
+TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保存保留采集率;重采即撤", "[host][sl485]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 造一份「44.1k 下采过 ch3」的工程:取本实例的 state,换进一节 44100 的内嵌 FEAT。
+    {
+        scvb::state::FeaturesData d;
+        d.sampleRate = 44100;
+        d.hopMs = 10;
+        d.vadPresent = false;
+        scvb::state::ChannelFeatures c;
+        c.channelId = static_cast<std::uint8_t>(kTestChannel);
+        constexpr std::uint32_t kHops = 64;
+        c.coverage.push_back(scvb::state::HopRange{0, kHops});
+        for (std::uint32_t i = 0; i < kHops; ++i)
+        {
+            c.kwDbq.push_back(static_cast<std::int16_t>(-3000));
+            c.peakDbq.push_back(static_cast<std::int16_t>(-2000));
+        }
+        d.channels.push_back(std::move(c));
+
+        juce::MemoryBlock base;
+        r.out.getStateInformation(base);
+        scvb::state::StateChunks chunks;
+        REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks)
+                    .status == scvb::state::StateLoadStatus::Ok);
+        chunks.set(scvb::state::kFourccFeat, scvb::state::encodeFeatures(d));
+        std::vector<std::uint8_t> blob;
+        REQUIRE(scvb::state::encodeContainer(chunks, blob));
+        r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        Rig::pumpMessages(100);
+    }
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 1.0).coveredS > 0.0); // 前提:特征真的装上了
+
+    // ① 48k 下打开 44.1k 采的轨 ⇒ stale;没有覆盖的轨不亮(空轨没有「过期」)。
+    CHECK(r.out.captureStale(kTestChannel));
+    CHECK_FALSE(r.out.captureStale(1));
+
+    // ② 保存:FEAT 仍记 44100(写当前值就是 48000,重开即丢提示)。
+    CHECK(savedFeatSampleRate(r.out) == 44100u);
+    // ②b 未 prepare 时保存(releaseResources 后 sr=0,没有当前值可比):同样记采集率,不落回默认 48000。
+    r.out.releaseResources();
+    CHECK(savedFeatSampleRate(r.out) == 44100u);
+    CHECK_FALSE(r.out.captureStale(kTestChannel)); // 未 prepare 不判(没有「当前采样率」可比)
+    r.out.prepareToPlay(kSr, kBlock);
+
+    // 运行期改采样率走同一判据:切到 44.1k 即撤、切回 48k 即亮。
+    r.out.prepareToPlay(44100.0, kBlock);
+    CHECK_FALSE(r.out.captureStale(kTestChannel));
+    // 空轨在 44.1k 下也不亮:它的采集采样率是 FrameStore 的默认值(48000),与当前不等,
+    // 但没有数据就没有「过期」—— 这一行在 48k 下判不出来(默认值恰好等于当前值)。
+    CHECK_FALSE(r.out.captureStale(1));
+    r.out.prepareToPlay(kSr, kBlock);
+    CHECK(r.out.captureStale(kTestChannel));
+
+    // ③ 在 48k 下重采这条轨 ⇒ 采集采样率更新为 48000、提示撤下,再保存记的也是 48000。
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    bool cleared = false;
+    for (int round = 0; round < 40 && !cleared; ++round)
+    {
+        r.runBlocks(20, 0.5f, /*pumpEveryN=*/4, /*pumpMs=*/6);
+        Rig::pumpMessages(40);
+        cleared = !r.out.captureStale(kTestChannel);
+    }
+    CHECK(cleared);
+    CHECK(savedFeatSampleRate(r.out) == 48000u);
+    r.out.setCaptureEnabled(false);
 }
