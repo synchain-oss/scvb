@@ -967,6 +967,10 @@ export function createTabTracks(opts) {
         // 延迟提交计时器 **per (ch,dim)**:共享单个句柄时,在轨 1 滚完 300ms 内去滚轨 2
         // 会把轨 1 那次待提交一起 clearTimeout 掉 —— 乐观值留在 UI 上,引擎里却没写进去。
         manualTimers: new Map(), // "ch:pan" / "ch:vol" → setTimeout 句柄
+        // [SL-469] 与 manualTimers 同键:那一发**要提交的值**({ch, dim, v})。冲刷要在定时器
+        // 之外按原样发出同一发,而闭包里的值拿不出来。**「在飞」只以 manualTimers 为准**
+        // —— 别处取消计时器时不必同步删这里,flushPending 只认 manualTimers 里还有的键。
+        manualQueued: new Map(),
         rows: new Map(), // ch → 该行的节点缓存(15 行 × 30 Hz 下不许逐帧 querySelector)
         // T33 性能批:拖动期的**按行增量**队列(见 requestRowRender)。
         dirtyRows: new Set(), // 待重投影的 ch
@@ -1150,21 +1154,49 @@ export function createTabTracks(opts) {
         const v = quantize(rng, value);
         local.manualEcho.set(k, v);
         clearTimeout(local.manualTimers.get(k));
+        local.manualQueued.set(k, { ch, dim, v });
         local.manualTimers.set(
             k,
             setTimeout(() => {
                 local.manualTimers.delete(k);
-                // 排程与落地隔着 300 ms:这中间该轨可能刚变成采样率错 / 面板转只读。
-                // 落不下去就把乐观值一并撤掉 —— 留着它 UI 就在显示一个从没写进引擎的数。
-                if (isWriteBlocked() || isRowDead(ch)) {
-                    local.manualEcho.delete(k);
-                    requestRender();
-                    return;
-                }
-                sendManual(ch, dim, v);
+                fireQueued(ch, dim, v);
             }, MANUAL_COMMIT_MS),
         );
         requestRender();
+    }
+
+    /** 延迟提交到点(或被 flushPending 提前)的那一发。返回 sendManual 的回执 Promise。 */
+    function fireQueued(ch, dim, v) {
+        // 排程与落地隔着 300 ms:这中间该轨可能刚变成采样率错 / 面板转只读。
+        // 落不下去就把乐观值一并撤掉 —— 留着它 UI 就在显示一个从没写进引擎的数。
+        if (isWriteBlocked() || isRowDead(ch)) {
+            local.manualEcho.delete(manualKey(ch, dim));
+            requestRender();
+            return undefined;
+        }
+        return sendManual(ch, dim, v);
+    }
+
+    /**
+     * [SL-469][SL-460] 撤销 / 切版本之前由 app.js 的 `settlePendingEdits()` 调。
+     *   · 防抖在飞的每一发(滚轮 / 方向键,300ms):**当场冲刷**并等回执 —— 否则
+     *     「方向键调音量 → 300ms 内 Ctrl+Z」会让 undo 先弹掉一件不相干的旧编辑、这一发
+     *     随后作为新事务入栈并清空 redo 栈;切版本时则会落进新版本。
+     *   · pan/vol 旋钮 / 卡箍**按住拖动中**:中止(cancelDrag,丢弃乐观值)—— 松手才发的
+     *     那一发在切版本后会写进新版本,撤销后会抹掉撤销。width 走宿主 gesture、不入插件
+     *     撤销栈、参数 id 在按下时已按版本捕获,不在此列。
+     * @returns {Promise<void>}
+     */
+    function flushPending() {
+        const landed = [];
+        for (const k of [...local.manualTimers.keys()]) {
+            const q = local.manualQueued.get(k);
+            clearTimeout(local.manualTimers.get(k));
+            local.manualTimers.delete(k);
+            if (q) landed.push(fireQueued(q.ch, q.dim, q.v));
+        }
+        if (local.drag && local.drag.kind !== "width") cancelDrag();
+        return Promise.all(landed).then(() => undefined);
     }
 
     function sendManual(ch, dim, value) {
@@ -1197,7 +1229,8 @@ export function createTabTracks(opts) {
         const freezeId = paramIdOf(activeVersion(), ch, "freeze");
         const bitsNow = freezeBits(readParam(freezeId, 0));
         const wasUnfrozen = !(dim === "vol" ? bitsNow.vol : bitsNow.pan);
-        call("setTrackManual", ch, dim, v).then((res) => {
+        // 回执 Promise 交还调用方:flushPending 要等它落地再放 undo / 切版本过去。
+        const landed = call("setTrackManual", ch, dim, v).then((res) => {
             // 非成功响应(observer / badArg / 桥异常 res=null)撤乐观值,
             // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)。
             // 但只撤**本次发送**的值:两笔在途时旧笔失败不得抹掉新笔的乐观值
@@ -1233,6 +1266,7 @@ export function createTabTracks(opts) {
             requestRender();
         });
         requestRender();
+        return landed;
     }
 
     // ------------------------------------------------------------- 行内确认层
@@ -2444,5 +2478,5 @@ export function createTabTracks(opts) {
         }
     }
 
-    return { mount, render, onMeters, onParams, onSegments };
+    return { mount, render, onMeters, onParams, onSegments, flushPending };
 }
