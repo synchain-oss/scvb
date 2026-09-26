@@ -1430,6 +1430,13 @@ function buildOutputBackend(ctx) {
             if (next !== cur && model.snapshot.analysis_run.running) {
                 patchState({ analysis_run: { running: false, progress: 0 } });
             }
+            // [SL-531] 与 native 同形:真切版本 ⇒ 丢弃已排未到点的松手档重分段防抖,
+            // 否则它到点时读的是新版本号,把旧版本上拖的那一下重分段进新版本。
+            // (undo/redo 这里恒回 ok:false、栈上什么都没动,按 native「动了栈才丢」天然不丢。)
+            if (next !== cur && debounceId !== null) {
+                clearTimeout(debounceId);
+                debounceId = null;
+            }
             patchState({ global: { version_active: next } });
             // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)。
             // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动
