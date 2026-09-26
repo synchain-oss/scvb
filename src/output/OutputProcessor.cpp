@@ -137,6 +137,11 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     {
         f.reset(sr, 0.080);
     }
+    // [SL-488] 重新 prepare = 音频流重起,上一轮「刚混进过」的记账作废。不能指望 prepare 后首段
+    // 必走早退:本类 25Hz Timer 从不停,首块之前 [M] 可能已重新 claim 并把 inject 填回来;而
+    // channelFade_.reset() 只换档、不改当前值 —— 两者凑齐,一条 release 期间被关掉的轨会被当成
+    // 释放中读环、响 80ms。连调两次 prepareToPlay(中间不 release)时 inject 不被清,同样靠这一行挡。
+    releasableMask_ = 0;
 
     // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启打印 Timer,见 startPrinting)。
     rebindVersion();
@@ -174,6 +179,14 @@ void ScvbOutputAudioProcessor::releaseResources()
     {
         vizTimer_->stopTimer();
     }
+    // [SL-489] 先停打印 Timer、再(锁内)闭合 gesture。只闭不停的话,播放头快照只在 processBlock 里
+    // 发布、停用后冻在最后一次 playing 的那一帧,打印器的三道防护(非 Print / 非 playing /
+    // 无时间线)对这份冻结快照一道都不开火 —— 下一拍 tick 就把刚闭合的 gesture 重新打开,
+    // 宿主 Write/Touch 档下车道被卡住的值占着,且 gesture 永不闭合。prepareToPlay 的
+    // startPrinting 是对称的恢复点。**本类自己的 25Hz Timer 不停**:心跳与 owner.lock 续租挂在上面。
+    // 停 Timer 与上面的 viz 定时器同样放在锁外(SL-192 的顺序):打印 tick 今天不取 lifecycleMutex_,
+    // 但别让「不死锁」依赖这条没人盯的前提。
+    printer_.stopPrinting();
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
     vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
@@ -566,9 +579,13 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 {
     const juce::ScopedNoDenormals noDenormals;
 
-    // 越界夹取(research/01 §2.3,Bridge #169 教训)。
-    const int n = juce::jmin(buffer.getNumSamples(), preparedMaxBlock_);
-    if (n <= 0)
+    // [SL-487] 宿主块长可以超过 prepare 时预告的上限(离线 bounce 放大块长、或播放中超发)。
+    // 内部缓冲(accum/trackBuf)按 preparedMaxBlock_ 定长,所以**按它分段把整块处理完**。
+    // 此前是 `n = jmin(numSamples, preparedMaxBlock_)` 夹取后只处理前 n 个样本 —— buffer 是
+    // 就地处理,尾段原样留着宿主传入的干信号,导出成「每块前 N 个湿、其余干」的拼接。
+    // 夹取本身(research/01 §2.3,Bridge #169 教训)仍在:每段不超过缓冲定长。
+    const int total = buffer.getNumSamples();
+    if (total <= 0 || preparedMaxBlock_ <= 0)
     {
         return;
     }
@@ -603,9 +620,30 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
             ++podEpoch_;
         }
         lastT0Out_ = t0;
-        expectedNextOut_ = t0 + n;
+        // [SL-487] 按宿主给的整块长推进 —— 取夹取后的 n 的话,超长块之后下一块的 t0 恒对不上,
+        // 每块都会被误判成时间线跳变(epoch 连跳 ⇒ 打印器每块 endAllGestures)。
+        expectedNextOut_ = t0 + total;
     }
     publishPlayhead(pos, haveT0, playing);
+
+    for (int offset = 0; offset < total; offset += preparedMaxBlock_)
+    {
+        const int n = juce::jmin(preparedMaxBlock_, total - offset);
+        renderSpan(buffer, offset, n, haveT0, t0 + offset);
+    }
+}
+
+void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0)
+{
+    // [SL-488] 上一段真混进了哪些轨:取出即清。只有走到混音路径末尾才重写(见 releasableMask_
+    // 头注),下面任何一条早退都让它归零。
+    const scvb::u32 releasablePrev = releasableMask_;
+    releasableMask_ = 0;
+
+    // 本段的读/写指针(buffer 就地处理:输入输出同内存,逐样本先读后写)。
+    // isBusesLayoutSupported 钉死了 stereo in/out,两个声道恒在。
+    const float* in[2] = {buffer.getReadPointer(0, offset), buffer.getReadPointer(1, offset)};
+    float* out[2] = {buffer.getWritePointer(0, offset), buffer.getWritePointer(1, offset)};
 
     const bool noTimeline = !haveT0;
     const bool negT0 = haveT0 && t0 < 0;
@@ -624,8 +662,6 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
             timelineInvalidBlocks_.store(0, std::memory_order_relaxed);
             timelineValid_.store(1, std::memory_order_relaxed); // 负 t0 是有效时间线([J51])
         }
-        const float* const* in = buffer.getArrayOfReadPointers();
-        float* const* out = buffer.getArrayOfWritePointers();
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         publishSilentMeters();
@@ -641,8 +677,8 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     if (inject == 0)
     {
         // 无注入轨(全部离线/注入延迟中/全被关掉):总线直通,经同一 busXfade 状态机(无硬切)。
-        const float* const* in = buffer.getArrayOfReadPointers();
-        float* const* out = buffer.getArrayOfWritePointers();
+        // [SL-488] 这一支**不**给释放中的轨续读:最后一条轨关掉时走的是总线级交叉,
+        // 不是逐轨 fade(那是另一条过渡路径,不在本卡范围)。
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         publishSilentMeters();
@@ -661,12 +697,28 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
             scvb::output::dbToLinear(blockTargets[static_cast<std::size_t>(ch)].volDb);
     }
 
-    // 读注入 channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
+    // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
+    // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
+    // 读环、hasData 恒假,混音循环整轨跳过 —— 80ms 淡出平滑器在空转,没乘在任何样本上,
+    // 面板关轨 = 块边界上硬切一刀。现在读环按「inject 或释放中」放行,fade 目标仍按 inject
+    // (释放中的轨目标 = 0),混音判据不变(仍是 hasData)。读失败 ⇒ hasData 假 ⇒ 退化为硬切,
+    // 与修前同形(掉线那半本来就读不到数据,淡出救不回来)。
+    scvb::u32 releasing = releasablePrev & ~inject;
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        if ((releasing & (1u << ch)) != 0 && channelFade_[static_cast<std::size_t>(ch)].getCurrentValue() <= 0.0f)
+        {
+            releasing &= ~(1u << ch); // 淡出已走完:不再读它的环
+        }
+    }
+    const scvb::u32 live = inject | releasing;
+
+    // 读 live channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
     std::array<bool, 15> hasData{};
     std::array<scvb::u32, 15> nch{};
     for (int ch = 1; ch <= 15; ++ch)
     {
-        if ((inject & (1u << (ch - 1))) == 0)
+        if ((live & (1u << (ch - 1))) == 0)
         {
             continue;
         }
@@ -679,6 +731,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         {
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
+            releasableMask_ |= (1u << (ch - 1)); // [SL-488] 本段真混进母线 ⇒ 下一段若离开 inject 可续读淡出
         }
     }
 
@@ -733,8 +786,6 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
-    const float* const* in = buffer.getArrayOfReadPointers();
-    float* const* out = buffer.getArrayOfWritePointers();
     const float* mix[2] = {accumL_.data(), accumR_.data()};
     busXfade_.render(out, in, mix, n, /*targetMix=*/true);
 
@@ -742,7 +793,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
 }
 
-void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int n, int64_t t0)
+void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int offset, int n, int64_t t0)
 {
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
@@ -814,8 +865,8 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         }
     }
 
-    auto* outL = buffer.getWritePointer(0);
-    auto* outR = buffer.getWritePointer(1);
+    auto* outL = buffer.getWritePointer(0, offset);
+    auto* outR = buffer.getWritePointer(1, offset);
     for (int i = 0; i < n; ++i)
     {
         outL[i] = accumL_[static_cast<std::size_t>(i)];
@@ -827,12 +878,15 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
                                                     juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
-    const int n = juce::jmin(buffer.getNumSamples(), preparedMaxBlock_);
-    if (n <= 0)
+    // [SL-487] 与 processBlock 同口径:按 preparedMaxBlock_ 分段把整块处理完,不只处理前 n 个样本。
+    const int total = buffer.getNumSamples();
+    if (total <= 0 || preparedMaxBlock_ <= 0)
     {
         return;
     }
     session_.bumpBlockCounter(); // [J52] 存活计数 → [M] 停摆看门狗(§4.2);bypass 期间同样推进
+    // [SL-488] bypass 期间不推进逐轨 fade,「上一段真混进过」的记账在这里作废(同 renderSpan 的早退)。
+    releasableMask_ = 0;
 
     int64_t t0 = 0;
     bool haveT0 = false;
@@ -853,12 +907,16 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
         publishSilentMeters(); // 与 processBlock 三条早退同口径:不发就冻在最后一次有声的高度
         return; // 无时间线:直通(不替换)
     }
-    renderBypassedUnity(buffer, n, t0);
     // 宿主 bypass 期间同样要更新电平表 —— 否则液柱冻在 bypass 前那一刻。
     // renderBypassedUnity 是 unity 求和(不 gain/pan/width),故每轨增益按 1.0 报。
     std::array<float, 15> unityGain{};
     unityGain.fill(1.0f);
-    publishMeters(bypassHasData_, bypassChannels_, unityGain, accumL_.data(), accumR_.data(), n);
+    for (int offset = 0; offset < total; offset += preparedMaxBlock_)
+    {
+        const int n = juce::jmin(preparedMaxBlock_, total - offset);
+        renderBypassedUnity(buffer, offset, n, t0 + offset);
+        publishMeters(bypassHasData_, bypassChannels_, unityGain, accumL_.data(), accumR_.data(), n);
+    }
 }
 
 void ScvbOutputAudioProcessor::timerCallback()
@@ -1491,9 +1549,33 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         }
     };
 
-    const std::uint32_t sr = static_cast<std::uint32_t>(sampleRate_.load(std::memory_order_relaxed) > 0.0
-                                                            ? sampleRate_.load(std::memory_order_relaxed)
-                                                            : static_cast<double>(scvb::state::kDefaultSampleRate));
+    // [SL-485] FEAT 节的 sampleRate 写**采集**采样率,不写当前采样率(节布局不变,仍是一个字段)。
+    // 写当前值的话:44.1k 采的特征在 48k 下存一次就被改标成 48k,重开时「采样率已变」这条硬失效
+    // (04 §4.5)永久丢失,段表照旧静默漂移;未 prepare 就保存(sr=0)也会被改标成默认 48k。
+    // 各轨采集率不一致(部分轨已在新采样率下重采)时,取通道号最小的那条「与当前不同」的轨 ——
+    // 节里只有一个字段,宁可让已重采的轨重开后也亮 ⚠,也不让没重采的轨丢掉提示。代价:这样一份
+    // 混合采样率工程**跨存盘撤不掉** ⚠,要把所有有覆盖的轨都在当前采样率下重采才行(逐轨记采样率
+    // 要动 FEAT 布局 = 契约变更,不在本卡)。
+    const double curSr = sampleRate_.load(std::memory_order_relaxed);
+    std::uint32_t sr = curSr > 0.0 ? static_cast<std::uint32_t>(std::llround(curSr)) : scvb::state::kDefaultSampleRate;
+    {
+        const auto& fs = session_.frameStore();
+        for (scvb::u32 ch = 1; ch <= fs.maxChannels(); ++ch)
+        {
+            const auto& frames = fs.channel(ch);
+            if (frames.coverage().empty())
+            {
+                continue; // 空轨的采集采样率无意义
+            }
+            // 与当前不同就改写。未 prepare 时 curSr=0,任何真实采集率都与它不同 ⇒ 同一句自然取到
+            // 第一条有覆盖轨的采集率,不另设分支(删除式验过:另设的分支判不出来)。
+            if (std::llround(frames.sampleRate()) != std::llround(curSr))
+            {
+                sr = static_cast<std::uint32_t>(std::llround(frames.sampleRate()));
+                break;
+            }
+        }
+    }
     const auto data =
         scvb::state::snapshotFeatures(session_.frameStore(), sr, scvb::output::OutputSession::featHopMs());
 
@@ -1800,6 +1882,29 @@ bool ScvbOutputAudioProcessor::featureHopMatchesBuild(std::uint32_t hopMs)
                                    << static_cast<int>(scvb::output::OutputSession::featHopMs())
                                    << "; refusing to restore features");
     return false;
+}
+
+bool ScvbOutputAudioProcessor::featureSampleRateStale(int channel) const
+{
+    const juce::ScopedLock lock(lifecycleMutex_); // FrameStore 由 setState / [M] tick 在同一把锁下改写
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
+    if (sr <= 0.0)
+    {
+        return false; // 未 prepare:没有「当前采样率」可比,prepare 之后再判
+    }
+    const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
+    if (frames.coverage().empty())
+    {
+        return false; // 没有数据就没有「过期」:空轨的采集采样率无意义
+    }
+    // 采集采样率的两个来源:加载时取 FEAT 节记录的 sampleRate(restoreFeatures 逐轨写入);
+    // 运行期该轨原本为空、第一次落账时记成当前值(OutputSession::pullFeatures)。按整数 Hz 比。
+    return std::llround(frames.sampleRate()) != std::llround(sr);
+}
+
+bool ScvbOutputAudioProcessor::captureStale(int channel) const
+{
+    return session_.channelStale(static_cast<scvb::u32>(channel)) || featureSampleRateStale(channel);
 }
 
 bool ScvbOutputAudioProcessor::featuresInSidecar() const
