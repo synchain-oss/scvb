@@ -17,7 +17,7 @@ namespace scvb::input::bridge
 // --- claim 六值(§5.2;[R3 收口] 与 01 §6.3/05 §1.4 逐字一致)--------------------------
 // state + maskBit(本组 connected_mask 本位)+ srMismatch(Output 已报 SR 且 ≠ 本机 SR)映射到六值:
 //   unassigned | idle | active | conflict | abiMismatch | srMismatch。
-// kUnavailable(I0 段未打开)→ idle;srMismatch 只在 kActive 上成立且优先于 active/idle。
+// kUnavailable(I0 段不可用,未持有 slot)→ idle(§5.2 idle 第 ② 支);srMismatch 只在 kActive 上成立且优先于 active/idle。
 juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch);
 
 // srMismatch 推导(§4.1):claim 态为 kActive ∧ Output 已报非零 SR ∧ ≠ 本机 SR。

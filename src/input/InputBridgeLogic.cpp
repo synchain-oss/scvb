@@ -19,7 +19,7 @@ juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch)
     case InputClaimState::kAbiMismatch:
         return "abiMismatch";
     case InputClaimState::kUnavailable:
-        return "idle"; // I0 段未打开(§5.2 idle:slot 已声明但 Output 尚未健康读取)
+        return "idle"; // I0 段不可用、一个 slot 也没持住(§5.2 idle 第 ② 支,不是「等待读取」那支)
     case InputClaimState::kActive:
         return srMismatch ? "srMismatch" : (maskBit ? "active" : "idle");
     }

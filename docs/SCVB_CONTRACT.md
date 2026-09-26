@@ -67,7 +67,7 @@
 ### 0.8 通用类型与返回值约定
 
 1. 所有 native function 返回 **JSON 对象**(无自然返回值者返回 `{"ok": true}`);绝不返回裸值、绝不返回 `undefined`。
-2. 参数越界/类型不符:C++ 侧**夹取或拒绝**并返回 `{"ok": false, "reason": "badArg"}`,**绝不崩溃、绝不静默改写无关字段**;同时经 `scvb.error` 只在有对应用户可见警告面时上报(§5.1 九码,不为参数错误新增 code)。
+2. 参数越界/类型不符:C++ 侧**夹取或拒绝**并返回 `{"ok": false, "reason": "badArg"}`,**绝不崩溃、绝不静默改写无关字段**;同时经 `scvb.error` 只在有对应用户可见警告面时上报(§5.1 七码,不为参数错误新增 code)。
 3. 三种标准拒绝态(§5.6):`{"rejected": "printing"}`、`{"conflict": true}`、`{"observer": true}`。
 4. 数值类型标注:`u8/u16/u32/u64` = 无符号整数,`f32/f64` = 浮点,`int` = 有符号整数,`bool`,`string`(UTF-8)。
 5. **「返回」行登记的是可枚举的完整并集**:每个函数条目的「返回」行列出该函数**全部可能的返回形状**(成功形状 + 全部拒绝态形状),「拒绝态」行只解释各形状的**触发条件**、不再重复形状;§7 manifest 的 `returns` 字符串与「返回」行**同一并集**,写法 `A | B | C`。mock 后端、C++ 常量表与 parity 脚本三方以此对齐。
@@ -579,8 +579,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 频率 | **即时**(条件成立/消失各发一次;持续性条件由 UI 按条件维持横幅) |
-| 载荷 | `{ code:<§5.1 九码之一>, ch?:1..15, detail:object, active?:bool }` |
-| 字段纪律 | `ch` 仅在轨级错误(`srMismatch`/`channelConflict`/`lowSample`)出现;`detail` 逐码定义见 §5.1;`active` 缺省视为 `true`,`false` = 该条件已解除(用于持续性横幅的撤下)。**UI 不静默**:未知 code 一律原样显示 code 字符串并入诊断区(ADR-002/ipc §5)。 |
+| 载荷 | `{ code:<§5.1 七码之一>, ch?:1..15, detail:object, active?:bool }` |
+| 字段纪律 | `ch` 仅在轨级错误(`srMismatch`/`channelConflict`)出现;`detail` 逐码定义见 §5.1;`active` 缺省视为 `true`,`false` = 该条件已解除(用于持续性横幅的撤下)。**UI 不静默**:未知 code 一律原样显示 code 字符串并入诊断区(ADR-002/ipc §5)。 |
 | 真源 | 05 §1.4 / §2.0 |
 
 ---
@@ -707,7 +707,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 频率 | 即时 |
-| 载荷 | `{ code:<§5.1 九码之一>, ch?:1..15, detail:object, active?:bool }` —— **与 Output 侧 §2.9 同形状**(01 §6.2 的 `{code, message}` 为异名,统一取 05 的 `detail`,§8.3) |
+| 载荷 | `{ code:<§5.1 七码之一>, ch?:1..15, detail:object, active?:bool }` —— **与 Output 侧 §2.9 同形状**(01 §6.2 的 `{code, message}` 为异名,统一取 05 的 `detail`,§8.3) |
 | Input 侧实际会发的 code | `channelConflict`(claim 冲突)、`srMismatch`(采样率不一致)。**abi 不匹配不占 error code**——走 claim 态 `abiMismatch` + 卡内 `banner.abiMismatch` 横幅(05 §3 定论:Output 侧不另设 abi 横幅,以 Input 侧为准) |
 | 真源 | **01 §6.2(事件存在性)**;载荷形状取 05 §1.4 Output `scvb.error` 的 `{code, ch?, detail}`(§8.3);Input 侧实际 code 与 UI 落点取 05 §3。**05 §1.4 的「Input — events」表未列本事件**,保留依据 = 01 §6.2 + T25 裁定 **A-8**(§4 节首脚注 / §8.3 / §8.4) |
 
@@ -715,7 +715,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 5. 共享枚举与错误降级语义
 
-### 5.1 `scvb.error.code` —— 九码(与 05 §2.0 警告面一一对应)
+### 5.1 `scvb.error.code` —— 七码(每码对应 05 §2.0 的一个警告面)
 
 | code | 触发条件 | `ch` | `detail` | UI 落点 | 真源 |
 |---|---|---|---|---|---|
@@ -725,9 +725,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `newerState` | 工程 state chunk 的 abi 高于本机 → **拒载** | — | `{localAbi:u32, projectAbi:u32}` | 红横幅④「此工程由更新版本的 SCVB 保存,请升级插件(本机 abi {a} / 工程 abi {b})」 | 03 §6.2 RejectedNewer / J40 |
 | `sidecarMissing` | 外部特征文件缺失或校验失败 | — | `{path?:string}` | **v1 无出口**:sidecar 不随 v1 出厂(用户 2026-09-14 裁定「sidecar 不上了」),且该 code 在 `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释;grep 证据与判据见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。**接线那天必须同时恢复横幅⑤**——锚点与三语词条都还在 | 04 §5.3 |
 | `noTimeline` | 宿主未提供时间线(无 `timeInSamples`)且**连续 ≥0.5s**(与 04 §4.2 [J51]「连续无时间线 → 清注入 mask」同一判据;单块抖动不上桥,负 t0 算有效时间线);时间线恢复即发 `active:false` | — | `{}` | 琥珀横幅⑥「宿主未提供时间线」+ 采集/输出开关 disabled | 04 §2.6 |
-| `projectCopy` | 检测到工程副本(sessionGUID 不匹配)→ 已建独立采集数据副本 | — | `{sessionGuid:string}` | toast①「检测到工程副本,已创建独立采集数据副本」 | 04 §5.6 |
 | `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件(**v1 出厂态不可达**:自动切换关闭 ⇒ 恒内嵌;枚举与文案保留) | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
-| `lowSample` | 该轨采集后**有效唱段 <1.5s** | 必填 | `{voicedS:f32}` | Tab2 状态灯旁 + Tab3 轨头黄标「样本不足,结果可能不稳」 | 04 §7 步7 |
+
+**已撤回两码**([J101],用户 2026-09-22 裁定):原表中的 `lowSample`(有效唱段不足)与 `projectCopy`(工程副本)两行**已删除** —— 两码在 `src/` 里没有生产者、也没有设计,**不作为待实装项挂账**。本节不再承诺它们对应的任何提示面;要恢复任一码,须按 §9.0 重新走冻结契约变更(连同触发判据与生产者一起设计)。撤回依据与影响面见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`。
 
 **降级纪律**:①UI **不静默**任何 code——未知 code 原样显示并入 Tab4 诊断区;**例外只有两条:`sidecarMissing` / `sidecarSwitched`,两条都****不进诊断区**。⚠ **两条的处境不一样,别合并读**:`sidecarMissing` 的落点列已改为「**v1 无出口**」,判据是它在 `src/` 里**没有生产者**(只有 `SidecarStore.h` 一条待接线注释,不是「发了但被隐藏」);`sidecarSwitched` 的落点列**保留**(toast②),受它自己那一行「v1 出厂态不可达:自动切换关闭 ⇒ 恒内嵌;枚举与文案保留」的注记约束 —— **自动切换开关打开时它照旧成立**,所以不改成「无出口」。**接线那天(谁在 `src/` 里发出这两条 code)必须同时恢复横幅⑤ / toast②,不得照本条例外继续静默**,判据 `smoke-tab4-settings.mjs` 的「`src/` **非注释**命中数 == 0」那一格届时会红,那是设计好的;②持续性条件(横幅①-⑥)不可手动关闭,条件消失(`active:false`)才撤下;一次性提示(toast)可关闭;③参数错误(`reason:"badArg"`)**不占用**本枚举,由函数返回值承载。
 
@@ -736,7 +736,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 值 | 含义 | UI 落点 |
 |---|---|---|
 | `unassigned` | 未 claim 任何 slot(**引导态,非错误**;不计入 Output 的 `N/15`,Output 侧完全不可见)。**本态下 `channel_id` 未必为 `0`**:它镜像的是配置号,`releaseResources()` 之后配置号原样留着 ⇒ **可以为非 `0`**;反过来 `channel_id=0` 也不蕴含本态(claim 失败态下它同样是 `0`)。完整规则见 §3.1 | pill「未选择通道」+ 直通副文案 |
-| `idle` | 已选 channel,slot 已声明但 Output 尚未健康读取本轨 | pill「等待 Output」/「Output 未运行」+ 直通副文案 |
+| `idle` | **一个字符串承载两支**([J103]:不拆名,C++ 侧的枚举→字符串映射不变):① **等待读取** —— 已选 channel,slot 已声明但 Output 尚未健康读取本轨(`kActive` 且 `connected_mask` 本位为 0);② **段不可用** —— `kUnavailable`(段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败,与 §3.1 同一组四项):本实例**一个 slot 也没持住**,属 claim 失败态而非等待态,`channel_id` 为 `0`(§3.1)。**两支靠 `channel_id` 分辨**:① 为所选通道号,② 为 `0` | ① pill「等待 Output」/「Output 未运行」+ 直通副文案;② 灰 pill「未选择通道」+ 直通副文案(Input 页的 pill 推导在 `channel_id=0` 处先行拦下,不看 `claim`) |
 | `active` | slot 活跃且被本组 Output 健康读取(`connected_mask` 本位=1) | pill「已连接」+「已接管:本轨静音转发」 |
 | `conflict` | claim 失败:同组同 channel 被心跳新鲜的实例占用 | 卡片抖动 + `ch.occupied` toast |
 | `abiMismatch` | 两端 SCVB abi 不匹配 → **拒连**(不进 registry 有效位) | 红 pill「版本不匹配」+ 卡内 `banner.abiMismatch`(两端 abi 取 §4.1 `abi`/`abi_remote`)+ 直通副文案照常 |
@@ -904,7 +904,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
     "rangeMode": ["follow", "daw_loop", "manual"],
     "editSegmentOp": ["move_boundary", "split", "merge", "set_values", "set_locked"],
     "segmentsReason": ["analyze", "vad", "segmentation", "edit", "trackManual", "undo", "redo", "versionActive", "copyVersion", "snapshot"],
-    "errorCode": ["srMismatch", "secondOutput", "channelConflict", "newerState", "sidecarMissing", "noTimeline", "projectCopy", "sidecarSwitched", "lowSample"],
+    "errorCode": ["srMismatch", "secondOutput", "channelConflict", "newerState", "sidecarMissing", "noTimeline", "sidecarSwitched"],
     "claimState": ["unassigned", "idle", "active", "conflict", "abiMismatch", "srMismatch"],
     "ctrlOp": {"kSetPriority": 1, "kFpReport": 2},
     "analysisLoudnessMode": ["kw_integrated", "rms", "peak_dbfs"],
