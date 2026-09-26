@@ -216,7 +216,10 @@ public:
     // 否则布防前的原值就被现在这个(已被我们改成 true 的)值冲掉,撤防后再也关不回去。
     void armRecapture(std::uint16_t tracksMask, double startS, double endS, bool autoStop);
     void disarmRecapture();
-    void setVersionActive(int version);
+    // [SL-484] 返回 false = PRINT 态拒绝(契约 §1.9 `{rejected:"printing"}`),versionActive_ 不动。
+    // 判据不在这里另写:走 `stepAuthority(..., VersionSwitchRequest)` 那一份。
+    // [SL-490] 真切换且分析在途时,先 cancelAnalysis() —— 结果整份丢弃,不写进新版本。
+    [[nodiscard]] bool setVersionActive(int version);
     int groupId() const { return groupId_; }
     int versionActive() const { return versionActive_; }
     bool captureEnabled() const { return captureEnabled_; }
@@ -547,7 +550,8 @@ private:
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, std::uint64_t applyFirstHop, std::uint64_t applyLastHop,
                         bool clearManual, bool fullScope, AnalysisDoneReason resegmentReason,
-                        std::uint16_t analyzedTracks, double minSegmentMs, double sampleRate);
+                        std::uint16_t analyzedTracks, double minSegmentMs, double sampleRate,
+                        std::uint16_t unfreezeMask);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -796,6 +800,10 @@ private:
         AnalysisDoneReason resegmentReason = AnalysisDoneReason::None;
         std::uint16_t analyzedTracks = 0;
         bool fullScope = false; // [SL-279] 与 clearManual 同款:随作业走,取消那条路一起丢掉
+        // [SL-491] clearManual 这一趟**落地时**要清冻结位的轨(bit t = 轨 t+1)。起跑时按
+        // 「写回集 ∧ 写回窗有覆盖 ∧ 当时已冻结」算好,作为作业构造参数随作业走([SL-399 R9]
+        // 同款,不落 processor 成员)。取消 / 代号不符 ⇒ 这份连同结果一起丢,冻结位一个都不动。
+        std::uint16_t unfreezeMask = 0;
     };
     PendingAnalysis pendingAnalysis_;
     // 分析刚完成([M] 置位 / editor 取走)。§2.8 的 reason 要落 "analyze" —— web 有两处认它:

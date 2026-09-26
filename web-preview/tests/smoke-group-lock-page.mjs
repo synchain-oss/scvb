@@ -36,6 +36,10 @@
 //      判定/记账在 `BRIDGEARGS-SL412`、拒载态置位在 `HOST SL412`、调用点在
 //      `smoke-tab2-interactions.mjs` 的源码钉子。搭本套的车是因为 ① 已经在同一个页面、
 //      同一条路径上断「error 码 → 屏上那条横幅」(横幅②),④ 与 ② 是同一类判据。
+//   ⑦ [SL-490] 分析在途(`analysis_run.running`)⇒ 版本 chip `data-disabled="1"`、tooltip 逐字
+//      是词条 `master.analyzing`、点了**不发** setVersionActive(计数)且当前版本不变、分析没被
+//      取消;对照臂:不在途 ⇒ 点了照常切、恰好发一次;⑦c:mock 在途时收到真切换 ⇒ 取消分析
+//      (与 native `setVersionActive` 同形)。
 //
 // 用法:node web-preview/tests/smoke-group-lock-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -909,6 +913,175 @@ try {
         "⑥b 横幅④ 在 6s 内撤下",
     );
     assertClean("⑥ newerState 横幅");
+
+    // =========================================================================
+    // [SL-490] ⑦ 分析在途:版本 chip 禁用 + tooltip「分析中…」,点了**不发** setVersionActive
+    //
+    // 为什么搭本套的车:本套已经在同一条会话上断「锁面 × tooltip × 点了没反应」(④ 的组卡),
+    // 版本 chip 是 header 上同一类锁面;PRINT 那一半的 chip 锁由 ④ 的同一次 PRINT 驱动。
+    //
+    // 判据不看「版本号没变」一件事:native 与 mock 在分析在途时收到真切换会**取消**分析,
+    // 所以 chip 闸若失效,可观测的是两件 —— mock 的 setVersionActive 被调了(计数 +1),
+    // 以及当前版本变了。**计数是承重判据**:删除式实测(去掉 chip 闸)红在计数上,
+    // 而「版本号没变」那条**没红** —— mock 的状态回声晚 250ms,切走再切回那次渲染赶在
+    // 回声之前,读到的仍是旧版本。那条只是用户可见面的顺带检查,别把它当成钉子。
+    // 「分析在途」直接写 mock 模型 + 推一帧 partial state:mock 的 analyze 只跑 800ms,
+    // 拿真 analyze 造窗会让这一格随机器快慢摇摆。对照臂(不在途 ⇒ 点了照常切)防的是
+    // 「chip 根本点不动」换来的假绿。
+    log(
+        "=== ⑦ [SL-490] 分析在途:版本 chip 禁用、tooltip「分析中…」、点了不切 ===",
+    );
+    check(
+        await evaluate(
+            IN(`const sw = gb("master-output-toggle-switch");
+                if (!sw) return false; sw.click(); return true;`),
+        ),
+        "⑦ 点输出开关(关)退出 PRINT",
+    );
+    const chipState = (v) =>
+        IN(`const c = gb("header-version-chip-${v}");
+            const m = w.__SCVB_MOCK__;
+            return c ? {
+                dis: c.getAttribute("data-disabled"),
+                title: c.getAttribute("title") || "",
+                pressed: c.getAttribute("aria-pressed"),
+                calls: m && m.__sl490 ? m.__sl490.n : null,
+            } : null;`);
+    check(
+        await waitFor(
+            IN(`const c = gb("header-version-chip-2");
+                return !!c && c.getAttribute("data-disabled") === "0";`),
+            8000,
+        ),
+        "⑦ 退出 PRINT 后版本 chip 回到可点",
+    );
+    // 在 mock 的 setVersionActive 上挂计数(bridge 每次调用按名现取 mock[name],包一层即可见)。
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.setVersionActive !== "function") return false;
+                if (!m.__sl490) {
+                    const orig = m.setVersionActive;
+                    m.__sl490 = { n: 0 };
+                    m.setVersionActive = function (...a) {
+                        m.__sl490.n++;
+                        return orig.apply(this, a);
+                    };
+                }
+                m.__sl490.n = 0;
+                return true;`),
+        ),
+        "⑦ 在 mock.setVersionActive 上挂好调用计数",
+    );
+    // 壳页上下文:直接写 mock 模型并推一帧 partial state(不走 IN(),理由同 ⑥)。
+    const setBusy = (on) =>
+        `(() => {
+            const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+            if (!s || !s.ctl || !s.ctl.model) return false;
+            const run = { running: ${on ? "true" : "false"}, progress: ${on ? 0.5 : 0} };
+            s.ctl.model.snapshot.analysis_run = run;
+            s.ctl.emit("scvb.state", { full: false, analysis_run: run });
+            return true;
+        })()`;
+    const mockRunning = `(() => {
+        const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+        return !!(s && s.ctl && s.ctl.model && s.ctl.model.snapshot.analysis_run.running);
+    })()`;
+
+    // ---- 实验臂:在途 ⇒ chip 禁用 + tooltip,点了不发、不切、不取消 ----
+    check(await evaluate(setBusy(true)), "⑦ 置「分析在途」");
+    check(
+        await waitFor(
+            IN(`const c = gb("header-version-chip-2");
+                return !!c && c.getAttribute("data-disabled") === "1";`),
+            6000,
+        ),
+        "⑦ 分析在途:版本 chip 整组 disabled",
+    );
+    {
+        const c2 = await evaluate(chipState(2));
+        eq(
+            c2 && c2.title,
+            T.zh["master.analyzing"],
+            "⑦ 分析在途:chip tooltip 逐字等于词条 master.analyzing(zh)",
+        );
+        eq(c2 && c2.pressed, "false", "⑦ 前置:V2 不是当前版本");
+    }
+    check(
+        await evaluate(
+            IN(
+                `const c = gb("header-version-chip-2"); if (!c) return false; c.click(); return true;`,
+            ),
+        ),
+        "⑦ 分析在途时点了 V2 chip",
+    );
+    // 否定断言要等一次确定的后续渲染(④ 同款:切走再切回),不写死 sleep。
+    await evaluate(
+        IN(
+            `const b = q('[data-tab-btn="tracks"]'); if (b) b.click(); return true;`,
+        ),
+    );
+    check(await waitFor(tabIs("tracks"), 6000), "⑦ 切到「轨道」页");
+    await evaluate(
+        IN(
+            `const b = q('[data-tab-btn="master"]'); if (b) b.click(); return true;`,
+        ),
+    );
+    check(await waitFor(tabIs("master"), 6000), "⑦ 切回「总览」页");
+    {
+        const c2 = await evaluate(chipState(2));
+        eq(c2 && c2.calls, 0, "⑦ 分析在途:点 chip **没有**发 setVersionActive");
+        eq(c2 && c2.pressed, "false", "⑦ 分析在途:当前版本没变(V2 仍未激活)");
+        eq(
+            await evaluate(mockRunning),
+            true,
+            "⑦ 分析在途:分析没被这一下点击取消",
+        );
+    }
+
+    // ---- 对照臂:不在途 ⇒ chip 可点、tooltip 清空、点了照常切 ----
+    check(await evaluate(setBusy(false)), "⑦ 撤「分析在途」");
+    check(
+        await waitFor(
+            IN(`const c = gb("header-version-chip-2");
+                return !!c && c.getAttribute("data-disabled") === "0";`),
+            6000,
+        ),
+        "⑦ 对照臂:分析结束后 chip 回到可点",
+    );
+    eq((await evaluate(chipState(2))).title, "", "⑦ 对照臂:chip tooltip 清空");
+    check(
+        await evaluate(
+            IN(
+                `const c = gb("header-version-chip-2"); if (!c) return false; c.click(); return true;`,
+            ),
+        ),
+        "⑦ 对照臂:点了 V2 chip",
+    );
+    check(
+        await waitFor(
+            IN(`const c = gb("header-version-chip-2");
+                return !!c && c.getAttribute("aria-pressed") === "true";`),
+            6000,
+        ),
+        "⑦ 对照臂:切到了 V2(这一格绿,上面的「不切」才证明是闸挡的)",
+    );
+    eq(
+        (await evaluate(chipState(2))).calls,
+        1,
+        "⑦ 对照臂:setVersionActive 恰好发了一次",
+    );
+
+    // ---- mock 同形:在途时收到**真**切换 ⇒ mock 取消分析(与 native setVersionActive 同口径)----
+    // 走的是远端/绕过 UI 的那一路(chip 闸挡不到的地方),断的是 mock 与 native 不分叉。
+    check(await evaluate(setBusy(true)), "⑦c 再置「分析在途」");
+    await evaluate(IN(`w.__SCVB_MOCK__.setVersionActive(1); return true;`));
+    eq(
+        await evaluate(mockRunning),
+        false,
+        "⑦c mock:分析在途时真切版本 ⇒ 分析被取消(与 native 同形)",
+    );
+    assertClean("⑦ 分析在途锁版本 chip");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

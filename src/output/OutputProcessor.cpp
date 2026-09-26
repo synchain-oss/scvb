@@ -1954,6 +1954,24 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         return; // Corrupt:不可信字节,拒载(不崩溃、不半填充)
     }
 
+    // [SL-490/SL-491 复审] 真要载入了 ⇒ 在途分析的结果整份作废。载入的是另一份工程 / 预设,
+    // 那一趟是按旧工程算的:不作废的话,段表会落进新工程的活动版本,clearManual 的清冻结位
+    // (落地时才做)会打到新工程的冻结参数上。
+    // **只 bump 代号,不调 cancelAnalysis()**:JUCE 不保证本函数在消息线程,而 cancelAnalysis
+    // 要动 analysisJob_ / retiredJobs_(只准消息线程)。代号是原子量,handleAsyncUpdate 在
+    // 同一把 lifecycleMutex_ 下比对它(见那里),于是「比对通过 → 等锁 → 本函数载入完 → 落地」
+    // 这条交错也被挡住。
+    // ⚠ 代价(与 cancelAnalysis 之后**不同形**):这里没有 signal 作业线程,它会跑完整条
+    // pipeline,结果被那道门丢掉;旧工程那份特征快照(作业按值持有)与这条线程一直活到
+    // 跑完、作业对象留到下一次 startAnalysis 退休或析构时才回收。
+    // 收掉这笔代价转 SL-525。
+    // 运行态一并清掉:结果既然作废,不清的话 UI 会一直停在「分析中」、版本 chip 一直灰着。
+    // 放在两道拒载 return 之后:被拒的载入什么都没改,不该连带取消分析。
+    analysisGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    runtime_.analysisRunning = false;
+    runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
+    analysisRunning_.store(false, std::memory_order_release);
+
     stateAbiMismatch_ = false;
     preservedStateBlob_.clear();
     loadedChunks_ = chunks; // 保真 FEAT/CRVS/未知 fourcc 供 save 原样回写(T19 未知 fourcc 回写纪律)
@@ -2462,15 +2480,52 @@ void ScvbOutputAudioProcessor::setOutputEnabled(bool on)
     }
 }
 
-void ScvbOutputAudioProcessor::setVersionActive(int version)
+bool ScvbOutputAudioProcessor::setVersionActive(int version)
 {
     version = juce::jlimit(1, kVersionMax, version);
+
+    // [SL-484] 契约 §1.9:PRINT 态 C++ 硬拒绝。此前这里没有任何判据,而 UI 那道闸的 phase
+    // 用的是用户 range、引擎判 PRINT 用的是段包络,两把尺子不同源 —— UI 显示 ARMED 的那一拍
+    // 点 chip,引擎真的切过去,打印器当场改绑新版本曲线,一趟 pass 被拼成两个版本。
+    // 判据取 `stepAuthority` 的 VersionSwitchRequest 分支(此前零生产调用点),不另写一份。
+    // mode 由 timerCallback 在消息线程求值,本函数也只在消息线程被调,读到的就是当拍的档。
+    if (!scvb::engine::stepAuthority(printer_.mode(), scvb::engine::AuthorityEvent::VersionSwitchRequest, {})
+             .versionSwitchAccepted)
+    {
+        return false;
+    }
+
+    // ⚠ 这里放了一次锁:`changing` 算完到下面写 `versionActive_` 之间,`setStateInformation`
+    // 可能改过它,`changing` 会过期。两个方向都成立:过期成「要切」⇒ 多取消一趟(那趟已被
+    // 对方作废);过期成「不切」⇒ 这里不取消,但对方自己 bump 过代号。**两者都靠
+    // `setStateInformation` 那次作废兜住** —— 挪走或收窄那处 bump 之前先回来看这里。
+    bool changing = false;
+    {
+        const juce::ScopedLock lock(lifecycleMutex_);
+        changing = versionActive_ != version;
+    }
+    // [SL-490] 分析在途时真切版本 ⇒ **取消**这一趟(结果整份丢弃,与用户点「取消」同口径)。
+    // 不取消的话,handleAsyncUpdate 唯一的门是 generation 比对,对切版本不可见;
+    // finishAnalysis / applyAnalysisSegments 读的是**写回时刻**的 versionActive_ ——
+    // 在 V1 发起的结果会整表写进 V2(pan 锚、冻结位都是按 V1 算的)。
+    // 选「取消」而不是「给作业带版本号、按发起时版本写回」:后者要让 finishAnalysis 里
+    // 两处读同一个版本的不变式、rebuildAllCurves、打印区间都改认「非活动版本」,面大得多。
+    // 放在锁外调:cancelAnalysis 自己按 pendingMutex_ → lifecycleMutex_ 的次序取锁。
+    // [SL-491] 这里取消还有一层作用:clearManual 的清冻结位推迟到落地时做,落地时读的
+    // versionActive_ 必须等于起跑时那个。切版本即取消是这条的一半;另一半是 setStateInformation
+    // 载入时作废在途分析(见那里)。
+    if (changing && analysisRunning_.load(std::memory_order_acquire))
+    {
+        cancelAnalysis();
+    }
+
     const juce::ScopedLock lock(lifecycleMutex_);
     versionActive_ = version;
     if (prepared_)
     {
         rebindVersion();
     }
+    return true;
 }
 
 void ScvbOutputAudioProcessor::setMasterChartMode(const juce::String& mode)
@@ -2665,8 +2720,12 @@ scvb::engine::CopyVersionResult ScvbOutputAudioProcessor::copyVersion(int src, i
 {
     const juce::ScopedLock lock(lifecycleMutex_);
 
-    if (src < 1 || src > 2 || dst < 1 || dst > 2 || src == dst)
-        return scvb::engine::CopyVersionResult::InvalidIndex;
+    // [SL-484] 前置校验走 VersionStore::validateCopy(PRINT 拒绝 / 越界 / src==dst),
+    // 不在这里另写一份。此前这里只判范围,PRINT 中途复制进活动版本会让打印器下一拍
+    // 读到另一版的曲线。调用方把 RejectedPrint 映射成 `{rejected:"printing"}`。
+    const auto check = authority_.validateCopy(src, dst, printer_.mode());
+    if (check != scvb::engine::CopyVersionResult::Ok)
+        return check;
 
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Copy V" + juce::String(src) + " -> V" + juce::String(dst),
@@ -2863,9 +2922,10 @@ public:
     AnalysisJob(ScvbOutputAudioProcessor& owner,
                 std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features,
                 scvb::analysis::PipelineConfig config, std::uint32_t generation, std::int64_t hopSamples,
-                std::uint64_t applyFirstHop, std::uint64_t applyLastHop)
+                std::uint64_t applyFirstHop, std::uint64_t applyLastHop, std::uint16_t unfreezeMask)
         : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
-          generation_(generation), hopSamples_(hopSamples), applyFirstHop_(applyFirstHop), applyLastHop_(applyLastHop)
+          generation_(generation), hopSamples_(hopSamples), applyFirstHop_(applyFirstHop), applyLastHop_(applyLastHop),
+          unfreezeMask_(unfreezeMask)
     {
     }
 
@@ -2916,6 +2976,7 @@ public:
             // 写回时刻不在 `runtime_`/`sampleRate_` 上重取。
             owner_.pendingAnalysis_.minSegmentMs = config_.segmentation.minSegmentMs;
             owner_.pendingAnalysis_.sampleRate = config_.sampleRate;
+            owner_.pendingAnalysis_.unfreezeMask = unfreezeMask_; // [SL-491] 随作业走
             owner_.pendingAnalysis_.valid = true;
         }
         owner_.triggerAsyncUpdate();
@@ -2949,6 +3010,8 @@ private:
     //   · 本作业对象是 `[W]` 独占的:成员只在构造时写、`run()` 里读,`[M]` 一个字节都不碰。
     std::uint64_t applyFirstHop_ = 0;
     std::uint64_t applyLastHop_ = 0;
+    // [SL-491] 落地时要清冻结位的轨(见 PendingAnalysis::unfreezeMask)。同上:构造时写、run() 里读。
+    std::uint16_t unfreezeMask_ = 0;
 };
 
 // 退休作业的回收(定义必须在 AnalysisJob 类之后:unique_ptr 析构与 stopThread 都要完整类型)。
@@ -2992,13 +3055,17 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
     }
 
     // 代号不符 = 这份结果所属的作业已经被取消(或已被新作业顶替)→ 整份丢弃,不碰 CRVS。
+    // [SL-490/SL-491 复审] 比对与落地**在同一把 lifecycleMutex_ 下**:setStateInformation 持这把锁
+    // bump 代号,而它未必在消息线程。锁外比对会留一条交错 ——「比对通过 → 等锁 → 对方载入完新工程
+    // → 落地」,作废的结果照样写进新工程。CriticalSection 可重入,finishAnalysis 里再取一次无妨。
+    const juce::ScopedLock lock(lifecycleMutex_);
     if (pending.generation != analysisGeneration_.load(std::memory_order_acquire))
     {
         return;
     }
     finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.applyFirstHop,
                    pending.applyLastHop, pending.clearManual, pending.fullScope, pending.resegmentReason,
-                   pending.analyzedTracks, pending.minSegmentMs, pending.sampleRate);
+                   pending.analyzedTracks, pending.minSegmentMs, pending.sampleRate, pending.unfreezeMask);
 }
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
@@ -3445,6 +3512,14 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 不清位的话曲线换了也没用(DspArbiter 对冻结维度读的是 rawPan/rawVol,P0-3 那一族),
     // 「只清范围内的冻结」在参数面上无从表达。要改成「窄范围不动 freeze」是产品语义决策
     // (需用户拍板),不是这里顺手改的事。
+    //
+    // [SL-491] 这里**只算清哪几轨,不真清**:参数面那次写入推迟到 finishAnalysis 的落地分支。
+    // 原先在作业起跑前就同步清,而取消那条路(cancelAnalysis / 代号不符整份丢弃)根本不经过
+    // finishAnalysis —— 点了「重新识别(含手动段)」再点取消,冻结位已被静默解掉,撤销也救不回来。
+    // 推迟**不改变分析输入**:下面给指派器的 `tc.freeze` 本来就是按本次意图直接置 0,
+    // 不回读参数原子;作业线程只吃快照,不读 rawFrz。推迟期间冻结维仍按手动值出声,
+    // 落地那一刻才与新曲线一起交还引擎。筛法与原先那次真实清位逐条相同。
+    std::uint16_t unfreezeMask = 0;
     if (clearManual)
     {
         for (int t = 0; t < scvb::engine::kNumTracks; ++t)
@@ -3469,16 +3544,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             {
                 continue; // 本就未冻结:不发多余的 gesture(宿主自动化里会多出一个空写入点)
             }
-            auto* p = apvts.getParameter(scvb::params::freezeId(versionActive_, t + 1));
-            if (p == nullptr)
-            {
-                continue;
-            }
-            // gesture 三段式与 setTrackManual 的参数面写入同口径:宿主要看见一次完整的用户编辑,
-            // 否则 Read 档下会把值当场顶回去。
-            p->beginChangeGesture();
-            p->setValueNotifyingHost(p->convertTo0to1(0.0f));
-            p->endChangeGesture();
+            unfreezeMask = static_cast<std::uint16_t>(unfreezeMask | (1u << t));
         }
     }
 
@@ -3502,10 +3568,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.freeze = frz != nullptr ? scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)) : 0;
         // [SL-399] 同上一处:写回窗内的覆盖(不是计算窗的 `anyCovered`)—— 喂给指派器的
-        // `tc.freeze` 与上面那次真实清位必须同口径,否则「参数面清了 0、指派器还当它冻结」。
+        // `tc.freeze` 与上面那次清位筛选(落地时真清)必须同口径,否则「参数面清了 0、指派器还当它冻结」。
         if (clearManual && applyCovered[static_cast<std::size_t>(t)] && scvb::output::inWriteMask(writeMask, t))
         {
-            // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值。
+            // 本次意图是清位([SL-491] 真实清位在落地时做);直接照意图取值,不回读参数原子。
             // [SL-393] 同样按写回集筛:计算集里的上下文轨,冻结位要**照实**喂给指派器,
             // 假装它们没冻结会把别人的手动值当成可自由指派的槽位算进来。
             tc.freeze = 0;
@@ -3521,8 +3587,8 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         //     正中再烘焙进段表(v5.1 实测 P0-B 的放大器)。
         //
         // 段表一侧的锚取**哪个窗的起点所在的段**,分两种情形(判据按该轨**此刻**的
-        // `tc.participateInAutoPan` 与冻结位;`clearManual` 刚清过冻结的按清过之后算,
-        // 因为那道清位就在上面几行、写的是同一个 `tc.freeze`):
+        // `tc.participateInAutoPan` 与冻结位;`clearManual` 要清冻结的按清过之后算,
+        // 因为上面几行按意图置 0 的就是同一个 `tc.freeze`):
         //
         //   · **参与自动声像且 pan 未冻结** —— 锚只做**连续性种子**(整条时间线那条区间链的
         //     链首那一格),这一趟的题面与 `analyze("all")` 逐字同形是 b″ 的前提。所以取
@@ -3610,8 +3676,8 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 留给调用方(tickResegmentDebounce 的 !accepted.ok 分支)清。此后 reason 随作业走。
     analysisResegmentReason_ = pendingResegmentReason_;
     pendingResegmentReason_ = AnalysisDoneReason::None;
-    analysisJob_ =
-        std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen, hopSamples, applyFirstHop, applyLastHop);
+    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen, hopSamples, applyFirstHop,
+                                                 applyLastHop, unfreezeMask);
     analysisJob_->startThread();
 
     // [SL-284] 新作业一受理就把回退级清 0 —— **不清零会造出假绿**(#183 复审)。
@@ -3659,7 +3725,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                                               std::int64_t rangeEndSample, std::uint64_t applyFirstHop,
                                               std::uint64_t applyLastHop, bool clearManual, bool fullScope,
                                               AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks,
-                                              double minSegmentMs, double sampleRate)
+                                              double minSegmentMs, double sampleRate, std::uint16_t unfreezeMask)
 {
     {
         const juce::ScopedLock lock(lifecycleMutex_);
@@ -3667,7 +3733,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
         // [SL-399 R3] 这里**不再**重算写回窗的 hop 换算基数。原先那行
         // `llround(featHopSeconds() * sampleRate_)` 与构造 `rangeStartSample/EndSample` 时用的
         // 那个 `sampleRate_` 可能不是同一个数(`prepareToPlay` 只取锁再 `store`,**不取消**
-        // 在途作业;`cancelAnalysis()` 的唯一调用点是 `releaseResources`),于是
+        // 在途作业,它也不在 `cancelAnalysis()` 的调用点里),于是
         // 「由 `applyHop * hopSamples` 构造 ⇒ 整除无损」那句注释会在宿主中途改采样率时变假,
         // 裁出来的 vadP 窗整体漂掉或是 `hi <= lo` 静默一个 hop 都不写。
         // 现在写回窗**随作业走 hop**(`applyFirstHop/applyLastHop` 是交接处原样带过来的),
@@ -3797,11 +3863,14 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             //
             // ⚠ 但「同一个表达式」只是**必要**条件,**真正的保证是锁**([SL-255] 复审⑤):
             // 两处读的是两个时刻的 `versionActive_`,它们相等靠的是本函数全程持
-            // `lifecycleMutex_`,而 `setVersionActive`(:2156)写它时取的是同一把锁。
+            // `lifecycleMutex_`,而写 `versionActive_` 的每一条路(`setVersionActive` 与
+            // `setStateInformation`)取的都是同一把锁。两条写路还各自作废在途分析,
+            // 所以这里的版本也等于起跑时那个 —— 见本函数下方 [SL-491] 清冻结位那段。
             // 将来若有人收窄锁粒度(比如让 apply / commit 各自取一次锁),表达式再一样
             // 也会分叉 —— 改锁粒度前先回来看这一段。
             //
-            // 取值域由 `setVersionActive` 的 jlimit 保证;夹取既已去掉,就在 debug 下钉住。
+            // 取值域由两条写路各自保证(`setVersionActive` 的 jlimit、`setStateInformation` 经
+            // 解码器的范围校验);夹取既已去掉,就在 debug 下钉住。
             jassert(versionActive_ >= 1 && versionActive_ <= kVersionMax);
             const int vIdx = versionActive_ - 1;
             auto& liveTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
@@ -3905,6 +3974,39 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                 scvb::output::diffTrackInto(t + 1, beforeTracks[static_cast<std::size_t>(t)].segments,
                                             liveTracks[static_cast<std::size_t>(t)].segments, rangeStartSample,
                                             rangeEndSample, lastSegmentDiff_);
+            }
+
+            // [SL-491] clearManual 的**真实**清冻结位 —— 从 startAnalysis 起跑前挪到这里(落地分支)。
+            // 取消 / 代号不符两条路都不经过本函数,于是「重新识别 → 取消」不再静默解冻。
+            // 排在段表与 rebuildAllCurves 之后:冻结维交还引擎的那一刻,引擎读到的已是新曲线,
+            // 不会先按旧 auto 曲线响几块。
+            // 版本下标用此刻的 versionActive_。它等于起跑时那个,靠的是**两处**把改 versionActive_
+            // 的路都接到作废上:setVersionActive 真切版本时 cancelAnalysis([SL-490]);
+            // setStateInformation 载入时 bump 代号(复审补上)。今天写 versionActive_ 的只有这两处
+            // 外加构造期;**再加第三条写路时必须同样作废在途分析**,否则清位会落到别的版本上。
+            // 落地时再判一次「仍冻结」:分析期间用户自己解冻了的,不再发一次空 gesture。
+            // gesture 三段式与 setTrackManual 的参数面写入同口径:宿主要看见一次完整的用户编辑,
+            // 否则 Read 档下会把值当场顶回去。
+            for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+            {
+                if ((unfreezeMask & (1u << t)) == 0)
+                {
+                    continue;
+                }
+                const auto* frzRaw =
+                    handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
+                if (frzRaw == nullptr || juce::roundToInt(frzRaw->load(std::memory_order_relaxed)) == 0)
+                {
+                    continue;
+                }
+                auto* p = apvts.getParameter(scvb::params::freezeId(versionActive_, t + 1));
+                if (p == nullptr)
+                {
+                    continue;
+                }
+                p->beginChangeGesture();
+                p->setValueNotifyingHost(p->convertTo0to1(0.0f));
+                p->endChangeGesture();
             }
         }
 
