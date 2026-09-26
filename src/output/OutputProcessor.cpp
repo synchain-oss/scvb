@@ -186,11 +186,27 @@ void ScvbOutputAudioProcessor::releaseResources()
     // startPrinting 是对称的恢复点。**本类自己的 25Hz Timer 不停**:心跳与 owner.lock 续租挂在上面。
     // 停 Timer 与上面的 viz 定时器同样放在锁外(SL-192 的顺序):打印 tick 今天不取 lifecycleMutex_,
     // 但别让「不死锁」依赖这条没人盯的前提。
+    // ⚠ 上面「冻在最后一次 playing 的那一帧」是 [SL-527] 之前的形态:现在锁内会补发一帧清掉
+    // playing 位的快照,打印器「非 playing」那道防护本身就会开火。于是 gesture 不重开这件事
+    // 有两层各自兜得住 —— SL-489 那格 host 用例删掉其中任一层都仍绿,分辨不出单层失效。
+    // 两层都留:这一层不依赖快照内容,那一层还管着 mode / UI phase 等别的读者。
     printer_.stopPrinting();
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
     vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
     printer_.endAllGestures();
+    // [SL-527] 播放头快照只在 processBlock 里发布,停用后冻在最后一帧 —— playing 位仍真。
+    // 25Hz tick 照常据此求 mode,可一直停在 Print ⇒ setVersionActive / copyVersion 的 PRINT 闸
+    // ([SL-484])拒切拒复制,web 侧按 playhead.isPlaying 判的 phase 也把版本按钮灰着,直到下次
+    // prepareToPlay 之后的首块。这里补发一帧只清 playing 位的快照(其余字段取自上一帧),让
+    // 所有读者(mode 求值、停流记账、recapture 边沿、editor 的 playhead / captureProgress)
+    // 同时看到「停」。写方前提:宿主不让 releaseResources 与 processBlock 并发(prepareToPlay
+    // 改写 lastT0Out_ / 累加缓冲靠的是同一条前提),所以这里不会与音频线程的 publish 交错。
+    {
+        scvb::engine::PlayheadPod stopped = playheadSnapshot();
+        stopped.flags &= ~static_cast<std::uint32_t>(scvb::engine::kPlayheadIsPlaying);
+        playheadShot_.publish(stopped);
+    }
     prepared_ = false;
     sampleRate_.store(
         0.0, std::memory_order_relaxed); // 复位:isPrepared()/sr 守卫在 release 后回到「未 prepare」(PR#55 第10轮缺陷1)
@@ -2520,6 +2536,15 @@ bool ScvbOutputAudioProcessor::setVersionActive(int version)
     }
 
     const juce::ScopedLock lock(lifecycleMutex_);
+    // [SL-531] 真切版本 ⇒ 丢弃已排未到点的松手档重分段防抖。不丢的话它在切完之后到点,
+    // 读的是新的 versionActive_ ⇒ 用户在旧版本上拖的那一下,重分段落进了刚切过去的新版本。
+    // 选「丢弃」而不是「按旧版本冲刷」:冲刷 = 此刻 startAnalysis,而那是后台作业,
+    // 落地在切换之后 —— 上面 [SL-490] 那道「真切版本即取消在途分析」会当场把它取消,
+    // 冲刷与丢弃结果相同,还白起一趟线程。判 `changing` 用锁内的当前值(上面那份可能已过期)。
+    if (versionActive_ != version)
+    {
+        discardPendingResegment();
+    }
     versionActive_ = version;
     if (prepared_)
     {
@@ -2898,16 +2923,38 @@ bool ScvbOutputAudioProcessor::setAnalysisConfig(const juce::String& loudnessMod
     return changed;
 }
 
+// [SL-531] 撤销 / 重做真的动了栈 ⇒ 丢弃已排未到点的松手档重分段防抖。
+//
+// 不丢的话:拖完 Tab3 参数滑杆松手、300ms 内按 Ctrl+Z,防抖随后到点,重分段落在**撤销后**
+// 的段表上并作为新事务入栈 —— juce::UndoManager 语义下新事务清空重做栈,刚撤掉的那一步
+// 连 Ctrl+Shift+Z 都找不回来(web 侧 [SL-469] 修过的同一种症状,那边够不着这里的计时器)。
+//
+// 选「丢弃」而不是 web 侧 settlePendingEdits 那种「先冲刷再撤销」:这里的冲刷 = 立刻
+// startAnalysis,而分析是后台作业、落地在撤销**之后**,撤销弹出的仍是更早那一步,冲刷
+// 换不来「撤掉的就是刚才那一下」。代价:参数值(全局 runtime,不进撤销栈)保留新值,段表
+// 不按它重算 —— 要应用得再点一次分析或再动一下滑杆。
+// 只在返回 true 时丢:栈上什么都没动,就没有「落进撤销后」这回事,防抖照常到点。
+// ⚠ 防抖已经到点、分析已在跑时按撤销,不在本函数管辖内(撤销不取消在途分析)。
 bool ScvbOutputAudioProcessor::undo()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    return authority_.undoManager().undo();
+    const bool ok = authority_.undoManager().undo();
+    if (ok)
+    {
+        discardPendingResegment();
+    }
+    return ok;
 }
 
 bool ScvbOutputAudioProcessor::redo()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    return authority_.undoManager().redo();
+    const bool ok = authority_.undoManager().redo(); // 同 undo():重做后落地同样会清掉剩下的重做栈
+    if (ok)
+    {
+        discardPendingResegment();
+    }
+    return ok;
 }
 
 // ============================================================================

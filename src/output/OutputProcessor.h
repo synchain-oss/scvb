@@ -219,6 +219,7 @@ public:
     // [SL-484] 返回 false = PRINT 态拒绝(契约 §1.9 `{rejected:"printing"}`),versionActive_ 不动。
     // 判据不在这里另写:走 `stepAuthority(..., VersionSwitchRequest)` 那一份。
     // [SL-490] 真切换且分析在途时,先 cancelAnalysis() —— 结果整份丢弃,不写进新版本。
+    // [SL-531] 真切换时同样丢弃已排未到点的松手档重分段防抖。
     [[nodiscard]] bool setVersionActive(int version);
     int groupId() const { return groupId_; }
     int versionActive() const { return versionActive_; }
@@ -476,6 +477,7 @@ public:
     // 传入值已由桥层白名单校验。变化才 bump configSeq,返回是否变化。
     bool setAnalysisConfig(const juce::String& loudnessMode, const juce::String& centerSlotPolicy, bool hasLoudness,
                            bool hasCenter);
+    // [SL-531] 真的动了栈(返回 true)时顺带丢弃已排未到点的松手档重分段防抖,理由见实现处。
     bool undo();
     bool redo();
 
@@ -826,6 +828,12 @@ private:
     // 快照本来就同时在手,顺手算完存这儿;editor 发段表时取走。
     scvb::output::SegmentDiff lastSegmentDiff_;
     void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
+    // [SL-531] 撤掉已排未到点的那一次(撤销 / 重做 / 真切版本时调);调用方已持 lifecycleMutex_。
+    void discardPendingResegment() noexcept
+    {
+        resegmentDueAtMs_ = 0;
+        resegmentReason_ = AnalysisDoneReason::None;
+    }
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
     //

@@ -6335,6 +6335,9 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
 // 冻在最后一次 playing 的那一帧,打印器的三道防护(非 Print / 非 playing / 无时间线)对它
 // 全不开火。修前 releaseResources 只 endAllGestures、不停打印 Timer,下一拍 tick 就把
 // gesture 重新打开(且再也没人闭合)。
+// ⚠ [SL-527] 之后 releaseResources 还会补发一帧清掉 playing 位的快照,「非 playing」那道
+// 防护从此也会开火 ⇒ 本格对「只删 stopPrinting」或「只删那次补发」都**不敏感**(两层各自
+// 兜得住),只在两层同时失效时红。补发那一层由下面 SL-527 那格单独钉。
 //
 // 进 Print 档不走「采集 + 分析」:setTrackManual 在当前版本写一条覆盖全时间线的常值段
 // (§1.16 手动接管通道),打印区间据此成立,Rig 单轨几百毫秒就进档。
@@ -10881,4 +10884,165 @@ TEST_CASE("HOST SL-491:分析在途时载入工程 ⇒ 这一趟作废,不清载
 
     CHECK(freezeOfW2a(r.out, v, kCh) == 1); // ★2 载入工程的冻结没被清
     CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), v)); // 段表仍是载入工程那一份
+}
+
+// ---------------------------------------------------------------------------
+// [SL-527] Output 停用 / 冻结期间(releaseResources 之后、下次 prepareToPlay 之前)切版本与
+// 「复制到…」不得被一直拒成 printing。
+//
+// 修前:播放头快照只在 processBlock 里发布,release 后冻在最后一帧(playing 位仍真),
+// 25Hz tick 照常据此求 mode ⇒ 停在 Print ⇒ [SL-484] 那道 PRINT 闸拒切拒复制。
+// 删除式落点:releaseResources 里补发「清 playing 位」快照那一段 ⇒ ★1/★2/★3 红。
+// PRINT 配方与 SL-484 那格同款(真仲裁,不直接 setMode)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-527:releaseResources 后切版本 / 复制版本不再被拒成 printing", "[host][sl527][print][version]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.ph.timeSamples = 0;
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+    // 前提:确实在 Print(否则下面「release 后受理」恒真)。
+    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    const auto shotBefore = r.out.playheadSnapshot();
+    REQUIRE((shotBefore.flags & scvb::engine::kPlayheadIsPlaying) != 0);
+
+    // ★ 停用:只 release,不再推块(宿主停用 / 冻结轨的真实形态)。
+    r.out.releaseResources();
+    MonoMultiRig::pump(300); // 若干拍 25Hz tick:修前 mode 在这里被冻结快照重新求成 Print
+    const auto shotAfter = r.out.playheadSnapshot();
+    CHECK((shotAfter.flags & scvb::engine::kPlayheadIsPlaying) == 0); // ★1
+    CHECK(shotAfter.timeSamples == shotBefore.timeSamples); // 只清 playing 位,位置原样
+    CHECK(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print); // ★2
+    CHECK(r.out.copyVersion(1, 2) == scvb::engine::CopyVersionResult::Ok); // ★3
+    CHECK(r.out.setVersionActive(2));
+    CHECK(r.out.versionActive() == 2);
+
+    // 恢复:重新 prepare 并推块后,首块重新发布真实的 playing ⇒ 照常回到 Print。
+    REQUIRE(r.out.setVersionActive(1));
+    r.out.prepareToPlay(kSr, kBlock);
+    r.ph.timeSamples = 0;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(200);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-531] 撤销 / 重做 / 切版本真的发生时,丢弃已排未到点的松手档重分段防抖。
+//
+// 修前:防抖计时器在 C++ 侧(tickResegmentDebounce),web 的 settlePendingEdits 够不着 ⇒
+// 松手后 300ms 内 Ctrl+Z / Ctrl+Shift+Z / 切版本,重分段随后落进撤销后的段表或新版本,
+// 且作为新事务清空重做栈。
+// 删除式三格,每格只动一处:undo() 里的丢弃 ⇒ ★U 红;redo() 里的 ⇒ ★R 红;
+// setVersionActive 里的 ⇒ ★V 红。三格各自独立成例,互不串台。
+// 对照例(最后一格):栈空的撤销、切到同一版本都不丢 —— 否则「丢弃」与「防抖链断了」分不开,
+// 也钉住「只在真的动了栈 / 真的切了版本时丢」这两个条件。
+// 判据用机制(takeAnalysisDone 仍为 None + 修订号不动),不用段数(理由见 SL-255 那组)。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 采一段分得开的素材、停走带(离开 PRINT,否则防抖被合法抑制)。analyze=true 时再分析一次,
+// 并把那次完成位消费掉,免得下面「没跑」的断言被它喂饱。
+double sl531Prepare(Rig& r, bool analyze)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    captureSpacedBursts(r);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    r.out.setCaptureEnabled(false);
+    if (analyze)
+    {
+        REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+        waitAnalysis(r);
+        REQUIRE(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+    }
+    r.ph.playing = false;
+    r.runBlocks(8, 0.0f); // 快照只在音频块里更新
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    // 与默认差得远:重分段真跑的话段表必变,「清空重做栈」那条才测得出来。
+    r.out.runtime().vadThresholdDb = 12.0f;
+    return coveredS;
+}
+
+void sl531WaitPastDebounce(Rig& r)
+{
+    Rig::pumpMessages(600); // 远超 300ms 窗(25Hz tick ⇒ 实际 300~340ms)
+    waitAnalysis(r);
+}
+} // namespace
+
+TEST_CASE("HOST SL-531:防抖窗内撤销 ⇒ 重分段不落进撤销后,重做栈还在", "[host][sl531][SL255][undo]")
+{
+    Rig r;
+    sl531Prepare(r, /*analyze=*/true);
+
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    REQUIRE(r.out.undo()); // 撤掉那次分析
+    const auto revAfterUndo = r.out.crvsRevision();
+    sl531WaitPastDebounce(r);
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★U
+    CHECK(r.out.crvsRevision() == revAfterUndo);
+    CHECK(r.out.redo()); // 用户可见的那一半:刚撤掉的那一步还能重做回来
+}
+
+TEST_CASE("HOST SL-531:防抖窗内重做 ⇒ 重分段不落进重做后", "[host][sl531][SL255][undo]")
+{
+    Rig r;
+    sl531Prepare(r, /*analyze=*/true);
+    REQUIRE(r.out.undo()); // 先撤掉分析,让重做栈里有东西;此时尚未布防,不涉及丢弃
+    Rig::pumpMessages(100);
+
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    REQUIRE(r.out.redo());
+    const auto revAfterRedo = r.out.crvsRevision();
+    sl531WaitPastDebounce(r);
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★R
+    CHECK(r.out.crvsRevision() == revAfterRedo);
+}
+
+TEST_CASE("HOST SL-531:防抖窗内切版本 ⇒ 重分段不落进新版本", "[host][sl531][SL255][version]")
+{
+    Rig r;
+    sl531Prepare(r, /*analyze=*/true);
+    REQUIRE(r.out.versionActive() == 1);
+    const auto before = r.out.crvsSnapshot();
+
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    REQUIRE(r.out.setVersionActive(2));
+    sl531WaitPastDebounce(r);
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★V
+    CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), 2)); // 新版本段表没被改
+    CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), 1)); // 旧版本同样没动(丢弃,不是冲刷)
+}
+
+TEST_CASE("HOST SL-531 对照:栈空的撤销 / 切到同一版本不丢防抖", "[host][sl531][SL255][undo][version]")
+{
+    Rig r;
+    sl531Prepare(r, /*analyze=*/false); // 不分析 ⇒ 撤销栈为空
+
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    CHECK_FALSE(r.out.undo()); // 前提:栈空,什么都没撤
+    CHECK_FALSE(r.out.redo());
+    CHECK(r.out.setVersionActive(r.out.versionActive())); // 同一版本:no-op
+    sl531WaitPastDebounce(r);
+
+    // 删掉 undo/redo 的 `if (ok)` 或切版本的 `versionActive_ != version` 任一条件 ⇒ 这里红。
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
 }
