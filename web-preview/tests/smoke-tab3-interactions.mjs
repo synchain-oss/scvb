@@ -1570,6 +1570,43 @@ log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)==="
         eq(seen[1].reason, "segmentation", "reason = segmentation");
     });
 
+    // ---- [SL-531] 防抖窗内真切版本 ⇒ 这一次松手档重分段被丢弃(与 native setVersionActive 同形)。
+    //      不丢的话它到点读新版本号,旧版本上拖的那一下落进新版本。
+    //      ← 删掉 mock setVersionActive 里清 debounceId 那段,只红「★」这条。
+    await withOutput("fixture=fifteen-tracks", async (b, seen) => {
+        const vad = {
+            threshold_db: -40,
+            hysteresis_db: 6,
+            hangover_ms: 180,
+            padding_pre_ms: 120,
+            padding_post_ms: 200,
+        };
+        const vadFrames = () => seen.filter((e) => e.reason === "vad").length;
+        eq(
+            (await b.setVadParams(vad)).ok,
+            true,
+            "SL-531 松手一发 setVadParams",
+        );
+        const sw = await b.setVersionActive(2);
+        check(sw && !sw.rejected, "SL-531 前提:切版本受理(不在打印)");
+        await sleep(420);
+        eq(vadFrames(), 0, "★ SL-531 防抖窗内真切版本 ⇒ 重分段不再到点");
+        // 对照:同一会话里不切版本,同样一发必须照常到点(否则上一条分不开「丢弃」与「链路断了」)。
+        // 计增量:★ 那条红的时候已多出一帧,计总数会让对照跟着红、指错地方。
+        const before2 = vadFrames();
+        eq(
+            (await b.setVadParams({ ...vad, threshold_db: -42 })).ok,
+            true,
+            "SL-531 对照:再松手一发",
+        );
+        await sleep(420);
+        eq(
+            vadFrames() - before2,
+            1,
+            "SL-531 对照:不切版本 ⇒ 照常一帧 reason:vad",
+        );
+    });
+
     // ---- [SL-279] `analysis.applied.*`(§1.21)的**第二个**前移来源:松手自动重分段。
     //      上一版这一条在 mock 侧零判据 —— 把 debounce 里那句前移整块删掉,冒烟全绿。
     //      后半段钉同一轮裁定:范围档下这条路**不**前移(重算只覆盖 global.range)。
