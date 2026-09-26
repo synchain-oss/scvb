@@ -791,6 +791,26 @@ log("=== ④ store → 15 行模型 ===");
             "冻结两位仍只由参数面决定",
         );
     }
+    // [SL-528] §2.9 存删走裸 code 键 —— 行为格在页面级 smoke-ui-layout-page G2b;
+    // 本套无浏览器也跑,兜住那一套 SKIP 的档位。先剥注释再找(app.js 注释里会提到
+    // 旧写法)。删除式:把 app.js 的 delete / set 任一处改成按 `code#ch` ⇒ 对应一条红。
+    {
+        const { stripJsComments } = await import(
+            u("scripts/lib/strip-comments.mjs")
+        );
+        const appCode = stripJsComments(
+            src("web/output/app.js"),
+            "web/output/app.js",
+        );
+        check(
+            appCode.includes("store.errors.delete(e.code);"),
+            "[SL-528] app.js 的 §2.9 解除按裸 code 删(active:false 不带 ch 也撤得下来)",
+        );
+        check(
+            appCode.includes("store.errors.set(e.code, e);"),
+            "[SL-528] app.js 的 §2.9 入库按裸 code 存整条载荷(横幅读得到 ch)",
+        );
+    }
     eq(rows[1].misalign, 4, "轨 2 失准计数入行模型");
     eq(rows[1].status, "warn", "轨 2 = 琥珀失准");
     eq(rows[2].status, "srErr", "轨 3 = 采样率不一致(整行 disabled)");

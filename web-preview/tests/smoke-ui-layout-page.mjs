@@ -3243,7 +3243,7 @@ try {
         );
         const r2 = await waitSr(true);
         check(
-            r2.box > 0 && /3/.test(String(r2.text)),
+            r2.box > 0 && /(^|\D)3(\D|$)/.test(String(r2.text)),
             `[SL-528] ★ ② 带 ch 的轨级 code 按裸 code 入库、横幅读得到载荷 ch(实得 box=${r2.box} ` +
                 `text=${JSON.stringify(r2.text)})`,
         );

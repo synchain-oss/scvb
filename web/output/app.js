@@ -136,8 +136,9 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
-    // §2.9 code → payload(active:false 即删)。键 = 裸 code:其余各码都是页级落点,
-    // 同一 code 的后一帧本就该覆盖前一帧。
+    // §2.9 code → payload(active:false 即删)。键 = 裸 code,同一 code 的后一帧覆盖
+    // 前一帧。轨级的 srMismatch / channelConflict(载荷带 ch)也不例外 —— srMismatch 的
+    // 横幅 ③ 口径就是一次只显示一个轨号(05 §2.0),这是既定行为,不是漏了复合键。
     errors: new Map(),
     unknownCodes: [], // §5.1 降级纪律①:未知 code 原样入诊断区
     readOnly: false, // secondOutput / conn.outputReadOnly
