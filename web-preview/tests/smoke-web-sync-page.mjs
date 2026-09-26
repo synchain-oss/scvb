@@ -942,6 +942,45 @@ try {
             0,
             "(s15)**中止之后那一记松手零提交**",
         );
+
+        // ---- (d) 拖动中**远端**换版本(全量类 reason)⇒ 连在拖那一维也清,松手不提交 ----
+        // 与 (a) 相反的那一支:同轨事件要保留在拖的值,但换版本之后这一段已经是另一版的段,
+        // 松手若照常提交,就是按时间锚把 V1 的值写进 V2。远端切换掐不到 settlePendingEdits。
+        await sleep(300);
+        i0 = await logLen();
+        await mouse("mousePressed", knob.x, knob.y);
+        await mouse("mouseMoved", knob.x, knob.y - 18);
+        check(
+            Number.isFinite((await waveDiag()).echo.pan),
+            "(s16)拖动中有乐观回声",
+        );
+        const p2 = (await evaluate(IN(`return w.__segPush.length;`))) || 0;
+        await evaluate(IN(`w.__SCVB_MOCK__.setVersionActive(2); return true;`));
+        check(
+            await waitFor(
+                IN(
+                    `return w.__segPush.slice(${p2}).some((e) => e.reason === "versionActive");`,
+                ),
+                3000,
+            ),
+            "(s17)远端换版本的 scvb.segments(versionActive)到了",
+        );
+        await sleep(100);
+        eq(
+            (await waveDiag()).echo.pan,
+            undefined,
+            "(s18)**换版本 ⇒ 在拖那一维的回声也清掉**(与 (s5) 相反的那一支)",
+        );
+        await mouse("mouseReleased", knob.x, knob.y - 18);
+        await sleep(400);
+        eq(
+            (await logEntriesSince(i0)).filter(
+                (e) => e.n === "editSegment" && e.a[1] === "set_values",
+            ).length,
+            0,
+            "(s19)换版本后那一记松手零提交",
+        );
+        await switchTo(1, "(s20)收尾");
     }
     assertClean("③ Tab3 检查器");
 
@@ -1075,6 +1114,59 @@ try {
             released,
             "(h6)结清后读数仍是松手的值",
         );
+        await sleep(400);
+
+        // ---- (h7) 同上,分段组那一根(MIN SEG):两组各有自己的在飞写记账,各验一次 ----
+        {
+            const tm = await centerOf(TRACK("wave-seg-minlen"));
+            check(tm && tm.w > 20, "(h7a)MIN SEG 杆有真实宽度");
+            const b0 = await readVal("wave-seg-minlen");
+            await mouse("mousePressed", tm.x - tm.w * 0.25, tm.y);
+            await mouse("mouseMoved", tm.x + tm.w * 0.25, tm.y);
+            await mouse("mouseReleased", tm.x + tm.w * 0.25, tm.y);
+            const r0 = await readVal("wave-seg-minlen");
+            check(r0 !== b0, `(h7b)拖动改了值(${b0} → ${r0})`);
+            const ss = [];
+            for (let i = 0; i < 5; i++) {
+                await sleep(40);
+                ss.push(await readVal("wave-seg-minlen"));
+            }
+            eq(
+                ss.filter((v) => v !== r0),
+                [],
+                "(h7c)**MIN SEG 松手后回推追平之前,读数一拍都没弹回旧值**",
+            );
+        }
+        await sleep(700);
+
+        // ---- (h8) 追不平的那一档:兜底到点必须放开 ----
+        // 松手之后引擎侧的值被**别处**改掉(另一实例 / 自动化;这里直接打 mock),回推永远
+        // 等不到发出去的那个值 ⇒ 只能靠 PARAM_ECHO_HOLD_MS 兜底放开,否则读数永远停在
+        // 用户放下的值上、与引擎不一致。
+        {
+            const tr2 = await centerOf(TRACK("wave-vad-threshold"));
+            await mouse("mousePressed", tr2.x + tr2.w * 0.2, tr2.y);
+            await mouse("mouseMoved", tr2.x - tr2.w * 0.2, tr2.y);
+            await mouse("mouseReleased", tr2.x - tr2.w * 0.2, tr2.y);
+            const rel2 = await readVal("wave-vad-threshold");
+            const other = await evaluate(
+                IN_ASYNC(`const mk = w.__SCVB_MOCK__;
+                    const snap = await mk.requestInitialState();
+                    const vad = { ...((snap.analysis || {}).vad || {}) };
+                    vad.threshold_db = vad.threshold_db <= -55 ? -25 : -55;
+                    mk.setVadParams(vad);
+                    return vad.threshold_db;`),
+            );
+            check(Number.isFinite(other), `(h8a)松手后引擎侧被改成 ${other}`);
+            check(
+                await waitFor(
+                    IN(`const el = gb("wave-vad-threshold-val");
+                        return !!el && el.textContent.trim() !== ${JSON.stringify(rel2)};`),
+                    3000,
+                ),
+                "(h8b)**追不平时兜底到点放开**,读数跟上引擎(不永远停在松手的值上)",
+            );
+        }
     }
     assertClean("④ Tab3 滑杆");
 
