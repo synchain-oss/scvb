@@ -1253,7 +1253,6 @@ export function createTabWave(opts) {
         // ⇒ 第一根的 releaseSlider 永不执行、脏位卡死。
         // [SL-497] 在飞写:{vad|seg: {sent, at}} —— 见 paramEchoPending()。
         paramInflight: { vad: null, seg: null },
-        paramHoldTimer: 0,
         lastParamSend: 0, // ≤50Hz 节流账(Date.now 系)
         paramTimer: 0, // 节流尾包计时器
         countdownApi: null, // "vad"|"segmentation":倒计时条挂起中(A-01)
@@ -1649,16 +1648,13 @@ export function createTabWave(opts) {
         }
     }
 
-    /** [SL-497] 记下这一发:state 回推追平它之前,render() 不拿回推覆盖本地乐观值。 */
+    /**
+     * [SL-497] 记下这一发:state 回推追平它之前,render() 不拿回推覆盖本地乐观值。
+     * 兜底到点之后由**下一次** render 放开(不另起定时器:追不平只发生在 native 规整过
+     * 数值时,那时本地显示的就是用户放下的值;任何一帧 state / params 事件都会带来那次 render)。
+     */
     function notePending(key, vals) {
         local.paramInflight[key] = { sent: { ...vals }, at: nowMs() };
-        // 到点兜底放开之后要有人再投影一次(追不平的那一档,否则会停在乐观值上)。
-        // 单槽:拖动期 ≤50Hz 连发,只留最后一发的那一次。
-        clearTimeout(local.paramHoldTimer);
-        local.paramHoldTimer = setTimeout(
-            requestRender,
-            PARAM_ECHO_HOLD_MS + 20,
-        );
     }
 
     /**

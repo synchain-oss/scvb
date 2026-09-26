@@ -1159,7 +1159,6 @@ export function createTabTracks(opts) {
             k,
             setTimeout(() => {
                 local.manualTimers.delete(k);
-                local.manualQueued.delete(k);
                 fireQueued(ch, dim, v);
             }, MANUAL_COMMIT_MS),
         );
@@ -1194,7 +1193,6 @@ export function createTabTracks(opts) {
             const q = local.manualQueued.get(k);
             clearTimeout(local.manualTimers.get(k));
             local.manualTimers.delete(k);
-            local.manualQueued.delete(k);
             if (q) landed.push(fireQueued(q.ch, q.dim, q.v));
         }
         if (local.drag && local.drag.kind !== "width") cancelDrag();

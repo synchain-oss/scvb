@@ -447,9 +447,10 @@ export function createCurveEditor(opts) {
         shift: false,
         commitTimer: 0,
         // [SL-460] 防抖在飞的那一发**提交什么、属于哪一版**({next, srcVersion} | null)。
-        // 与 commitTimer 同生共死(只在 armCommit 写、在定时器开火 / flushPending /
-        // abortEdit 三处清):定时器的闭包里也有这两样,但闭包拿不出来 —— 冲刷要在
-        // 定时器之外**按原样**提交同一发。
+        // 定时器的闭包里也有这两样,但闭包拿不出来 —— 冲刷要在定时器之外**按原样**提交
+        // 同一发。**「在飞」只以 commitTimer 为准**:本字段只在 armCommit 写、从不清;
+        // 定时器开火 / 被冲刷 / 被 abortEdit 清掉之后它留着旧值,而 flushPending 先看
+        // commitTimer 再读它(与 tab-tracks 的 manualQueued 同一口径)。
         pendingCommit: null,
         // [SL-499] 上一次 render() 看到的只读位;翻转时补一次 syncToolbar()(收起工具条)。
         readOnlySeen: false,
@@ -925,7 +926,6 @@ export function createCurveEditor(opts) {
         if (!hasPendingEdit()) return false;
         clearTimeout(local.commitTimer); // ①
         local.commitTimer = 0;
-        local.pendingCommit = null;
         if (
             local.dragPointerId !== null &&
             canvas.releasePointerCapture &&
@@ -972,7 +972,6 @@ export function createCurveEditor(opts) {
         if (local.commitTimer && p) {
             clearTimeout(local.commitTimer);
             local.commitTimer = 0;
-            local.pendingCommit = null;
             local.flushes++;
             landed = commit(p.next, p.srcVersion);
         }
@@ -995,7 +994,6 @@ export function createCurveEditor(opts) {
             // 永久为真 => abortEdit() 的早退再也挡不住空跑,aborts 变成「按了几次
             // undo」而不是「中止了几次」。这是轮 1 补丁(早退 + render 闸)的副作用。
             local.commitTimer = 0;
-            local.pendingCommit = null;
             commit(next, srcVersion);
         }, 140);
     }

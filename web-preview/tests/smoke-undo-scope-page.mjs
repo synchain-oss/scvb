@@ -992,6 +992,56 @@ try {
                 1,
                 "(f2d)防抖窗走完后仍恰一次(冲刷时定时器已清,不会再补发)",
             );
+
+            // ---- 「等回执」:undo 要等冲刷那一发**落地**才发 ----
+            // 只看调用顺序的话,flushPending 不 await 回执也照样「先调 setPanCurve 后调 undo」
+            // (调用本身是同步发出的),这一格就钉不住 await。把 mock 的 setPanCurve 包成晚
+            // 300ms 才回,记下「回来了」的时刻,断它排在 undo 之前。
+            check(
+                await evaluate(
+                    IN(`const mk = w.__SCVB_MOCK__;
+                        if (!mk.__origSPC3) mk.__origSPC3 = mk.setPanCurve;
+                        mk.setPanCurve = function (...a) {
+                            return new Promise((r) => setTimeout(() => {
+                                w.__scopeLog.push("setPanCurve:done");
+                                r(mk.__origSPC3.apply(mk, a));
+                            }, 300));
+                        };
+                        return true;`),
+                ),
+                "(f3a)setPanCurve 已包成晚 300ms 回执",
+            );
+            await sleep(300);
+            const L3 = await evaluate(IN(`return w.__scopeLog.length;`));
+            await bump(2.5);
+            await pressCtrlZ();
+            check(
+                await waitFor(
+                    IN(`return w.__scopeLog.slice(${L3}).includes("undo");`),
+                    3000,
+                ),
+                "(f3b)undo 到达桥面",
+            );
+            {
+                const seq = await evaluate(
+                    IN(`return w.__scopeLog.slice(${L3});`),
+                );
+                const iD = seq.indexOf("setPanCurve:done");
+                const iU = seq.indexOf("undo");
+                check(
+                    iD >= 0 && iU >= 0 && iD < iU,
+                    `(f3c)**undo 等到冲刷那一发的回执之后才发**(实得 ${JSON.stringify(seq)})`,
+                );
+            }
+            check(
+                await evaluate(
+                    IN(`const mk = w.__SCVB_MOCK__;
+                        if (mk.__origSPC3) { mk.setPanCurve = mk.__origSPC3; delete mk.__origSPC3; }
+                        return true;`),
+                ),
+                "(f3d)已还原 mock 的 setPanCurve",
+            );
+            await sleep(600);
         }
     }
     assertClean("④b Q 滑杆防抖");

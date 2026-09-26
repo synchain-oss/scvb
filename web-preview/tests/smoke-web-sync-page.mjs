@@ -618,6 +618,55 @@ try {
             "(t7)防抖窗走完后 setTrackManual 仍恰一次(冲刷那一发之后定时器没再开火)",
         );
 
+        // ---- 「等回执」:undo 要等冲刷那一发**落地**才发,不只是排在它后面发 ----
+        // 把 mock 的 setTrackManual 包成晚 300ms 才回,记下「回来了」的时刻 ——
+        // 只看调用顺序的话,不 await 回执也照样先调后调,这一格就钉不住 await。
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (!mk.__origTM) mk.__origTM = mk.setTrackManual;
+                    mk.setTrackManual = function (...a) {
+                        return new Promise((r) => setTimeout(() => {
+                            w.__syncLog.push({ n: "setTrackManual:done", a: [] });
+                            r(mk.__origTM.apply(mk, a));
+                        }, 300));
+                    };
+                    return true;`),
+            ),
+            "(t7a)setTrackManual 已包成晚 300ms 回执",
+        );
+        check((await focusEl(COLLAR)) === "ok", "(t7b)焦点仍在卡箍上");
+        i0 = await logLen();
+        await arrowUp();
+        await pressCtrlZ();
+        check(
+            await waitFor(
+                IN(
+                    `return w.__syncLog.slice(${i0}).some((e) => e.n === "undo");`,
+                ),
+                3000,
+            ),
+            "(t7c)undo 到达桥面",
+        );
+        {
+            const seq = await logSince(i0);
+            const iD = seq.indexOf("setTrackManual:done");
+            const iU = seq.indexOf("undo");
+            check(
+                iD >= 0 && iU >= 0 && iD < iU,
+                `(t7d)**undo 等到冲刷那一发的回执之后才发**(实得 ${JSON.stringify(seq)})`,
+            );
+        }
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (mk.__origTM) { mk.setTrackManual = mk.__origTM; delete mk.__origTM; }
+                    return true;`),
+            ),
+            "(t7e)已还原 mock 的 setTrackManual",
+        );
+        await sleep(400);
+
         // ---- 实验臂:方向键后立刻切版本 ⇒ 那一发先于 setVersionActive ----
         check((await focusEl(COLLAR)) === "ok", "(t8)切版本臂:焦点仍在卡箍上");
         i0 = await logLen();
@@ -879,6 +928,11 @@ try {
         );
         const ab = await waveDiag();
         eq(ab.knobDrag, false, "(s14)Ctrl+Z ⇒ 检查器拖动被中止");
+        eq(
+            ab.echo.pan,
+            undefined,
+            "(s14b)Ctrl+Z ⇒ 那一维的乐观回声一并丢弃(旋钮回到引擎值,不显示一个没提交的数)",
+        );
         await mouse("mouseReleased", knob.x, knob.y - 26);
         await sleep(400);
         eq(
@@ -929,9 +983,11 @@ try {
         await sleep(700);
 
         // ---- (b) [SL-496] 键盘操作途中(任意一根杆计时挂着)state 回推不覆盖 ----
-        // 回推造法:直接打 mock 的 setVadParams —— 引擎侧阈值真的变了、§2.1 回推照常来。
-        // 键盘操作挂在**分段组**的杆上、回推改的是 **VAD 组** ⇒ VAD 组没有在飞写
-        // (SL-497 的回声闸不在场),挡住覆盖的只可能是「有杆的键盘计时挂着」这一道。
+        // 回推造法:直接打 mock 的 setVadParams —— 引擎侧阈值真的变了、§2.1 回推照常来
+        // (mock 的回推固定晚 250ms,SL-357)。键盘操作挂在**分段组**的杆上、回推改的是
+        // **VAD 组** ⇒ VAD 组没有在飞写(SL-497 的回声闸不在场),挡住覆盖的只可能是
+        // 「有杆的键盘计时挂着」这一道。⚠ 回推要在**计时还挂着的时候**到:所以注入之后
+        // 每 100ms 按一次方向键、连按 600ms,在这段中途(注入后约 450ms,回推已到)读数。
         const thr0 = await readVal("wave-vad-threshold");
         check(
             (await focusEl(TRACK("wave-seg-minlen"))) === "ok",
@@ -944,15 +1000,29 @@ try {
                 const vad = { ...((snap.analysis || {}).vad || {}) };
                 vad.threshold_db = vad.threshold_db <= -50 ? -30 : -50;
                 mk.setVadParams(vad);
+                w.__injectAt = performance.now();
                 return vad.threshold_db;`),
         );
         check(Number.isFinite(injected), `(k6)回推已注入(阈值 → ${injected})`);
-        await sleep(120); // 回推到达 + 一帧 render,仍在 250ms 计时窗内
-        eq(
-            await readVal("wave-vad-threshold"),
-            thr0,
-            "(k7)**有杆的键盘计时挂着时,state 回推不覆盖本地**",
-        );
+        let midRead = null;
+        let midPending = null;
+        for (let i = 0; i < 6; i++) {
+            await sleep(100);
+            await arrowRight();
+            if (i === 3) {
+                midRead = await readVal("wave-vad-threshold");
+                midPending = (await waveDiag()).sliderKeyTimers;
+                const since = await evaluate(
+                    IN(`return performance.now() - w.__injectAt;`),
+                );
+                check(
+                    since > 300,
+                    `(k6b)读数时回推已经到了(注入后 ${Math.round(since)}ms > 250ms 回推延迟)`,
+                );
+            }
+        }
+        eq(midPending, 1, "(k6c)读数那一刻 MIN SEG 的键盘计时确实挂着");
+        eq(midRead, thr0, "(k7)**有杆的键盘计时挂着时,state 回推不覆盖本地**");
         await sleep(900);
         check(
             (await readVal("wave-vad-threshold")) !== thr0,
@@ -961,19 +1031,8 @@ try {
         await sleep(700);
 
         // ---- (c) [SL-497] 指针拖完松手 ⇒ 回推追平之前读数不许弹回 ----
-        // 造「回推带着旧值」的窗:把 mock 的 setVadParams 包成晚 400ms 才落地。
-        check(
-            await evaluate(
-                IN(`const mk = w.__SCVB_MOCK__;
-                    if (!mk.__origVad) mk.__origVad = mk.setVadParams;
-                    mk.setVadParams = function (p) {
-                        return new Promise((r) =>
-                            setTimeout(() => r(mk.__origVad(p)), 400));
-                    };
-                    return true;`),
-            ),
-            "(h0)setVadParams 已包成晚 400ms 落地",
-        );
+        // 窗是现成的:mock 的 §2.1 回推固定晚 250ms(与真桥同形,SL-357)⇒ 松手那一拍
+        // state 里还是拖动之前的值。这段时间里若有任何一拍拿 state 覆盖,读数就弹回 before。
         const tr = await centerOf(TRACK("wave-vad-threshold"));
         check(
             tr && tr.w > 20,
@@ -983,12 +1042,12 @@ try {
         await mouse("mousePressed", tr.x - tr.w * 0.3, tr.y);
         await mouse("mouseMoved", tr.x + tr.w * 0.3, tr.y);
         await mouse("mouseReleased", tr.x + tr.w * 0.3, tr.y);
+        const tRel = Date.now();
         const released = await readVal("wave-vad-threshold");
         check(released !== before, `(h2)拖动改了值(${before} → ${released})`);
-        // 引擎侧在 400ms 内还是旧值;这段时间里若有任何一拍拿 state 覆盖,读数就弹回 before。
         const samples = [];
-        for (let i = 0; i < 6; i++) {
-            await sleep(50);
+        for (let i = 0; i < 5; i++) {
+            await sleep(40);
             samples.push(await readVal("wave-vad-threshold"));
         }
         eq(
@@ -996,24 +1055,25 @@ try {
             [],
             "(h3)**松手后回推追平之前,读数一拍都没弹回旧值**",
         );
-        await sleep(900);
+        // 追平即放开:回推约 250ms 到,**早于** 500ms 兜底 ⇒ 放开必须来自「值相等」那一支。
+        check(
+            await waitFor(
+                IN(
+                    `return w.__SCVB_OUTPUT__.wave().paramInflight.vad === false;`,
+                ),
+                3000,
+            ),
+            "(h4)在飞写已结清",
+        );
+        const settleMs = Date.now() - tRel;
+        check(
+            settleMs < 470,
+            `(h5)**回推追平即放开**,不是等 500ms 兜底(松手后 ${settleMs}ms 结清)`,
+        );
         eq(
             await readVal("wave-vad-threshold"),
             released,
-            "(h4)回推追平后读数仍是松手的值",
-        );
-        eq(
-            (await waveDiag()).paramInflight.vad,
-            false,
-            "(h5)在飞写已结清(回推追平即放开)",
-        );
-        check(
-            await evaluate(
-                IN(`const mk = w.__SCVB_MOCK__;
-                    if (mk.__origVad) { mk.setVadParams = mk.__origVad; delete mk.__origVad; }
-                    return true;`),
-            ),
-            "(h6)已还原 mock 的 setVadParams",
+            "(h6)结清后读数仍是松手的值",
         );
     }
     assertClean("④ Tab3 滑杆");
@@ -1274,6 +1334,15 @@ try {
             ),
             "1",
             "(r13)卡片挂上只读态",
+        );
+        eq(
+            await evaluate(
+                IN(
+                    `return gb("master-pancurve-canvas").getAttribute("aria-disabled");`,
+                ),
+            ),
+            "true",
+            "(r13b)画布 aria-disabled=true(读屏同步知道它不可改)",
         );
         c0 = await commits();
         await wheel();
