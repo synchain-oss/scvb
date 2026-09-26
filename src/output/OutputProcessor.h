@@ -499,6 +499,12 @@ private:
 
     // [A] processBlock 的一段(§5.2 步骤 3 起):处理 buffer 的 [offset, offset+n),
     // n ≤ preparedMaxBlock_(内部缓冲的定长);t0 = 该段首样本的时间线位置。[SL-487]
+    // 正常块长下只有一段,与分段前逐位相同。超长块才会分段,下面三处因此按「段」而不是按「块」发生:
+    //   · 电平(publishMeters / publishSilentMeters)每段发一次,后发覆盖先发 —— 电平表看到的是
+    //     **最后一段**,不是整块的最坏值;
+    //   · authority_.processBlock 每段调一次:DspArbiter 判换表看 LUT 指针、判换版本看快照指针,
+    //     同一宿主块内两者不变,不会误触发 30ms 切换斜坡;
+    //   · 负 t0 按段判:跨过 0 的超长块前几段直通、后几段混音,中间经 busXfade 等功率交叉。
     void renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0);
 
     // [A] 本块电平测量并发布(§2.5 数据面)。hasData/nch 为本块读环结果,trackGain 为本块
@@ -680,7 +686,7 @@ private:
     int64_t lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     uint32_t podEpoch_ = 0;
-    std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
+    std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数(超长块按段计,见 renderSpan)/ [M] 仅 DBG
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
     std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
     // 求值曲线修订号:**每次 rebuildAllCurves 都 +1**,涵盖所有段编辑路径(editSegment /
@@ -716,7 +722,7 @@ private:
     // 用途:轨刚离开 inject(面板关轨)时,它的 80ms 淡出还要乘在真样本上 —— 所以这一段
     // 仍要读它的环。只认「上一段真混进过」而不是只看 fade 当前值:直通 / 观察 / 无注入这些
     // 早退路径不推进 fade,残留的 fade 值不代表它刚才在响。每段开头取出即清,只有走完
-    // 混音路径才重写,任何早退都让它归零。
+    // 混音路径才重写,任何早退都让它归零;prepareToPlay 也清(理由见那里)。
     scvb::u32 releasableMask_ = 0;
 
     // [M] 状态。

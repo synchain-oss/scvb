@@ -10175,9 +10175,10 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
 // Output 按 preparedMaxBlock_ 分段把整块处理完。修前 `n = jmin(numSamples, preparedMaxBlock_)`
 // 后只处理前 n 个样本,buffer 是就地处理 ⇒ 尾段原样留着宿主传入的干信号。
 //
-// ⚠ 本格只钉 **Output 侧**。Input 侧写环按 `planBlock` 的 captureSamples 夹取(采集/写环只写
-// 前 preparedMaxBlock 个样本),超长块的尾段在环里是洞,Output 读不到 —— 那半不在本卡范围。
-// 所以这里让 Input 按正常块长分段写同一段时间线,只把超长块喂给 Output,隔离出 Output 的行为。
+// ⚠ 本卡只修 Output 侧;导出断音要连 Input 采集一起分段,见 SL-523。Input 侧写环按 `planBlock`
+// 的 captureSamples 夹取(采集/写环只写前 preparedMaxBlock 个样本),超长块的尾段在环里是洞,
+// Output 读不到。所以这里让 Input 按正常块长分段写同一段时间线,只把超长块喂给 Output,
+// 隔离出 Output 的行为。
 //
 // 判据形态照 SL-210:干信号用 L=+0.9 / R=-0.9 反相记号(混音是同一条正弦的 L≈R,不可能凑出
 // 这一对),尾段只要有一个样本没被替换就会原样露出它;另断尾段真的带着混音(不是被清成 0)。
@@ -10454,6 +10455,47 @@ TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被�
     }
 }
 
+TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成释放中续读", "[host][sl488]")
+{
+    // 「刚混进过」的记账跨 releaseResources → prepareToPlay 不得存活。不能指望 prepare 后首段必走
+    // 早退:本类 25Hz Timer 从不停,首块之前 [M] 已重新 claim、把 inject 填回来;channelFade_ 的
+    // 当前值也跨 prepare 存活(reset 只换档)。两者凑齐,release 期间关掉的 ch1 会从 1 淡出、响 80ms。
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
+
+    r.out.releaseResources();
+    setTrackEnabled(r.out, 1, false);
+    r.out.prepareToPlay(kSr, kBlock);
+    // 只停用/重启 Output 所在轨、别的轨照常在播(宿主里最常见的一幕):Input 继续推块、Output 不推。
+    // Input 必须在推 —— 写头冻结 ≥ kSuspendStallMs(500ms)该轨就判挂起、退出 inject,首块反而走
+    // 早退把记账清掉,这一格就什么都证明不了(第一版用例只 pump 不推块,删掉复位行照样绿,就是这个原因)。
+    // 推满 ~0.7s:[M] 重新 claim、重新绑定、走完 [J32] 200ms 注入延迟,inject 在 Output 首块之前已填回。
+    for (int k = 0; k < 35; ++k)
+    {
+        for (int i = 0; i < MonoMultiRig::kCount; ++i)
+        {
+            if (i == 0)
+            {
+                Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+            }
+            else
+            {
+                r.inBuf.clear();
+            }
+            r.ins[static_cast<std::size_t>(i)]->processBlock(r.inBuf, r.midi);
+        }
+        r.ph.timeSamples += kBlock;
+        MonoMultiRig::pump(20);
+    }
+
+    for (int k = 0; k < 10; ++k)
+    {
+        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
+    }
+}
+
 // ===========================================================================
 // [SL-485] 采样率变化 = 采集特征硬失效(04 §4.5「立即全局 stale」)。
 //
@@ -10462,8 +10504,8 @@ TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被�
 // restoreFeatures 也逐轨写进了 FrameStore,只是没人读。现在:
 //   ① 有覆盖的轨,采集采样率 ≠ 当前采样率 ⇒ captureStale(§2.8 channels[].stale,既有的 ⚠);
 //   ② 保存时 FEAT 写采集采样率,不写当前值(否则存一次判据就永久丢了);
-//   ③ 该轨在当前采样率下重采(拉到新特征)⇒ 采集采样率跟着更新、提示撤下
-//      (与 fingerprint 失配「拉到新特征即作废」同一个口径)。
+//   ③ 采集采样率只在「空轨第一次落账」时记成当前值:非空轨上只重采一段不撤 ⚠(采集率是整轨
+//      一个标量,那一段之外仍按旧采样率漂移);清除该轨采集数据后再重采才撤。
 // 用例按落点各有一行 CHECK;运行期改采样率走同一判据,顺带钉住「改回原采样率即撤」。
 // ===========================================================================
 namespace
@@ -10484,7 +10526,7 @@ std::uint32_t savedFeatSampleRate(ScvbOutputAudioProcessor& out)
 }
 } // namespace
 
-TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保存保留采集率;重采即撤", "[host][sl485]")
+TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保存保留采集率;清除后重采才撤", "[host][sl485]")
 {
     Rig r;
     r.ph.playing = true;
@@ -10527,6 +10569,15 @@ TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保�
 
     // ② 保存:FEAT 仍记 44100(写当前值就是 48000,重开即丢提示)。
     CHECK(savedFeatSampleRate(r.out) == 44100u);
+    // ②a 往返:把刚存的 state 原样装回来,提示仍在(存盘若写成当前值,装回来就不亮了)。
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        r.out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        Rig::pumpMessages(100);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 1.0).coveredS > 0.0);
+        CHECK(r.out.captureStale(kTestChannel));
+    }
     // ②b 未 prepare 时保存(releaseResources 后 sr=0,没有当前值可比):同样记采集率,不落回默认 48000。
     r.out.releaseResources();
     CHECK(savedFeatSampleRate(r.out) == 44100u);
@@ -10542,18 +10593,29 @@ TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保�
     r.out.prepareToPlay(kSr, kBlock);
     CHECK(r.out.captureStale(kTestChannel));
 
-    // ③ 在 48k 下重采这条轨 ⇒ 采集采样率更新为 48000、提示撤下,再保存记的也是 48000。
+    // ③a 非空轨上在 48k 下只重采一段(采集开着播几秒)⇒ 覆盖确实长了,但 ⚠ 不撤:
+    //     旧的那 64 个 hop 仍是 44.1k 下的,整轨标成 48k 就是静默漂移。
     REQUIRE(r.waitUntilInjected());
+    const double coveredBefore = r.out.coverageOf(kTestChannel, 0.0, 600.0).coveredS;
     r.out.setCaptureEnabled(true);
     Rig::pumpMessages(400);
-    bool cleared = false;
-    for (int round = 0; round < 40 && !cleared; ++round)
+    r.runBlocks(200, 0.5f, /*pumpEveryN=*/4, /*pumpMs=*/6);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 600.0).coveredS > coveredBefore); // 前提:确实重采到了
+    CHECK(r.out.captureStale(kTestChannel));
+
+    // ③b 清除这条轨的采集数据(轨变空)→ 继续采 ⇒ 空轨第一次落账记成 48000,⚠ 撤下;再存记 48000。
+    r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), 0.0, 1.0e6);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 600.0).coveredS == 0.0);
+    bool recaptured = false;
+    for (int round = 0; round < 40 && !recaptured; ++round)
     {
         r.runBlocks(20, 0.5f, /*pumpEveryN=*/4, /*pumpMs=*/6);
         Rig::pumpMessages(40);
-        cleared = !r.out.captureStale(kTestChannel);
+        recaptured = r.out.coverageOf(kTestChannel, 0.0, 600.0).coveredS > 0.0;
     }
-    CHECK(cleared);
+    REQUIRE(recaptured);
+    CHECK_FALSE(r.out.captureStale(kTestChannel));
     CHECK(savedFeatSampleRate(r.out) == 48000u);
     r.out.setCaptureEnabled(false);
 }

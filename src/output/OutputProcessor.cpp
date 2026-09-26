@@ -137,6 +137,11 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     {
         f.reset(sr, 0.080);
     }
+    // [SL-488] 重新 prepare = 音频流重起,上一轮「刚混进过」的记账作废。不能指望 prepare 后首段
+    // 必走早退:本类 25Hz Timer 从不停,首块之前 [M] 可能已重新 claim 并把 inject 填回来;而
+    // channelFade_.reset() 只换档、不改当前值 —— 两者凑齐,一条 release 期间被关掉的轨会被当成
+    // 释放中读环、响 80ms。连调两次 prepareToPlay(中间不 release)时 inject 不被清,同样靠这一行挡。
+    releasableMask_ = 0;
 
     // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启打印 Timer,见 startPrinting)。
     rebindVersion();
@@ -174,15 +179,17 @@ void ScvbOutputAudioProcessor::releaseResources()
     {
         vizTimer_->stopTimer();
     }
-    const juce::ScopedLock lock(lifecycleMutex_);
-    session_.release(scvb::steadyNowMs());
-    vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
-    // [SL-489] 先停打印 Timer、再闭合 gesture。只闭不停的话,播放头快照只在 processBlock 里
+    // [SL-489] 先停打印 Timer、再(锁内)闭合 gesture。只闭不停的话,播放头快照只在 processBlock 里
     // 发布、停用后冻在最后一次 playing 的那一帧,打印器的三道防护(非 Print / 非 playing /
     // 无时间线)对这份冻结快照一道都不开火 —— 下一拍 tick 就把刚闭合的 gesture 重新打开,
     // 宿主 Write/Touch 档下车道被卡住的值占着,且 gesture 永不闭合。prepareToPlay 的
     // startPrinting 是对称的恢复点。**本类自己的 25Hz Timer 不停**:心跳与 owner.lock 续租挂在上面。
+    // 停 Timer 与上面的 viz 定时器同样放在锁外(SL-192 的顺序):打印 tick 今天不取 lifecycleMutex_,
+    // 但别让「不死锁」依赖这条没人盯的前提。
     printer_.stopPrinting();
+    const juce::ScopedLock lock(lifecycleMutex_);
+    session_.release(scvb::steadyNowMs());
+    vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
     printer_.endAllGestures();
     prepared_ = false;
     sampleRate_.store(
@@ -1545,8 +1552,10 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
     // [SL-485] FEAT 节的 sampleRate 写**采集**采样率,不写当前采样率(节布局不变,仍是一个字段)。
     // 写当前值的话:44.1k 采的特征在 48k 下存一次就被改标成 48k,重开时「采样率已变」这条硬失效
     // (04 §4.5)永久丢失,段表照旧静默漂移;未 prepare 就保存(sr=0)也会被改标成默认 48k。
-    // 各轨采集率不一致(部分轨已在新采样率下重采)时取与当前不同的那一个 —— 节里只有一个字段,
-    // 宁可让已重采的轨重开后也亮 ⚠(保守、可由再次重采撤下),也不让没重采的轨丢掉提示。
+    // 各轨采集率不一致(部分轨已在新采样率下重采)时,取通道号最小的那条「与当前不同」的轨 ——
+    // 节里只有一个字段,宁可让已重采的轨重开后也亮 ⚠,也不让没重采的轨丢掉提示。代价:这样一份
+    // 混合采样率工程**跨存盘撤不掉** ⚠,要把所有有覆盖的轨都在当前采样率下重采才行(逐轨记采样率
+    // 要动 FEAT 布局 = 契约变更,不在本卡)。
     const double curSr = sampleRate_.load(std::memory_order_relaxed);
     std::uint32_t sr = curSr > 0.0 ? static_cast<std::uint32_t>(std::llround(curSr)) : scvb::state::kDefaultSampleRate;
     {
@@ -1889,7 +1898,7 @@ bool ScvbOutputAudioProcessor::featureSampleRateStale(int channel) const
         return false; // 没有数据就没有「过期」:空轨的采集采样率无意义
     }
     // 采集采样率的两个来源:加载时取 FEAT 节记录的 sampleRate(restoreFeatures 逐轨写入);
-    // 运行期该轨每拉到新特征就记成当前值(OutputSession::pullFeatures)。按整数 Hz 比。
+    // 运行期该轨原本为空、第一次落账时记成当前值(OutputSession::pullFeatures)。按整数 Hz 比。
     return std::llround(frames.sampleRate()) != std::llround(sr);
 }
 
