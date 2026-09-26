@@ -834,8 +834,8 @@ export const T = {
         // **只提示,不自动失效、不阻断任何操作**(04 §4.5 UI 条)。
         "banner.staleCapture":
             "{m} 轨的上游音频与已采集特征不一致,建议重新采集",
-        // [SL-239] 横幅 ⑨:采集 ON 期间上一条提示整条是哑的(FeatRing::accumulateFp 的
-        // `if (capturing) return;` —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。
+        // [SL-239] 横幅 ⑨:采集 ON 期间上一条提示整条是哑的(FeatRing::accumulateFp
+        // 末尾那道上报闸里的 capturing 条件 —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。
         // 用户按终验清单做「改狠上游 EQ → 应出 ⚠」时采集通常还开着,于是他看到的是
         // 「提醒没了」而查不出原因;文案必须把**可执行动作**说出来,不能只说状态。
         "banner.fpPausedByCapture":

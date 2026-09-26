@@ -780,7 +780,7 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         // ---- [SL-239] 横幅 ⑨「采集开着 ⇒ 上游改动比对已暂停」的数据面与接线面 ----
         //
         // 立卡:v5.6.2 实测里 #146 合入后用户仍等不到 ⚠。定谳 = 链没断,断的是
-        // **采集 ON 期间整条比对是哑的**(FeatRing::accumulateFp 的 `if (capturing) return;`),
+        // **采集 ON 期间整条比对是哑的**(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件),
         // 而终验清单没有一句叫用户先关采集。引擎侧那一半由 harness 的
         // `HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗` 钉住;
         // DOM 侧由 smoke-output-stale-page.mjs 在无头 Chrome 里正反向各渲染一次;

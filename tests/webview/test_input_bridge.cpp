@@ -82,7 +82,7 @@ TEST_CASE("T30 claim 六值映射列全([R3 收口] unassigned|idle|active|confl
     CHECK(claimValue(InputClaimState::kUnassigned, true, true) == "unassigned");
     CHECK(claimValue(InputClaimState::kConflict, true, true) == "conflict");
     CHECK(claimValue(InputClaimState::kAbiMismatch, true, true) == "abiMismatch");
-    CHECK(claimValue(InputClaimState::kUnavailable, true, true) == "idle"); // I0 段未打开 → idle
+    CHECK(claimValue(InputClaimState::kUnavailable, true, true) == "idle"); // I0(未持有 slot)→ idle
     CHECK(claimValue(InputClaimState::kActive, true, false) == "active");
     CHECK(claimValue(InputClaimState::kActive, false, false) == "idle"); // 已 claim 但 Output 未健康读取
     // srMismatch 只作用于 kActive 且优先于 active/idle(§5.2)。

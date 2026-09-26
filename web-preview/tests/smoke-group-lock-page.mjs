@@ -768,7 +768,7 @@ try {
     assertClean("④ PRINT 态");
 
     // =========================================================================
-    // [SL-412] ⑥ `scvb.error{newerState}` ⇒ 红横幅④(§5.1 九码里这一码的提示面)
+    // [SL-412] ⑥ `scvb.error{newerState}` ⇒ 红横幅④(§5.1 错误码表里这一码的提示面)
     //
     // 为什么搭本套的车:① 已经在**同一个页面、同一条路径**上断「error 码 → 屏上那条横幅」
     // (横幅② 的显隐 + 占位符替换),而 CDP/无头 Chrome 那段脚手架是全套里最贵的部分;
@@ -786,7 +786,7 @@ try {
     // (`{local_abi, project_abi}` 之类)时,横幅会渲染成「本机 abi undefined / 工程 abi
     // undefined」—— 「横幅出现了」照样绿,而这句话唯一有信息量的部分没了。
     log(
-        "=== ⑥ [SL-412] scvb.error{newerState} ⇒ 红横幅④(§5.1 九码的提示面)===",
+        "=== ⑥ [SL-412] scvb.error{newerState} ⇒ 红横幅④(§5.1 错误码的提示面)===",
     );
     // ⚠ **不能用 `w.__SCVB_MOCK__.emit`** —— `__SCVB_MOCK__` 是 `createBridge` 的
     // `mockBackend`,上面**只有桥面那些上行函数 + `addEventListener`**,**没有 `emit`**

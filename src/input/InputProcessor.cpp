@@ -45,7 +45,8 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
 
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     preparedMaxBlock_ = samplesPerBlock > 0 ? samplesPerBlock : 512;
-    // [J57] 声道检测:prepareToPlay 依轨道布局判定 channels ∈ {1,2},运行期不变(写进 AudioRingHeader)。
+    // [J57] 声道检测:每次 prepareToPlay 依轨道布局判定 channels ∈ {1,2}(写进 AudioRingHeader;
+    // 布局变了会原地改写段头几何,见 InputSession::prepare)。
     srcChannels_ = (getMainBusNumInputChannels() == 1) ? 1 : 2;
     capInterleaved_.assign(static_cast<std::size_t>(2) * static_cast<std::size_t>(preparedMaxBlock_), 0.0f);
 
