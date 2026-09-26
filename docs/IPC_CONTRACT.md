@@ -59,15 +59,16 @@ struct AudioRingHeader {              // size 40 align 8
   atomic<u32> abi;                    // 4   = kScvbAbi
   u32 sample_rate;                    // 8
   u32 ring_frames;                    // 12  kDefaultRingFrames = 1<<19 = 524288 帧(≈10.9s @48k;mono/stereo 同帧数,字节数 ×channels)
-  u32 channels;                       // 16  v1.4/J57:1=mono 2=stereo(prepareToPlay 写定,运行期不变)
+  u32 channels;                       // 16  v1.4/J57:1=mono 2=stereo(claim 方在 prepareToPlay 写定;布局变化时原地改写,见下「几何纪律」)
   u32 _pad;                           // 20  对齐 8
   atomic<u64> write_head_samples;     // 24  时间线绝对样本位置:下一帧将写到的 timeline pos
-  atomic<u64> epoch;                  // 32  时间线跳变(定位/循环回跳)时 +1,读方据此丢弃跨代数据
+  atomic<u64> epoch;                  // 32  时间线跳变(定位/循环回跳)或几何改写时 +1,读方据此丢弃跨代数据
 };
 float32 ring[ring_frames*channels]; // v1.4/J57:channels=1|2,stereo 为 interleaved LR(ADR-003 v2.0),地址 = ((timeline_pos & (ring_frames-1)) * channels + c)
 ```
 
 - 写(Input 音频线程):按块以 playhead `timeInSamples` 为地址写入;transport 非线性跳变 → epoch+1 后继续
+- **几何纪律**([SL-505] 按已实现行为订正,见 SL-482 / SL-486):几何字段(`sample_rate` / `ring_frames` / `channels`)由 claim 方在 prepareToPlay 写定,**运行期可原地改写** —— 同一 channel 重新 prepare 时采样率或声道布局变了,或 attach 到一个几何与本次请求不符的存活旧段时,写方就地写新几何、`write_head_samples` 归零、`epoch`+1。段恒按 stereo 容量创建(`ring_frames`×2 个 float),改写不重开段、不扩容;mono 只用前半。读方的音频线程只用 attach 时发布的不可变几何快照,**不每块回读段头几何**;由读方非实时线程周期性按值比对段头几何,不一致即重绑、发布新快照(旧注释口径与订正理由见 `docs/contract-changes/20260926-j106-j107-sl505-contract-supplement.md`)
 - 读(Output 音频线程):按自身块的 [t0,t1) 读取;区间未被覆盖(write_head 落后或 epoch 不符)→ 该轨该块静音 + 失准计数(UI 警告)
 - 单写单读 SPSC;时间线寻址天然容忍预测性引擎的提前写(ADR-002/D5)
 

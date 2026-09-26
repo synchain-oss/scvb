@@ -105,7 +105,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 参数 | `on: bool` |
 | 返回 | `{ok:true}` 或 `{observer:true}` 或 `{ok:false, reason:"noTimeline"}` 或 `{ok:false, reason:"badArg"}`(`on` 不是严格布尔) |
 | 语义 | 写 state `global.capture_enabled`。ON = 对 `{enabled 轨} × {global.range}` 布防;实际写特征段只在「播放中且在 range 内」发生(01 §5.1、04)。变更经 `scvb.state` 回推。<br>**采集态是纯运行时态,不随工程持久化**([J91]:`getStateInformation` 对该字段恒写 `0`,`setStateInformation` 一律忽略、加载后恒为**关**;见 `docs/STATE_SCHEMA.md` §三 `CFGS`)。<br>**副作用(J92a 互斥)**:本函数以 `on=true` 被**用户手动**调用时,同时把 `global.output_enabled` 置 `false`。**布防豁免** —— §1.23 `recaptureArm` 替用户打开采集的那一下**不**触发互斥([J92a],§1.23 裁定① 优先),因此点「重采集选区」**不会**关掉用户的输出引擎。<br>在重采集布防期调用即视为用户**接管**这把闸,撤防不再替他恢复(§1.23 裁定③)。工程恢复那一路不经过本函数。 |
-| 拒绝态 | `noTimeline` 场景下 UI 侧 disabled(05 §2.0 横幅⑥);C++ 侧收到调用时返回 `{ok:false, reason:"noTimeline"}` 并不改 state。**`noTimeline` 场景**的判据与 §5.1 同名 code 的触发条件是同一个(宿主连续 ≥0.5s 不给时间线;[SL-478]),`on` 取 `true`/`false` 一律拒。只读观察态 → `{observer:true}`(不改 state)。判序:`observer` → `noTimeline` → `badArg` |
+| 拒绝态 | **`noTimeline` 场景下允许关、拒绝开**([J107],用户 2026-09-26 裁定;[SL-509]):`on=true` → 返回 `{ok:false, reason:"noTimeline"}` 并不改 state;`on=false` 照常受理(关采集不需要时间线,宿主在采集开着时丢了时间线,用户必须还能关掉它)。UI 侧同口径:此时采集开关只挡「打开」,开着时仍可点关(05 §2.0 横幅⑥)。**`noTimeline` 场景**的判据与 §5.1 同名 code 的触发条件是同一个(宿主连续 ≥0.5s 不给时间线;[SL-478])。只读观察态 → `{observer:true}`(不改 state)。判序:`observer` → `noTimeline`(仅 `on=true` 时)→ `badArg`。<br>⚠ **实现随 [SL-509] 另行落地**;落地之前 C++ 侧、mock 与 UI 仍按改前口径对 `on` 取 `true`/`false` 一律拒(改前原文与改法见变更文档 `docs/contract-changes/20260926-j106-j107-sl505-contract-supplement.md`)。 |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §2.1 ①;**「用户自选采集态」那一句已由 [J91] 删除**(J91 之后采集态不落盘,该说法无持久化含义;[SL-225] PR `#146` 与 [J90] 的旧口径见 git 历史)。当前语义行的两条副作用 —— 不落盘([J91])与互斥([J92a])—— 变更文档 `docs/contract-changes/20260830-j91-capture-not-persisted.md` |
@@ -117,7 +117,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 参数 | `on: bool`(**两态**:ON=引擎驱动参数 write,OFF=follow host;ADR-005 / J08 维持 bool) |
 | 返回 | `{ok:true}` 或 `{observer:true}` 或 `{ok:false, reason:"noTimeline"}` 或 `{ok:false, reason:"badArg"}`(`on` 不是严格布尔) |
 | 语义 | 写 state `global.output_enabled`。ON 且「播放中 ∧ 在 range 内」= PRINT 态(打印头写 gesture);ON 且停止/区间外 = ARMED;OFF = FOLLOW(03 §2.2 三态)。加载守卫未确认时**行为止于 ARMED**(04 §5.3,守卫态见 §2.1 `print_guard`,确认入口 = §1.34 `confirmPrintGuard()`)。<br>**副作用(J92a 互斥)**:本函数以 `on=true` 被**用户手动**调用时,同时把 `global.capture_enabled` 置 `false`(并视为用户**接管**采集闸,清 `recaptureAutoEnabledCapture`)。若此时正处于 §1.23 重采集布防期,**本次重采集当场作废**(采集被关,门控失去意义);**布防位保留不自动撤防** —— 撤了用户就丢了刚拖出来的工作选区且毫无痕迹,留着则 `recapture.armed ∧ !capture_enabled` 这个组合本身即可观测的证据,UI 据它出**醒目但非阻塞**的提示(横幅,**不弹确认框**,沿 [J85] 口径),不新增契约字段。该提示同时覆盖另一条路:用户在布防期手动**关**采集(§1.23 裁定③ 的「接管」)落到同一组合。 |
-| 拒绝态 | 同 1.2(`observer` / `noTimeline` / `badArg` 三支与判序) |
+| 拒绝态 | 同 1.2(`observer` / `noTimeline` / `badArg` 三支与判序),**唯一差别**:`noTimeline` 场景下本函数 `on` 取 `true`/`false` **一律拒**(§1.2 的「允许关」只裁了采集开关,[J107] 不涉及输出开关) |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §2.1 ① |
@@ -190,6 +190,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true}` 或 `{rejected:"printing"}` |
 | 语义 | 写 state `global.version_active`(**非自动化参数**,ADR-005:切换零 gesture、零自动化污染)。切换后 C++ **全量重发** `scvb.params`(`full:true`,`hostEcho:false`)以刷新新激活版本的 60 个每轨参数,**并全量重发 `scvb.segments`(`reason:"versionActive"`,含全部轨新版本段表)+ `scvb.state`(含新版本 `versions[].pan_curve`)**——换出的是另一版本的曲线真身,泳道段叠加层与 pan 曲线编辑器必须随之刷新(§2.8)。ARMED 态切换由 UI 弹轻确认(纯 UI 行为)。 |
 | 拒绝态 | **PRINT 态(输出 ON + 播放 + 在 range 内)C++ 侧硬拒绝**,回 `{rejected:"printing"}`(03 §2.2 硬规则);UI 侧同时 chip disabled + tooltip |
+| 取消在途分析 | ([J106] / [J110],用户 2026-09-26 裁定)以下三种场合会**取消**进行中的分析(§1.6 `analyze` 与 §1.18/§1.19 松手档触发的那一趟同样适用):结果整份丢弃、不写入任何版本,`scvb.state.analysis_run.running` 回到 `false`。<br>① **真切换版本**(`v` 与当前激活版本不同且未被 PRINT 拒绝;[SL-490]):与 §1.7 `cancelAnalyze()` 走同一条取消路径;`v` 等于当前版本时不取消。<br>② **宿主读入工程或预设**(`setStateInformation` 接受了这份 state;高版本 abi 拒载与损坏数据拒载什么都不改,不取消;[SL-491]):作业线程不被叫停,它跑完后的结果被丢弃。<br>③ **撤销 / 重做真的动了栈**(§1.25/§1.26 返回 `{ok:true}`;栈为空返回 `{ok:false}` 时不取消;[J110])。⚠ ③ **实现随 [SL-532] 另行落地**;落地之前撤销 / 重做**不**取消在途分析,那一趟跑完后作为一条新撤销步落进撤销后的状态。<br>同样这几种场合还会丢弃尚未到点的松手档重分段防抖,见 §1.18。 |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §2.1 ③ |
@@ -281,7 +282,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `p`(全部字段必填):`{ threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int(默认 120), padding_post_ms:int(默认 200) }`(J23) |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 state `analysis.vad`。**两段式(04 §1.2 逐字)**:<br>**拖动档** —— 每次调用只触发**即时重判决**并回发 VAD/边界**预览**(非破坏:不写 `versions` 曲线;目标 <50ms);<br>**松手档** —— UI 停止调用后由 **C++ 侧 300ms 防抖**自动跑完整流水线,**仅改写 `origin=auto` 且未 `locked` 的段**(J34),用户段逐字节不动;完成后回发 `scvb.segments`(`reason:"vad"`,含 diff 摘要)。<br>抑制条件**只有** PRINT 态或分析进行中(J47):抑制时不自动应用,UI 退回显式「应用到分段(重分析)」按钮 = `analyze(scope)`。 |
+| 语义 | 写 state `analysis.vad`。**两段式(04 §1.2 逐字)**:<br>**拖动档** —— 每次调用只触发**即时重判决**并回发 VAD/边界**预览**(非破坏:不写 `versions` 曲线;目标 <50ms);<br>**松手档** —— UI 停止调用后由 **C++ 侧 300ms 防抖**自动跑完整流水线,**仅改写 `origin=auto` 且未 `locked` 的段**(J34),用户段逐字节不动;完成后回发 `scvb.segments`(`reason:"vad"`,含 diff 摘要)。<br>抑制条件**只有** PRINT 态或分析进行中(J47):抑制时不自动应用,UI 退回显式「应用到分段(重分析)」按钮 = `analyze(scope)`。<br>**丢弃(不是抑制)**([J106] / [SL-531],用户 2026-09-26 裁定):防抖**已排、尚未到点**时发生下列任一事件,这一次松手档重分段直接作废、不再到点 —— **撤销 / 重做真的动了栈**(§1.25/§1.26 返回 `{ok:true}`)、**真切换版本**(§1.9,`v` 与当前不同且未被 PRINT 拒绝)、**宿主读入工程或预设**(`setStateInformation` 接受了这份 state)。不作废的话它会在事件之后到点,把用户在旧状态上拖的那一下落进撤销后 / 新版本 / 新工程(撤销 / 重做的情形下它还会作为新事务入栈、清空重做栈)。实现见 #284。丢弃只撤掉这一次排程,**阈值本身保留新值**(它不入栈,见下「撤销」行),段表不按它重算,要应用得再点一次分析或再动一下滑杆。「抑制」与「丢弃」是两回事,上面「只有」两条仍然成立:抑制看的是**状态**(松手排程时与到点时各判一次 PRINT / 分析进行中,成立即不跑),抑制条件的集合没有变;丢弃看的是**事件**(上述几件事发生的那一刻撤掉已排的那一次),不是新增的抑制条件。 |
 | 拒绝态 | 字段缺失/越界 → `{ok:false, reason:"badArg"}` |
 | 撤销 | **是**([J95③a],2026-08-31 用户批准;变更文档 `docs/contract-changes/20260831-j95-3a-release-apply.md`)。阈值本身**仍不入栈**;它在**松手档触发的那一次重分段 = 一条**撤销步 —— 沿 [J89] 与 `analyze` 同栈同口径(提交前把整个 CRVS 快照压进既有 UndoManager)。撤销 = 恢复重分段前的段表,重做 = 重放重分段结果;两者各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8,枚举与行为均不变)。<br>改前为「否(阈值本身不入栈;其触发的段改写属分析产物)」—— 该括注把定性挂在「分析产物」上,而 [J89] 已将分析产物改判为可撤销,遂成同一份产物两套规矩,本次一并修回。 |
 | 线程/频率 | [M] 预览同步;松手档 [M] 防抖计时 → [W] 流水线 |
@@ -293,7 +294,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `p`:`{ mode:string, sensitivity:f32, min_segment_ms:int }` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 state `analysis.segmentation`;**两段式与抑制条件同 §1.18**(拖动=预览,松手 300ms 防抖跑流水线,仅 `origin=auto` 且未 `locked` 段);完成后 `scvb.segments`(`reason:"segmentation"`)。 |
+| 语义 | 写 state `analysis.segmentation`;**两段式、抑制条件与丢弃条件同 §1.18**(防抖计时与 §1.18 共用一个)(拖动=预览,松手 300ms 防抖跑流水线,仅 `origin=auto` 且未 `locked` 段);完成后 `scvb.segments`(`reason:"segmentation"`)。 |
 | 拒绝态 | 同 §1.18 |
 | 撤销 | **是** —— 同 §1.18([J95③a]:松手档触发的那一次重分段 = 一条撤销步,沿 [J89];灵敏度/最短段长本身不入栈)。改前为「否」。 |
 | 线程/频率 | 同 §1.18 |
@@ -365,7 +366,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110],该条的实现时态见那里)。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |
@@ -724,7 +725,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `channelConflict` | claim CAS 失败且占用方心跳新鲜 | 必填 | `{groupId:1..8}` | Input 卡片抖动 + 红 toast `ch.occupied`「通道 {n} 已被占用(组 {g})」 | ipc §1 |
 | `newerState` | 工程 state chunk 的 abi 高于本机 → **拒载** | — | `{localAbi:u32, projectAbi:u32}` | 红横幅④「此工程由更新版本的 SCVB 保存,请升级插件(本机 abi {a} / 工程 abi {b})」 | 03 §6.2 RejectedNewer / J40 |
 | `sidecarMissing` | 外部特征文件缺失或校验失败 | — | `{path?:string}` | **v1 无出口**:sidecar 不随 v1 出厂(用户 2026-09-14 裁定「sidecar 不上了」),且该 code 在 `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释;grep 证据与判据见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。**接线那天必须同时恢复横幅⑤**——锚点与三语词条都还在 | 04 §5.3 |
-| `noTimeline` | 宿主未提供时间线(无 `timeInSamples`)且**连续 ≥0.5s**(与 04 §4.2 [J51]「连续无时间线 → 清注入 mask」同一判据;单块抖动不上桥,负 t0 算有效时间线);时间线恢复即发 `active:false` | — | `{}` | 琥珀横幅⑥「宿主未提供时间线」+ 采集/输出开关 disabled | 04 §2.6 |
+| `noTimeline` | 宿主未提供时间线(无 `timeInSamples`)且**连续 ≥0.5s**(与 04 §4.2 [J51]「连续无时间线 → 清注入 mask」同一判据;单块抖动不上桥,负 t0 算有效时间线);时间线恢复即发 `active:false` | — | `{}` | 琥珀横幅⑥「宿主未提供时间线」+ 输出开关 disabled;采集开关只挡「打开」,开着时仍可关([J107],见 §1.2 拒绝态行及其实现时态注) | 04 §2.6 |
 | `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件(**v1 出厂态不可达**:自动切换关闭 ⇒ 恒内嵌;枚举与文案保留) | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
 
 **已撤回两码**([J101],用户 2026-09-22 裁定):原表中的 `lowSample`(有效唱段不足)与 `projectCopy`(工程副本)两行**已删除** —— 两码在 `src/` 里没有生产者、也没有设计,**不作为待实装项挂账**。本节不再承诺它们对应的任何提示面;要恢复任一码,须按 §9.0 重新走冻结契约变更(连同触发判据与生产者一起设计)。撤回依据与影响面见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`。
