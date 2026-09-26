@@ -6025,7 +6025,9 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     // 默认值都是 1,而 Rig 恒在版本 1 —— 不切版本的话,把装配里那行 `in.versionActive = ...`
     // 整行删掉,断言照样绿(PR #155 复审【重要】①)。切版本还会走 rebindVersion,
     // 顺带把「切版本 → 车道/句柄重绑」这一跳一起串上。
-    r.out.setVersionActive(2);
+    // [SL-484] setVersionActive 返回 false = PRINT 拒绝;这里是前提,切不过去就当场红,
+    // 不能静默留在 V1 让后面的 versionActive 断言变空真。
+    REQUIRE(r.out.setVersionActive(2));
 
     // 被观察轨:改配置 —— 这一份 runtime 就是 publishVizFrame 的输入。
     auto& cfg = r.out.runtime().channels[kTestChannel - 1];
