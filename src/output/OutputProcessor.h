@@ -270,9 +270,14 @@ public:
     // [M] 该轨**本次失准发作**的缺口数(scvb.conn.channels[].misalignCount 数据源)。恢复健康
     // 满 1s 即归零 —— 累计值上桥会把「路由失准」横幅永久钉死(T37 三轮 A 族)。
     scvb::u32 misalignCount(int channel) const { return session_.misalignCountRecent(static_cast<scvb::u32>(channel)); }
-    // [M] 该轨采集数据是否已过期(§2.8 segments.channels[].stale 数据源;04 §4.5 fingerprint
-    // watchdog)。判定由 session_ 在 tick() 的命令环消费里推进 —— 与本读点同在消息线程,串行。
-    bool captureStale(int channel) const { return session_.channelStale(static_cast<scvb::u32>(channel)); }
+    // [M] 该轨采集数据是否已过期(§2.8 segments.channels[].stale 数据源;04 §4.5)。两条来源取或:
+    //   ① fingerprint watchdog(上游改动,软提示)—— 由 session_ 在 tick() 的命令环消费里推进;
+    //   ② [SL-485] 采样率硬失效:该轨有覆盖,而它的采集采样率 ≠ 当前采样率(见 featureSampleRateStale)。
+    bool captureStale(int channel) const;
+    // [SL-485] 04 §4.5「硬失效(立即全局 stale):sample_rate 变化」。段表 / 特征都只存样本数或
+    // hop 序号,换采样率后按当前 sr 换算的秒数整体漂移(44.1k→48k 约 8.8%)。规格选的是**失效 +
+    // 提示**,不是换算(不在这里偷偷按比例重标定)。未 prepare(sr=0)时不判。
+    bool featureSampleRateStale(int channel) const;
 
     // scvb.conn(契约 §2.3)的整帧数据面快照。T29 桥曾以「claim 态推导」的占位值充数
     // (全轨 slotState=2、heartbeatFresh 恒 false),UI 的 `slotState=2 ∧ heartbeatFresh`
@@ -491,8 +496,19 @@ private:
     float readGlobalWidth() const noexcept;
     float readMsBalance() const noexcept;
 
-    // [A] 按时间线读 15 环做 unity 求和(§5.4 bypass 语义)。
-    void renderBypassedUnity(juce::AudioBuffer<float>& buffer, int n, int64_t t0);
+    // [A] 按时间线读 15 环做 unity 求和(§5.4 bypass 语义)。处理 buffer 的 [offset, offset+n),
+    // n ≤ preparedMaxBlock_;t0 = 该段首样本的时间线位置。
+    void renderBypassedUnity(juce::AudioBuffer<float>& buffer, int offset, int n, int64_t t0);
+
+    // [A] processBlock 的一段(§5.2 步骤 3 起):处理 buffer 的 [offset, offset+n),
+    // n ≤ preparedMaxBlock_(内部缓冲的定长);t0 = 该段首样本的时间线位置。[SL-487]
+    // 正常块长下只有一段,与分段前逐位相同。超长块才会分段,下面三处因此按「段」而不是按「块」发生:
+    //   · 电平(publishMeters / publishSilentMeters)每段发一次,后发覆盖先发 —— 电平表看到的是
+    //     **最后一段**,不是整块的最坏值;
+    //   · authority_.processBlock 每段调一次:DspArbiter 判换表看 LUT 指针、判换版本看快照指针,
+    //     同一宿主块内两者不变,不会误触发 30ms 切换斜坡;
+    //   · 负 t0 按段判:跨过 0 的超长块前几段直通、后几段混音,中间经 busXfade 等功率交叉。
+    void renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0);
 
     // [A] 本块电平测量并发布(§2.5 数据面)。hasData/nch 为本块读环结果,trackGain 为本块
     // 起点仲裁目标导出的线性增益;busL/busR = 求和后的总线缓冲(nullptr = 本块未混音)。
@@ -674,7 +690,7 @@ private:
     int64_t lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     uint32_t podEpoch_ = 0;
-    std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
+    std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数(超长块按段计,见 renderSpan)/ [M] 仅 DBG
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
     std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
     // 求值曲线修订号:**每次 rebuildAllCurves 都 +1**,涵盖所有段编辑路径(editSegment /
@@ -706,6 +722,12 @@ private:
     scvb::dsp::LinearSmoother gSSmoother_{1.0f};
     scvb::dsp::LinearSmoother globalWidthSmoother_{100.0f};
     std::array<scvb::dsp::LinearSmoother, 15> channelFade_;
+    // [SL-488] 上一段**真的混进了母线**的轨(bit{ch-1};= 那一段读环成功的轨)。[A] 独占。
+    // 用途:轨刚离开 inject(面板关轨)时,它的 80ms 淡出还要乘在真样本上 —— 所以这一段
+    // 仍要读它的环。只认「上一段真混进过」而不是只看 fade 当前值:直通 / 观察 / 无注入这些
+    // 早退路径不推进 fade,残留的 fade 值不代表它刚才在响。每段开头取出即清,只有走完
+    // 混音路径才重写,任何早退都让它归零;prepareToPlay 也清(理由见那里)。
+    scvb::u32 releasableMask_ = 0;
 
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;

@@ -490,6 +490,39 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3/abi4 迁移 + abi5.bin 格
     }
 }
 
+TEST_CASE("STATE-CRVS-4c 段 pan/volDb 非有限或越界 → 整份拒载;边界值照常解", "[state][crvs][nan][sl483]")
+{
+    // [SL-483] 段的两个 float 与 pan_curve 同属不可信字节,且一路原样进实时混音。
+    // 构造法同 4b:encode 不设防(它写的是内存里的值),于是字节流里躺着的就是坏值。
+    // 每个输入只打中**一个**判据原子,删掉任一原子恰有一行 CHECK 转红:
+    //   NaN 专打 isfinite(值域比较对 NaN 恒假,放过它);±inf 同时被值域挡住,不单独计格;
+    //   四个有限越界值各打一条值域比较。用 CHECK 不用 REQUIRE:一行红了其余行照样要跑。
+    const auto decodesWith = [](float pan, float volDb) {
+        CrvsData d;
+        d.versions[1].tracks[4].segments.push_back(
+            Segment{0, 48000, pan, volDb, scvb::state::makeSegmentFlags(SegmentOrigin::Auto, false)});
+        std::vector<std::uint8_t> enc;
+        REQUIRE(scvb::state::encodeCrvs(d, enc));
+        CrvsData out;
+        return scvb::state::decodeCrvs(enc.data(), enc.size(), out);
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    CHECK_FALSE(decodesWith(nan, 0.0f)); // isfinite(pan)
+    CHECK_FALSE(decodesWith(0.0f, nan)); // isfinite(volDb)
+    CHECK_FALSE(decodesWith(-100.5f, 0.0f)); // pan < -100
+    CHECK_FALSE(decodesWith(100.5f, 0.0f)); // pan > 100
+    CHECK_FALSE(decodesWith(0.0f, -24.5f)); // volDb < -24
+    CHECK_FALSE(decodesWith(0.0f, 12.5f)); // volDb > 12
+    CHECK_FALSE(decodesWith(inf, 0.0f));
+    CHECK_FALSE(decodesWith(0.0f, -inf));
+
+    // 反向:闭区间两端是合法值(产品侧 jlimit 夹出来的正是端点),不得被拒。
+    CHECK(decodesWith(-100.0f, -24.0f));
+    CHECK(decodesWith(100.0f, 12.0f));
+}
+
 TEST_CASE("STATE-CRVS-4b pan_curve 的非有限 float 拒载(接线格)", "[state][crvs][nan]")
 {
     // [SL-442 第2轮] 自本卡起 pan_curve 进实时音频链 —— 解码路的三个 float 是不可信字节,

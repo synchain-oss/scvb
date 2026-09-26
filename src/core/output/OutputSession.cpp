@@ -275,6 +275,15 @@ void OutputSession::pullFeatures()
     // 不限轨(轨维在 Input 侧按广播区的 enabled 位布防,不重复门控),局部重采集布防期换成选中轨
     // 掩码([J87] 04 §4.2 ①:时间维与轨维同为硬约束);activeMask = 本组 connected_mask,
     // 只拉在线轨(04 §3.3)。
+    // [SL-485] 拉取前先记下哪些轨是空的(无覆盖)—— 采集采样率只在「空轨第一次落账」时记,理由见下。
+    u32 emptyBefore = 0;
+    for (u32 ch = 1; ch <= kMaxChannels; ++ch)
+    {
+        if (frameStore_.channel(ch).coverage().empty())
+        {
+            emptyBefore |= (1u << (ch - 1));
+        }
+    }
     const u32 refreshed = featPuller_.pullTick(frameStore_, featureGate_, featureTrackMask_, registry_.connectedMask());
 
     // 04 §4.5:哪条轨拉到了新特征,哪条轨的旧失配定谳就作废 —— 基线正在被改写,拿它得出的
@@ -285,6 +294,15 @@ void OutputSession::pullFeatures()
         if ((refreshed & (1u << (ch - 1))) != 0)
         {
             fpWatch_.resetChannel(ch);
+            // [SL-485] 采集采样率只在这条轨**原本是空的**时记成当前值。与上面 fingerprint 的
+            // 「拉到新特征即作废」不同:那是软提示,这是硬失效 —— 采集率是整轨一个标量,而这一拍
+            // 只改写了拉到的那几个 hop。非空轨上重采一段(布防选区,或采集开着只播了几秒)就把
+            // 整轨记成当前值的话,⚠ 撤下而没重采的部分照旧按旧采样率漂移 8.8%,正是本卡要根除的
+            // 静默漂移。所以撤下 ⚠ 的路径是:清除这条轨的采集数据(轨变空)→ 在当前采样率下重采。
+            if (sampleRate_ > 0 && (emptyBefore & (1u << (ch - 1))) != 0)
+            {
+                frameStore_.channel(ch).setSampleRate(static_cast<double>(sampleRate_));
+            }
         }
     }
 }
