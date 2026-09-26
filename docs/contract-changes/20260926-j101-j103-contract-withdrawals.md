@@ -24,10 +24,11 @@
       `errorCode` 九值 → 七值(J101);§5.2 `idle` 行(J103)。
 - [ ] tests/golden/(golden 快照)—— **不动**。
 
-另改两处非冻结件:`scripts/check-bridge-parity.mjs` 的 `EXPECTED_ENUM_ARRAYS.errorCode` 与它的
+另改三处非冻结件:`scripts/check-bridge-parity.mjs` 的 `EXPECTED_ENUM_ARRAYS.errorCode` 与它的
 OK 行措辞(与 §7 manifest 同源,manifest 删值它必须同步,否则门禁 3i 当场红);
 `docs/spikes/E2E-journey.md` 步 7 / L-7 的真机验收项里「有效唱段 <1.5s 黄标」一项(用户照着它
-上机会去找一个不存在的提示)。
+上机会去找一个不存在的提示);`src/input/InputBridgeLogic.{h,cpp}` 里 `kUnavailable → idle` 那两行
+**纯注释**(见下 J103)。
 
 ## 变更内容
 
@@ -84,13 +85,26 @@ OK 行措辞(与 §7 manifest 同源,manifest 删值它必须同步,否则门禁
 分辨。**不改**枚举到字符串的映射,**不**给 `kUnavailable` 拆新字符串(拆名是值域变更,面比
 这次要解决的问题大)。`claimState` 六值枚举与 §7 manifest 不动。
 
+**先核了哪边对,再动文字**:`kUnavailable` 的产生条件全在 `InputSession::openAndClaim()` 的失败分支
+(换组 / 打开 registry 非 abi 的失败、`claimInput` 非 `kConflict` 的失败、`createSegments` 失败并
+`releaseInput`),每一支都以「本实例未持有任何 slot」结束。`claimValue` 里这一支的行注原写
+「§5.2 idle:slot 已声明但 Output 尚未健康读取」—— 那是 ① 支的定义,套在 ② 支上是错的;头文件
+那句「kUnavailable(I0 段未打开)→ idle」没错但不全。两行注释改为指向 §5.2 的 ② 支,**映射代码一字未动**。
+
 ## 兼容性影响
 
-- **行为零变化**:三项都没有改 C++ / JS 行为代码。撤回的两码此前就没有任何一处会发出;
+- **行为零变化**:三项都没有改 C++ / JS 行为代码(C++ 只改了两行注释)。撤回的两码此前就没有任何一处会发出;
   range 此前就不落盘;`idle` 的两支此前就是这样映射、这样渲染。
 - **工程 / 自动化 / 新旧版本互通**:零影响。state 布局、abi、迁移链、ParamID 全部不动。
-- **`contractVersion`**:见 PR 描述(是否按 §9.0 第 3 条升主版本,待统筹裁定;本文件随裁定补写)。
-- **web 侧残留**(本 PR 不动,另行处理):`web/output/app.js` 的 `KNOWN_CODES`、
+- **`contractVersion` 保持 `1.0`(豁免)**:撤回两码按 §0.1 第 3 条 / §9.0 第 3 条属「收窄取值域」,
+  字面上要升主版本。本次照 [SL-468] 的先例豁免(用户 2026-09-21 对同类情形裁「豁免」,见
+  `20260921-sl464-channel-id-zero-semantics.md` 与 #275),依据三条:① 两码在 `src/` 里**零生产者**,
+  从未有一条消息带着它们上桥;② 因此**没有任何消费方会因撤回而坏掉** —— web 侧对它们的处理是
+  七码的超集,只是永远等不到;③ `contractVersion` 这个值只存在于本契约版本行与 §7 manifest,
+  **不与任何一侧对拍**(SL-464 变更文档里有 grep 证据),升不升都不改变任何构建或运行行为。
+- **§9.0 第 3 条要求的「同批更新 mock 后端」推迟**:本 PR **没有**同步 mock 与 web 侧,推迟到
+  同一发版内的后续 PR(SL-528)。在那之前,下面「web 侧残留」一条列出的代码仍按九码处理。
+- **web 侧残留**(本 PR 不动,转 SL-528):`web/output/app.js` 的 `KNOWN_CODES`、
   `web/shared/mock-data.js` 的 `ENUMS.errorCode` 与夹具、三语词条 `toast.projectCopy` /
   `lowSample` / `lowSample.full`、`web/output/index.html` 的 `toast-projectCopy`、Tab2/Tab3 的
   lowSample 黄标与 `lowSampleChannels`,以及用到这两码的 web-preview 冒烟夹具。它们是
