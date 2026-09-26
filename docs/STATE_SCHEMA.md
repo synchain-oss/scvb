@@ -22,7 +22,7 @@ global:
   capture_enabled: bool        # 采集开关(默认 off)
   output_enabled: bool         # 输出开关:on=引擎驱动参数(write),off=follow host
   version_active: 1..2         # 当前版本(非自动化,防 write 自录;J59 4→2)
-  # range{mode, start_s, end_s} 不在本树:[J102] 运行期状态,不随工程走(见 §三 末尾「global.range」一条)
+  # range{mode, start_s, end_s} 不在本树:[J102] 运行期状态,不随工程走(见 §三「global.range」一条)
 analysis:
   vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # [SL-416] 五项**自本版起随工程落盘**(此前只在内存里,重开全回默认 —— A24 实测);值域/默认真源 = 02 §0.3(−60..−10/默认 −38、3..12/6、100..600/250、20..400/120、50..400/200);默认宁多勿少(J23 拆分,默认 120/200)
   segmentation: {mode: valley|vad_only, sensitivity: 0..100, min_segment_ms: 50..2000}   # [SL-411] 三项**自本版起随工程落盘**(此前只在内存里,重开回默认 valley/50/120);[SL-413] `mode` 为 **v1 保留位**:UI 不露出、引擎不消费、恒写 0=valley,`vad_only` 留待接线时启用(布局与 abi 一律不动,口径见 §三)
