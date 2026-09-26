@@ -35,7 +35,7 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
 //     存在的理由**,本次合并前独立复核抓到的用户可见回归就是这一态。
 //   kConflict/kAbiMismatch/kUnavailable:⚠ [轮 9 复审【重要】订正] 这三态统一走
 //     channelId(=0),**不是**只挑 kConflict——InputSession::openAndClaim() 的失败分支
-//     (src/core/input/InputSession.cpp:343-386)里,previousChannel==0(没有旧 channel
+//     (src/core/input/InputSession.cpp)里,previousChannel==0(没有旧 channel
 //     可回滚)时这三个失败码走的是完全同一条代码路径:channelId_(配置)同样停在被拒的请求
 //     号,claimedChannel_(实际持有)同样是 0——kAbiMismatch/kUnavailable 与 kConflict 只是
 //     失败原因不同(注册表 abi 不符/段打不开 vs 通道被占),"配置了但什么都没绑定"这件事

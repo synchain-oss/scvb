@@ -1050,34 +1050,39 @@ TEST_CASE("SL-446(轮 8 复审【重要】):releaseResources() 之后 configured
     // 了"这种直觉性的"清理"),今天没有任何一格判据会变红,而 displayChannelId() 整套分流
     // 就会全塌:releaseResources() 之后配置值也变 0,又退回本卡最初要修的"常见操作后误报未
     // 分配"那个用户可见回归。
-    juce::ScopedJuceInitialiser_GUI juceInit;
-    FakePlayHead ph;
+    // [SL-465] 夹具里必须有 Output:maskBit 以 outputOnline 为前提(InputSession::connSnapshot()),
+    // 没有 Output 时它恒为 false,下面那条 CHECK_FALSE(maskBit) 怎么改实现都绿 = 死格。
+    // 所以先等到 release 之前 maskBit 确实为真(Output 在线且 connected_mask 本位已置),
+    // release 之后仍为真的唯一来源才是「maskBit 没按实际持有算」。
+    Rig r;
+    REQUIRE(r.waitUntilInjected());
+    bool maskBefore = false;
+    for (int i = 0; i < 50 && !maskBefore; ++i)
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        maskBefore = r.in.bridgeTickSnapshot().conn.maskBit;
+    }
+    REQUIRE(maskBefore); // 前提:夹具能分辨(release 前为真)
 
-    ScvbInputAudioProcessor p;
-    p.setGroupId(kTestGroup);
-    p.setPlayHead(&ph);
-    p.prepareToPlay(kSr, kBlock);
-    REQUIRE(p.setChannelId(6) == scvb::input::InputClaimState::kActive);
+    r.in.releaseResources();
 
-    p.releaseResources();
-
-    const auto snap = p.bridgeTickSnapshot();
+    const auto snap = r.in.bridgeTickSnapshot();
     CHECK(snap.claimState == scvb::input::InputClaimState::kUnassigned); // release() 落的态
     CHECK(snap.channelId == 0); // 实际持有(boundChannel())如实清 0
-    CHECK(snap.configuredChannelId == 6); // ⚠ 这一行就是本格的全部意义:配置值必须原样留着
+    CHECK(snap.configuredChannelId == kTestChannel); // ⚠ 这一行就是本格的全部意义:配置值必须原样留着
     // [轮 8 复审【重要】① 的数据源]:web/input/app.js 的远程只读摘要行改用 conn.maskBit
     // 当闸(理由见那边注释:cfg.channelId 撞契约冻结、claim==="active" 会被 srMismatch 吃掉)。
-    // maskBit 的计算(InputSession::connSnapshot())只看 claimedChannel_(实际持有),release()
-    // 之后必然是 false——这里钉住的是 JS 闸消费的那个数据源本身在这个场景下确实是 false,
-    // 不是钉 JS 接线本身(JS 端因 mock 桥的 model 目前把 channel_id 与 maskBit 耦合在同一个
-    // 值上、无法独立模拟"配置留着但未持有"这个分叉场景,没有自动化端到端判据——material
-    // 已给统筹,材料同 SL-456/459 那一族"mock 结构性覆盖不到")。
+    // 这里钉的是 JS 闸消费的那个数据源:release() 之后 Output 仍在线、connected_mask 本位
+    // 也还没被收走(中间没有泵消息),maskBit 仍必须是 false —— 它只按实际持有的通道算。
+    // JS 闸本身的接线由 web-preview/tests/smoke-input-conflict-page.mjs 的 remoteSummary 那段钉。
+    CHECK(snap.conn.outputOnline); // 前提:false 是因为没持有,不是因为 Output 离线
     CHECK_FALSE(snap.conn.maskBit);
 
     // displayChannelId() 本身按 claimState 分流:kUnassigned 走 configuredChannelId。
     // 这里直接调用生产代码里那个真实分流函数,而不是重新写一遍它的逻辑——否则这一格测的是
     // "我以为分流该怎么做",不是"分流实际怎么做"。
-    CHECK(scvb::input::bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId) == 6);
+    CHECK(scvb::input::bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId) ==
+          kTestChannel);
 }
 
 TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
@@ -1690,12 +1695,28 @@ TEST_CASE("HOST R6:范围 A 分析 → 范围 B 分析 → A 的段仍在", "[ho
 
 // ---------------------------------------------------------------------------
 // 复审 R5:分析在途时销毁 processor 不得崩溃(裸 callAsync 捕获 owner 指针 = use-after-free)。
+//
+// [SL-501] 两种销毁时机交替跑:
+//   · 偶数轮:起跑后立刻销毁 —— worker 多半还在管线里,在取消检查点早退,到不了交接那一步;
+//   · 奇数轮:不泵消息、等 worker 把进度写到 1.0 后再多睡 100ms,再销毁 —— 目标是让「消息队列里
+//     已经有一条指向本对象的派发」这个状态出现,但这是**概率性覆盖,不是判据**:进度 1.0 是
+//     worker 在管线内写的(runAnalysisPipeline 返回之前),此后它还要过取消检查、持 pendingMutex_
+//     填交接槽,最后才调 triggerAsyncUpdate()(见 ScvbOutputAudioProcessor::AnalysisJob::run())。
+//     下面两条前提 REQUIRE 在「进度已是 1.0、triggerAsyncUpdate() 尚未调用」的窗口里同样成立,
+//     分不出派发入没入队;让本臂落进目标状态的只有其后那段 sleep(100) 的余量。余量不够时本臂
+//     退化成与偶数轮同形的时机(不会红)。更贴的信号要一个只读探针,属产品代码改动,不在本卡。
+// ⚠ 本用例能钉的只有「不崩」,而 Release 下 use-after-free 不一定崩。另一个钉不住的点要写明:
+// 把析构里撤销挂起派发的那一句删掉,本用例(两臂)都**不会红** —— JUCE 的 AsyncUpdater 基类
+// 析构自己也会把挂起的那条消息作废(juce_AsyncUpdater.cpp ~AsyncUpdater),而本用例在消息线程
+// 上销毁,两者之间没有别的线程能插进来派发。这条兜底本身由下一格探针钉住。那一句防的是
+// 「析构跑在非消息线程、消息线程同时在派发」的时机,本用例没有造这种时机。
+// 内存安全那一半要靠 Debug 运行时 / 地址消毒的 CI 通道,不在本用例。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST R5:分析在途销毁 processor 不崩溃", "[host][t37][analyze][r5]")
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
-    for (int round = 0; round < 3; ++round)
+    for (int round = 0; round < 4; ++round)
     {
         auto rig = std::make_unique<Rig>();
         rig->ph.playing = true;
@@ -1714,14 +1735,64 @@ TEST_CASE("HOST R5:分析在途销毁 processor 不崩溃", "[host][t37][analyze
         REQUIRE(coveredS > 0.0);
         REQUIRE(rig->out.startAnalysis(0, 0.0, coveredS).ok);
 
-        // **不等分析跑完**,直接销毁(= 用户在分析跑着时把插件从轨上删掉)。
-        // 析构里 cancelAnalysis() 先 join、再 cancelPendingUpdate() 撤掉已入队的派发。
+        if (round % 2 == 1)
+        {
+            // 不泵消息地等 worker 跑完管线(进度 1.0 在管线返回前写,早于交接),再给交接留余量。
+            // 期间消息线程不转 ⇒ 结果只能停在交接槽里,analysisRunning() 仍为真。
+            for (int waited = 0; waited < 10000 && rig->out.runtime().analysisProgress.load() < 1.0f; waited += 10)
+            {
+                juce::Thread::sleep(10);
+            }
+            juce::Thread::sleep(100);
+            REQUIRE(rig->out.runtime().analysisProgress.load() == 1.0f); // 前提:worker 已跑完管线(不证明已交接)
+            REQUIRE(rig->out.analysisRunning()); // 前提:消息线程还没收走这份结果
+        }
+
+        // **不等消息线程收结果**,直接销毁(= 用户在分析跑着时把插件从轨上删掉)。
+        // 析构里各步的顺序与理由见 ScvbOutputAudioProcessor 析构函数头注。
         rig.reset();
 
         // 再泵一轮消息:修复前这里会把 finishAnalysis 打在已析构对象上。
         Rig::pumpMessages(300);
     }
     SUCCEED("分析在途销毁 + 消息泵未崩溃");
+}
+
+// ---------------------------------------------------------------------------
+// [SL-501] 上一格「删掉析构里撤销挂起派发那一句也不红」的原因,落成可执行的前提:
+// 在消息线程上销毁一个挂着派发的 AsyncUpdater,**不**手动撤销,之后泵消息也不会派发。
+// 对照臂先证明探针本身能计数(触发 + 泵 ⇒ 恰好一次),否则「零次」恒真。
+// 若哪天升级 JUCE 后这条红了,上一格那一句就从「双保险」变成唯一防线,要回去补真覆盖。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct AsyncProbe final : juce::AsyncUpdater
+{
+    explicit AsyncProbe(int& hits) : hits_(hits) {}
+    void handleAsyncUpdate() override { ++hits_; }
+    int& hits_;
+};
+} // namespace
+
+TEST_CASE("HOST R5 前提:消息线程上销毁的 AsyncUpdater 不再派发挂起的那条", "[host][r5][sl501]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    int controlHits = 0;
+    {
+        AsyncProbe probe(controlHits);
+        probe.triggerAsyncUpdate();
+        Rig::pumpMessages(200);
+    }
+    CHECK(controlHits == 1); // 对照:探针能计数
+
+    int hits = 0;
+    {
+        AsyncProbe probe(hits);
+        probe.triggerAsyncUpdate(); // 挂着,不泵、不 cancelPendingUpdate() 就销毁
+    }
+    Rig::pumpMessages(200);
+    CHECK(hits == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -5030,7 +5101,7 @@ TEST_CASE("HOST J87:tracksMask 只点保留位不得退化成「不限轨」", "
 // 判据取 `captureStale`(引擎侧真值),不看 UI。
 //
 // 两个必须踩准的前提,踩不准这条用例会「绿得毫无意义」:
-//   ① **fp_report 只在采集 OFF 时发**(FeatRing::accumulateFp:`if (capturing) return;`)——
+//   ① **fp_report 只在采集 OFF 时发**(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件)——
 //      采集 ON 时这一秒的特征正在被写成新基线,拿它跟自己比毫无意义;
 //   ② 第二遍必须回到**同一段时间线**,否则 tile 号对不上、基线不存在(baselineTileFingerprint
 //      在 coverage 不全时返回 false),那些上报会被「无基线」分支整条跳过,分母都进不去。
@@ -5137,7 +5208,7 @@ TEST_CASE("HOST SL-225:布防→撤防之后,上游改动仍须翻出 stale", "[
         Rig::pumpMessages(200);
 
         // 这一条**期望为假**,而且不是缺陷:采集 ON 时这一秒的特征正被写成新基线,
-        // 拿它跟自己比毫无意义(FeatRing::accumulateFp 的 `if (capturing) return;`)。
+        // 拿它跟自己比毫无意义(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件)。
         // 钉住它是为了把「采集 ON 所以没提示」与「链断了所以没提示」两件事分开 ——
         // 用户看到的都是「提示不见了」,但只有后者是 bug。
         CHECK_FALSE(upstreamChangedThenAsk(r, 0.05f));
@@ -5161,7 +5232,7 @@ TEST_CASE("HOST SL-225:布防→撤防之后,上游改动仍须翻出 stale", "[
 //   ② 用户此时保存工程(或宿主自动保存)→ CFGS 里 capture_enabled 落成 1;
 //   ③ 重开工程 → 采集是 ON,而**布防位不持久化**(04 §4.2 ③,工作选区不落 state),
 //      于是界面上没有任何「正在布防」的线索,用户也从没自己开过采集;
-//   ④ 采集 ON 期间 Input 一条 fp_report 都不发(FeatRing::accumulateFp 的 `if (capturing) return;`)
+//   ④ 采集 ON 期间 Input 一条 fp_report 都不发(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件)
 //      —— 于是改多狠的 EQ 都不会再有 ⚠。
 //
 // 用户看到的就是「重采提醒消失了」,而且查不出原因:采集开关确实开着,但那不是他开的。
@@ -7189,7 +7260,7 @@ TEST_CASE("HOST SL-239:工程重开(全新实例)后上游改动仍须翻出 sta
 // 且基线已被刷新,不是因为链死了」(PR #146 评审立下的负向断言纪律)。
 //
 // 前两条**没有**配「注入一处断链让它变红」的反向验证,不是漏了,是它不存在:本卡实跑试过
-// 把 `accumulateFp` 的 `if (capturing) return;` 整个去掉(= 采集 ON 也照发 fp_report),
+// 把 `accumulateFp` 末尾那道上报闸里的 capturing 条件整个去掉(= 采集 ON 也照发 fp_report),
 // 两条**照样绿** —— 报告到达 Output 时基线已被同一遍采集覆写,比出来的是「自己跟自己一样」。
 // 也就是说这两条钉的是一条**结构性属性**,不是某一行代码的行为;能证伪它的只有「在覆写前
 // 快照基线」那种设计级改动。第三条正向断言就是它们的防空转装置。
@@ -7214,7 +7285,7 @@ TEST_CASE("HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗"
     REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
 
     // ★① 采集**留在 ON**(用户的自然流程:没有任何地方叫他关)→ 改狠上游再播:
-    //     没有 ⚠。按 04 §4.5 这不是缺陷(FeatRing::accumulateFp 的 `if (capturing) return;`
+    //     没有 ⚠。按 04 §4.5 这不是缺陷(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件
     //     —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义),但用户看到的就是「提醒没了」。
     CHECK_FALSE(replay(0.05f));
 

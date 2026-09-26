@@ -113,7 +113,7 @@ struct AudioRingHeader
     std::atomic<u32> abi; // 4   = kScvbAbi
     u32 sample_rate; // 8
     u32 ring_frames; // 12  帧数(2^k),不是样本数(见上)
-    u32 channels; // 16  1=mono 2=stereo(prepareToPlay 写定,运行期不变;[J57])
+    u32 channels; // 16  1=mono 2=stereo(claim 方 prepareToPlay 写定,可原地改写,见 Registry.h 几何纪律;[J57])
     u32 _pad; // 20  (对齐 8)
     std::atomic<u64> write_head_samples; // 24 时间线绝对样本位置:下一帧将写到的 timeline pos
     std::atomic<u64> epoch; // 32 时间线跳变(定位/循环回跳)时 +1,读方丢弃跨代数据

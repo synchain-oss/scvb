@@ -85,7 +85,9 @@ inline u32 resolveInputChannelForClaim(u32 envCh, u32 stateCh, bool claimed, u32
 //    会让读/写线程读到「新几何 + 旧视图」或「旧几何 + 新视图」的撕裂组合 → 越界写共享内存
 //    (0xC0000005;S1 v5 AudioRingGeometry 快照教训)。
 // 2. 段恒按 stereo 容量创建(ring_frames × 2 float),声道切换(1→2)不扩容段——mono 只用
-//    ring_frames×1 的前半,stereo 用满容量;几何 channels 字段在 prepareToPlay 写定后运行期不变。
+//    ring_frames×1 的前半,stereo 用满容量;几何 channels 字段由 claim 方在 prepareToPlay 写定,
+//    布局变化的重新 prepare / attach 到存活旧段时原地改写(epoch+1),读方须按值对账重绑
+//    (写侧见 InputSession::rebuildAudioGeometry / createSegments,读侧见 OutputSession::refreshAudioGeometry)。
 //    任何依赖「切换声道时重开更大段」的假设都违反此纪律(ring_frames 口径 = 帧数,不是样本数,
 //    见 SegmentLayout.h AudioRingHeader 注释)。
 // ---------------------------------------------------------------------------
