@@ -92,7 +92,11 @@ public:
     juce::Optional<PositionInfo> getPosition() const override
     {
         PositionInfo p;
-        p.setTimeInSamples(timeSamples);
+        // [SL-478] haveTime=false 模拟「宿主不给时间线」(契约 §5.1 `noTimeline`:无 timeInSamples)。
+        if (haveTime)
+        {
+            p.setTimeInSamples(timeSamples);
+        }
         p.setTimeInSeconds(static_cast<double>(timeSamples) / kSr);
         p.setIsPlaying(playing);
         p.setIsLooping(looping);
@@ -116,6 +120,7 @@ public:
     bool looping = false;
     bool haveLoop = false;
     bool haveBpm = true;
+    bool haveTime = true; // [SL-478] 见 getPosition
     double bpm = 120.0;
     double loopStartPpq = 0.0;
     double loopEndPpq = 0.0;
@@ -9971,4 +9976,79 @@ TEST_CASE("HOST SL414 (c):写回窗裁出 1000ms 残段 + MIN SEG=2000 → 残�
     CHECK(a2->t1 == base[1].t1);
     CHECK(a2->pan == base[1].pan);
     CHECK(a2->volDb == base[1].volDb);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-478] 宿主不给时间线 → `hostTimelineMissing()` 置起;给回 → 撤下。
+//
+// 这是 `scvb.error{noTimeline}` 与 §1.2/§1.3/§1.23 三处拒绝分支**共同的条件源**。那四处都在
+// `OutputEditor` 里(要真 WebView2,编不进任何 C++ 测试目标),它们的调用点由
+// `smoke-tab2-interactions.mjs` 的 [SL-478] 钉子锁住,边沿判定由 `test_bridge_args.cpp` 的
+// `planConditionErrorEmit` 那组锁住;这里锁的是「条件在真 processor 上真的会翻」。
+//
+// 四格:
+//   T1 有时间线 ⇒ 不置;
+//   T2 无时间线但**不足 0.5s**(去抖:单块 `timelineValid_` 逐块刷新,直接上桥会让横幅⑥
+//      随宿主抖动翻转)⇒ 仍不置。定时器在负载下只会**少**跑几拍、不会多跑,故 100ms 这格
+//      不会因为机器慢而假红;
+//   T3 持续无时间线 ⇒ 置起(预算 3s,远大于 0.5s 判据);
+//   T4 给回时间线 ⇒ 撤下;负 t0 仍算有效时间线([J51])⇒ 不置。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTimelineMissing 置起,给回即撤", "[host][sl478]")
+{
+    Rig rig;
+    rig.ph.playing = true;
+
+    // T1
+    rig.runBlocks(16, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/20);
+    CHECK_FALSE(rig.out.hostTimelineMissing());
+
+    // T2:一块无时间线 + 约 100ms 消息泵(约 2-3 拍,判据是 12 拍)
+    rig.ph.haveTime = false;
+    rig.runBlocks(1, 0.25f, /*pumpEveryN=*/0);
+    Rig::pumpMessages(100);
+    CHECK_FALSE(rig.out.hostTimelineMissing());
+
+    // T3
+    bool raised = false;
+    for (int waited = 0; waited < 3000 && !raised; waited += 40)
+    {
+        rig.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        raised = rig.out.hostTimelineMissing();
+    }
+    CHECK(raised);
+
+    // T4a:给回
+    rig.ph.haveTime = true;
+    bool cleared = false;
+    for (int waited = 0; waited < 2000 && !cleared; waited += 40)
+    {
+        rig.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        cleared = !rig.out.hostTimelineMissing();
+    }
+    CHECK(cleared);
+
+    // T4b:负 t0 是有效时间线([J51]),跑满 1s 也不置
+    rig.ph.timeSamples = -static_cast<std::int64_t>(kSr) * 4;
+    for (int waited = 0; waited < 1000; waited += 40)
+    {
+        rig.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+    }
+    CHECK(rig.ph.timeSamples < 0); // 前提:这 1s 确实都在负 t0 上跑(没越过 0)
+    CHECK_FALSE(rig.out.hostTimelineMissing());
+
+    // T5:丢时间线后宿主停掉音频引擎(releaseResources,此后不再有 processBlock)⇒ 不得冻在 true。
+    // 冻住的话 §1.2/§1.3 会一直拒绝,连「关采集」都做不到(#278 复审建议 1)。
+    rig.ph.haveTime = false;
+    bool raisedAgain = false;
+    for (int waited = 0; waited < 3000 && !raisedAgain; waited += 40)
+    {
+        rig.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        raisedAgain = rig.out.hostTimelineMissing();
+    }
+    REQUIRE(raisedAgain); // 前提:确实进了 missing 态,否则这一格是白测
+    rig.out.releaseResources();
+    Rig::pumpMessages(200); // 约 5 拍,只要一拍就够
+    CHECK_FALSE(rig.out.hostTimelineMissing());
+    rig.out.prepareToPlay(kSr, kBlock); // 还给 Rig 析构一个已 prepare 的实例
 }

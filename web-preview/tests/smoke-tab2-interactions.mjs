@@ -476,6 +476,63 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
                 ),
             "[SL-412] 闩锁是「屏上有没有 + 写的是哪个 abi」两位,不是单个 bool",
         );
+        // ------------------------------------------------------------------
+        // [SL-478] `noTimeline` 整条链的**调用点钉子**。
+        //
+        // 理由同上面 [SL-412] 那一组:`OutputEditor.cpp` 编不进任何 C++ 测试目标,
+        // `planConditionErrorEmit` 的纯函数用例(test_bridge_args.cpp)与 `HOST SL-478`
+        // (processor 的条件源真的会翻)都守不到「editor 真的在用它们」这一跳。
+        // 契约 §1.2/§1.3/§1.23/§5.1 承诺的四个落点各钉一条,**一律带行形态锚**
+        // (`^[ \t]*…`,注释掉整行 ⇒ 行首多出 `//` ⇒ 不匹配;理由见上面 [SL-412] 的 D4c 那段)。
+        //
+        // ① 生产者:emitTick 调它、它按 plan 发 §2.9 信封(detail 为 {}、不带 ch)、按 plan 回填闩锁。
+        {
+            const body = fnBodyOf("emitNoTimelineError");
+            check(
+                /^[ \t]*emitNoTimelineError\(\);[ \t]*$/m.test(
+                    fnBodyOf("emitTick"),
+                ),
+                "[SL-478] emitTick 真的调了 emitNoTimelineError",
+            );
+            check(
+                /^[ \t]*const auto plan =\s*scvb::output::planConditionErrorEmit\(processor_\.hostTimelineMissing\(\), webView\(\)\.isVisible\(\), noTimelineShown_\);/m.test(
+                    body,
+                ),
+                "[SL-478] 条件取 processor 的去抖值 hostTimelineMissing(),判定走纯函数",
+            );
+            check(
+                /^[ \t]*emitError\("noTimeline", 0, obj\(\), plan\.active\);[ \t]*$/m.test(
+                    body,
+                ),
+                "[SL-478] 载荷按 §2.9 信封发出(§5.1 该行 detail 为 {}、ch 为「—」)",
+            );
+            check(
+                /^[ \t]*noTimelineShown_ = plan\.nextShown;[ \t]*$/m.test(
+                    body,
+                ) && /^[ \t]*bool noTimelineShown_ = false;[ \t]*$/m.test(oeh),
+                "[SL-478] 闩锁按 plan 回填(无条件推进会让不可见期那一帧被永久吞掉)",
+            );
+        }
+        // ② §1.2/§1.3 两个 handler:observer 判据之后、badArg 之前回 {ok:false, reason:"noTimeline"}。
+        for (const h of ["handleSetCaptureEnabled", "handleSetOutputEnabled"]) {
+            check(
+                /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(
+                    fnBodyOf(h),
+                ),
+                `[SL-478] ${h}:observer 之后、badArg 之前有 noTimeline 拒绝分支`,
+            );
+        }
+        check(
+            /^[ \t]*put\(o, "reason", "noTimeline"\);[ \t]*$/m.test(oe),
+            "[SL-478] noTimelineResp 的 reason 逐字是 §5.6 闭集里的 noTimeline",
+        );
+        // ③ §1.23 recaptureArm 的第四个 reason,排在 readOnly 之后(与 mock 判序一致)。
+        check(
+            /^[ \t]*else if \(isReadOnly\(\)\)\s*reason = "readOnly";[\s\S]*?^[ \t]*else if \(processor_\.hostTimelineMissing\(\)\)\s*reason = "noTimeline";/m.test(
+                fnBodyOf("handleRecaptureArm"),
+            ),
+            "[SL-478] handleRecaptureArm:readOnly 之后有 noTimeline 这一支",
+        );
         // [SL-255 复审②] `armResegment` 必须落在 `if (changed)` **之外**。
         //
         // 为什么只能在源码形态上钉:这两个 handler 属 `OutputEditor.cpp`,只编进插件目标,

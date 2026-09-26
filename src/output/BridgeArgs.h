@@ -348,6 +348,48 @@ inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projec
 }
 
 // -----------------------------------------------------------------------------
+// [SL-478] `scvb.error` 的 `noTimeline` 一档:这一拍发不发、发哪一态。
+//
+// **正题**:契约 §5.1 的 `noTimeline`(琥珀横幅⑥ + 采集/输出开关 disabled)**没有生产者**。
+// 生产侧的判据一直在(`OutputProcessor::timerCallback` 里「连续无时间线 ≥0.5s → 清注入
+// mask」那一段),但结论只落一行 `DBG`,从不进桥;而 web 侧的消费者(`app.js` 的
+// `err.has("noTimeline")`、`tab-master.js` 的开关闸)早就就绪 ⇒ 恒 false。
+//
+// 形态与上面的 `planNewerStateEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),只少了
+// 「换了一份工程 abi 要重发」那一维 —— `noTimeline` 的 `detail` 是 `{}`,屏上没有要跟着
+// 变的数。**为什么不直接复用 `planNewerStateEmit`(传 abi=0)**:那条函数的不变量写着
+// 「mismatch ⇒ projectAbi ≥ 1」,拿 0 去喂等于把它的前提当成可以随手违反的东西。
+//
+//   · 条件成立且屏上还没这一条 ⇒ 发 `active:true`;
+//   · 条件成立、屏上已有 ⇒ 不发(条件是持续态,逐拍比会发 25 次/秒);
+//   · 条件解除且屏上挂着 ⇒ 发 `active:false` 撤横幅(§5.1 降级纪律②);
+//   · 条件解除且屏上本来就没有 ⇒ 不发空撤销帧;
+//   · 不可见 ⇒ 一律不发**且不推进记账**(理由同 `planNewerStateEmit` 的 `!visibleNow` 支)。
+//
+// **去抖不在这里**:`condition` 传的已经是去抖后的 `hostTimelineMissing()`(0.5s 判据,
+// 见 `OutputProcessor.h` 该访问器头注)。本函数只管「上桥的边沿」,不管「条件怎么判」。
+struct ConditionErrorEmitPlan
+{
+    bool send = false; // 这一拍要不要调 emitError
+    bool active = true; // 载荷的 active 位(false = 撤横幅)
+    bool nextShown = false; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibleNow, bool alreadyShown) noexcept
+{
+    ConditionErrorEmitPlan p;
+    p.nextShown = alreadyShown;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (condition == alreadyShown)
+        return p; // 屏上已是这一态(含「解除且本来就没有」)
+    p.send = true;
+    p.active = condition;
+    p.nextShown = condition;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
 // [SL-412] `newerState.detail` 里那两个 abi 数**落 JSON 的口径**。
 //
 // 病灶:`stateAbiSeen_` 直接来自**工程文件里的不可信字节**(`OutputProcessor.cpp` 里那句
