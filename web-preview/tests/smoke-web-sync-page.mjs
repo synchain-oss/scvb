@@ -1151,34 +1151,75 @@ try {
         }
         await sleep(700);
 
-        // ---- (h8) 追不平的那一档:兜底到点必须放开 ----
-        // 松手之后引擎侧的值被**别处**改掉(另一实例 / 自动化;这里直接打 mock),回推永远
-        // 等不到发出去的那个值 ⇒ 只能靠 PARAM_ECHO_HOLD_MS 兜底放开,否则读数永远停在
-        // 用户放下的值上、与引擎不一致。
+        // ---- (h8) 追不平的那一档:兜底到点必须放开,且**到点之后要有人再 render 一次** ----
+        // 造「native 规整过数值」:把 mock 的 setVadParams 换成桩 —— 不改引擎、不跑重分段
+        // 流水线,50ms 后由壳页 driver 直发一帧 state,阈值比发出的值偏 0.5 dB。回推因此
+        // 永远等不到发出去的那个值,只能靠 PARAM_ECHO_HOLD_MS 兜底放开。
+        // ⚠ 两件事都要做到,否则这一格钉不住「到点补渲染」那个定时器(删除式实测过两次):
+        //   · 走带停着 —— 预览默认在播,30Hz 播放头每帧都带来一次 render;
+        //   · 不走 mock 真的 setVadParams —— 它会顺带跑重分段,约 600ms 后来一帧
+        //     scvb.segments,那一帧的 render 会替定时器把闸放开。
+        // 还剩一个晚来的 render 来源:松手挂起的倒计时条 2s 自撤(armCountdown)—— 所以
+        // 下面的上界卡在它之前。停走带之后,500ms 到 2s 之间唯一的 render 来源就是那个定时器。
+        eq(
+            await evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl) return "no-session";
+                s.ctl.setTransport({ isPlaying: false });
+                return "ok";
+            })()`),
+            "ok",
+            "(h8-pre)停走带(让兜底到点之后没有别的 render 来源)",
+        );
+        await sleep(600);
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    const s = w.parent.__SCVB_PREVIEW__;
+                    if (!s || !s.ctl || typeof s.ctl.emit !== "function") return false;
+                    if (!mk.__origVad) mk.__origVad = mk.setVadParams;
+                    mk.setVadParams = function (p) {
+                        const vad = { ...p, threshold_db: p.threshold_db + 0.5 };
+                        setTimeout(() => s.ctl.emit("scvb.state",
+                            { full: false, analysis: { vad: vad } }), 50);
+                        return { ok: true };
+                    };
+                    return true;`),
+            ),
+            "(h8a)setVadParams 换成「规整 +0.5 dB、不跑流水线」的桩",
+        );
         {
             const tr2 = await centerOf(TRACK("wave-vad-threshold"));
             await mouse("mousePressed", tr2.x + tr2.w * 0.2, tr2.y);
             await mouse("mouseMoved", tr2.x - tr2.w * 0.2, tr2.y);
             await mouse("mouseReleased", tr2.x - tr2.w * 0.2, tr2.y);
+            const tRel2 = Date.now();
             const rel2 = await readVal("wave-vad-threshold");
-            const other = await evaluate(
-                IN_ASYNC(`const mk = w.__SCVB_MOCK__;
-                    const snap = await mk.requestInitialState();
-                    const vad = { ...((snap.analysis || {}).vad || {}) };
-                    vad.threshold_db = vad.threshold_db <= -55 ? -25 : -55;
-                    mk.setVadParams(vad);
-                    return vad.threshold_db;`),
+            await sleep(300);
+            eq(
+                await readVal("wave-vad-threshold"),
+                rel2,
+                "(h8b)兜底窗内:规整过的回推被挡住,读数仍是松手的值",
             );
-            check(Number.isFinite(other), `(h8a)松手后引擎侧被改成 ${other}`);
             check(
                 await waitFor(
                     IN(`const el = gb("wave-vad-threshold-val");
                         return !!el && el.textContent.trim() !== ${JSON.stringify(rel2)};`),
-                    3000,
+                    900,
                 ),
-                "(h8b)**追不平时兜底到点放开**,读数跟上引擎(不永远停在松手的值上)",
+                "(h8c)**兜底到点(500ms)后当即放开**,读数跟上引擎的规整值 —— 上界取松手后约 1.2s:" +
+                    "松手挂起的倒计时条 2s 自撤时也会 render 一次,等到那时才放开就是没有兜底补渲染",
             );
+            log(`  (h8d)松手后 ${Date.now() - tRel2}ms 读数跟上引擎`);
         }
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (mk.__origVad) { mk.setVadParams = mk.__origVad; delete mk.__origVad; }
+                    return true;`),
+            ),
+            "(h8e)已还原 mock 的 setVadParams",
+        );
     }
     assertClean("④ Tab3 滑杆");
 
