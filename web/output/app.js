@@ -35,8 +35,6 @@ import {
     footerPrintKey,
     secondsToTimecode,
     shouldShowGuide,
-    errorStoreKey,
-    errorKeysToDrop,
     segmentsEventApplies,
     applySegmentsEvent,
     HISTORY_AVAIL_INIT,
@@ -138,9 +136,9 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
-    // §2.9 errorStoreKey(e) → payload(active:false 即删)。键 = 裸 code,**唯
-    // `lowSample` 用 `lowSample#{ch}` 复合键**(轨级且会同时命中多轨,裸 code 存一条
-    // 会互相覆盖);消费侧走 tab-master.js 的 lowSampleChannels(),与键形解耦。
+    // §2.9 code → payload(active:false 即删)。键 = 裸 code,同一 code 的后一帧覆盖
+    // 前一帧。轨级的 srMismatch / channelConflict(载荷带 ch)也不例外 —— srMismatch 的
+    // 横幅 ③ 口径就是一次只显示一个轨号(05 §2.0),这是既定行为,不是漏了复合键。
     errors: new Map(),
     unknownCodes: [], // §5.1 降级纪律①:未知 code 原样入诊断区
     readOnly: false, // secondOutput / conn.outputReadOnly
@@ -1479,11 +1477,11 @@ function renderHeader() {
  *
  * [SL-373] ⑧⑨⑩ 三条**建议类**横幅带一枚 ✕(见 showDismissible)。这不与上面第 ② 条
  * 冲突,判据是**契约那句话点的是哪几条**:§5.1 写的是「持续性条件(横幅①-⑥)」——
- * 那是**本页的横幅编号**,不是九码表的行号。①-⑥ 里 ②-⑥ 各对应九码表一行
+ * 那是**本页的横幅编号**,不是错误码表的行号。①-⑥ 里 ②-⑥ 各对应错误码表一行
  * (secondOutput / srMismatch / newerState / sidecarMissing / noTimeline),
  * 而 ① 路由失准**不是 code**,它由 `scvb.conn` 的 misalignCount 派生(见 ① 自己那段注)——
  * 契约那句话按本页编号把它一并收进「持续性条件」,所以它同样不给 ✕。
- * [复审第 1 轮] 上一版把这一段写成「①-⑥ 正好是九码表里有 UI 落点的那几个」,那是**错的**:
+ * [复审第 1 轮] 上一版把这一段写成「①-⑥ 正好是错误码表里有 UI 落点的那几个」,那是**错的**:
  * ① 不在表里。结论(①-⑥ 一条都不加 ✕)没变,但归因错了会误导后人判断「哪条能加 ✕」。
  * ⑦⑧⑨⑩ 则连本页那句话的编号范围都不在:⑦ 读 §2.1 `print_guard`、⑧ 读 §2.8
  * `segments.channels[].stale`、⑨⑩ 读 §2.1 的两个布尔位 —— 四条都不是 `scvb.error` 的
@@ -1546,7 +1544,7 @@ function renderBanners() {
     // `scvb.error{code:"sidecarMissing"}` 到达也**不产生布局盒**(页面级判据:
     // `smoke-ui-layout-page.mjs` G 节)。
     // ⚠ **只摘了这一句,没有摘别的**:`sidecarMissing` 仍在下面 `KNOWN_CODES` 里(它仍是
-    // §5.1 九码之一),store.errors 也照旧收下它 —— 只是本版没有渲染出口。
+    // §5.1 错误码之一),store.errors 也照旧收下它 —— 只是本版没有渲染出口。
     // **按事实读,别照本卡第 1 推那句旧话读**:统筹 2026-09-15 grep 更正 —— 这条 code 在
     // `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释),也就是说
     // **横幅⑤ 在本次之前也从来没有亮过**,不是「本来会提示、被我们收掉了」。将来谁在 `src/`
@@ -1576,7 +1574,7 @@ function renderBanners() {
 
     // ⑨ [SL-239] 采集开着 ⇒ 上面那条提示整条是哑的,而用户完全看不出来。
     //
-    // 04 §4.5 的比对**只在采集 OFF 期间发生**(FeatRing::accumulateFp 的 `if (capturing) return;`
+    // 04 §4.5 的比对**只在采集 OFF 期间发生**(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件
     //  —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。这本身不是缺陷;缺陷是
     // 它不可见:v5.6.2 实测里用户按终验清单做「改狠上游 EQ → 应出 ⚠」,采集还开着,
     // 于是既没有 ⚠、也没有任何线索说明为什么(SL-239 定谳)。更糟的是机会**一次性消耗** ——
@@ -1646,8 +1644,6 @@ function renderBanners() {
         "",
     );
 
-    // toast:一次性提示(§5.1 降级纪律②:可关闭)
-    show($("toast-projectCopy"), err.has("projectCopy"));
     // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
     // 「sidecar 不上了」)。此处原为
     //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
@@ -2164,14 +2160,8 @@ if (bridge) {
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
         // §2.9:active 缺省视为 true;false = 条件已解除(持续性横幅据此撤下)。
-        // 键由 errorStoreKey 统一(lowSample = code+ch 复合键);撤下走
-        // errorKeysToDrop —— 契约没保证解除事件必带 ch,不带 ch 的解除必须把该
-        // code 的全部轨级条目一并撤掉,否则黄标永不熄灭。
-        if (e.active === false) {
-            for (const k of errorKeysToDrop(store.errors, e)) {
-                store.errors.delete(k);
-            }
-        } else store.errors.set(errorStoreKey(e), e);
+        if (e.active === false) store.errors.delete(e.code);
+        else store.errors.set(e.code, e);
         if (!KNOWN_CODES.has(e.code) && !store.unknownCodes.includes(e.code)) {
             store.unknownCodes.push(e.code);
         }
@@ -2179,7 +2169,7 @@ if (bridge) {
     });
 }
 
-/** §5.1 九码;表外一律进诊断区(UI 不静默)。 */
+/** §5.1 七码;表外一律进诊断区(UI 不静默)。 */
 const KNOWN_CODES = new Set([
     "srMismatch",
     "secondOutput",
@@ -2187,9 +2177,7 @@ const KNOWN_CODES = new Set([
     "newerState",
     "sidecarMissing",
     "noTimeline",
-    "projectCopy",
     "sidecarSwitched",
-    "lowSample",
 ]);
 
 /**

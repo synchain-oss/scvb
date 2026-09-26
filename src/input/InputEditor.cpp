@@ -141,9 +141,8 @@ void InputEditor::emitTick()
     // ⚠ 不能无条件改成 configuredChannelId(与上面 buildSnapshot() 同一个坑)——kConflict
     // (首次绑定、点了一个被占通道)这一态下 configuredChannelId 停在被拒的请求号、channelId
     // (=boundChannel())如实是 0,无条件用配置值会把被拒的通道显示成"已选中",重新打开
-    // SL-19/SL-446 本身要堵的洞。displayChannelId() 按 claimState 分流,kConflict 单独走
-    // channelId,别的态走 configuredChannelId——见 InputBridgeLogic.h 声明处头注(含
-    // CHANGELOG.md 里那句已发版承诺的出处)。
+    // SL-19/SL-446 本身要堵的洞。displayChannelId() 按 claimState 分流,哪几态走哪个值见
+    // InputBridgeLogic.h 声明处头注(含 CHANGELOG.md 里那句已发版承诺的出处)。
     // ⚠ 别碰下面 scvb.config 的 cfg.channelId——那处索引广播数组仍必须用实际持有,理由见
     // InputBridgeLogic.cpp buildConfigPayload() 头注。
     juce::Optional<scvb::u32> abiRemote;

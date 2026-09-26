@@ -874,7 +874,7 @@ function renderRemoteSummary() {
     // channel、cfg 数据有效,用 claim 当闸会把这一行在 srMismatch 时也藏起来——那是本轮不该
     // 引入的行为改变。
     // 改用 conn.maskBit(§4.2,契约里已有的字段,零新增):它的计算(InputSession::
-    // connSnapshot(),src/core/input/InputSession.cpp:217-234)本来就是"outputOnline 且
+    // connSnapshot(),src/core/input/InputSession.cpp)本来就是"outputOnline 且
     // **实际持有**的 channel 在 Output 广播的 connected_mask 里置位"才为 true,与 cfg 同源。
     // 代价:比"channelId>=1 且 haveOwn"严格一点点——还要求 Output 的 mask 已经把我们的心跳
     // 位置上,claim 成功到 mask 置位之间有极短的窗口,这一行可能比"刚绑定"晚一拍才显示。

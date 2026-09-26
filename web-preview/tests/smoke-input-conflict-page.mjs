@@ -32,10 +32,13 @@
 //        的判据,不与 toast/shake 这两条重复(那两条是 claimChannel 里在 render()
 //        **之前**就直接调用的,证明不了 render() 本身有没有执行到)。
 //   ④ 每段零 console.error、零未捕获异常(旧代码的 SyntaxError 会在这里现形)。
+//   ⑤ [SL-465] 远程只读摘要行(`input.remoteSummary`)的闸跟 `conn.maskBit` 走、不跟
+//      顶层 `channel_id` 走 —— 同一个 Input 页面、同一套装载,顺带放在这里。
 //
 // 删除式(未提交,人工核过):把 claimChannel 里的选择器改回
 // `$('input.channels.card[data-ch="' + ch + '"]')` 那个坏形态,本文件②③段必须转红
 // (SyntaxError 未捕获 ⇒ ④ 段的零异常断言先炸,②③ 的后续断言全部读到 null/超时)。
+// ⑤ 的删除式见该段注释。
 //
 // 用法:node web-preview/tests/smoke-input-conflict-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -530,6 +533,53 @@ try {
     );
 
     assertClean("③ 通道冲突反馈");
+
+    // =========================================================================
+    // [SL-465] 分叉输入:?scenario=passthrough —— 顶层 channel_id=1(卡 1 选中)、Output 在线、
+    // scvb.config 在,但 maskBit=false(本通道还没被 Output 健康读取)。闸若退回
+    // `store.state.channel_id >= 1`,摘要行就会显示出来。
+    // 对照:默认场景(已连上,maskBit=true)这一行必须显示 —— 否则「隐藏」恒真、判不出东西。
+    // 删除式(未提交,人工核过):把 web/input/app.js 里 showRow 的 `conn.maskBit === true`
+    // 换成 `store.state.channel_id >= 1` ⇒ 只有「passthrough ⇒ 隐藏」那一条红。
+    log("=== ⑤ remoteSummary 的闸跟 maskBit 走,不跟 channel_id 走(SL-465)===");
+    const SUMMARY_SHOWN = IN(`const r = gb("input.remoteSummary");
+        return !!r && r.hidden === false;`);
+    await open("");
+    check(
+        await waitFor(SUMMARY_SHOWN, 6000),
+        "⑤ 对照:已连上(maskBit=true)时远程摘要行显示",
+    );
+    assertClean("⑤ 对照");
+
+    await open("scenario=passthrough");
+    // 先等分叉的两半都已上屏,再判隐藏 —— 否则读到的是首帧之前的初值(本来就隐藏)。
+    check(
+        await waitFor(
+            IN(`const c = card(1);
+                return !!c && c.getAttribute("aria-pressed") === "true";`),
+            6000,
+        ),
+        "⑤ passthrough:卡 1 已显示为选中(顶层 channel_id=1 已到)",
+    );
+    const wantSub = [T.zh, T.en, T.fr].map((d) =>
+        String(d["in.pillSub.passthrough"]),
+    );
+    check(
+        await waitFor(
+            IN(`const s = gb("input.header.pillSub");
+                return !!s && ${JSON.stringify(wantSub)}.includes(s.textContent.trim());`),
+            6000,
+        ),
+        "⑤ passthrough:副文案已是「直通中」(scvb.conn 已到)",
+    );
+    check(
+        (await evaluate(
+            IN(`const r = gb("input.remoteSummary");
+                return !!r && r.hidden === true;`),
+        )) === true,
+        "⑤ channel_id=1 但 maskBit=false ⇒ 远程摘要行隐藏(闸若退回 channel_id>=1 会显示)",
+    );
+    assertClean("⑤ passthrough");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
@@ -552,5 +602,5 @@ if (fail > 0) {
     console.log(`\n❌ ${fail} 条断言失败`);
     process.exit(1);
 }
-console.log("\n✅ Input 通道冲突反馈(SL-19)页面级冒烟全绿");
+console.log("\n✅ Input 通道冲突反馈(SL-19)+ 远程摘要闸(SL-465)页面级冒烟全绿");
 process.exit(0);

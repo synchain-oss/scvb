@@ -70,7 +70,7 @@ import {
     labelPlaceholder,
     tt,
 } from "./tab-tracks.js";
-import { format, outputPhase, lowSampleChannels } from "./tab-master.js";
+import { format, outputPhase } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -584,16 +584,13 @@ export function durationOf(store) {
  * 事件仓 → 15 条泳道模型(**Tab3 轨头/行状态的唯一渲染源**;只读投影)。
  *   label / status ← §2.1 channels + §2.3 conn(口径同 Tab2 rowsFromStore);
  *   cov ← §2.7 captureProgress(app.js 落在 store.coverage[ch]);
- *   segs / stale ← §2.8 segments;low ← §2.9 lowSample(轨级 error)。
+ *   segs / stale ← §2.8 segments。
  * `picked` 恒 0:轨选是 Wave 2 交互态,不属事件仓。
  */
 export function laneModelFromStore(store) {
     const st = store || {};
     const chans = (st.state && st.state.channels) || [];
     const conn = (st.conn && st.conn.channels) || [];
-    // §2.9 lowSample 是轨级 error 且会同时命中多轨 —— 与 Tab2 轨行**消费同一份**
-    // (app.js 按 `lowSample#{ch}` 复合键存,这里扫成轨号集合;T33)。
-    const low = lowSampleChannels(st.errors);
     const lanes = [];
     for (let ch = 1; ch <= LANE_COUNT; ch++) {
         const cfg = chans[ch - 1] || {};
@@ -605,7 +602,6 @@ export function laneModelFromStore(store) {
             cov: Math.round(num((st.coverage || {})[ch], 0)),
             segs: ((segCh && segCh.segments) || []).length,
             stale: !!(segCh && segCh.stale),
-            low: low.has(ch) ? 1 : 0,
             picked: 0,
         });
     }
@@ -1125,8 +1121,6 @@ export function waveLaneHtml(ch) {
         <span class="sc-dot wave-lane__light" data-tone="gray" data-pulse="0"
               data-gb="${gb("light")}"></span>
         <span class="wave-lane__label" data-gb="${gb("label")}"></span>
-        <!-- 「样本不足」黄标:158px 内压成琥珀点 + tooltip(05 行 309;C-05 补件) -->
-        <span class="wave-lane__lowdot" data-gb="${gb("lowsample")}" hidden></span>
         <!-- 「数据可能已过期」⚠ 角标(04 §4.5;整句 tooltip 走 wave.staleTrack) -->
         <span class="wave-lane__staledot" data-gb="${gb("stale")}" hidden>⚠</span>
         <span class="wave-lane__covseg" data-gb="${gb("covseg")}"></span>
@@ -2330,7 +2324,6 @@ export function createTabWave(opts) {
                 head: gb("head"),
                 light: gb("light"),
                 label: gb("label"),
-                low: gb("lowsample"),
                 stale: gb("stale"),
                 covseg: gb("covseg"),
                 check: gb("checkbox"),
@@ -3796,8 +3789,6 @@ export function createTabWave(opts) {
             });
             text(n.covseg, covSeg);
             setTitle(n.covseg, covSeg);
-            show(n.low, !!lane.low);
-            setTitle(n.low, lane.low ? t["lowSample.full"] || "" : "");
             // 04 §4.5:该轨上游音频与已采集特征不一致 → ⚠ 角标 + 整句 tooltip。
             // 数据来自 §2.8 segments.channels[].stale(laneModelFromStore 已投影)。
             show(n.stale, !!lane.stale);

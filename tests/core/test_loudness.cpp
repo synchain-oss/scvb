@@ -273,4 +273,39 @@ TEST_CASE("LOUD-attached: 附带指标 peakMax 与 400ms 滑窗 p95/max/min", "[
     REQUIRE(segRms.momentary.max == seg.momentary.max);
     REQUIRE(segRms.momentary.min == seg.momentary.min);
     REQUIRE(segRms.peakMax == seg.peakMax);
+
+    // [SL-502] 上面只有序不变式与同实现互比,三个字段的赋值整段删掉仍全绿。下面写死期望值,
+    // 期望侧不调被测函数:窗均值按定义逐窗直接求和(不走滑动累加),响度按 BS.1770 公式
+    // -0.691 + 10·log10(z) 现算,取哪一窗由输入形状手算决定(不靠排序)。
+    // 每条用 CHECK:要读「其余几条仍绿」时,REQUIRE 一红会把后面的截掉。
+    static constexpr int kWin = 40; // 400ms = 40 hop(static:MSVC 不许无捕获 lambda 隐式用局部 constexpr)
+    const auto lufs = [](double z) { return -0.691 + 10.0 * std::log10(z); };
+    const auto windowMean = [](const std::vector<float>& e, int i) {
+        double sum = 0.0;
+        for (int k = i; k < i + kWin; ++k)
+            sum += static_cast<double>(e[static_cast<std::size_t>(k)]);
+        return sum / kWin;
+    };
+
+    // ① 上面那组单调递增输入:100 hop ⇒ 61 窗,窗均值随窗号严格递增 ⇒ min = 第 0 窗、
+    //    max = 第 60 窗;p95 分位位置 0.95×60 = 57 为整数 ⇒ 落在第 57 窗,不插值。
+    CHECK(seg.momentary.min == Approx(lufs(windowMean(kwMs, 0))).margin(1e-9));
+    CHECK(seg.momentary.max == Approx(lufs(windowMean(kwMs, 60))).margin(1e-9));
+    CHECK(seg.momentary.p95 == Approx(lufs(windowMean(kwMs, 57))).margin(1e-9));
+
+    // ② 降序输入:50 hop ⇒ 11 窗,窗均值随窗号严格递减 ⇒ 排序后第 k 小(从 0 数)= 第 10-k 窗。
+    //    p95 分位位置 0.95×10 = 9.5 ⇒ 排序后第 9、10 个(= 第 1 窗与第 0 窗)的正中间。
+    //    不排序的话读到的是第 9、10 窗(最小的两个);插值只取低侧的话是第 1 窗本身。
+    constexpr int nDesc = 50;
+    std::vector<float> desc(static_cast<std::size_t>(nDesc));
+    std::vector<float> descPeak(static_cast<std::size_t>(nDesc), 0.5f);
+    for (int k = 0; k < nDesc; ++k)
+        desc[static_cast<std::size_t>(k)] = static_cast<float>(0.01 + 0.001 * (nDesc - 1 - k));
+    const auto segDesc =
+        scvb::analysis::measureSegment(desc.data(), descPeak.data(), nDesc, scvb::analysis::LoudnessMode::KIntegrated);
+    const double l0 = lufs(windowMean(desc, 0));
+    const double l1 = lufs(windowMean(desc, 1));
+    CHECK(segDesc.momentary.max == Approx(l0).margin(1e-9));
+    CHECK(segDesc.momentary.min == Approx(lufs(windowMean(desc, 10))).margin(1e-9));
+    CHECK(segDesc.momentary.p95 == Approx(l1 + 0.5 * (l0 - l1)).margin(1e-9));
 }
