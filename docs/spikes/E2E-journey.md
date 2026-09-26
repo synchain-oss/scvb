@@ -22,7 +22,7 @@ D3 三通道的本次落地:
 **离线覆盖结论**:16 步里,「连接态 / Input 七态 / 四个 tab 状态 / tour 后状态 / 打印守卫 /
 重采集布防 / 分段时间线」等**视觉与状态机语义**可经 web-preview mock 覆盖(步 1–12、15 的
 绝大部分);**必须真机 DAW** 的步集中在「真实走带 / 采集记账 / write 落盘 / 回读一致 /
-fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage 生长与「样本不足」)、
+fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage 生长与覆盖率汇总)、
 13/14(write/Latch 落盘与回读)、16(改 EQ 后 fingerprint 过期)以及 §8 六类验收里所有依赖
 宿主时间线与自动化的格子。这些步与格已全部收进 §3 清单。
 
@@ -42,7 +42,7 @@ fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage �
 | 4 | 「每轨设置」:优先级/主唱锁/配对/label | 即改即存 Output state;Input UI 同步(ctrl 广播,config_seq) | ✅ 离线:Tab2 轨道卡(优先级/锁/配对/label 控件)截图 `t37-output-tracks.png`;config_seq 透传的 core 断言 = `test_input_bridge_ipc.cpp`「configSeq」。🖥️ 真机补:Input↔Output 跨实例实时同步 → §3 清单 L-4 |
 | 5 | 选 range:默认「全曲跟随(follow)」;或「用循环区」/手动 | daw_loop 下拖 DAW 循环区实时跟随;无 loop 能力时「用循环区」disabled + tooltip | ✅ 离线:Tab1 range 三值枚举(follow 默认档)截图 `t37-output-master-fifteen.png`;`&loop=none` 降级 → `second-output`(daw_loop 代表档)+ `&loop=none` 变体。🖥️ 真机补:「拖宿主循环区 → 插件 range 实时跟随」需真实宿主 → §3 清单 L-5 |
 | 6 | **采集开关 ON** → 播放 range | 绿点脉冲「采集中」;各轨覆盖进度条实时生长;离开 range → 琥珀 +「已离开采集范围」 | 🖥️ 待用户上机:采集布防/coverage 生长依赖真实走带(采集 ON ∧ 播放 ∧ playhead 有效三条件)。离线只验「采集态视觉与布防门控」的 mock 面(见步 15 `recapture-armed`)。→ §3 清单 L-6 |
-| 7 | 播完,**采集开关 OFF**(或自动停) | 每轨覆盖率汇总;有效唱段 <1.5s 的轨黄标「样本不足」;FrameStore 转只读 | 🖥️ 待用户上机:覆盖率汇总/样本不足/只读态依赖真实采集结果。→ §3 清单 L-7 |
+| 7 | 播完,**采集开关 OFF**(或自动停) | 每轨覆盖率汇总;FrameStore 转只读(原「有效唱段 <1.5s 黄标」一项随 [J101] 撤回) | 🖥️ 待用户上机:覆盖率汇总/只读态依赖真实采集结果。→ §3 清单 L-7 |
 | 8 | 点 **分析** | <1s 出结果;时间线显示分段边界+段响度+各轨 pan/vol 曲线;洞区间显示「未采集」空槽 | ✅ 离线(视觉):Tab3 波形 + 分段(15 泳道 + 段检查器)截图 `t37-output-wave.png`。分析流水线(VAD/分段/响度/分配)的 core 断言 = `test_vad.cpp`/`test_segmentation.cpp`/`test_assign.cpp`/`test_balance.cpp`。🖥️ 真机补:「<1s 出结果」实测耗时 → §3 清单 L-8 |
 | 9 | 拖 VAD 阈值/灵敏度滑杆,松手等自动应用(抑制时点「应用到分段」) | 拖动中分段预览实时重算(<50ms,不写曲线);松手 300ms 防抖后自动跑流水线(仅 origin=auto 未锁段);仅 PRINT/分析中才抑制;用户段任何路径不动 | ✅ 离线(逻辑):`smoke-tab3-interactions.mjs`(纯函数 + mock 端到端,重分析保护用户段等)。视觉:Tab3 截图 `t37-output-wave.png`。🖥️ 真机补:拖动全程零曲线写入的交互手感 + 300ms 防抖时序 → §3 清单 L-9 |
 | 10 | 试听:**输出开关 OFF→ON**(DAW 自动化不 arm) | OFF→ON 一次性非模态确认(双后果文案);确认后引擎接管 DSP 立即听到平衡;A/B 开关切听 | ✅ 离线:`print-guard` 场景(打印守卫)+ write 确认文案。截图 `t37-output-master-printguard.png`。🖥️ 真机补:真实 DSP 听感 + 「不 arm 仅试听不落盘」在宿主 Read 模式下的行为 → §3 清单 L-10 |
@@ -82,7 +82,7 @@ fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage �
 - [ ] **L-4** 每轨设置即改即存;Input UI 经 ctrl 广播(config_seq)同步显示
 - [ ] **L-5** `daw_loop` 模式下拖 DAW 循环区 → 插件 range 实时跟随;宿主无 loop 时「用循环区」disabled + tooltip
 - [ ] **L-6** 采集 ON + 播放 range:绿点脉冲「采集中」;覆盖进度条实时生长;离开 range → 琥珀 +「已离开采集范围」
-- [ ] **L-7** 采集 OFF:每轨覆盖率汇总;有效唱段 <1.5s 的轨黄标「样本不足」;FrameStore 转只读
+- [ ] **L-7** 采集 OFF:每轨覆盖率汇总;FrameStore 转只读
 - [ ] **L-8** 点分析:<1s 出结果;时间线分段边界 + 段响度 + pan/vol 曲线;洞区间「未采集」空槽
 - [ ] **L-9** 拖 VAD 阈值:拖动中预览(<50ms)且**拖动全程零曲线写入**;松手 300ms 防抖自动应用(仅 origin=auto 未锁段);PRINT/分析中才抑制
 - [ ] **L-10** 输出 OFF→ON:一次性确认文案(双后果);引擎接管 DSP 立即听到平衡;Read 模式试听不落盘(S2 验收)
