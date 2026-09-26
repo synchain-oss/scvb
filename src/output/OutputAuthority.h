@@ -72,6 +72,11 @@ public:
 
     // ---- 版本复制 §5.3(消息线程;纯 state 深拷贝,零 gesture、零参数写入;单条撤销)----
     scvb::engine::CopyVersionResult copyVersion(int src, int dst, scvb::engine::AuthorityMode mode);
+    // [SL-484] 只校验不执行:生产路径(processor 的 CRVS 复制)借这一份判据,不另写 PRINT 判断。
+    scvb::engine::CopyVersionResult validateCopy(int src, int dst, scvb::engine::AuthorityMode mode) const
+    {
+        return m_versions.validateCopy(src, dst, mode);
+    }
 
     // ---- 版本重命名 [J05](消息线程;可撤销;返回归一化结果供 UI 反馈)----
     scvb::engine::SetNameResult setVersionName(int version, const juce::String& name);
