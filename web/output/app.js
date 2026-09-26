@@ -932,8 +932,31 @@ function noteRejectedPrinting() {
     setTimeout(requestRender, REJECT_HINT_MS + 50);
 }
 
+/**
+ * [SL-460][SL-469] 撤销 / 重做 / 切版本**之前**把全页在飞的本地编辑收干净 —— 唯一入口。
+ *
+ * 两类在飞编辑,处置不同(每个模块的 flushPending() 各自按这条规矩做):
+ *   · **防抖在飞**(用户已停手、提交还没到点):**当场冲刷**,并等它回来。
+ *     曲线滚轮 / Q 滑杆 140ms、Tab2 音量卡箍 / 旋钮滚轮与方向键 300ms。
+ *     此刻 undo / setVersionActive 都还没发 ⇒ 这一发落到它本来的那一版上,并先于
+ *     undo 入栈。不冲刷的两种坏结局:丢弃(撤销撤多了 / 切版本后微调静默消失)与
+ *     不处理(防抖晚于 undo 落地 ⇒ 撤错了别的、且作为新事务清空 redo 栈)。
+ *   · **指针仍按着**(拖动中):编辑没有完成,**中止**(SL-450 ① 的既定语义 ——
+ *     松手那一记不许把陈旧抄本写回去,也不许写进切换后的版本)。
+ *     曲线拖点、Tab2 pan/vol 旋钮与卡箍拖动、Tab3 段检查器 PAN 旋钮 / VOL 滑杆。
+ * ⚠ 新增任何「防抖提交」或「松手才发」的写面,都要在这里接上它的 flushPending(),
+ * 否则它会重新长出 SL-469 / SL-460 那两种症状。
+ */
+function settlePendingEdits() {
+    return Promise.all([
+        curveEditor.flushPending(),
+        tabTracks.flushPending(),
+        tabWave.flushPending(),
+    ]);
+}
+
 async function switchVersion(v) {
-    // [SL-450 复审轮 1] **发出切换之前**先中止在飞的曲线编辑。
+    // [SL-450 复审轮 1] **发出切换之前**先收掉在飞的曲线编辑。
     //
     // 为什么必须在**发之前**、不能只靠 curve-editor 的 render() 闸兜着:
     // 引擎收到 setVersionActive 是**同步**切的,而 `scvb.state` 回声**异步**到。
@@ -945,13 +968,11 @@ async function switchVersion(v) {
     // ⚠ 远端推来的切换掐不到源头 —— 那一路由 curve-editor 的 render() 闸在回声
     // 到达的那一刻兜;两者合起来仍留一档残余,见 curve-editor.js 里 commit() 的注释。
     //
-    // ⚠ **这一步会丢掉用户的一次真实编辑**,说清楚而不是含糊过去:若此刻正有一发
-    // Q 滑杆 / 滚轮的 140ms 防抖提交在飞,它会被**直接丢弃**,不会补发。
-    // 取舍是有意的 —— 宁可丢一次 Q 微调(用户看得见滑杆弹回、可以再拨一次),
-    // 也不让它写进**错误的版本**(那是另一版整条曲线被覆盖,且不在这一步的撤销范围里)。
-    // 「先冲刷再切」(把在飞的那一发按**旧版本**提交完再发切换)是可行的,
-    // 只是需要让 switchVersion 等一次上行往返 —— **留作后续**,不在本卡范围内。
-    curveEditor.abortEdit();
+    // [SL-460] 此处原先是 abortEdit():在飞的 140ms 防抖提交被**直接丢弃**(当时取的
+    // 安全侧,冲刷方案「留作后续」)。现在走 settlePendingEdits():引擎此刻仍停在旧版本,
+    // 那一发**按旧版本冲刷落地**后再发切换 —— 用户的微调落在它本来的那一版上。
+    // 代价是 switchVersion 多等一次上行往返。
+    await settlePendingEdits();
     const res = await call("setVersionActive", v);
     if (res && res.rejected === "printing") noteRejectedPrinting();
     requestRender();
@@ -1185,15 +1206,12 @@ async function runHistory(kind) {
     // 按 `!roNow` 写),但 Ctrl/Cmd+Z 那条根本不看按钮属性 —— 键盘能干成鼠标干不成的
     // 写操作。两个入口共用的这一层是唯一堵得住的地方。
     if (isReadOnly(store)) return;
-    // [SL-450] 发 undo/redo **之前**先中止在飞的曲线编辑。
-    // 曲线编辑器在 pointerdown 时把点集抄进本地,pointerup 提交的是那份抄本 ——
-    // 「按住不放 → Ctrl+Z → 松手」会让那记松手把刚撤销掉的那一笔整表写回去,
-    // 撤销当场被抹掉(拖动期没有声音变化,所以界面上察觉不到)。
-    // ⚠ 只能堵在 web 侧:C++ 不知道有人正按着鼠标。
-    // 放在只读闸**之后**:只读态根本不发 undo,没有要中止的东西;
-    // 放在 `await call(kind)` **之前**:中止必须先于撤销落地,否则中间这一窗
-    // 仍然可能被那份抄本提交上去。
-    curveEditor.abortEdit();
+    // [SL-450] 发 undo/redo **之前**先收掉在飞的本地编辑(规矩见 settlePendingEdits):
+    // 拖动中 ⇒ 中止(否则那记松手把刚撤掉的那一笔整表写回去,撤销当场被抹掉);
+    // [SL-460][SL-469] 防抖在飞 ⇒ 冲刷并等它落地,undo 才撤得到用户刚做的这一下。
+    // ⚠ 只能堵在 web 侧:C++ 不知道有人正按着鼠标、也不知道 UI 里还挂着定时器。
+    // 放在只读闸**之后**(只读态不发 undo)、`await call(kind)` **之前**(必须先于撤销落地)。
+    await settlePendingEdits();
     const res = await call(kind);
     // call() 在「桥没接上 / 调用抛错」时回 null —— 那是**没有证据**,不是栈空,
     // 保持原样(置灰会把一次通信故障变成一个永久灰掉的按钮)。
@@ -1389,10 +1407,19 @@ function renderHeader() {
     const printLocked = phase === "print" || rejected;
     // [SL-490] 分析在途也不许切版本:引擎侧真切版本会**取消**这一趟(结果整份丢弃),
     // 这里在源头挡住,用户不会一点 chip 就丢掉进行中的分析。tooltip 复用「分析中…」。
-    // 只挡 chip;「复制到…」不在本卡范围。双击改名读的也是 data-disabled,
+    // 挡 chip 与 ARMED 确认框的「继续」([SL-526],见下);「复制到…」不在本卡范围。双击改名读的也是 data-disabled,
     // 所以分析中同样不能改名 —— 已知副作用,分析结束即恢复。
     const analysisBusy = !!(s.analysis_run && s.analysis_run.running);
     const switchLocked = printLocked || analysisBusy;
+    // [SL-526] ARMED 轻确认框是 chip 之外的**第二个发起点**(「继续」直调 switchVersion),
+    // 非模态 —— 弹出后用户可以去 master 页起分析、回来再点「继续」。闸只写在 chip 上的话,
+    // 这一路照样切版本、引擎当场取消刚起的分析。锁住期间把框收起并清掉待切版本:
+    // 用户看到的是框消失 + chip 置灰 + tooltip 说明原因,而不是一个点了没反应的「继续」。
+    // 解锁后不自动弹回 —— 要切再点一次 chip。
+    if (switchLocked && verUi.armedConfirm && !verUi.armedConfirm.hidden) {
+        verUi.armedConfirm.hidden = true;
+        armedPendingVersion = 0;
+    }
     verUi.chips.forEach((chip, i) => {
         if (!chip) return;
         const v = i + 1;
@@ -2268,6 +2295,9 @@ window.__SCVB_OUTPUT__ = {
     // 与「提交了但回显还没到」。计数一格就能分辨,而且配得上一个「本该 +1」的对照臂
     // (同样的拖动**不按** Ctrl+Z ⇒ commits 必须 +1,否则这套测的是它自己的哑火)。
     curve: () => curveEditor.diag(),
+    // [SL-492][SL-496][SL-497] Tab3 检查器回声 / 滑杆键盘档计时 / 在飞写的只读快照。
+    // 与上面同一口径:要断的是「回声没被清掉」「脏位没卡死」这类内部态,画面分辨不出。
+    wave: () => tabWave.syncDiag(),
     // [SL-356] hostEcho 闩锁的只读快照。为什么需要它:页面级冒烟要断「快速起停时徽标
     // 全程不灭」,而这条断言只有在**采样窗真的跨过了停走档 900ms** 时才有牙 —— 不然
     // 修前修后都绿。窗口跨没跨过去取决于「最后一帧 hostEcho:true 到底什么时候来的」,

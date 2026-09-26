@@ -34,7 +34,8 @@
 //      会静默变成假绿),读 `defaultPrevented` 判「拦没拦」;
 //   ④ **拖动中 Ctrl+Z**:对照臂(不按 ⇒ commits +1)+ 实验臂(按 ⇒ commits 不变、
 //      aborts +1、dragging=false);
-//   ④b **Q 滑杆的 140ms 防抖在飞时按 Ctrl+Z** ⇒ 那一发必须被掐掉(对照臂:不按 ⇒ 照常提交);
+//   ④b **Q 滑杆的 140ms 防抖在飞时按 Ctrl+Z** ⇒ [SL-460] 那一发**先冲刷落地、undo 后发**
+//      (对照臂:不按 ⇒ 照常提交;SL-450 时这一格断的是「被掐掉」,已翻转);
 //   ④c **防抖已经落地之后**按 Ctrl+Z ⇒ abortEdit 必须空跑、`aborts` 不涨
 //      (钉 `commitTimer` 开火后清零;测量窗覆盖「拨动 -> 落地」全程,只跨 Ctrl+Z 会被自愈吃掉);
 //   ④d 同 ④c,但走**滚轮**那一处 arm —— 两处 arm 各验一次,不外推(C11 就是这么漏过的);
@@ -45,9 +46,12 @@
 //      ⚠ 夹具要先 copyVersion 把 V2 填成 6 点:空 V2 上 `onPointerUp` 的
 //      `idx >= cur.length` 早退会**替版本闸兜住**提交,只看计数的判据分辨不出闸在不在;
 //   ⑥ **跨版本落地守卫:每一类在飞写者各一格**(拖动 / 滚轮 / Q 滑杆)—— 本地那一路由
-//      `switchVersion()` 发前中止关死;各配一条「本该照常提交」的对照臂;
+//      `switchVersion()` 发前的 `settlePendingEdits()` 关死([SL-460] 起防抖那两类是**按 V1
+//      冲刷落地再切**,断 setPanCurve 先于 setVersionActive、V2 不变、V1 收到);各配对照臂;
 //   ⑦ **远端换版本**(直接打 mock 后端、绕过 UI 的 `switchVersion`)⇒ `render()` 的回声闸
 //      必须在回声到达那一刻中止 —— 这是那道闸**唯一**可达的路径,⑥ 里它一次都没被执行到;
+//   ⑦b [SL-460] 远端换版本时 **Q 滑杆防抖在飞** ⇒ 只能丢弃(定时器被清、commit() 零调用)——
+//      Ctrl+Z / 本地切版本改成冲刷之后,abortEdit 那行 clearTimeout 只剩这一条路径;
 //   ⑧ **commit 在途窗**:松手后**不换版本**时版本闸不许开火(钉 `pendingVersion` 不再被
 //      提前清成哨兵 0)。⚠ 这一段要先把 mock 的 `setPanCurve` 包成**跨宏任务**才测得出来 ——
 //      默认 mock 是纯微任务解析,在途窗几乎不存在;并配反向对照(在途窗里真换版本 ⇒ 闸照常开火);
@@ -79,6 +83,15 @@
 //   node 侧源码不变式(2 格,判据 = smoke-undo-redo.mjs):旧 `tagName` 形态回来;
 //     `EDITABLE_SELECTOR` 不再由 `EDITABLE_TEXT_SELECTOR` 派生。
 //   ⇒ 8 + 1 + 13 + 2 = **24**。
+//   ⚠ **[SL-460] 订正(批 2-C)**:撤销 / 本地切版本从「中止在飞防抖」改成「先冲刷」之后,
+//     上面「中止在飞编辑那一族」里有几格的**落点与红点变了**,别照上面的原文去注入:
+//     · 「runHistory / switchVersion 里的 abortEdit()」两格 → 现在那两处是
+//       `await settlePendingEdits()`,摘掉它分别红在 ④b 的 (f2)/(f2c) 与 ⑥ 的 (g5)/(g12);
+//     · 「abortEdit() 去掉 clearTimeout」原红在 ④b —— ④b 已不经过它,改由 ⑦b 的 (n6) 接;
+//     · 「滚轮 / Q 滑杆各自不记 pendingVersion」「各自不清 commitTimer」:两处已合进
+//       `armCommit()`,各只剩**一个**落点(不再能分开注入)。
+//     本次按新面重跑的结果与新增格(flushPending 本体、⑦b)记在批 2-C 的 PR 描述里;
+//     上面那个 24 是 SL-450 当时的数,**未按新面重数**。
 //   ⚠ **一处订正(复审轮 3)**:这里曾写着「C8(把 render 闸退回只看 `dragging`)
 //     钉不住、造不出确定性输入」——**那句是假的,已删**。真因是 mock 的桥**纯微任务
 //     解析**、commit 的在途窗几乎不存在,于是没有任何一格观测得到那半边。
@@ -886,14 +899,19 @@ try {
     assertClean("④ 拖动中 Ctrl+Z");
 
     // =========================================================================
-    log("=== ④b Q 滑杆的 140ms 防抖提交 ⇒ Ctrl+Z 同样要把它掐掉 ===");
+    log(
+        "=== ④b Q 滑杆的 140ms 防抖在飞时 Ctrl+Z ⇒ [SL-460] 先冲刷落地、再发 undo ===",
+    );
     newBucket("Q 滑杆防抖");
     {
-        // `local.dragPoints` 不只被拖动写:Q 滑杆(与键盘微调)也写它,并挂一个
-        // 140ms 的防抖 `commit(next)`。那个定时器拿的是**闭包里捕获的** next,
-        // 不读 `local.dragPoints` —— 所以 abortEdit 里只把抄本置空是不够的,
-        // 不 clearTimeout 的话「拨完滑杆 140ms 内按 Ctrl+Z」原样复现缺陷一。
-        // 这一格就是钉那一行 clearTimeout 的;没有它,那一行删掉也没人会红。
+        // [SL-460] **本格语义已翻转**。SL-450 时这里断的是「Ctrl+Z 把在飞的那一发掐掉」
+        // (abortEdit 丢弃);那等于用户拨完 Q 滑杆 140ms 内按 Ctrl+Z ⇒ Q 值弹回去、
+        // undo 还撤掉了更早那一笔 = 撤多了。现在 runHistory 先走 settlePendingEdits():
+        // 那一发**先按原样提交**、等它回来,undo 才发出去 ⇒ 撤掉的正是这一下。
+        // 断三件事:恰提交一次(不是零、也不是定时器再补一次)、冲刷计数 +1、
+        // 桥面上 setPanCurve **排在** undo 之前(读页内调用日志的下标,不读时间)。
+        // abortEdit 里那行 clearTimeout 原先由本格钉着,现在改由 ⑦b(远端换版本时
+        // 防抖在飞 ⇒ 只能丢弃)钉 —— Ctrl+Z 这一路已不再经过它。
         const ready = await evaluate(
             IN(`const qs = q('[data-curve-q]');
                 const wrap = q('.curve-toolbar__q');
@@ -921,15 +939,58 @@ try {
                 "(f1)对照臂:拨完滑杆,防抖窗到点提交一次(证明本格看得见这条路径)",
             );
 
-            // ---- 实验臂:拨一下、140ms 内按 Ctrl+Z ⇒ 那次提交必须不发生 ----
+            // ---- 实验臂:拨一下、140ms 内按 Ctrl+Z ⇒ 那一发先落地、undo 后发 ----
+            check(
+                await evaluate(
+                    IN(`const mk = w.__SCVB_MOCK__;
+                        if (!w.__scopeLog) {
+                            w.__scopeLog = [];
+                            for (const n of ["setPanCurve", "undo", "setVersionActive"]) {
+                                const orig = mk[n];
+                                mk[n] = function (...a) {
+                                    w.__scopeLog.push(n);
+                                    return orig.apply(mk, a);
+                                };
+                            }
+                        }
+                        return true;`),
+                ),
+                "(f1b)调用日志装上(setPanCurve / undo / setVersionActive)",
+            );
             const b1 = await curveDiag();
+            const L1 = await evaluate(IN(`return w.__scopeLog.length;`));
             await bump(3.0);
             await pressCtrlZ();
-            await sleep(400); // 把防抖窗整段走完,给「若没掐掉」一个开火机会
+            check(
+                await waitFor(
+                    IN(`return w.__scopeLog.slice(${L1}).includes("undo");`),
+                    3000,
+                ),
+                "(f2a)undo 到达桥面",
+            );
+            const f2 = await curveDiag();
+            eq(
+                f2.commits - b1.commits,
+                1,
+                "(f2)**Ctrl+Z 之前在飞的防抖提交被冲刷落地**(提交恰一次,不是丢弃)",
+            );
+            eq(f2.flushes - b1.flushes, 1, "(f2b)flushPending 认领了这一发");
+            {
+                const seq = await evaluate(
+                    IN(`return w.__scopeLog.slice(${L1});`),
+                );
+                const iP = seq.indexOf("setPanCurve");
+                const iU = seq.indexOf("undo");
+                check(
+                    iP >= 0 && iU >= 0 && iP < iU,
+                    `(f2c)**setPanCurve 先于 undo 到桥面**(undo 撤的是这一下;实得 ${JSON.stringify(seq)})`,
+                );
+            }
+            await sleep(400); // 把防抖窗整段走完:定时器若没被清掉,这里会再提交一次
             eq(
                 (await curveDiag()).commits - b1.commits,
-                0,
-                "(f2)**Ctrl+Z 掐掉了在飞的防抖提交** —— 少一行 clearTimeout 这里就红",
+                1,
+                "(f2d)防抖窗走完后仍恰一次(冲刷时定时器已清,不会再补发)",
             );
         }
     }
@@ -944,7 +1005,8 @@ try {
         // [复审轮 2【重要】] `setTimeout` 返回正整数,回调里不清零的话
         // `!!local.commitTimer` 从第一次防抖提交起**恒真** ⇒ hasPendingEdit() 永久为真
         // ⇒ abortEdit() 的早退再也挡不住空跑,`aborts` 退化成「按了几次 undo」。
-        // 那会让 (g5b)/(g12b)/(h8) 的 `>= 1` **恒真、失去分辨力** —— 判据还在,牙没了。
+        // 那会让 (h8)/(n5) 的 `>= 1` **恒真、失去分辨力** —— 判据还在,牙没了。
+        // ([SL-460] 前这里还点名 (g5b)/(g12b);那两格已改断 flushes,不再读 aborts。)
         // 这一格钉的就是「**什么都没在飞的时候,abortEdit 必须什么都不做**」。
         const ready = await evaluate(
             IN(`const qs = q('[data-curve-q]');
@@ -1217,6 +1279,7 @@ try {
     log("=== ⑥ 跨版本落地守卫:**每一类在飞写者各一格** ===");
     newBucket("跨版本守卫逐写者");
     {
+        let wheelV1Before = null; // 滚轮臂起手时 V1 的指纹(对照臂里核「V1 真的收到了」)
         // 为什么要逐写者:`local.dragPoints` 有**三类**能跨版本在飞的写者 ——
         // 拖动(抄本在 pointerdown 捕获)、滚轮 140ms 防抖、Q 滑杆 140ms 防抖。
         // ⑤ 只走了拖动那一条,而**第一版的版本闸正是只盖住了它**(闸挂在
@@ -1274,6 +1337,7 @@ try {
                 `(g2)滚轮臂:起手仍在 V1(实得 ${b1.activeVersion})`,
             );
             // 滚一下 ⇒ 排一个 140ms 的提交;**不等它到点**就换版本
+            const L1 = await evaluate(IN(`return w.__scopeLog.length;`));
             await cdp.send("Input.dispatchMouseEvent", {
                 type: "mouseWheel",
                 x: pXY.x,
@@ -1292,20 +1356,37 @@ try {
             const sigV2 = (await curveDiag()).curveSig;
             await sleep(600); // 把 140ms 防抖窗整段走完,给它开火的机会
             const b2 = await curveDiag();
-            // ⚠ 观测量是「**这一发被取消了**」,不是「消费点把它丢了」:本地点 chip 会走
-            // switchVersion(),它在**发出切换之前**就调了 abortEdit ⇒ 防抖定时器当场被
-            // clearTimeout,commit() 根本不会被调用。所以这里断 commits 不涨 + aborts 涨,
-            // 而 crossVersionDrops **本来就该是 0** —— 断它 +1 才是错的(我上一版就是这么写才红的)。
+            // [SL-460] 观测量从「这一发被取消」翻成「**这一发先按 V1 落地、再切**」:
+            // switchVersion() 在发出切换之前 await settlePendingEdits(),此刻引擎仍在 V1。
+            // crossVersionDrops **本来就该是 0**(落地时版本没变,消费点守卫不开火)。
             eq(
                 b2.commits - b1.commits,
+                1,
+                "(g5)**滚轮臂:那一发防抖提交在切版本之前冲刷落地**(恰一次)",
+            );
+            eq(
+                b2.flushes - b1.flushes,
+                1,
+                "(g5b)滚轮臂:flushPending 认领了这一发",
+            );
+            eq(
+                b2.crossVersionDrops - b1.crossVersionDrops,
                 0,
-                "(g5)**滚轮臂:那一发防抖提交被取消,commit() 没被调用过**",
+                "(g5c)滚轮臂:消费点守卫零开火(落地时引擎仍在 V1)",
             );
-            check(
-                b2.aborts - b1.aborts >= 1,
-                `(g5b)滚轮臂:abortEdit 认领了这一次(aborts 实得 +${b2.aborts - b1.aborts})`,
-            );
+            {
+                const seq = await evaluate(
+                    IN(`return w.__scopeLog.slice(${L1});`),
+                );
+                const iP = seq.indexOf("setPanCurve");
+                const iV = seq.indexOf("setVersionActive");
+                check(
+                    iP >= 0 && iV >= 0 && iP < iV,
+                    `(g5d)**滚轮臂:setPanCurve 先于 setVersionActive**(实得 ${JSON.stringify(seq)})`,
+                );
+            }
             eq(b2.curveSig, sigV2, "(g6)**滚轮臂:V2 的点集一个字节都没变**");
+            wheelV1Before = b1.curveSig;
         }
 
         // ---- 写者 B 的**对照臂**:同样滚一下,**不换版本** ⇒ 必须照常提交 -----
@@ -1320,6 +1401,12 @@ try {
                     6000,
                 ),
                 "(g6b)滚轮对照臂:激活版本 = V1",
+            );
+            // [SL-460] 数据面:滚轮臂那一发落在 **V1**(它本来的那一版)上。
+            check(
+                wheelV1Before !== null &&
+                    (await curveDiag()).curveSig !== wheelV1Before,
+                "(g6b2)**滚轮臂冲刷的那一发落在了 V1 上**(V1 指纹变了)",
             );
             await mouse("mousePressed", pXY.x, pXY.y);
             await mouse("mouseReleased", pXY.x, pXY.y);
@@ -1376,6 +1463,7 @@ try {
             );
             check(ready === "ok", `(g9)Q 滑杆臂:滑杆可用(实得 ${ready})`);
             if (ready === "ok") {
+                const L2 = await evaluate(IN(`return w.__scopeLog.length;`));
                 await evaluate(
                     IN(`const qs = q('[data-curve-q]');
                         qs.value = "4.5";
@@ -1398,20 +1486,47 @@ try {
                 const sigV2b = (await curveDiag()).curveSig;
                 await sleep(600);
                 const c1 = await curveDiag();
-                // 同滚轮臂:观测量是「被取消」,不是「被消费点丢弃」。
+                // 同滚轮臂([SL-460]):观测量是「先按 V1 冲刷落地、再切」。
                 eq(
                     c1.commits - c0.commits,
-                    0,
-                    "(g12)**Q 滑杆臂:那一发防抖提交被取消,commit() 没被调用过**",
+                    1,
+                    "(g12)**Q 滑杆臂:那一发防抖提交在切版本之前冲刷落地**(恰一次)",
                 );
-                check(
-                    c1.aborts - c0.aborts >= 1,
-                    `(g12b)Q 滑杆臂:abortEdit 认领了这一次(aborts 实得 +${c1.aborts - c0.aborts})`,
+                eq(
+                    c1.flushes - c0.flushes,
+                    1,
+                    "(g12b)Q 滑杆臂:flushPending 认领了这一发",
                 );
+                {
+                    const seq = await evaluate(
+                        IN(`return w.__scopeLog.slice(${L2});`),
+                    );
+                    const iP = seq.indexOf("setPanCurve");
+                    const iV = seq.indexOf("setVersionActive");
+                    check(
+                        iP >= 0 && iV >= 0 && iP < iV,
+                        `(g12c)**Q 滑杆臂:setPanCurve 先于 setVersionActive**(实得 ${JSON.stringify(seq)})`,
+                    );
+                }
                 eq(
                     c1.curveSig,
                     sigV2b,
                     "(g13)**Q 滑杆臂:V2 的点集一个字节都没变**",
+                );
+                // 数据面:Q=4.5 落在 V1 上(它本来的那一版)。
+                check(await armSwitchBack(1), "(g13a)Q 滑杆臂:切回 V1 核数据");
+                check(
+                    await waitFor(
+                        IN(
+                            `return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`,
+                        ),
+                        6000,
+                    ),
+                    "(g13b)Q 滑杆臂:激活版本 = V1",
+                );
+                check(
+                    (await curveDiag()).curveSig.includes("bell:4.5"),
+                    "(g13c)**Q 滑杆臂冲刷的 Q=4.5 落在了 V1 上**",
                 );
             }
         }
@@ -1518,6 +1633,111 @@ try {
         );
     }
     assertClean("⑦ 远端换版本");
+
+    // =========================================================================
+    log(
+        "=== ⑦b **远端**换版本时 Q 滑杆防抖在飞 ⇒ 只能丢弃(引擎已在新版本上)===",
+    );
+    newBucket("远端换版本 × 防抖");
+    {
+        // [SL-460] Ctrl+Z / 本地切版本已改成「先冲刷」,不再经过 abortEdit 的 clearTimeout;
+        // 那一行唯一还在起作用的路径是这里:远端切换回声到达时引擎**已经**在新版本上,
+        // 冲刷只会写错版本,只能丢弃。钉的是「定时器被清、commit() 一次都没被调用」——
+        // 少了那行 clearTimeout,定时器照样开火,commit() 被调用(消费点守卫会丢掉它,
+        // 所以数据不坏,但 commits 会 +1)。
+        check(
+            await evaluate(
+                IN(`const c1 = gb("header-version-chip-1");
+                    if (!c1 || c1.getAttribute("data-disabled") === "1") return false;
+                    c1.click();
+                    return true;`),
+            ),
+            "(n0)回到 V1",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                6000,
+            ),
+            "(n1)激活版本 = V1",
+        );
+        const nXY = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const pts = (w.__SCVB_OUTPUT__.curve().curveSig || "").split("|")
+                .map((s) => s.split(":"));
+            const bell = pts.find((p) => p[2] === "bell");
+            if (!bell) return null;
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            return {
+                x: fr.left + r.left + (m.angleToX(Number(bell[0])) / m.PLOT_W) * r.width,
+                y: fr.top + r.top + (m.dbToY(Number(bell[1])) / m.PLOT_H) * r.height,
+            };
+        `),
+        );
+        check(!!nXY, "(n2)V1 上找得到一个 bell 点");
+        await mouse("mousePressed", nXY.x, nXY.y);
+        await mouse("mouseReleased", nXY.x, nXY.y);
+        await sleep(400);
+        const ready = await evaluate(
+            IN(`const qs = q('[data-curve-q]');
+                const wrap = q('.curve-toolbar__q');
+                return qs && wrap && !wrap.hidden ? "ok" : "不可用";`),
+        );
+        check(ready === "ok", `(n3)Q 滑杆可用(实得 ${ready})`);
+        // ⚠ mock 的 §2.1 回声默认晚 250ms(SL-357),比 140ms 防抖窗长 ⇒ 定时器会**先于**
+        // 回声开火,那一档是 SL-451 记下的契约层残余(UI 版本号陈旧,谁都挡不住),不是本格
+        // 要测的东西。临时把回声切成同步(`caps.syncStateEcho`,壳页会话上的 mock 模型),
+        // 让回声赶在 140ms 之内到 —— 这才是「回声闸中止在飞防抖」那条路径。
+        eq(
+            await evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.caps) return "no-caps";
+                s.ctl.model.caps.syncStateEcho = true;
+                return "ok";
+            })()`),
+            "ok",
+            "(n3b)回声临时切成同步",
+        );
+        const n0 = await curveDiag();
+        await evaluate(
+            IN(`const qs = q('[data-curve-q]');
+                qs.value = "6.5";
+                qs.dispatchEvent(new w.Event("input", { bubbles: true }));
+                w.__SCVB_MOCK__.setVersionActive(2);
+                return true;`),
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 2;`),
+                6000,
+            ),
+            "(n4)远端切到 V2,回声到达",
+        );
+        await sleep(600); // 走完 140ms 防抖窗
+        await evaluate(`(() => {
+            window.__SCVB_PREVIEW__.ctl.model.caps.syncStateEcho = false;
+            return true;
+        })()`);
+        const n1 = await curveDiag();
+        check(
+            n1.aborts - n0.aborts >= 1,
+            `(n5)回声闸中止了在飞的防抖(aborts 实得 +${n1.aborts - n0.aborts})`,
+        );
+        eq(
+            n1.commits - n0.commits,
+            0,
+            "(n6)**定时器已被清,commit() 一次都没被调用**(少 abortEdit 那行 clearTimeout 这里就红)",
+        );
+        eq(
+            n1.flushes - n0.flushes,
+            0,
+            "(n7)远端那一路不冲刷(引擎已在新版本上)",
+        );
+    }
+    assertClean("⑦b 远端换版本 × 防抖");
 
     // =========================================================================
     log("=== ⑧ commit 在途窗:松手后**不换版本**时,版本闸不许开火 ===");

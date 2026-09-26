@@ -2242,6 +2242,11 @@
                 outline: 2px solid var(--acc-strong);
                 outline-offset: -2px;
             }
+            /* [SL-499] 只读观察态:曲线不接受任何写入(入口在 curve-editor.js 里早退、工具条收起) */
+            [data-gb="master-pancurve"][data-readonly="1"]
+                [data-gb="master-pancurve-canvas"] {
+                cursor: not-allowed;
+            }
 
             /* ================================ Tab2 轨道(05 §2.2;设计稿 561-648) ================================ */
             /* **列宽不在本段出现**:唯一真源是 web/output/tab-tracks.js 的 TRACK_COLS,

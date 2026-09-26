@@ -17,7 +17,8 @@
 //      **[SL-450] 追加**:Ctrl+Z 闸不再是 `tagName === "INPUT"` 那份、改走
 //      `isEditableTextTarget`;文本族白名单由 `EDITABLE_TEXT_SELECTOR` 单一真源派生
 //      且三条回归项(text/number/缺省无 type)还在、收回的两类没悄悄回来;
-//      `runHistory` 在写调用之前中止在飞的曲线编辑,`abortEdit()` 的四件事与
+//      `runHistory` 在写调用之前收掉在飞的本地编辑(**[SL-460]** 起走
+//      `settlePendingEdits()`:防抖冲刷、拖动中止),`abortEdit()` 的四件事与
 //      `render()` 的版本闸都在。**行为面不在本套** —— 豁免矩阵与「松手不再提交
 //      陈旧抄本」要真 DOM / 真焦点 / 真 pointer capture,归
 //      `smoke-undo-scope-page.mjs`(页面级)。本段的删除式(注入未提交,实跑过):
@@ -463,18 +464,31 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         "tab-wave 仍引 isEditableTarget(含 select 的那一份;两处用途正当不同)",
     );
 
-    // 中止在飞编辑:接线 + 四件事都在。
+    // 收掉在飞编辑:接线 + 四件事都在。
     // 「之前」按**下标**比,不按「紧挨着」比:中间将来再插什么都不会误伤,顺序反了照样红
     // (与上面只读闸那一格同一口径 —— 那一格正是被本卡插进去的一行撑爆过)。
+    // [SL-460] 接线点从 `curveEditor.abortEdit();` 换成 `await settlePendingEdits();`
+    // (防抖在飞 = 冲刷、拖动中 = 中止;行为面在 smoke-pending-flush-page.mjs)。
     check(
         (() => {
             const h = appJs.slice(appJs.indexOf("async function runHistory("));
-            const iAbort = h.indexOf("curveEditor.abortEdit();");
+            const iAbort = h.indexOf("await settlePendingEdits();");
             const iCall = h.indexOf("const res = await call(kind);");
             return iAbort >= 0 && iCall >= 0 && iAbort < iCall;
         })(),
-        "runHistory 在 await call(kind) **之前**中止在飞的曲线编辑",
+        "runHistory 在 await call(kind) **之前**收掉在飞的本地编辑(settlePendingEdits)",
     );
+    // settlePendingEdits 三个模块都接上了(少一个,那一页的防抖 / 拖动就漏在撤销与切版本之外)。
+    {
+        const i0 = appJs.indexOf("function settlePendingEdits()");
+        const body = appJs.slice(i0, appJs.indexOf("\n}", i0));
+        for (const m of ["curveEditor", "tabTracks", "tabWave"]) {
+            check(
+                i0 >= 0 && body.includes(m + ".flushPending()"),
+                `settlePendingEdits 接上了 ${m}.flushPending()`,
+            );
+        }
+    }
     {
         // ⚠ [复审轮 4] `ce` 一律**先剥注释**:`curve-editor.js` 的注释里正逐字写着
         // `local.pendingVersion = 0`(轮 3 那段解释「为什么不能在 onPointerUp 清」),
@@ -518,11 +532,11 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
             const app = appJs.slice(
                 appJs.indexOf("async function switchVersion("),
             );
-            const iAbort = app.indexOf("curveEditor.abortEdit();");
+            const iAbort = app.indexOf("await settlePendingEdits();");
             const iCall = app.indexOf('await call("setVersionActive", v)');
             check(
                 iAbort >= 0 && iCall >= 0 && iAbort < iCall,
-                'switchVersion 在 call("setVersionActive") **之前**中止在飞编辑(本地那一路关在源头)',
+                'switchVersion 在 call("setVersionActive") **之前**收掉在飞编辑(本地那一路关在源头;[SL-460] 防抖冲刷到旧版本)',
             );
         }
         // 三类写者都要在推出抄本那一刻记 pendingVersion —— 少一处,render 的闸就认不出它。
@@ -545,9 +559,18 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
                     /local\.pendingVersion = (?:activeVersion\(\)|srcVersion)/g,
                 ) || []
             ).length;
+            // [SL-460] 滚轮 / Q 滑杆两处合进 `armCommit()` ⇒ 写入点 = 拖动 1 + armCommit 1,
+            // 两类防抖写者改由「`armCommit(` 调用点恰 2 处」钉住(少一处 = 那一类没记版本)。
             check(
-                writers === 3,
-                `拖动 / 滚轮 / Q 滑杆三类写者都写了 pendingVersion(只数写入、不数清零;实得 ${writers} 处)`,
+                writers === 2,
+                `拖动 + armCommit 两个写入点都写了 pendingVersion(只数写入、不数清零;实得 ${writers} 处)`,
+            );
+            const arms = (
+                ceFlat.match(/armCommit\(next, activeVersion\(\)\)/g) || []
+            ).length;
+            check(
+                arms === 2,
+                `滚轮 / Q 滑杆两类防抖写者都经 armCommit 挂提交(实得 ${arms} 处)`,
             );
         }
     }
