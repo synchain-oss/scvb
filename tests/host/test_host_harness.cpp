@@ -10388,6 +10388,9 @@ void checkNoResidualRelease(MonoMultiRig& r)
             // 前提:本块走的是混音路径且 ch2 真被读了(否则下面的 CHECK 恒真)。
             REQUIRE(r.out.meterSnapshot().trackPeak[1] > 0.0f);
         }
+        // 不变量本身:ch1 没被读环。hasData[0] 为真时 trackPeak[0] = 峰值 × 增益 > 0,为假恒 0 ——
+        // 无阈值,不依赖下面那条的增益余量(#280 复审第 3 轮,统筹裁定加)。
+        CHECK(r.out.meterSnapshot().trackPeak[0] == 0.0f);
         CHECK(peakOf(b.l) < 0.01f);
     }
 }
