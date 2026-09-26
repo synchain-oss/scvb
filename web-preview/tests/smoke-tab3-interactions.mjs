@@ -686,7 +686,7 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             "旧写法 segs[j+1].t1S 已不存在(防止改回裸 t1S)",
         );
     }
-    // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
+    // 泳道模型投影(§2.7 覆盖率 / §2.8 段数)
     const lanes = TW.laneModelFromStore({
         state: { channels: [{ label: "主唱" }] },
         conn: {
@@ -710,46 +710,14 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
                 },
             ],
         },
-        errors: new Map([["lowSample", { code: "lowSample", ch: 1 }]]),
     });
     eq(lanes.length, 15, "恒 15 条泳道(J59)");
     eq(
-        [
-            lanes[0].status,
-            lanes[0].cov,
-            lanes[0].segs,
-            lanes[0].stale,
-            lanes[0].low,
-        ],
-        ["active", 88, 2, true, 1],
-        "轨头六件投影(状态/覆盖率/段数/stale/黄标)",
+        [lanes[0].status, lanes[0].cov, lanes[0].segs, lanes[0].stale],
+        ["active", 88, 2, true],
+        "轨头投影(状态/覆盖率/段数/stale)",
     );
     eq(lanes[1].status, "idle", "无 conn 的轨 = idle");
-    // T33:§2.9 lowSample 是 code+ch 复合键(t32/deviations §N)——多轨同时低采样时
-    // Tab3 轨头与 Tab2 轨行**消费同一份**,不再互相覆盖成一枚黄标。
-    {
-        const multi = TW.laneModelFromStore({
-            errors: new Map([
-                ["lowSample#4", { code: "lowSample", ch: 4 }],
-                ["lowSample#11", { code: "lowSample", ch: 11 }],
-                ["noTimeline", { code: "noTimeline" }],
-            ]),
-        });
-        eq(
-            multi.filter((l) => l.low).map((l) => l.n),
-            [4, 11],
-            "两轨同时低采样 ⇒ 两条泳道各自挂黄标(复合键)",
-        );
-        eq(
-            TW.laneModelFromStore({
-                errors: new Map([["lowSample", { code: "lowSample", ch: 6 }]]),
-            })
-                .filter((l) => l.low)
-                .map((l) => l.n),
-            [6],
-            "裸 lowSample 键同样命中(消费侧与键形解耦)",
-        );
-    }
     // ---- SL-177 / 04 §4.5:「采集数据已过期」提示的**数据面**与**接线面**。
     //      DOM 侧(横幅 ⑧ / tab 琥珀点 / 泳道 ⚠ 真的显出来)由
     //      smoke-output-stale-page.mjs 在无头 Chrome 里真渲染一次断;
@@ -812,7 +780,7 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         // ---- [SL-239] 横幅 ⑨「采集开着 ⇒ 上游改动比对已暂停」的数据面与接线面 ----
         //
         // 立卡:v5.6.2 实测里 #146 合入后用户仍等不到 ⚠。定谳 = 链没断,断的是
-        // **采集 ON 期间整条比对是哑的**(FeatRing::accumulateFp 的 `if (capturing) return;`),
+        // **采集 ON 期间整条比对是哑的**(FeatRing::accumulateFp 末尾那道上报闸里的 capturing 条件),
         // 而终验清单没有一句叫用户先关采集。引擎侧那一半由 harness 的
         // `HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗` 钉住;
         // DOM 侧由 smoke-output-stale-page.mjs 在无头 Chrome 里正反向各渲染一次;
@@ -1066,7 +1034,6 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
         "wave-lane-3-checkbox",
         "wave-lane-3-light",
         "wave-lane-3-label",
-        "wave-lane-3-lowsample",
         "wave-lane-3-covseg",
         "wave-lane-3-curvevisible",
         "wave-lane-3-stage",

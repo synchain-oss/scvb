@@ -387,8 +387,9 @@ export function createCurveEditor(opts) {
         typeof o.onLocalChange === "function" ? o.onLocalChange : () => {};
 
     if (!canvas || typeof canvas.getContext !== "function") {
-        // [SL-450] 这份空壳也要有 abortEdit / diag:app.js 的 runHistory() 无条件调
-        // abortEdit(),画布缺席时少一个方法就是 Ctrl+Z 当场抛 TypeError。
+        // [SL-450] 这份空壳也要有 abortEdit / flushPending / diag:app.js 的
+        // settlePendingEdits() 在每次撤销 / 切版本前无条件调 flushPending(),
+        // 画布缺席时少一个方法就是 Ctrl+Z 当场抛 TypeError。
         return {
             mount() {},
             render() {},
@@ -396,6 +397,9 @@ export function createCurveEditor(opts) {
             push() {},
             abortEdit() {
                 return false;
+            },
+            flushPending() {
+                return Promise.resolve();
             },
             diag: () => ({
                 dragging: false,
@@ -406,6 +410,8 @@ export function createCurveEditor(opts) {
                 crossVersionDrops: 0,
                 commits: 0,
                 aborts: 0,
+                flushes: 0,
+                readOnly: false,
             }),
         };
     }
@@ -432,13 +438,22 @@ export function createCurveEditor(opts) {
         // render() 那道闸(只看 dragging)对它们视而不见。泛化成 pendingVersion,
         // 三类写者(拖动 / 滚轮 / Q 滑杆)一律在**推出抄本的那一刻**写它。
         // ⚠ 跨版本覆盖今天由**三层**挡,不是一层 —— 别只看这一个字段就以为判据在某一处:
-        //   ① `app.js::switchVersion()` 在**发出切换之前** abortEdit(本地那一路,源头关死);
+        //   ① `app.js::switchVersion()` 在**发出切换之前** settlePendingEdits() → flushPending()
+        //      (本地那一路,源头关死:防抖那一发按旧版本冲刷落地、拖动中止;[SL-460]);
         //   ② 本文件 `render()` 的回声闸(远端那一路,回声到达那一刻);
         //   ③ `commit()` 里的消费点守卫(唯一落地点上的最后一道)。
         // 删掉任意一层都不等价,各自的可达路径与删除式见 smoke-undo-scope-page.mjs 头注。
         pendingVersion: 0,
         shift: false,
         commitTimer: 0,
+        // [SL-460] 防抖在飞的那一发**提交什么、属于哪一版**({next, srcVersion} | null)。
+        // 定时器的闭包里也有这两样,但闭包拿不出来 —— 冲刷要在定时器之外**按原样**提交
+        // 同一发。**「在飞」只以 commitTimer 为准**:本字段只在 armCommit 写、从不清;
+        // 定时器开火 / 被冲刷 / 被 abortEdit 清掉之后它留着旧值,而 flushPending 先看
+        // commitTimer 再读它(与 tab-tracks 的 manualQueued 同一口径)。
+        pendingCommit: null,
+        // [SL-499] 上一次 render() 看到的只读位;翻转时补一次 syncToolbar()(收起工具条)。
+        readOnlySeen: false,
         hintTimer: 0,
         lutCache: { key: "", lut: null },
         // [SL-450] 只读诊断计数。页面级冒烟要断的是「那一次提交**没有发生**」——
@@ -449,7 +464,20 @@ export function createCurveEditor(opts) {
         // [SL-450 复审轮 1] 消费点守卫丢掉的跨版本提交次数。判据要能断「守卫**真的**
         // 开过火」,而不是「什么都没发生」—— 这两者在 V2 指纹上长得一模一样。
         crossVersionDrops: 0,
+        // [SL-460] flushPending() 真的冲刷掉一发防抖提交的次数(空跑不计)。
+        flushes: 0,
     };
+
+    /**
+     * [SL-499] 只读观察态:本编辑器**不接受任何写入**。口径同 Tab2/Tab3 的
+     * `isWriteBlocked()`(读 app.js 在 renderBanners 里写的 `readOnly`)。
+     * native 侧 `handleSetPanCurve` 另有硬拒绝,这一道管的是「别让用户拖出一条
+     * 松手后无声弹回的曲线」—— 挂在四个输入入口(拖拽 / 双击 / 滚轮 / 键盘)
+     * 与工具条的显隐上。
+     */
+    function isWriteBlocked() {
+        return !!getStore().readOnly;
+    }
 
     /**
      * 有没有**尚未落地**的本地编辑。
@@ -714,7 +742,7 @@ export function createCurveEditor(opts) {
         //     实测证据:滚轮 / Q 滑杆两臂曾在此处把 V1 的值写进 V2,而本计数器为 0。
         //     根因在契约:§1.17 的 `setPanCurve` **不带版本号**,UI 没有办法指定目标版本。
         //     已记为已知负债,留待 [SL-447](issue #272)改 §1.17 时一并解决。
-        //   · **为什么还留着**:真正关死那两路的是 `switchVersion()` 的发前中止(本地)
+        //   · **为什么还留着**:真正关死那两路的是 `switchVersion()` 的发前冲刷 / 中止(本地)
         //     与 `render()` 的回声中止(远端)—— 两者都**依赖 UI 状态与时序**。本守卫
         //     在唯一的落地点上再核一次,是它们失效时的最后一道。删掉它今天不会有用例变红
         //     (上面两道会先拦住),这一点如实写在这里,而不是假装它被钉住了。
@@ -872,11 +900,13 @@ export function createCurveEditor(opts) {
      *      ⚠ 此前这句写的是「Q 滑杆与**键盘微调**」——**错的**:键盘微调(`onKeyDown`)走
      *      **同步**路径,推表与提交在同一个 tick、既不写 `dragPoints` 也不挂防抖。
      *      挂防抖的第三个写者是**滚轮**。留着那句错话,下一个人会去键盘路径找第三处
-     *      `commitTimer = 0`,而真正的两处在 `onWheel` 与 `buildToolbar`(复审轮 2 的
-     *      C11 差点就漏在这上面)。
+     *      `commitTimer = 0`,而真正的写者是 `onWheel` 与 `buildToolbar` —— [SL-460] 起
+     *      两者共用 `armCommit()`,`commitTimer = 0` 只剩那一处(复审轮 2 的 C11 当年
+     *      就是漏在「两处各写一份」上)。
      *      只把 `dragPoints` 置空、不停表,那个定时器照样会拿着**闭包里捕获的** next
-     *      提交(它不读 `local.dragPoints`),于是「拨完 Q 滑杆 / 滚完滚轮 140ms 内按
-     *      Ctrl+Z」原样复现同一个缺陷;
+     *      提交(它不读 `local.dragPoints`)。[SL-460] 起撤销 / 本地切版本会**先**经
+     *      flushPending() 把这一发冲刷掉,走到这里时定时器已清;仍靠这一行的是 render()
+     *      的**远端换版本**闸 —— 那时引擎已在新版本上,只能丢弃;
      *   ② `releasePointerCapture` —— 捕获不放掉,指针事件会一直被这块 canvas 吃住;
      *   ③ `dragging=false` —— 随后那记 pointerup 由它挡住(onPointerUp 首行早退),
      *      这才是「不再提交那份陈旧抄本」的落点;
@@ -923,8 +953,54 @@ export function createCurveEditor(opts) {
         return wasDragging;
     }
 
+    // ---- 冲刷在飞编辑([SL-460][SL-469])-------------------------------------
+    /**
+     * 撤销 / 切版本**之前**由 app.js 的 `settlePendingEdits()` 调。两类在飞编辑处置不同:
+     *   · **防抖在飞**(滚轮 / Q 滑杆的 140ms)—— 用户已经停手,这一发是**完成了的编辑**,
+     *     只是还没到点。**当场按原样提交**(同一份 next、同一个 srcVersion),并等它回来。
+     *     此刻引擎仍停在旧版本(`setVersionActive` 还没发)、undo 也还没发 ⇒ 它落到
+     *     它本来的那一版上、并先于 undo 入栈。改前这里是 abortEdit() 直接丢弃:
+     *     撤销前 = 「Q 值弹回去 + 更早那笔也被撤了」,切版本前 = 这次微调静默消失。
+     *   · **指针仍按着**(拖动)—— 编辑没有完成,仍走 abortEdit() 中止(SL-450 ① 的既定
+     *     语义:松手那一记不许把陈旧抄本写回去)。
+     * 先冲刷、后中止:abortEdit() 会清 commitTimer,顺序反了防抖那一发就没了。
+     * @returns {Promise<void>} 冲刷的那一发落地(或失败)后 resolve;没有在飞防抖时立即 resolve。
+     */
+    function flushPending() {
+        let landed = Promise.resolve();
+        const p = local.pendingCommit;
+        if (local.commitTimer && p) {
+            clearTimeout(local.commitTimer);
+            local.commitTimer = 0;
+            local.flushes++;
+            landed = commit(p.next, p.srcVersion);
+        }
+        if (local.dragging) abortEdit();
+        return landed;
+    }
+
+    /**
+     * 挂一发 140ms 防抖提交(滚轮 / Q 滑杆两处共用)。**延迟路径**:把推表那一刻的版本
+     * 一起捕获,同时写进 local.pendingVersion —— render() 的版本闸靠它认出「这份在飞
+     * 编辑属于旧版本」,回声一到就把还没开火的这一发取消掉。
+     */
+    function armCommit(next, srcVersion) {
+        local.pendingVersion = srcVersion;
+        local.pendingCommit = { next, srcVersion };
+        clearTimeout(local.commitTimer);
+        local.commitTimer = setTimeout(() => {
+            // [SL-450 复审轮 2] 开火即清零。setTimeout 返回正整数,不清的话
+            // `!!local.commitTimer` 从第一次防抖提交起**恒真** => hasPendingEdit()
+            // 永久为真 => abortEdit() 的早退再也挡不住空跑,aborts 变成「按了几次
+            // undo」而不是「中止了几次」。这是轮 1 补丁(早退 + render 闸)的副作用。
+            local.commitTimer = 0;
+            commit(next, srcVersion);
+        }, 140);
+    }
+
     // ---- 拖拽 -------------------------------------------------------------
     function onPointerDown(e) {
+        if (isWriteBlocked()) return; // [SL-499] 入口 ①:拖拽(连选中也不进 —— 工具条在只读态收起)
         const i = hitTest(e);
         if (i >= 0) {
             local.dragging = true;
@@ -934,8 +1010,9 @@ export function createCurveEditor(opts) {
             // 「当前激活版本」、载荷里不带版本号,拖到一半换了版本再提交 = 把 V1 的
             // 点集整表写进 V2。
             // ⚠ 判据**不在这一处、也不只一处** —— 今天由**三层**挡,删掉任意一层都不等价:
-            //   ① `app.js::switchVersion()` 在**发出切换之前** abortEdit(本地那一路,
-            //      用户点 chip 是最常见的路径,在源头关死);
+            //   ① `app.js::switchVersion()` 在**发出切换之前** settlePendingEdits()
+            //      → flushPending() 中止拖动(本地那一路,用户点 chip 是最常见的路径,
+            //      在源头关死);
             //   ② 本文件 `render()` 的回声闸(**远端**那一路 —— 换版本不一定由本地点击
             //      发起,`version_active` 也会经 §2.1 `scvb.state` 推过来);
             //   ③ `commit()` 里的消费点守卫(唯一落地点上的最后一道)。
@@ -1020,6 +1097,7 @@ export function createCurveEditor(opts) {
 
     // ---- 滚轮:bell/shelf 调 Q,cut 步进斜率档 ----------------------------------
     function onWheel(e) {
+        if (isWriteBlocked()) return; // [SL-499] 入口 ③:滚轮(不 preventDefault,滚轮照常滚页面)
         if (local.selected >= points().length) local.selected = -1;
         if (local.selected < 0) return;
         e.preventDefault();
@@ -1044,20 +1122,7 @@ export function createCurveEditor(opts) {
         local.dragPoints = next;
         syncToolbar();
         draw();
-        // [SL-450] **延迟路径**:闭包已经捕获了 next,把**推表那一刻的版本**一起捕获。
-        // 同时写进 local.pendingVersion —— render() 的版本闸靠它认出「这份在飞编辑
-        // 属于旧版本」,回声一到就把还没开火的这一发取消掉。
-        const srcVersion = activeVersion();
-        local.pendingVersion = srcVersion;
-        clearTimeout(local.commitTimer);
-        local.commitTimer = setTimeout(() => {
-            // [SL-450 复审轮 2] 开火即清零。setTimeout 返回正整数,不清的话
-            // `!!local.commitTimer` 从第一次防抖提交起**恒真** => hasPendingEdit()
-            // 永久为真 => abortEdit() 的早退再也挡不住空跑,aborts 变成「按了几次
-            // undo」而不是「中止了几次」。这是轮 1 补丁(早退 + render 闸)的副作用。
-            local.commitTimer = 0;
-            commit(next, srcVersion);
-        }, 140);
+        armCommit(next, activeVersion()); // [SL-450] 延迟路径,见 armCommit
     }
 
     // ---- 键盘 -------------------------------------------------------------
@@ -1074,6 +1139,9 @@ export function createCurveEditor(opts) {
             }
             return;
         }
+        // [SL-499] 入口 ④:键盘。只读态只留 Esc(退出选中);选点导航也不放 ——
+        // 选中点在只读态没有可用的工具条,放行只会让方向键「看起来能动」。
+        if (isWriteBlocked()) return;
 
         // Enter/Space:加点到默认位(角度 0、0 dB)。pan 曲线是角度域,无「播放位置」维度,
         // 故取中性默认位;达 16 点上限时浮条提示。
@@ -1241,15 +1309,7 @@ export function createCurveEditor(opts) {
             }
             syncToolbar();
             draw();
-            // [SL-450] **延迟路径**:同滚轮 —— 连版本一起捕获进闭包 + 写 pendingVersion。
-            const srcVersion = activeVersion();
-            local.pendingVersion = srcVersion;
-            clearTimeout(local.commitTimer);
-            local.commitTimer = setTimeout(() => {
-                // [SL-450 复审轮 2] 开火即清零,同滚轮那处(见它的注释)。
-                local.commitTimer = 0;
-                commit(next, srcVersion);
-            }, 140);
+            armCommit(next, activeVersion()); // [SL-450] 延迟路径,同滚轮
         });
         const qRead = document.createElement("span");
         qRead.className = "curve-toolbar__q-read sc-num";
@@ -1331,8 +1391,9 @@ export function createCurveEditor(opts) {
         const tb = _toolbar || buildToolbar();
         if (!tb) return;
         const idx = local.selected;
-        tb.bar.hidden = idx < 0;
-        if (idx < 0) return;
+        // [SL-499] 工具条五组按钮 + Q 滑杆全是写面:只读态整条收起(一处盖住六个控件)。
+        tb.bar.hidden = idx < 0 || isWriteBlocked();
+        if (tb.bar.hidden) return;
         const cur = local.dragPoints || points();
         const pt = cur[idx];
         if (!pt) return;
@@ -1384,6 +1445,7 @@ export function createCurveEditor(opts) {
         canvas.addEventListener("pointerup", onPointerUp);
         canvas.addEventListener("pointercancel", onPointerUp);
         canvas.addEventListener("dblclick", (e) => {
+            if (isWriteBlocked()) return; // [SL-499] 入口 ②:双击加点 / 删点
             const i = hitTest(e);
             if (i >= 0) deleteAt(i);
             else addAt(logicalFromEvent(e));
@@ -1421,7 +1483,8 @@ export function createCurveEditor(opts) {
         // 为什么这一道非有不可(它不是 commit() 守卫的重复):
         // `version_active` 未必由本地点 chip 改 —— ARMED 轻确认、另一侧实例、以及
         // §2.1 `scvb.state` 下行推过来的增量,都从这一个口进。本地那一路已由
-        // `app.js::switchVersion()` 在**发出切换之前**调 abortEdit 关死;
+        // `app.js::switchVersion()` 在**发出切换之前**调 settlePendingEdits() 关死
+        // ([SL-460] 起防抖那一发是按旧版本冲刷落地,不再丢弃);
         // **远端那一路只能在这里、在回声到达的那一刻**关。
         //
         // ⚠ [复审轮 3 订正] 这里原先写着「把条件退回 `local.dragging` 不会有任何用例
@@ -1439,6 +1502,14 @@ export function createCurveEditor(opts) {
         // =====================================================================
         if (hasPendingEdit() && local.pendingVersion !== activeVersion())
             abortEdit();
+        // [SL-499] 只读位翻转:收起 / 恢复工具条,并给卡片挂禁用态(光标 + aria)。
+        const ro = isWriteBlocked();
+        if (ro !== local.readOnlySeen) {
+            local.readOnlySeen = ro;
+            if (card) card.setAttribute("data-readonly", ro ? "1" : "0");
+            canvas.setAttribute("aria-disabled", String(ro));
+            syncToolbar();
+        }
         const cur = points();
         if (local.selected >= cur.length) {
             local.selected = -1;
@@ -1492,8 +1563,10 @@ export function createCurveEditor(opts) {
         render,
         draw,
         push() {},
-        // [SL-450] app.js 的 runHistory() 在发 undo/redo **之前**调它。
+        // [SL-450] 远端换版本等「只能丢弃」的场合;撤销 / 切版本走下面的 flushPending。
         abortEdit,
+        // [SL-460][SL-469] app.js 的 settlePendingEdits() 在发 undo/redo / setVersionActive 之前调。
+        flushPending,
         /** 只读诊断快照(页面级冒烟用;零写入口,与 `__SCVB_OUTPUT__` 同口径)。 */
         diag: () => ({
             dragging: local.dragging,
@@ -1513,6 +1586,8 @@ export function createCurveEditor(opts) {
                 .join("|"),
             commits: local.commits,
             aborts: local.aborts,
+            flushes: local.flushes,
+            readOnly: isWriteBlocked(),
         }),
     };
 }

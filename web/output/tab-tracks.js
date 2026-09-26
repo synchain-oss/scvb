@@ -49,12 +49,7 @@ import {
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
-import {
-    hostEchoVisible,
-    format,
-    lowSampleChannels,
-    secondsToTimecode,
-} from "./tab-master.js";
+import { hostEchoVisible, format, secondsToTimecode } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -498,7 +493,7 @@ export function versionLabel(state, v) {
 
 /**
  * 一帧内的**跨行公共量**(T33 性能批):版本号 / 配对计数 / 多主唱 / 主唱居中 /
- * 布防位图 / lowSample 轨集 —— 与 ch 无关,15 行共用一份。
+ * 布防位图 —— 与 ch 无关,15 行共用一份。
  *
  * 为什么单拎出来:`rowOf(ch)` 在拖动期每步进都要读一行的当前值,原先走
  * `rowsFromStore()[ch-1]` 会把 15 行连同这些公共量整套重算(pairCounts /
@@ -536,9 +531,6 @@ export function rowContext(store) {
         multiLead: leadLockCount(chans) >= 2 ? 1 : 0,
         leadSel: Math.trunc(num(vals.lead_select, 0)),
         recMask: rec && rec.armed ? Math.trunc(num(rec.tracksMask, 0)) : 0,
-        // §2.9 `lowSample` 是轨级 error(载荷带 ch),且会同时命中多轨 ——
-        // app.js 按 `lowSample#{ch}` 复合键存,这里按值扫成轨号集合(T33)。
-        low: lowSampleChannels(st.errors),
     };
 }
 
@@ -608,7 +600,6 @@ export function rowFromStore(store, ch, ctx) {
         fp: bits.pan ? 1 : 0,
         fv: bits.vol ? 1 : 0,
         on: cfg.enabled === false ? 0 : 1,
-        low: c.low.has(ch) ? 1 : 0,
         misalign: cc ? Math.trunc(num(cc.misalignCount, 0)) : 0,
         leadCenter: c.leadSel === ch ? 1 : 0,
         pairFull: isPairOverflow(c.counts, pair) ? 1 : 0,
@@ -626,7 +617,7 @@ export function rowFromStore(store, ch, ctx) {
  * 字段名沿用 Wave 1 模板的短名(`trackRowHtml` 不动):
  * st=stereo 标 / vol=卡箍行程比 0..1 / lv·pk=液柱与峰线行程比(由 meter.js 逐帧覆写) /
  * volPart=音量参与(=!lead_vol_exempt) / part=participate_in_auto_pan /
- * fp·fv=冻结两位 / low=样本不足。
+ * fp·fv=冻结两位。
  * 公共量只算一次(rowContext),逐行走 rowFromStore —— 行为与 T32 逐字一致。
  */
 export function rowsFromStore(store) {
@@ -749,8 +740,6 @@ export function trackRowHtml(t) {
                data-t-aria="tracks.labelEdit" data-gb="${gb("label-input")}" />
         <!-- Lead Select≠0 选中轨的行首居中标记(05 §2.2 主唱锁行 → §2.1 ④) -->
         <span class="tracks-row__leadmark" data-t="tracks.leadCenter" data-gb="${gb("leadcenter")}"${t.leadCenter ? "" : " hidden"}></span>
-        <!-- 采集后有效唱段 <1.5s(05 §2.2 R1):角标保短版,全句「样本不足,结果可能不稳」进 tooltip(统筹裁定 B12) -->
-        <span class="sc-badge--amber tracks-row__mark" data-t="lowSample" data-gb="${gb("lowsample")}"${t.low ? "" : " hidden"}></span>
         <!-- SL-230 restore-auto trigger (see rowHtml header note) -->
         <button type="button" class="tracks-row__restore" data-gb="${gb("restore-auto")}"
                 data-disabled="0" hidden>${RESTORE_ICON}</button>
@@ -967,6 +956,10 @@ export function createTabTracks(opts) {
         // 延迟提交计时器 **per (ch,dim)**:共享单个句柄时,在轨 1 滚完 300ms 内去滚轨 2
         // 会把轨 1 那次待提交一起 clearTimeout 掉 —— 乐观值留在 UI 上,引擎里却没写进去。
         manualTimers: new Map(), // "ch:pan" / "ch:vol" → setTimeout 句柄
+        // [SL-469] 与 manualTimers 同键:那一发**要提交的值**({ch, dim, v})。冲刷要在定时器
+        // 之外按原样发出同一发,而闭包里的值拿不出来。**「在飞」只以 manualTimers 为准**
+        // —— 别处取消计时器时不必同步删这里,flushPending 只认 manualTimers 里还有的键。
+        manualQueued: new Map(),
         rows: new Map(), // ch → 该行的节点缓存(15 行 × 30 Hz 下不许逐帧 querySelector)
         // T33 性能批:拖动期的**按行增量**队列(见 requestRowRender)。
         dirtyRows: new Set(), // 待重投影的 ch
@@ -1150,21 +1143,49 @@ export function createTabTracks(opts) {
         const v = quantize(rng, value);
         local.manualEcho.set(k, v);
         clearTimeout(local.manualTimers.get(k));
+        local.manualQueued.set(k, { ch, dim, v });
         local.manualTimers.set(
             k,
             setTimeout(() => {
                 local.manualTimers.delete(k);
-                // 排程与落地隔着 300 ms:这中间该轨可能刚变成采样率错 / 面板转只读。
-                // 落不下去就把乐观值一并撤掉 —— 留着它 UI 就在显示一个从没写进引擎的数。
-                if (isWriteBlocked() || isRowDead(ch)) {
-                    local.manualEcho.delete(k);
-                    requestRender();
-                    return;
-                }
-                sendManual(ch, dim, v);
+                fireQueued(ch, dim, v);
             }, MANUAL_COMMIT_MS),
         );
         requestRender();
+    }
+
+    /** 延迟提交到点(或被 flushPending 提前)的那一发。返回 sendManual 的回执 Promise。 */
+    function fireQueued(ch, dim, v) {
+        // 排程与落地隔着 300 ms:这中间该轨可能刚变成采样率错 / 面板转只读。
+        // 落不下去就把乐观值一并撤掉 —— 留着它 UI 就在显示一个从没写进引擎的数。
+        if (isWriteBlocked() || isRowDead(ch)) {
+            local.manualEcho.delete(manualKey(ch, dim));
+            requestRender();
+            return undefined;
+        }
+        return sendManual(ch, dim, v);
+    }
+
+    /**
+     * [SL-469][SL-460] 撤销 / 切版本之前由 app.js 的 `settlePendingEdits()` 调。
+     *   · 防抖在飞的每一发(滚轮 / 方向键,300ms):**当场冲刷**并等回执 —— 否则
+     *     「方向键调音量 → 300ms 内 Ctrl+Z」会让 undo 先弹掉一件不相干的旧编辑、这一发
+     *     随后作为新事务入栈并清空 redo 栈;切版本时则会落进新版本。
+     *   · pan/vol 旋钮 / 卡箍**按住拖动中**:中止(cancelDrag,丢弃乐观值)—— 松手才发的
+     *     那一发在切版本后会写进新版本,撤销后会抹掉撤销。width 走宿主 gesture、不入插件
+     *     撤销栈、参数 id 在按下时已按版本捕获,不在此列。
+     * @returns {Promise<void>}
+     */
+    function flushPending() {
+        const landed = [];
+        for (const k of [...local.manualTimers.keys()]) {
+            const q = local.manualQueued.get(k);
+            clearTimeout(local.manualTimers.get(k));
+            local.manualTimers.delete(k);
+            if (q) landed.push(fireQueued(q.ch, q.dim, q.v));
+        }
+        if (local.drag && local.drag.kind !== "width") cancelDrag();
+        return Promise.all(landed).then(() => undefined);
     }
 
     function sendManual(ch, dim, value) {
@@ -1197,7 +1218,8 @@ export function createTabTracks(opts) {
         const freezeId = paramIdOf(activeVersion(), ch, "freeze");
         const bitsNow = freezeBits(readParam(freezeId, 0));
         const wasUnfrozen = !(dim === "vol" ? bitsNow.vol : bitsNow.pan);
-        call("setTrackManual", ch, dim, v).then((res) => {
+        // 回执 Promise 交还调用方:flushPending 要等它落地再放 undo / 切版本过去。
+        const landed = call("setTrackManual", ch, dim, v).then((res) => {
             // 非成功响应(observer / badArg / 桥异常 res=null)撤乐观值,
             // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)。
             // 但只撤**本次发送**的值:两笔在途时旧笔失败不得抹掉新笔的乐观值
@@ -1233,6 +1255,7 @@ export function createTabTracks(opts) {
             requestRender();
         });
         requestRender();
+        return landed;
     }
 
     // ------------------------------------------------------------- 行内确认层
@@ -1905,7 +1928,6 @@ export function createTabTracks(opts) {
             "label",
             "label-input",
             "leadcenter",
-            "lowsample",
             "recapture-badge",
             "pan",
             "width",
@@ -2152,16 +2174,14 @@ export function createTabTracks(opts) {
             text(n.label, shown);
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
             // 轨名被挤窄时靠 `text-overflow: ellipsis` 收场,但截断后名字就不可读了 ——
-            // label 单元格固定 150px,而条件角标最多同时挂三件(主唱居中标 26px +
-            // 样本不足角标 44px + SL-230 的触发钮 18px),实测最坏档轨名只剩 44px。
+            // label 单元格固定 150px,还要与条件角标(主唱居中标 26px + SL-230 的触发钮
+            // 18px)分宽度,长轨名照样截断。
             // 补一条 tooltip,截断至少是可恢复的(#148 二轮【建议】4)。
             setTitle(n.label, shown);
         }
         setTitle(n.labelInput, t["tracks.labelEdit"]);
         show(n.leadcenter, !!row.leadCenter);
         setTitle(n.leadcenter, t["master.leadSelectHint"]);
-        show(n.lowsample, !!row.low);
-        setTitle(n.lowsample, t["lowSample.full"]);
         show(n.recaptureBadge, !!row.recapture);
         // tooltip 走**无占位符**短式:行模型只有布尔 `recapture` 位(rowFromStore
         // 由 recMask 派生),拿不到 {x}{y}{n} —— 灌 `wave.recaptureArmed` 会把字典
@@ -2444,5 +2464,5 @@ export function createTabTracks(opts) {
         }
     }
 
-    return { mount, render, onMeters, onParams, onSegments };
+    return { mount, render, onMeters, onParams, onSegments, flushPending };
 }

@@ -2242,6 +2242,11 @@
                 outline: 2px solid var(--acc-strong);
                 outline-offset: -2px;
             }
+            /* [SL-499] 只读观察态:曲线不接受任何写入(入口在 curve-editor.js 里早退、工具条收起) */
+            [data-gb="master-pancurve"][data-readonly="1"]
+                [data-gb="master-pancurve-canvas"] {
+                cursor: not-allowed;
+            }
 
             /* ================================ Tab2 轨道(05 §2.2;设计稿 561-648) ================================ */
             /* **列宽不在本段出现**:唯一真源是 web/output/tab-tracks.js 的 TRACK_COLS,
@@ -2450,14 +2455,10 @@
                 display: none;
             }
             .tracks-row__labelcell[data-editing="1"] .tracks-row__label,
-            .tracks-row__labelcell[data-editing="1"] .tracks-row__mark,
             .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark {
                 display: none;
             }
-            .tracks-row__mark {
-                flex: none;
-            }
-            /* [SL-230 复审②]「恢复自动」触发钮 —— 与上面两枚条件角标同族的行内小件。
+            /* [SL-230 复审②]「恢复自动」触发钮 —— 与上面的主唱居中标同族的行内小件。
                为什么不做成浮条:.tracks-row__hint 是 absolute + top:100%,浮在**下一行**上;
                做一次性提示没问题,做常驻入口则两条以上手动轨时每条盖住下一行,下一行
                点不动。行高 44px 是设计常量(15×44 撑起整块),浮条改占位会顶掉布局,
@@ -3734,16 +3735,8 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            /* 「样本不足」黄标:158px 内压成琥珀点 + tooltip(同 Tab2 dotmark 手法) */
-            .wave-lane__lowdot {
-                width: 6px;
-                height: 6px;
-                flex: none;
-                border-radius: 50%;
-                background: rgba(var(--sem-amber), 0.9);
-            }
-            /* 「数据可能已过期」⚠ 角标(04 §4.5 fingerprint watchdog):与「样本不足」黄标同族,
-               取同一支琥珀语义色;158px 轨头装不下整句,全句走 title tooltip。 */
+            /* 「数据可能已过期」⚠ 角标(04 §4.5 fingerprint watchdog):取琥珀语义色;
+               158px 轨头装不下整句,全句走 title tooltip。 */
             .wave-lane__staledot {
                 flex: none;
                 font-size: 9px;
@@ -9066,13 +9059,6 @@
                     data-gb="toast-region"
                     aria-live="polite"
                 >
-                    <div class="sc-toast" data-gb="toast-projectCopy" hidden>
-                        <span class="sc-toast__dot"></span>
-                        <!-- toast①(05 §2.0 逐字;词条 toast.projectCopy 为 T31 Wave 2 新增,04 §5.6) -->
-                        <span data-t="toast.projectCopy"
-                            >检测到工程副本,已创建独立采集数据副本</span
-                        >
-                    </div>
                     <!-- [SL-415] **本 toast 已收起** —— 同横幅 ⑤:用户 2026-09-14 裁定
                          「sidecar 不上了」,DOM 留 + `hidden` 恒挂,`app.js` 不再对它调
                          `show()`(见 renderBanners 那一处注释)。词条与 toast 本体都保留,

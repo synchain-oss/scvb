@@ -36,11 +36,11 @@ inline constexpr u32 kInputDefaultGroup = 1;
 // Input 实例的 IPC 状态(01 §4.1 状态机)。
 enum class InputClaimState
 {
-    kUnassigned, // I6:channel_id==0,不 claim/不建段/不发心跳
+    kUnassigned, // I6:不 claim/不建段/不发心跳;⚠ 不蕴含配置号为 0(release() 之后配置号原样留着)
     kActive, // I4:claim 成功
     kConflict, // I2:被活跃实例占用(不满足接管双条件)
     kAbiMismatch, // I1:registry abi 不符(拒连,J40)
-    kUnavailable // I0:段未打开/映射失败
+    kUnavailable // I0:注册表或段不可用、未持有 slot;赋值点全在 openAndClaim(),分支以那里为准
 };
 
 // 音频线程每 block acquire 一次的不可变视图:绑定快照 + 段租约(持有期内段不解映射)。

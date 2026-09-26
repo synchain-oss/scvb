@@ -194,7 +194,7 @@ private:
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     double sampleRate_ = 48000.0;
-    int srcChannels_ = 1; // [J57] 1|2,prepareToPlay 依布局判定,运行期不变
+    int srcChannels_ = 1; // [J57] 1|2,每次 prepareToPlay 依布局重判
     int preparedMaxBlock_ = 512;
     std::vector<float> capInterleaved_; // stereo 容量(2 × preparedMaxBlock),interleaved LR
     std::array<const float*, 2> planarPtrs_{};
