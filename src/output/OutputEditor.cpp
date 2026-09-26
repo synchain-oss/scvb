@@ -84,6 +84,15 @@ juce::var noTimelineResp()
     return o;
 }
 
+// [SL-484] 契约 §1.9/§1.11/§5.6 的 PRINT 拒绝态。web 侧 noteRejectedPrinting 早已就绪,
+// 此前 C++ 一处都不回,那条分支走不到。
+juce::var rejectedPrintingResp()
+{
+    juce::var o = obj();
+    put(o, "rejected", "printing");
+    return o;
+}
+
 // ---- 枚举 → 字符串 ----
 const char* rangeModeName(int mode)
 {
@@ -1439,7 +1448,12 @@ void OutputEditor::handleSetVersionActive(const ArgList& a, Completion c)
         return;
     }
     const int old = processor_.versionActive();
-    processor_.setVersionActive(v);
+    // [SL-484] PRINT 态判据在 processor 里(stepAuthority 那一份),这里只做映射。
+    if (!processor_.setVersionActive(v))
+    {
+        c(rejectedPrintingResp());
+        return;
+    }
     if (v != old)
     {
         ++processor_.runtime().configSeq; // 配置变更(PR#55 缺陷4)
@@ -1493,6 +1507,11 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
         return;
     }
     const auto result = processor_.copyVersion(src, dst); // 持锁事务(PR#55 重要1)
+    if (result == scvb::engine::CopyVersionResult::RejectedPrint)
+    {
+        c(rejectedPrintingResp()); // [SL-484] 判据在 processor 里(VersionStore::validateCopy)
+        return;
+    }
     if (result != scvb::engine::CopyVersionResult::Ok)
     {
         c(badArgResp());
