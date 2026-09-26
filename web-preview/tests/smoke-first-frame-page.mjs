@@ -26,7 +26,7 @@
 //   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`;first-paint 记录真的取到了;
 //      `信号时刻 − first-paint 时刻 > 0`(A1);`帧计数(信号) − 帧计数(first-paint) >= 2`(A2);
 //      [SL-430 前半] 载荷里的 `paintDeltaMs` 取到了、为正,且落在本套同源量到的
-//      [本帧 tick − first-paint, 信号 − first-paint] 区间里(A3;[SL-529] 起不用容差)。
+//      [最近一次 tick − first-paint, 信号 − first-paint] 区间里(A3;[SL-529] 起不用容差)。
 //      A2 那个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在**下一帧**跑(+1),内层再等
 //      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
 //      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
@@ -655,7 +655,7 @@ for (const role of ["input", "output", "monitor"]) {
         if (
             check(
                 typeof tickMs === "number" && tickMs >= 0 && tickMs <= ff[0].ms,
-                `${role}:桩取到了本帧 tick 时刻,且不晚于信号时刻(实得 ${tickMs} / ` +
+                `${role}:桩取到了最近一次 tick 时刻,且不晚于信号时刻(实得 ${tickMs} / ` +
                     `${ff[0].ms})`,
             )
         ) {
@@ -667,7 +667,7 @@ for (const role of ["input", "output", "monitor"]) {
             );
             check(
                 reported >= lo,
-                `${role}:载荷里的 paintDeltaMs 不早于本帧 tick(实得 ${reported} < ${lo};` +
+                `${role}:载荷里的 paintDeltaMs 不早于最近一次 tick(实得 ${reported} < ${lo};` +
                     `= 页面取 now() 的时刻早于发信号的那一帧,或基线晚于 first-paint)`,
             );
             check(
