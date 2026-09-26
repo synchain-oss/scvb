@@ -933,6 +933,13 @@ export const SNAP_PX = 6;
 export const SLIDER_KEY_RELEASE_MS = 250;
 
 /**
+ * [SL-497] 在飞写的回声等待上限(ms)。发出 setVadParams / setSegmentation 之后,
+ * `state.analysis` 回推的值追平发出的值之前,不拿它覆盖本地乐观值;追不平(native 规整过
+ * 数值、或回推被合并掉)时到点放开。native 25Hz emitTick 最坏约 40ms,留足余量。
+ */
+export const PARAM_ECHO_HOLD_MS = 500;
+
+/**
  * 泳道点选(05 §2.3 行 288 语义,**照抄稿内 pick(),不自行发明**):
  * 普通点击 = toggle;shift = 以**上一次点选轨**(数组尾)为锚点连选,
  * 并集追加、不清空既有选择。`cur` 保持**点击顺序数组**(锚点语义依赖它)。
@@ -1241,7 +1248,12 @@ export function createTabWave(opts) {
         boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
         autostopUser: false, // 「区域外自动停止」是用户手勾的(撤防不复位它)
-        sliderKeyTimer: 0, // 键盘档「视为松手」计时
+        // [SL-496] 键盘档「视为松手」计时**按杆持有**(`s.keyTimer`),不在这里:
+        // 原先是这里一个全页单例,第二根杆的按键会把第一根那一发清掉且不再重排
+        // ⇒ 第一根的 releaseSlider 永不执行、脏位卡死。
+        // [SL-497] 在飞写:{vad|seg: {sent, at}} —— 见 paramEchoPending()。
+        paramInflight: { vad: null, seg: null },
+        paramHoldTimer: 0, // 兜底到点的补渲染(单槽)
         lastParamSend: 0, // ≤50Hz 节流账(Date.now 系)
         paramTimer: 0, // 节流尾包计时器
         countdownApi: null, // "vad"|"segmentation":倒计时条挂起中(A-01)
@@ -1629,10 +1641,55 @@ export function createTabWave(opts) {
     /** 拖动档下发:**整包**(五字段 / 三字段),≤50Hz 节流,尾包补发。 */
     function sendParams(api) {
         if (api === "vad") {
+            notePending("vad", local.vadParams);
             call("setVadParams", { ...local.vadParams });
         } else {
+            notePending("seg", local.segmentation);
             call("setSegmentation", { ...local.segmentation });
         }
+    }
+
+    /**
+     * [SL-497] 记下这一发:state 回推追平它之前,render() 不拿回推覆盖本地乐观值。
+     * 放开只在 render() 里判,所以兜底到点时**必须有人再 render 一次**:追不平的那一档
+     * (引擎侧被别处改了 / native 规整过数值)里,带来新值的那帧回推恰好落在闸内被挡掉,
+     * 之后若走带停着、没有任何事件,界面会一直停在用户放下的值上、与引擎不一致。
+     * 单槽:拖动期 ≤50Hz 连发,只留最后一发的那一次。
+     */
+    function notePending(key, vals) {
+        local.paramInflight[key] = { sent: { ...vals }, at: nowMs() };
+        clearTimeout(local.paramHoldTimer);
+        local.paramHoldTimer = setTimeout(
+            requestRender,
+            PARAM_ECHO_HOLD_MS + 20,
+        );
+    }
+
+    /**
+     * [SL-497] 这一组还有没追平的在飞写吗(有 ⇒ 这一拍别拿 state 覆盖本地)。
+     * 追平 = 回推里每个发出去的字段都等于发出值;到 PARAM_ECHO_HOLD_MS 兜底放开。
+     * ⚠ 已知边界:A→B→A 快速来回时,B 的回声到达之前 state 里的旧 A 就与发出值相等,
+     * 会提前放开一拍 —— 回推不带序号,UI 分辨不出「旧 A」与「新 A」。
+     */
+    function paramEchoPending(key, src) {
+        const rec = local.paramInflight[key];
+        if (!rec) return false;
+        const settled =
+            nowMs() - rec.at > PARAM_ECHO_HOLD_MS ||
+            (!!src &&
+                Object.keys(rec.sent).every((k) =>
+                    k === "mode"
+                        ? src[k] === rec.sent[k]
+                        : Number.isFinite(src[k]) &&
+                          Math.abs(src[k] - rec.sent[k]) <= 1e-6,
+                ));
+        if (settled) local.paramInflight[key] = null;
+        return !settled;
+    }
+
+    /** [SL-496] 任意一根杆的键盘档「视为松手」计时还挂着吗。 */
+    function sliderKeyPending() {
+        return (els.sliders || []).some((s) => !!s.keyTimer);
     }
 
     function sendParamsThrottled(api) {
@@ -2447,9 +2504,10 @@ export function createTabWave(opts) {
                     s.dirty = true;
                     sendParamsThrottled(s.def.api);
                 }
-                if (local.sliderKeyTimer) clearTimeout(local.sliderKeyTimer);
-                local.sliderKeyTimer = setTimeout(() => {
-                    local.sliderKeyTimer = 0;
+                // [SL-496] 按杆计时:只重排**这根杆自己的**那一发。
+                if (s.keyTimer) clearTimeout(s.keyTimer);
+                s.keyTimer = setTimeout(() => {
+                    s.keyTimer = 0;
                     releaseSlider(s);
                 }, SLIDER_KEY_RELEASE_MS);
             });
@@ -3575,6 +3633,24 @@ export function createTabWave(opts) {
         input.addEventListener("blur", commit);
     }
 
+    /**
+     * [SL-460][SL-469] 撤销 / 切版本之前由 app.js 的 `settlePendingEdits()` 调。
+     * 本页没有防抖提交(检查器 PAN 旋钮 / VOL 滑杆都是**松手才发**),在飞的只有
+     * 「指针仍按着」这一类 ⇒ 中止并丢弃乐观值:不中止的话,切版本后松手会按时间锚把值
+     * 写进新版本的同位段,撤销后松手会把刚撤掉的那一笔写回去(SL-450 ① 同形)。
+     * @returns {Promise<void>}
+     */
+    function flushPending() {
+        if (local.knobDrag || local.vslDrag) {
+            if (local.knobDrag) delete local.echo.pan;
+            if (local.vslDrag) delete local.echo.vol;
+            local.knobDrag = null;
+            local.vslDrag = null;
+            requestRender();
+        }
+        return Promise.resolve();
+    }
+
     async function commitSegValues(patch) {
         const cur = canEditSelected();
         if (!cur) return;
@@ -3738,10 +3814,15 @@ export function createTabWave(opts) {
         //      state.analysis 整组回读(契约 §2.1;mock 默认值已统一 05 口径,
         //      02 旧口径差异登记 deviations 供复核):拖动/键盘档进行中乐观值
         //      优先,静默后以 state 整包覆盖 —— 切 tab/重开面板不丢参数。
-        if (!local.sliderDrag && !local.sliderKeyTimer) {
+        //      [SL-496] 键盘档的闸看**任意一根杆**的按杆计时(原先是全页单例)。
+        //      [SL-497] 松手 / 键盘档释放之后,在飞写的回声追平之前也不覆盖:
+        //      原先松手当拍就放开,而 25Hz 回推还带着约 40ms 前的旧值 ⇒ 读数先弹回再跳到新值。
+        if (!local.sliderDrag && !sliderKeyPending()) {
             const ana = (store.state || {}).analysis || {};
-            syncParamGroup(local.vadParams, ana.vad);
-            syncParamGroup(local.segmentation, ana.segmentation);
+            if (!paramEchoPending("vad", ana.vad))
+                syncParamGroup(local.vadParams, ana.vad);
+            if (!paramEchoPending("seg", ana.segmentation))
+                syncParamGroup(local.segmentation, ana.segmentation);
         }
         for (const s of els.sliders || []) {
             const src =
@@ -4861,6 +4942,8 @@ export function createTabWave(opts) {
         ) {
             cancelBoundDrag();
         }
+        // 检查器乐观回声属于**选中段所在的轨**;重绑之前先记下它是哪一轨。
+        const echoCh = local.selectedCh;
         if (local.selectedCh && local.selectedSegs.length) {
             const segCh = segmentsOfCh(getStore().segments, local.selectedCh);
             local.selectedSegs = rebindSegKeys(
@@ -4869,7 +4952,31 @@ export function createTabWave(opts) {
             );
             if (!local.selectedSegs.length) local.selectedCh = 0;
         }
-        local.echo = {};
+        // [SL-492] 回声让位**按轨过滤 + 在拖的那一维不清**(照 tab-tracks.js onSegments
+        // 的既定判例,与上面 boundDrag 的「只掐被本次事件重编号的那一轨」同一纪律)。
+        // 原先这里对任何 §2.8 事件无条件 `local.echo = {}`:别的轨一次重发(C++ 25Hz 段重发
+        // 判据即可触发,不需要第二个用户动作)就把 PAN 旋钮 / VOL 滑杆的乐观值清空 ——
+        // 恰落在最后一次移动与松手之间时,松手读到的回声不是有限数,提交判据为假,
+        // 用户拖好的值**不发送、不报错**。
+        //   · 全量类 reason(整表替换 / 换版本 / 复制版本):全清,并**作废检查器拖动本身**
+        //     (照 cancelBoundDrag 判例)—— 只清回声不够:拖动态还在的话,随后的 pointermove
+        //     会把回声重新写满,松手照样按时间锚把这一版的值写进换过来的那一版(#282 复审);
+        //   · 事件没碰回声所在的那一轨:不动(那一轨的段一个都没变);
+        //   · 碰了:只保留**正在拖的那一维**(松手要读它),其余清 —— 回推值优先上屏。
+        //     (选中段在重绑里失效的话,选中轨必在本次事件里 ⇒ 也走这一支;
+        //      那时松手的 canEditSelected() 为空、不提交,留下的回声等下次选段时清。)
+        if (segAll) {
+            local.echo = {};
+            local.knobDrag = null;
+            local.vslDrag = null;
+        } else if (seg.channels.some((c) => c && c.ch === echoCh)) {
+            const keep = {};
+            if (local.knobDrag && Number.isFinite(local.echo.pan))
+                keep.pan = local.echo.pan;
+            if (local.vslDrag && Number.isFinite(local.echo.vol))
+                keep.vol = local.echo.vol;
+            local.echo = keep;
+        }
         const reason = seg && seg.reason;
         if (
             reason === "vad" ||
@@ -4943,5 +5050,21 @@ export function createTabWave(opts) {
         // 布防 badge 三处的共用跳转口径(05 行 300 ①;Tab1/Tab2 badge 经
         // app.js 切到本页后调用,定位选区 + 勾选目标轨)
         locateRecapture,
+        // [SL-460][SL-469] app.js 的 settlePendingEdits() 在撤销 / 切版本前调。
+        flushPending,
+        // [SL-492][SL-496][SL-497] 只读诊断快照(页面级冒烟用;零写入口)。
+        syncDiag: () => ({
+            echo: { ...local.echo },
+            selectedCh: local.selectedCh,
+            knobDrag: !!local.knobDrag,
+            vslDrag: !!local.vslDrag,
+            sliderKeyTimers: (els.sliders || []).filter((s) => !!s.keyTimer)
+                .length,
+            dirty: (els.sliders || []).map((s) => !!s.dirty),
+            paramInflight: {
+                vad: !!local.paramInflight.vad,
+                seg: !!local.paramInflight.seg,
+            },
+        }),
     };
 }
