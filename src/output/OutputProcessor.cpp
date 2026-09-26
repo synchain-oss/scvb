@@ -202,6 +202,9 @@ void ScvbOutputAudioProcessor::releaseResources()
     // 所有读者(mode 求值、停流记账、recapture 边沿、editor 的 playhead / captureProgress)
     // 同时看到「停」。写方前提:宿主不让 releaseResources 与 processBlock 并发(prepareToPlay
     // 改写 lastT0Out_ / 累加缓冲靠的是同一条前提),所以这里不会与音频线程的 publish 交错。
+    // ⚠「取自上一帧」只在这次读没撕裂时成立:撕裂时 playheadSnapshot() 回的是默认值 pod
+    // (timeSamples=-1、flags=0),发出去的是「停 + 无位置 + 无循环区」,方向仍是停。
+    // 按上面的前提这里读不到撕裂。
     {
         scvb::engine::PlayheadPod stopped = playheadSnapshot();
         stopped.flags &= ~static_cast<std::uint32_t>(scvb::engine::kPlayheadIsPlaying);
@@ -1987,6 +1990,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     runtime_.analysisRunning = false;
     runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
     analysisRunning_.store(false, std::memory_order_release);
+    // [SL-531] 同理丢弃已排未到点的松手档重分段防抖:它到点时读的是载入后的 runtime_ 与段表,
+    // 会按那一刻的参数把刚载入的工程重分段一遍,作为载入后的第一条撤销步入栈。与上面同样放在
+    // 两道拒载 return 之后。只写两个成员、不碰作业对象,所以不受「本函数不保证在消息线程」的
+    // 限制(读写它们的各处都持这把 lifecycleMutex_)。
+    discardPendingResegment();
 
     stateAbiMismatch_ = false;
     preservedStateBlob_.clear();

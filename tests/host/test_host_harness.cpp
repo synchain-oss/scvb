@@ -10937,13 +10937,13 @@ TEST_CASE("HOST SL-527:releaseResources 后切版本 / 复制版本不再被拒�
 }
 
 // ---------------------------------------------------------------------------
-// [SL-531] 撤销 / 重做 / 切版本真的发生时,丢弃已排未到点的松手档重分段防抖。
+// [SL-531] 撤销 / 重做 / 切版本 / 载入工程真的发生时,丢弃已排未到点的松手档重分段防抖。
 //
 // 修前:防抖计时器在 C++ 侧(tickResegmentDebounce),web 的 settlePendingEdits 够不着 ⇒
-// 松手后 300ms 内 Ctrl+Z / Ctrl+Shift+Z / 切版本,重分段随后落进撤销后的段表或新版本,
-// 且作为新事务清空重做栈。
-// 删除式三格,每格只动一处:undo() 里的丢弃 ⇒ ★U 红;redo() 里的 ⇒ ★R 红;
-// setVersionActive 里的 ⇒ ★V 红。三格各自独立成例,互不串台。
+// 松手后 300ms 内 Ctrl+Z / Ctrl+Shift+Z / 切版本 / 宿主载入工程,重分段随后落进撤销后的
+// 段表、新版本或刚载入的工程,且作为新事务入栈(撤销那两条路上顺带清空重做栈)。
+// 删除式四格,每格只动一处:undo() 里的丢弃 ⇒ ★U 红;redo() 里的 ⇒ ★R 红;
+// setVersionActive 里的 ⇒ ★V 红;setStateInformation 里的 ⇒ ★L 红。各自独立成例,互不串台。
 // 对照例(最后一格):栈空的撤销、切到同一版本都不丢 —— 否则「丢弃」与「防抖链断了」分不开,
 // 也钉住「只在真的动了栈 / 真的切了版本时丢」这两个条件。
 // 判据用机制(takeAnalysisDone 仍为 None + 修订号不动),不用段数(理由见 SL-255 那组)。
@@ -11045,4 +11045,27 @@ TEST_CASE("HOST SL-531 对照:栈空的撤销 / 切到同一版本不丢防抖",
 
     // 删掉 undo/redo 的 `if (ok)` 或切版本的 `versionActive_ != version` 任一条件 ⇒ 这里红。
     CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+}
+
+TEST_CASE("HOST SL-531:防抖窗内宿主载入工程 ⇒ 重分段不落进刚载入的工程", "[host][sl531][SL255][state]")
+{
+    Rig r;
+    sl531Prepare(r, /*analyze=*/true);
+
+    // 「另一份工程」= 此刻的存档(与 SL-491 那格同一配方)。
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    // 载入会把 vadThresholdDb 读回存档里的值;重设成远离默认,确保「真跑了」的话段表必变。
+    r.out.runtime().vadThresholdDb = 12.0f;
+    const auto revAfterLoad = r.out.crvsRevision();
+    const auto loaded = r.out.crvsSnapshot();
+    sl531WaitPastDebounce(r);
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★L
+    CHECK(r.out.crvsRevision() == revAfterLoad);
+    CHECK(sameTracksW2a(loaded, r.out.crvsSnapshot(), r.out.versionActive())); // 载入的段表原样
 }

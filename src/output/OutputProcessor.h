@@ -828,7 +828,7 @@ private:
     // 快照本来就同时在手,顺手算完存这儿;editor 发段表时取走。
     scvb::output::SegmentDiff lastSegmentDiff_;
     void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
-    // [SL-531] 撤掉已排未到点的那一次(撤销 / 重做 / 真切版本时调);调用方已持 lifecycleMutex_。
+    // [SL-531] 撤掉已排未到点的那一次(撤销 / 重做 / 真切版本 / 载入工程时调);调用方已持 lifecycleMutex_。
     void discardPendingResegment() noexcept
     {
         resegmentDueAtMs_ = 0;
