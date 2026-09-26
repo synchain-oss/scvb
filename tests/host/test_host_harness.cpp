@@ -6025,7 +6025,9 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     // 默认值都是 1,而 Rig 恒在版本 1 —— 不切版本的话,把装配里那行 `in.versionActive = ...`
     // 整行删掉,断言照样绿(PR #155 复审【重要】①)。切版本还会走 rebindVersion,
     // 顺带把「切版本 → 车道/句柄重绑」这一跳一起串上。
-    r.out.setVersionActive(2);
+    // [SL-484] setVersionActive 返回 false = PRINT 拒绝;这里是前提,切不过去就当场红,
+    // 不能静默留在 V1 让后面的 versionActive 断言变空真。
+    REQUIRE(r.out.setVersionActive(2));
 
     // 被观察轨:改配置 —— 这一份 runtime 就是 publishVizFrame 的输入。
     auto& cfg = r.out.runtime().channels[kTestChannel - 1];
@@ -10051,4 +10053,242 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
     Rig::pumpMessages(200); // 约 5 拍,只要一拍就够
     CHECK_FALSE(rig.out.hostTimelineMissing());
     rig.out.prepareToPlay(kSr, kBlock); // 还给 Rig 析构一个已 prepare 的实例
+}
+
+// ===========================================================================
+// [SL-490][SL-491][SL-484] 分析 × 版本 × 冻结 三件状态机缺陷(发布前扫描第一轮)。
+// ===========================================================================
+namespace
+{
+
+bool sameTracksW2a(const scvb::state::CrvsData& a, const scvb::state::CrvsData& b, int version)
+{
+    const auto& ta = a.versions[static_cast<std::size_t>(version - 1)].tracks;
+    const auto& tb = b.versions[static_cast<std::size_t>(version - 1)].tracks;
+    for (std::size_t t = 0; t < ta.size(); ++t)
+    {
+        if (!scvb::output::segmentsIdentical(ta[t].segments, tb[t].segments))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+int freezeOfW2a(ScvbOutputAudioProcessor& out, int version, int ch)
+{
+    return juce::roundToInt(out.getAPVTS().getRawParameterValue(scvb::params::freezeId(version, ch))->load());
+}
+
+void setFreezeOnVersionW2a(ScvbOutputAudioProcessor& out, int version, int ch, int bits)
+{
+    auto* p = out.getAPVTS().getParameter(scvb::params::freezeId(version, ch));
+    REQUIRE(p != nullptr);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(bits)));
+    p->endChangeGesture();
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// [SL-490] 在 V1 点「重新识别(含手动段)」,趁在途切到 V2 ⇒ 这一趟**整份丢弃**:
+// 两个版本的段表都一字不动,两个版本的冻结位也都不动。
+//
+// 修复前:setVersionActive 不碰 generation,handleAsyncUpdate 那道唯一的门对切版本不可见,
+// finishAnalysis 读写回时刻的 versionActive_ ⇒ V1 的结果整表写进 V2。
+// 冻结那半是 [SL-491] 的连带:清冻结位推迟到落地时做,落地读的也是写回时刻的版本 ——
+// 切版本若不取消,会把 **V2** 的 ch1 冻结位清掉(用户从没在 V2 上点过重新识别)。
+// 故 V1、V2 的 ch1 都先冻上,两条冻结断言才分得出「清到了哪一版」。
+//
+// 删除式落点:`setVersionActive` 里那次 `cancelAnalysis()`。删掉 ⇒ ★1(仍在途)、
+// ★2(V2 段表被改写)、★3(V2 冻结被清)红。
+// 对照臂(末尾):同一份素材在 V2 上真跑完 ⇒ V2 段表**确实会变** —— 否则「没变」是空真。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-490:分析在途切版本 ⇒ 这一趟整份丢弃,不写进新版本", "[host][sl490][sl491][analyze][version]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    // Follow 档:本格测的是「分析 × 版本」,不让 PRINT 拒绝([SL-484])混进来。
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(200);
+    REQUIRE(r.out.versionActive() == 1);
+
+    constexpr int kCh = 1;
+    setFreezeOnVersionW2a(r.out, 1, kCh, 1);
+    setFreezeOnVersionW2a(r.out, 2, kCh, 1);
+    MonoMultiRig::pump(100);
+    REQUIRE(freezeOfW2a(r.out, 1, kCh) == 1);
+    REQUIRE(freezeOfW2a(r.out, 2, kCh) == 1);
+
+    const auto before = r.out.crvsSnapshot();
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    REQUIRE(r.out.analysisRunning());
+    // 结果只会在消息线程上回落(AsyncUpdater),这里还没泵过消息 ⇒ 切换必然发生在落地之前。
+    CHECK(r.out.setVersionActive(2));
+    CHECK(r.out.versionActive() == 2);
+    CHECK_FALSE(r.out.analysisRunning()); // ★1 切版本即取消
+    CHECK_FALSE(r.out.runtime().analysisRunning);
+
+    // 给「没被取消的那一趟」足够的时间落地(修复后这里立刻退出,再多泵 1s 收掉在途线程的交接)。
+    for (int waited = 0; waited < 20000 && r.out.analysisRunning(); waited += 50)
+    {
+        MonoMultiRig::pump(50);
+    }
+    MonoMultiRig::pump(1000);
+
+    const auto after = r.out.crvsSnapshot();
+    CHECK(sameTracksW2a(before, after, 2)); // ★2 V1 发起的结果没写进 V2
+    CHECK(sameTracksW2a(before, after, 1)); // 也没写回 V1(取消 = 整份丢弃)
+    CHECK(freezeOfW2a(r.out, 2, kCh) == 1); // ★3 V2 的冻结没被清
+    CHECK(freezeOfW2a(r.out, 1, kCh) == 1); // V1 的冻结也没被清(这一趟被取消了)
+
+    // 对照臂:同一份素材在 V2 上真跑完 ⇒ V2 段表会变。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    CHECK_FALSE(sameTracksW2a(before, r.out.crvsSnapshot(), 2));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-491] 「重新识别(含手动段)」被取消 ⇒ 冻结位**不动**。
+//
+// 修复前:startAnalysis 在作业起跑前就同步清整轨 freeze(带 gesture),而取消那条路不经过
+// finishAnalysis ⇒ 冻结被静默解掉,撤销救不回来。
+// 删除式落点 A:把清位挪回起跑前 ⇒ ★ 两条红。
+// 删除式落点 B:finishAnalysis 里那次真实清位 ⇒ 本格对照臂与 `HOST P0-3` 红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-491:重新识别(含手动段)被取消 ⇒ 冻结位不动", "[host][sl491][analyze][freeze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    constexpr int kCh = 1;
+    const int v = r.out.versionActive();
+    setFreezeOnVersionW2a(r.out, v, kCh, 1);
+    MonoMultiRig::pump(100);
+    REQUIRE(freezeOfW2a(r.out, v, kCh) == 1);
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    CHECK(freezeOfW2a(r.out, v, kCh) == 1); // ★ 起跑时不清(落地才清)
+    r.out.cancelAnalysis();
+    MonoMultiRig::pump(1000);
+    CHECK(freezeOfW2a(r.out, v, kCh) == 1); // ★ 取消之后冻结仍在
+
+    // 对照臂:同一请求真跑完 ⇒ 冻结位被清(P0-3 的承诺没被这次推迟弄丢)。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/true));
+    CHECK(freezeOfW2a(r.out, v, kCh) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-484] 契约 §1.9/§1.11:PRINT 态 C++ 硬拒绝切版本与复制版本。
+//
+// PRINT 用**真仲裁**造(SL-231 同款配方:分析出段表 → 开输出 → 走带回到段包络内),
+// 不直接 setMode —— 生产上那道判据读的就是 timerCallback 求出来的档。
+// 删除式落点 A:setVersionActive 里的 stepAuthority 判据 ⇒ ★A 红。
+// 删除式落点 B:copyVersion 改回只判范围 ⇒ ★B 红(并连带 V2 段表被改)。
+// 对照臂:关输出回 Follow ⇒ 两件都照常受理,且复制真的落地。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-484:PRINT 态切版本 / 复制版本被 C++ 硬拒绝", "[host][sl484][print][version]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.ph.timeSamples = 0; // 段包络从 0 附近起,理由见 SL-231 那条
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    REQUIRE(r.out.versionActive() == 1);
+
+    const auto before = r.out.crvsSnapshot();
+    // 前置:V1 与 V2 段表不同,否则「复制没发生」与「复制了同样的东西」分不开。
+    REQUIRE_FALSE(sameTracksW2a(
+        before,
+        [&] {
+            auto c = before;
+            c.versions[1] = c.versions[0];
+            return c;
+        }(),
+        2));
+
+    CHECK_FALSE(r.out.setVersionActive(2)); // ★A
+    CHECK(r.out.versionActive() == 1);
+    CHECK(r.out.copyVersion(1, 2) == scvb::engine::CopyVersionResult::RejectedPrint); // ★B
+    CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), 2));
+
+    // 对照臂:Follow 档两件都受理。
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(300);
+    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Follow);
+    CHECK(r.out.copyVersion(1, 2) == scvb::engine::CopyVersionResult::Ok);
+    {
+        auto expect = before;
+        expect.versions[1].tracks = expect.versions[0].tracks;
+        CHECK(sameTracksW2a(expect, r.out.crvsSnapshot(), 2));
+    }
+    CHECK(r.out.setVersionActive(2));
+    CHECK(r.out.versionActive() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-490/SL-491 复审] 分析在途时宿主载入工程 ⇒ 这一趟整份作废:段表不落进载入的工程,
+// 清冻结位也不打到载入工程的冻结参数上。
+//
+// 载入的是**同一个版本号**的工程(存档时 versionActive=1,载入后仍是 1)—— 这正是「作业带
+// 起跑版本号、落地不等即丢」挡不住的那一格,所以用它钉。
+// 删除式两格(setStateInformation 里各动一处):
+//   · 去掉 bump 代号 ⇒ ★2(冻结被清)与段表那条红;★1 仍绿(运行态是另一行清的)。
+//   · 去掉清运行态那三行 ⇒ ★1 红(UI 会一直停在「分析中」)。
+// ⚠ 钉不住的一半:handleAsyncUpdate 把比对挪进 lifecycleMutex_,挡的是**跨线程**交错
+//   (比对通过 → 等锁 → 载入 → 落地)。本机台单线程泵消息,造不出那条交错,本格对它不敏感。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-491:分析在途时载入工程 ⇒ 这一趟作废,不清载入工程的冻结", "[host][sl491][sl490][analyze][state]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    r.out.setOutputEnabled(false); // Follow:与 PRINT 无关
+    MonoMultiRig::pump(200);
+
+    constexpr int kCh = 1;
+    const int v = r.out.versionActive();
+    setFreezeOnVersionW2a(r.out, v, kCh, 1);
+    MonoMultiRig::pump(100);
+    REQUIRE(freezeOfW2a(r.out, v, kCh) == 1);
+
+    // 「另一份工程」= 此刻的存档(ch1 冻着、段表为此刻的样子)。
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+    const auto before = r.out.crvsSnapshot();
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    REQUIRE(r.out.analysisRunning());
+    // 结果只在消息线程回落,这里还没泵过消息 ⇒ 载入必然发生在落地之前。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.versionActive() == v); // 前提:版本号没变(本格要钉的就是这种情形)
+    CHECK_FALSE(r.out.analysisRunning()); // ★1 载入即作废
+    CHECK_FALSE(r.out.runtime().analysisRunning);
+
+    for (int waited = 0; waited < 20000 && r.out.analysisRunning(); waited += 50)
+    {
+        MonoMultiRig::pump(50);
+    }
+    MonoMultiRig::pump(1000);
+
+    CHECK(freezeOfW2a(r.out, v, kCh) == 1); // ★2 载入工程的冻结没被清
+    CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), v)); // 段表仍是载入工程那一份
 }

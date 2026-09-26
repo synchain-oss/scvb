@@ -1424,6 +1424,12 @@ function buildOutputBackend(ctx) {
                 model.snapshot.global.version_active,
             );
             const cur = model.snapshot.global.version_active;
+            // [SL-490] 与 native `setVersionActive` 同形:分析在途时**真**切版本 ⇒ 取消这一趟,
+            // 结果整份丢弃(`analyze` 那条 later(800) 看见 running=false 就早退)。不取消的话
+            // mock 会按起跑时捕获的版本写回,与 native「写回时刻取消」两边不同形。
+            if (next !== cur && model.snapshot.analysis_run.running) {
+                patchState({ analysis_run: { running: false, progress: 0 } });
+            }
             patchState({ global: { version_active: next } });
             // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)。
             // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动

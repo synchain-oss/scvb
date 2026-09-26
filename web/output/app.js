@@ -1387,6 +1387,12 @@ function renderHeader() {
     const active = g.version_active || 1;
     const rejected = Date.now() < viewStore().session.rejectedPrintingUntil;
     const printLocked = phase === "print" || rejected;
+    // [SL-490] 分析在途也不许切版本:引擎侧真切版本会**取消**这一趟(结果整份丢弃),
+    // 这里在源头挡住,用户不会一点 chip 就丢掉进行中的分析。tooltip 复用「分析中…」。
+    // 只挡 chip;「复制到…」不在本卡范围。双击改名读的也是 data-disabled,
+    // 所以分析中同样不能改名 —— 已知副作用,分析结束即恢复。
+    const analysisBusy = !!(s.analysis_run && s.analysis_run.running);
+    const switchLocked = printLocked || analysisBusy;
     verUi.chips.forEach((chip, i) => {
         if (!chip) return;
         const v = i + 1;
@@ -1394,10 +1400,18 @@ function renderHeader() {
         chip.setAttribute("data-active", v === active ? "1" : "0");
         chip.setAttribute("aria-pressed", String(v === active));
         chip.setAttribute("data-empty", entry.empty ? "1" : "0");
-        chip.setAttribute("data-disabled", printLocked ? "1" : "0");
-        chip.setAttribute("aria-disabled", String(printLocked));
+        chip.setAttribute("data-disabled", switchLocked ? "1" : "0");
+        chip.setAttribute("aria-disabled", String(switchLocked));
         // 05 §2.1 ③ 逐字要求 disabled **+ tooltip**(title 不走 applyI18n,每次渲染重写)
-        setTitle(chip, printLocked ? dictNow["master.printLock.version"] : "");
+        // PRINT 优先:两者同时成立时,「打印中」才是用户更需要知道的那一条。
+        setTitle(
+            chip,
+            printLocked
+                ? dictNow["master.printLock.version"]
+                : analysisBusy
+                  ? dictNow["master.analyzing"]
+                  : "",
+        );
         // 名字是 state 里的用户串,只能进 textContent(不拼 HTML)
         chip.childNodes[0].nodeValue = versionName(v);
     });
