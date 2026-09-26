@@ -235,9 +235,7 @@ const EXPECTED_ENUM_ARRAYS = {
         "newerState",
         "sidecarMissing",
         "noTimeline",
-        "projectCopy",
         "sidecarSwitched",
-        "lowSample",
     ],
     claimState: [
         "unassigned",
@@ -562,7 +560,7 @@ if (!enums || typeof enums !== "object") {
     if (errors.length === 0) {
         ok(
             "枚举取值全部一致(rangeMode 三值 / editSegmentOp 五值 / segmentsReason 十值 / " +
-                "errorCode 九值 / claimState 六值 / ctrlOp 两值 / analysis 两组三值)",
+                "errorCode 七值 / claimState 六值 / ctrlOp 两值 / analysis 两组三值)",
         );
     }
 }
