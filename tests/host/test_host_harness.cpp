@@ -1698,8 +1698,13 @@ TEST_CASE("HOST R6:范围 A 分析 → 范围 B 分析 → A 的段仍在", "[ho
 //
 // [SL-501] 两种销毁时机交替跑:
 //   · 偶数轮:起跑后立刻销毁 —— worker 多半还在管线里,在取消检查点早退,到不了交接那一步;
-//   · 奇数轮:不泵消息、只等 worker 把结果放进交接槽并触发了异步派发,再销毁 —— 只有这一臂
-//     会让「消息队列里已经有一条指向本对象的派发」这个状态真的出现。
+//   · 奇数轮:不泵消息、等 worker 把进度写到 1.0 后再多睡 100ms,再销毁 —— 目标是让「消息队列里
+//     已经有一条指向本对象的派发」这个状态出现,但这是**概率性覆盖,不是判据**:进度 1.0 是
+//     worker 在管线内写的(runAnalysisPipeline 返回之前),此后它还要过取消检查、持 pendingMutex_
+//     填交接槽,最后才调 triggerAsyncUpdate()(见 ScvbOutputAudioProcessor::AnalysisJob::run())。
+//     下面两条前提 REQUIRE 在「进度已是 1.0、triggerAsyncUpdate() 尚未调用」的窗口里同样成立,
+//     分不出派发入没入队;让本臂落进目标状态的只有其后那段 sleep(100) 的余量。余量不够时本臂
+//     退化成与偶数轮同形的时机(不会红)。更贴的信号要一个只读探针,属产品代码改动,不在本卡。
 // ⚠ 本用例能钉的只有「不崩」,而 Release 下 use-after-free 不一定崩。另一个钉不住的点要写明:
 // 把析构里撤销挂起派发的那一句删掉,本用例(两臂)都**不会红** —— JUCE 的 AsyncUpdater 基类
 // 析构自己也会把挂起的那条消息作废(juce_AsyncUpdater.cpp ~AsyncUpdater),而本用例在消息线程
@@ -1732,14 +1737,14 @@ TEST_CASE("HOST R5:分析在途销毁 processor 不崩溃", "[host][t37][analyze
 
         if (round % 2 == 1)
         {
-            // 不泵消息地等 worker 跑完管线(进度 1.0 由 worker 在交接前一刻写),再给交接留余量。
+            // 不泵消息地等 worker 跑完管线(进度 1.0 在管线返回前写,早于交接),再给交接留余量。
             // 期间消息线程不转 ⇒ 结果只能停在交接槽里,analysisRunning() 仍为真。
             for (int waited = 0; waited < 10000 && rig->out.runtime().analysisProgress.load() < 1.0f; waited += 10)
             {
                 juce::Thread::sleep(10);
             }
             juce::Thread::sleep(100);
-            REQUIRE(rig->out.runtime().analysisProgress.load() == 1.0f); // 前提:worker 已走到交接
+            REQUIRE(rig->out.runtime().analysisProgress.load() == 1.0f); // 前提:worker 已跑完管线(不证明已交接)
             REQUIRE(rig->out.analysisRunning()); // 前提:消息线程还没收走这份结果
         }
 

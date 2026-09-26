@@ -34,8 +34,8 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
 int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId)
 {
     // [轮 9 复审【重要】订正] 上一版只把 kConflict 摘出来走 channelId,漏了"不持有任何
-    // slot"这一半——InputSession::openAndClaim()(src/core/input/InputSession.cpp:343-
-    // 386)在"首次/换 channel"这条路上失败时,除了 kConflict(通道被占)还会落到
+    // slot"这一半——InputSession::openAndClaim()(src/core/input/InputSession.cpp)
+    // 在"首次/换 channel"这条路上失败时,除了 kConflict(通道被占)还会落到
     // kAbiMismatch(registry.changeGroup()/open() 返回 abi 不符)与 kUnavailable(段打不开/
     // 映射失败/claimInput 非 kConflict 的失败/createSegments 失败)——**这三个失败态走的是
     // 同一条代码路径**,previousChannel==0(没有旧 channel 可回滚)时 channelId_(配置)同样
