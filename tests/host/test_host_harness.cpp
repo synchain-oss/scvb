@@ -10277,7 +10277,8 @@ struct SoloBlock
     std::vector<float> l; // Output 这一块的 L 声道
 };
 
-SoloBlock soloBlock(MonoMultiRig& r, float amp, bool bypassed = false)
+// otherAmp:ch2/ch3 的素材幅度。默认 0(静音,对母线零贡献);见 checkNoResidualRelease 为什么要非零。
+SoloBlock soloBlock(MonoMultiRig& r, float amp, bool bypassed = false, float otherAmp = 0.0f)
 {
     SoloBlock b;
     b.t0 = r.ph.timeSamples;
@@ -10287,6 +10288,10 @@ SoloBlock soloBlock(MonoMultiRig& r, float amp, bool bypassed = false)
         if (i == 0)
         {
             Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
+        }
+        else if (otherAmp != 0.0f)
+        {
+            Rig::fillSine(r.inBuf, otherAmp, r.ph.timeSamples);
         }
         else
         {
@@ -10362,6 +10367,28 @@ SoloBlock settleSolo(MonoMultiRig& r)
     }
     return last;
 }
+
+// ch1 已关掉的前提下跑 10 块,断言母线上没有 ch1 的残留(没被当成释放中续读)。
+//
+// ⚠ 「母线逐位为 0」本身是**会静默变绿**的判据:Output 若还没重新 claim(观察早退)或 ch2/ch3
+// 还没回到 inject(总线直通早退),每块同样是 0,这一格就什么都没证明(#280 复审第 2 轮)。
+// 所以 ch2/ch3 这里喂一个很小的信号(1e-3),并在首块**要求**本轨电平表读到 ch2 ——
+// publishMeters 只在混音路径上、且只给真读到环的轨报电平,早退一律发全零。
+// 判据相应从 `== 0` 放宽到 `< 0.01`:ch2/ch3 的贡献 ≤ 1e-3 量级,ch1 的残留是 0.1 量级。
+void checkNoResidualRelease(MonoMultiRig& r)
+{
+    constexpr float kOther = 1.0e-3f;
+    for (int k = 0; k < 10; ++k)
+    {
+        const SoloBlock b = soloBlock(r, 0.5f, /*bypassed=*/false, kOther);
+        if (k == 0)
+        {
+            // 前提:本块走的是混音路径且 ch2 真被读了(否则下面的 CHECK 恒真)。
+            REQUIRE(r.out.meterSnapshot().trackPeak[1] > 0.0f);
+        }
+        CHECK(peakOf(b.l) < 0.01f);
+    }
+}
 } // namespace
 
 TEST_CASE("HOST SL-488:多轨在注入时面板关掉一轨,那一轨 80ms 淡出而不是块边界硬切", "[host][sl488]")
@@ -10424,10 +10451,7 @@ TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当�
     setTrackEnabled(r.out, 2, true);
     setTrackEnabled(r.out, 3, true);
     MonoMultiRig::pump(100);
-    for (int k = 0; k < 10; ++k)
-    {
-        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
-    }
+    checkNoResidualRelease(r);
 }
 
 TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被当成释放中续读", "[host][sl488]")
@@ -10449,10 +10473,7 @@ TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被�
         soloBlock(r, 0.5f, /*bypassed=*/true);
     }
 
-    for (int k = 0; k < 10; ++k)
-    {
-        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
-    }
+    checkNoResidualRelease(r);
 }
 
 TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成释放中续读", "[host][sl488]")
@@ -10490,10 +10511,7 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
         MonoMultiRig::pump(20);
     }
 
-    for (int k = 0; k < 10; ++k)
-    {
-        CHECK(peakOf(soloBlock(r, 0.5f).l) == 0.0f);
-    }
+    checkNoResidualRelease(r);
 }
 
 // ===========================================================================
@@ -10602,7 +10620,9 @@ TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保�
     r.runBlocks(200, 0.5f, /*pumpEveryN=*/4, /*pumpMs=*/6);
     Rig::pumpMessages(200);
     REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 600.0).coveredS > coveredBefore); // 前提:确实重采到了
-    CHECK(r.out.captureStale(kTestChannel));
+    // 直接断采样率那一半:captureStale 是 fingerprint 失配与采样率失效取或,只断它的话,
+    // 采样率这半被改坏时可能由 fingerprint 那半糊绿(#280 复审第 2 轮)。
+    CHECK(r.out.featureSampleRateStale(kTestChannel));
 
     // ③b 清除这条轨的采集数据(轨变空)→ 继续采 ⇒ 空轨第一次落账记成 48000,⚠ 撤下;再存记 48000。
     r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), 0.0, 1.0e6);
