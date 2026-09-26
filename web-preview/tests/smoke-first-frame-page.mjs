@@ -25,7 +25,8 @@
 //      而 output 恰是三页里唯一测不出本缺陷的那个;这一条同时关掉 SL-423。
 //   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`;first-paint 记录真的取到了;
 //      `信号时刻 − first-paint 时刻 > 0`(A1);`帧计数(信号) − 帧计数(first-paint) >= 2`(A2);
-//      [SL-430 前半] 载荷里的 `paintDeltaMs` 取到了、且与本套独立量到的 Δms 一致(A3)。
+//      [SL-430 前半] 载荷里的 `paintDeltaMs` 取到了、为正,且落在本套同源量到的
+//      [本帧 tick − first-paint, 信号 − first-paint] 区间里(A3;[SL-529] 起不用容差)。
 //      A2 那个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在**下一帧**跑(+1),内层再等
 //      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
 //      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
@@ -110,12 +111,6 @@ function eq(got, want, msg) {
     if (a === b) return true;
     fail++;
     console.log(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
-    return false;
-}
-function near(got, want, tol, msg) {
-    if (Number.isFinite(got) && Math.abs(got - want) <= tol) return true;
-    fail++;
-    console.log(`  [FAIL] ${msg}: 实得 ${got},应为 ${want}±${tol}`);
     return false;
 }
 
@@ -466,9 +461,13 @@ cdp.on((m) => {
 //   在它眼里完全看不见。改成拿 **paint 记录**当基线:`__scvbPaintFrames` / `__scvbPaintMs`
 //   由一个**注册在页面之前**的 PerformanceObserver 落下(本桩先跑 ⇒ 回调也先于页面那个),
 //   `first-paint` 才是「这一帧真的画上去了」的可观测证据。
+// [SL-529] `tick` 顺手记下**本帧**开始时的 performance.now(),postMessage 时连同信号
+//   时刻一起快照 —— 它是 A3 那两格的下界,理由见 A3 上方注释。
 const PROBE = `
     window.__scvbFrames = 0;
+    window.__scvbTickMs = -1;
     (function tick() {
+        window.__scvbTickMs = performance.now();
         window.__scvbFrames++;
         requestAnimationFrame(tick);
     })();
@@ -495,6 +494,7 @@ const PROBE = `
                 raw: String(s),
                 frames: window.__scvbFrames,
                 ms: performance.now(),
+                tickMs: window.__scvbTickMs,
             });
         },
     };
@@ -536,6 +536,7 @@ for (const role of ["input", "output", "monitor"]) {
             id: (JSON.parse(m.raw) || {}).eventId,
             frames: m.frames,
             ms: m.ms,
+            tickMs: m.tickMs,
             // [SL-430 前半] 页面自己在载荷里报的「信号 − first-paint」差值。
             // 用 ?? null 显式落成 null:字段缺席与「差值恰好是 0」必须分得开
             // (0 是合法值,拿真值判会把它读成缺席 —— 判例 comparison-axis-can-be-silently-hollow)。
@@ -613,8 +614,17 @@ for (const role of ["input", "output", "monitor"]) {
     // ⚠ [SL-429 第 4 轮] 容差从 ±20 ms 收到 ±5 ms,**而且符号那一格是新加的** —— 复审指出
     // 原来那条立论(「漏个减号照样全绿 ⇒ 所以要断一致」)是**数据凑出来的**:±20 比它要量的
     // 那个量还大,`|−10 − 10| = 20 ≤ 20` ⇒ 换台快机器(Δms 掉到 10 ms 以内)这一格就变绿。
-    // 两个读数取自**同一个同步任务**(页面在 postMessage 前一行取 performance.now(),桩在
-    // postMessage 里取),差值本该亚毫秒级,`Math.round` 再加 ±0.5 ⇒ 5 ms 是宽松上界。
+    // ⚠ [SL-529] ±5 那一版的立论(「两次读数在同一个同步任务里 ⇒ 差值亚毫秒级」)**不成立**:
+    // 同一任务只约束先后,不约束墙钟 —— 渲染主线程在两次 performance.now() 之间被 OS 抢占
+    // 几毫秒,CI 上实测越过 ±5(载荷一律偏小,因为桩那次读数必然更晚)。两个 paint startTime
+    // 是同一条记录,逐次相等;差值全部来自这段停顿,落点随机(实测过落在 JSON.stringify 里,
+    // 也落在「读完 now() 到调 stringify」之间),三页都会中。数表见 PR 描述。
+    // 所以不给容差,改成**同源夹逼**:页面那次读数必然落在 [本帧 tick 时刻, 桩收信号时刻]
+    // 之间 —— rAF 按注册顺序回调,桩的 tick 每帧都最先注册,页面的 signal() 跑时本帧 tick
+    // 已经跑过;走 2.5s 保险路时下界是更早一帧的 tick,只会更松、仍然成立。三个时刻与
+    // paint startTime 同一时钟,`Math.round` 单调 ⇒ `round(下界) ≤ 载荷 ≤ round(上界)` 是
+    // **精确**断言,不含任何估出来的余量。正常情况下区间宽零点几毫秒,比 ±5 更严;真有停顿时
+    // 区间如实变宽,它本来就是那次的真实可能范围。上下界各一格,删掉哪一格都有注入会漏过去。
     //
     // C++ 那一侧(读载荷 + 拼日志)**没有任何判据**:WebViewHost.cpp 不进任何测试目标,
     // 这是本仓既有的空白,不是本卡新开的口子 —— 照实说,别假装它被守着。
@@ -636,12 +646,33 @@ for (const role of ["input", "output", "monitor"]) {
             `${role}:载荷里的 paintDeltaMs 必须为正(实得 ${reported};` +
                 `负值 / 零 = 页面那行算式的减号写反了,或基线取的根本不是 first-paint)`,
         );
-        near(
-            reported,
-            dMs,
-            5,
-            `${role}:载荷里报的 paintDeltaMs 与本套独立量到的 Δms 一致`,
-        );
+        // 下界取不到时 `tickMs − paintMs` 为负,下界那格恒真 —— 先断取到了
+        // (「比对轴会静默变空」那一族;0 是合法时刻,用 >= 0 判)。
+        const tickMs = ff[0].tickMs;
+        if (
+            check(
+                typeof tickMs === "number" && tickMs >= 0 && tickMs <= ff[0].ms,
+                `${role}:桩取到了本帧 tick 时刻,且不晚于信号时刻(实得 ${tickMs} / ` +
+                    `${ff[0].ms})`,
+            )
+        ) {
+            const lo = Math.round(tickMs - probe.paintMs);
+            const hi = Math.round(dMs);
+            log(
+                `  ${role}:载荷 paintDeltaMs=${reported},同源区间 [${lo}, ${hi}]` +
+                    `(tick−paint=${(tickMs - probe.paintMs).toFixed(1)}、Δms=${dMs.toFixed(1)})`,
+            );
+            check(
+                reported >= lo,
+                `${role}:载荷里的 paintDeltaMs 不早于本帧 tick(实得 ${reported} < ${lo};` +
+                    `= 页面取 now() 的时刻早于发信号的那一帧,或基线晚于 first-paint)`,
+            );
+            check(
+                reported <= hi,
+                `${role}:载荷里的 paintDeltaMs 不晚于桩收到信号(实得 ${reported} > ${hi};` +
+                    `= 页面算的不是「发信号时刻 − first-paint」,或基线早于 first-paint)`,
+            );
+        }
     }
 }
 
