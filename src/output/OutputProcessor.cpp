@@ -1855,8 +1855,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // **只 bump 代号,不调 cancelAnalysis()**:JUCE 不保证本函数在消息线程,而 cancelAnalysis
     // 要动 analysisJob_ / retiredJobs_(只准消息线程)。代号是原子量,handleAsyncUpdate 在
     // 同一把 lifecycleMutex_ 下比对它(见那里),于是「比对通过 → 等锁 → 本函数载入完 → 落地」
-    // 这条交错也被挡住。作业线程自己跑完、结果被那道门丢掉;作业对象留到下一次 startAnalysis
-    // 退休或析构时回收(与 cancelAnalysis 之后同形)。
+    // 这条交错也被挡住。
+    // ⚠ 代价(与 cancelAnalysis 之后**不同形**):这里没有 signal 作业线程,它会跑完整条
+    // pipeline,结果被那道门丢掉;旧工程那份特征快照(作业按值持有)与这条线程一直活到
+    // 跑完、作业对象留到下一次 startAnalysis 退休或析构时才回收。
+    // 收掉这笔代价转 SL-525。
     // 运行态一并清掉:结果既然作废,不清的话 UI 会一直停在「分析中」、版本 chip 一直灰着。
     // 放在两道拒载 return 之后:被拒的载入什么都没改,不该连带取消分析。
     analysisGeneration_.fetch_add(1, std::memory_order_acq_rel);
@@ -2387,6 +2390,10 @@ bool ScvbOutputAudioProcessor::setVersionActive(int version)
         return false;
     }
 
+    // ⚠ 这里放了一次锁:`changing` 算完到下面写 `versionActive_` 之间,`setStateInformation`
+    // 可能改过它,`changing` 会过期。两个方向都成立:过期成「要切」⇒ 多取消一趟(那趟已被
+    // 对方作废);过期成「不切」⇒ 这里不取消,但对方自己 bump 过代号。**两者都靠
+    // `setStateInformation` 那次作废兜住** —— 挪走或收窄那处 bump 之前先回来看这里。
     bool changing = false;
     {
         const juce::ScopedLock lock(lifecycleMutex_);
@@ -3621,7 +3628,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
         // [SL-399 R3] 这里**不再**重算写回窗的 hop 换算基数。原先那行
         // `llround(featHopSeconds() * sampleRate_)` 与构造 `rangeStartSample/EndSample` 时用的
         // 那个 `sampleRate_` 可能不是同一个数(`prepareToPlay` 只取锁再 `store`,**不取消**
-        // 在途作业;`cancelAnalysis()` 的唯一调用点是 `releaseResources`),于是
+        // 在途作业,它也不在 `cancelAnalysis()` 的调用点里),于是
         // 「由 `applyHop * hopSamples` 构造 ⇒ 整除无损」那句注释会在宿主中途改采样率时变假,
         // 裁出来的 vadP 窗整体漂掉或是 `hi <= lo` 静默一个 hop 都不写。
         // 现在写回窗**随作业走 hop**(`applyFirstHop/applyLastHop` 是交接处原样带过来的),
@@ -3751,11 +3758,14 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             //
             // ⚠ 但「同一个表达式」只是**必要**条件,**真正的保证是锁**([SL-255] 复审⑤):
             // 两处读的是两个时刻的 `versionActive_`,它们相等靠的是本函数全程持
-            // `lifecycleMutex_`,而 `setVersionActive`(:2156)写它时取的是同一把锁。
+            // `lifecycleMutex_`,而写 `versionActive_` 的每一条路(`setVersionActive` 与
+            // `setStateInformation`)取的都是同一把锁。两条写路还各自作废在途分析,
+            // 所以这里的版本也等于起跑时那个 —— 见本函数下方 [SL-491] 清冻结位那段。
             // 将来若有人收窄锁粒度(比如让 apply / commit 各自取一次锁),表达式再一样
             // 也会分叉 —— 改锁粒度前先回来看这一段。
             //
-            // 取值域由 `setVersionActive` 的 jlimit 保证;夹取既已去掉,就在 debug 下钉住。
+            // 取值域由两条写路各自保证(`setVersionActive` 的 jlimit、`setStateInformation` 经
+            // 解码器的范围校验);夹取既已去掉,就在 debug 下钉住。
             jassert(versionActive_ >= 1 && versionActive_ <= kVersionMax);
             const int vIdx = versionActive_ - 1;
             auto& liveTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
