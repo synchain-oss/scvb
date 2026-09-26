@@ -997,6 +997,9 @@ verUi.chips.forEach((chip, i) => {
     // 双击 chip 就地重命名(行内 input,≤16 字符,Enter 提交,空值回落默认 "V{n}")
     chip.addEventListener("dblclick", () => {
         if (chip.getAttribute("data-disabled") === "1") return;
+        // [SL-499] 只读观察态不进改名(native `setVersionName` 另有硬拒绝;不挡的话
+        // 用户能打完一串名字、失焦后无声弹回)。chip 本身不置灰 —— 切版本不归本卡管。
+        if (isReadOnly(viewStore())) return;
         renamingVersion = v;
         if (verUi.box) verUi.box.setAttribute("data-mode", "rename");
         if (verUi.renameChip0) verUi.renameChip0.textContent = "V" + v;
@@ -1443,9 +1446,11 @@ function renderHeader() {
         chip.childNodes[0].nodeValue = versionName(v);
     });
     // 「复制到…」同款:05 §2.1 ③「PRINT 态按钮 disabled + tooltip『打印中不可复制版本』」
+    // [SL-499] 只读观察态同样 disabled(tooltip 不另写:横幅② 已整屏说明只读)。
     if (verUi.copyBtn) {
-        verUi.copyBtn.setAttribute("data-disabled", printLocked ? "1" : "0");
-        verUi.copyBtn.setAttribute("aria-disabled", String(printLocked));
+        const copyLocked = printLocked || roNow;
+        verUi.copyBtn.setAttribute("data-disabled", copyLocked ? "1" : "0");
+        verUi.copyBtn.setAttribute("aria-disabled", String(copyLocked));
         setTitle(
             verUi.copyBtn,
             printLocked ? dictNow["master.printLock.copy"] : "",

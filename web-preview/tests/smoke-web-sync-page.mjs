@@ -719,9 +719,21 @@ try {
             "(t15)拖动对照臂:松手提交一次(证明本格看得见这条路径)",
         );
         await sleep(400);
+        // ⚠ 对照臂把音量拖大了 ⇒ 卡箍**挪了位置**。沿用旧坐标会按在管体上、拖动根本没开始,
+        // 下面「零提交」就成了假绿(删除式第一轮实测如此)。重取坐标并断落点就是卡箍本身。
+        const c2 = await centerOf(COLLAR);
+        eq(
+            await evaluate(
+                IN(`const fr = f.getBoundingClientRect();
+                    const el = d.elementFromPoint(${c2.x} - fr.left, ${c2.y} - fr.top);
+                    return !!el && el === q(${JSON.stringify(COLLAR)});`),
+            ),
+            true,
+            "(t15b)实验臂的按下点**落在卡箍本身**上(重取过坐标)",
+        );
         i0 = await logLen();
-        await mouse("mousePressed", c.x, c.y);
-        await mouse("mouseMoved", c.x + 30, c.y);
+        await mouse("mousePressed", c2.x, c2.y);
+        await mouse("mouseMoved", c2.x + 30, c2.y);
         await pressCtrlZ();
         check(
             await waitFor(
@@ -732,7 +744,7 @@ try {
             ),
             "(t16)拖动中 Ctrl+Z 到达桥面",
         );
-        await mouse("mouseReleased", c.x + 30, c.y);
+        await mouse("mouseReleased", c2.x + 30, c2.y);
         await sleep(500);
         eq(
             count(await logSince(i0), "setTrackManual"),
@@ -1347,6 +1359,29 @@ try {
             }
         };
 
+        // [SL-499 按族] 版本改名(双击 chip)与「复制到…」—— 同一道只读闸。
+        const renameProbe = () =>
+            evaluate(
+                IN(`const chip = gb("header-version-chip-1");
+                    chip.dispatchEvent(new w.MouseEvent("dblclick", { bubbles: true }));
+                    const box = gb("header-version");
+                    const mode = box ? box.getAttribute("data-mode") : null;
+                    if (mode === "rename") {
+                        const inp = gb("header-version-rename-input");
+                        inp.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+                    }
+                    return mode;`),
+            );
+        const copyProbe = () =>
+            evaluate(
+                IN(`const b = gb("header-version-copy");
+                    const dis = b.getAttribute("data-disabled");
+                    b.click();
+                    const c = gb("header-version-copy-confirm");
+                    const shown = !!c && !c.hidden;
+                    if (shown) gb("header-version-copy-cancel").click();
+                    return { dis: dis, shown: shown };`),
+            );
         // ---- 对照臂(非只读):四个入口各自真能提交 —— 否则下面的「零提交」可能只是没打中 ----
         await mouse("mousePressed", bell.x, bell.y);
         await mouse("mouseReleased", bell.x, bell.y);
@@ -1400,6 +1435,16 @@ try {
         await mouse("mouseReleased", moved.x, moved.y);
         await sleep(300);
         check(await toolbarShown(), "(r10)转只读之前:点已选中、工具条在");
+        eq(
+            await renameProbe(),
+            "rename",
+            "(r10b)对照:非只读时双击 chip 进改名(证明本格看得见这条路径)",
+        );
+        eq(
+            await copyProbe(),
+            { dis: "0", shown: true },
+            "(r10c)对照:非只读时「复制到…」可点、确认框弹出",
+        );
 
         // ---- 转只读 ----
         await setGroup(1);
@@ -1453,18 +1498,56 @@ try {
             0,
             "(r16)**只读:键盘(方向键 / Enter)零提交**",
         );
+        // ⚠ 转只读会在页顶挂出横幅②、整页下移 ⇒ 转只读之前取的坐标全部作废
+        // (删除式第一轮实测:拖拽入口的闸拿掉仍全绿,因为按下点根本没落在点上)。
+        // 重取 bell 点(按当前点表换算)与空白处的坐标,并断两个落点都在画布上。
+        const ro1 = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const pts = (w.__SCVB_OUTPUT__.curve().curveSig || "").split("|")
+                .map((s) => s.split(":"));
+            const bell = pts.find((p) => p[2] === "bell");
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            const at = (a, g) => ({
+                x: fr.left + r.left + (m.angleToX(a) / m.PLOT_W) * r.width,
+                y: fr.top + r.top + (m.dbToY(g) / m.PLOT_H) * r.height,
+            });
+            const pb = at(Number(bell[0]), Number(bell[1]));
+            const pe = at(-90, 8);
+            const onCanvas = (p) => d.elementFromPoint(p.x - fr.left, p.y - fr.top) === c;
+            return { bell: pb, empty: pe, ok: onCanvas(pb) && onCanvas(pe) };
+        `),
+        );
+        check(
+            ro1 && ro1.ok,
+            `(r16b)只读态下重取的两个落点都在画布上(实得 ${JSON.stringify(ro1)})`,
+        );
+        const moved2 = ro1.bell;
+        const empty2 = ro1.empty;
         c0 = await commits();
-        await mouse("mousePressed", moved.x, moved.y);
+        await mouse("mousePressed", moved2.x, moved2.y);
         const dr = await curveDiag();
-        await mouse("mouseMoved", moved.x + 20, moved.y - 10);
-        await mouse("mouseReleased", moved.x + 20, moved.y - 10);
+        await mouse("mouseMoved", moved2.x + 20, moved2.y - 10);
+        await mouse("mouseReleased", moved2.x + 20, moved2.y - 10);
         await sleep(300);
         eq(dr.dragging, false, "(r17)只读:按下不进拖动态");
         eq((await commits()) - c0, 0, "(r18)**只读:拖拽零提交**");
         c0 = await commits();
-        await dbl(empty);
+        await dbl(empty2);
         await sleep(300);
         eq((await commits()) - c0, 0, "(r19)**只读:双击零提交**");
+        eq(
+            await renameProbe(),
+            "normal",
+            "(r20)**只读:双击版本 chip 不进改名**",
+        );
+        eq(
+            await copyProbe(),
+            { dis: "1", shown: false },
+            "(r21)**只读:「复制到…」置灰、点了不弹确认框**",
+        );
     }
     assertClean("⑥ 曲线只读闸");
 } catch (e) {
