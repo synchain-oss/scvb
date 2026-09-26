@@ -4176,8 +4176,7 @@ TEST_CASE("HOST SL-483:段 pan 为 NaN 的 CRVS 整份拒载,段表与曲线原�
             auto& segs = d.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments;
             segs.clear();
             segs.push_back(scvb::state::Segment{
-                0, 480000, pan, -6.0f,
-                scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false)});
+                0, 480000, pan, -6.0f, scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false)});
             c.payload.clear();
             REQUIRE(scvb::state::encodeCrvs(d, c.payload));
             found = true;
@@ -10185,8 +10184,7 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
 // 三格各钉一个落点:processBlock 的分段、processBlockBypassed 的分段、超长块之后的时间线推进
 // (按整块长推,不按夹取后的 n 推 —— 否则每块都被误判成跳变,epoch 连跳)。
 // ===========================================================================
-TEST_CASE("HOST SL-487:宿主块长超过 prepare 预算,整块含尾段都被替换(processBlock / bypass / epoch)",
-          "[host][sl487]")
+TEST_CASE("HOST SL-487:宿主块长超过 prepare 预算,整块含尾段都被替换(processBlock / bypass / epoch)", "[host][sl487]")
 {
     Rig r;
     r.ph.playing = true;
@@ -10512,8 +10510,9 @@ TEST_CASE("HOST SL-485:采集采样率 ≠ 当前采样率 ⇒ 该轨 stale;保�
         juce::MemoryBlock base;
         r.out.getStateInformation(base);
         scvb::state::StateChunks chunks;
-        REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks)
-                    .status == scvb::state::StateLoadStatus::Ok);
+        REQUIRE(
+            scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
         chunks.set(scvb::state::kFourccFeat, scvb::state::encodeFeatures(d));
         std::vector<std::uint8_t> blob;
         REQUIRE(scvb::state::encodeContainer(chunks, blob));

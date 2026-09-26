@@ -626,8 +626,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 }
 
-void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0,
-                                          int64_t t0)
+void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0)
 {
     // [SL-488] 上一段真混进了哪些轨:取出即清。只有走到混音路径末尾才重写(见 releasableMask_
     // 头注),下面任何一条早退都让它归零。
