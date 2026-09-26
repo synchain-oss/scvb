@@ -1849,6 +1849,21 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         return; // Corrupt:不可信字节,拒载(不崩溃、不半填充)
     }
 
+    // [SL-490/SL-491 复审] 真要载入了 ⇒ 在途分析的结果整份作废。载入的是另一份工程 / 预设,
+    // 那一趟是按旧工程算的:不作废的话,段表会落进新工程的活动版本,clearManual 的清冻结位
+    // (落地时才做)会打到新工程的冻结参数上。
+    // **只 bump 代号,不调 cancelAnalysis()**:JUCE 不保证本函数在消息线程,而 cancelAnalysis
+    // 要动 analysisJob_ / retiredJobs_(只准消息线程)。代号是原子量,handleAsyncUpdate 在
+    // 同一把 lifecycleMutex_ 下比对它(见那里),于是「比对通过 → 等锁 → 本函数载入完 → 落地」
+    // 这条交错也被挡住。作业线程自己跑完、结果被那道门丢掉;作业对象留到下一次 startAnalysis
+    // 退休或析构时回收(与 cancelAnalysis 之后同形)。
+    // 运行态一并清掉:结果既然作废,不清的话 UI 会一直停在「分析中」、版本 chip 一直灰着。
+    // 放在两道拒载 return 之后:被拒的载入什么都没改,不该连带取消分析。
+    analysisGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    runtime_.analysisRunning = false;
+    runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
+    analysisRunning_.store(false, std::memory_order_release);
+
     stateAbiMismatch_ = false;
     preservedStateBlob_.clear();
     loadedChunks_ = chunks; // 保真 FEAT/CRVS/未知 fourcc 供 save 原样回写(T19 未知 fourcc 回写纪律)
@@ -2385,7 +2400,8 @@ bool ScvbOutputAudioProcessor::setVersionActive(int version)
     // 两处读同一个版本的不变式、rebuildAllCurves、打印区间都改认「非活动版本」,面大得多。
     // 放在锁外调:cancelAnalysis 自己按 pendingMutex_ → lifecycleMutex_ 的次序取锁。
     // [SL-491] 这里取消还有一层作用:clearManual 的清冻结位推迟到落地时做,落地时读的
-    // versionActive_ 必须等于起跑时那个 —— 切版本即取消,保证了这一点。
+    // versionActive_ 必须等于起跑时那个。切版本即取消是这条的一半;另一半是 setStateInformation
+    // 载入时作废在途分析(见那里)。
     if (changing && analysisRunning_.load(std::memory_order_acquire))
     {
         cancelAnalysis();
@@ -2927,6 +2943,10 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
     }
 
     // 代号不符 = 这份结果所属的作业已经被取消(或已被新作业顶替)→ 整份丢弃,不碰 CRVS。
+    // [SL-490/SL-491 复审] 比对与落地**在同一把 lifecycleMutex_ 下**:setStateInformation 持这把锁
+    // bump 代号,而它未必在消息线程。锁外比对会留一条交错 ——「比对通过 → 等锁 → 对方载入完新工程
+    // → 落地」,作废的结果照样写进新工程。CriticalSection 可重入,finishAnalysis 里再取一次无妨。
+    const juce::ScopedLock lock(lifecycleMutex_);
     if (pending.generation != analysisGeneration_.load(std::memory_order_acquire))
     {
         return;
@@ -3845,8 +3865,10 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 取消 / 代号不符两条路都不经过本函数,于是「重新识别 → 取消」不再静默解冻。
             // 排在段表与 rebuildAllCurves 之后:冻结维交还引擎的那一刻,引擎读到的已是新曲线,
             // 不会先按旧 auto 曲线响几块。
-            // 版本下标用此刻的 versionActive_:它等于起跑时那个,因为 setVersionActive 在分析
-            // 在途时真切版本会先 cancelAnalysis([SL-490])—— 这一格失效的话,清位会落到别的版本上。
+            // 版本下标用此刻的 versionActive_。它等于起跑时那个,靠的是**两处**把改 versionActive_
+            // 的路都接到作废上:setVersionActive 真切版本时 cancelAnalysis([SL-490]);
+            // setStateInformation 载入时 bump 代号(复审补上)。今天写 versionActive_ 的只有这两处
+            // 外加构造期;**再加第三条写路时必须同样作废在途分析**,否则清位会落到别的版本上。
             // 落地时再判一次「仍冻结」:分析期间用户自己解冻了的,不再发一次空 gesture。
             // gesture 三段式与 setTrackManual 的参数面写入同口径:宿主要看见一次完整的用户编辑,
             // 否则 Read 档下会把值当场顶回去。

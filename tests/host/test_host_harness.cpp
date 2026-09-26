@@ -10240,3 +10240,55 @@ TEST_CASE("HOST SL-484:PRINT 态切版本 / 复制版本被 C++ 硬拒绝", "[ho
     CHECK(r.out.setVersionActive(2));
     CHECK(r.out.versionActive() == 2);
 }
+
+// ---------------------------------------------------------------------------
+// [SL-490/SL-491 复审] 分析在途时宿主载入工程 ⇒ 这一趟整份作废:段表不落进载入的工程,
+// 清冻结位也不打到载入工程的冻结参数上。
+//
+// 载入的是**同一个版本号**的工程(存档时 versionActive=1,载入后仍是 1)—— 这正是「作业带
+// 起跑版本号、落地不等即丢」挡不住的那一格,所以用它钉。
+// 删除式两格(setStateInformation 里各动一处):
+//   · 去掉 bump 代号 ⇒ ★2(冻结被清)与段表那条红;★1 仍绿(运行态是另一行清的)。
+//   · 去掉清运行态那三行 ⇒ ★1 红(UI 会一直停在「分析中」)。
+// ⚠ 钉不住的一半:handleAsyncUpdate 把比对挪进 lifecycleMutex_,挡的是**跨线程**交错
+//   (比对通过 → 等锁 → 载入 → 落地)。本机台单线程泵消息,造不出那条交错,本格对它不敏感。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-491:分析在途时载入工程 ⇒ 这一趟作废,不清载入工程的冻结", "[host][sl491][sl490][analyze][state]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    r.out.setOutputEnabled(false); // Follow:与 PRINT 无关
+    MonoMultiRig::pump(200);
+
+    constexpr int kCh = 1;
+    const int v = r.out.versionActive();
+    setFreezeOnVersionW2a(r.out, v, kCh, 1);
+    MonoMultiRig::pump(100);
+    REQUIRE(freezeOfW2a(r.out, v, kCh) == 1);
+
+    // 「另一份工程」= 此刻的存档(ch1 冻着、段表为此刻的样子)。
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+    const auto before = r.out.crvsSnapshot();
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    REQUIRE(r.out.analysisRunning());
+    // 结果只在消息线程回落,这里还没泵过消息 ⇒ 载入必然发生在落地之前。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.versionActive() == v); // 前提:版本号没变(本格要钉的就是这种情形)
+    CHECK_FALSE(r.out.analysisRunning()); // ★1 载入即作废
+    CHECK_FALSE(r.out.runtime().analysisRunning);
+
+    for (int waited = 0; waited < 20000 && r.out.analysisRunning(); waited += 50)
+    {
+        MonoMultiRig::pump(50);
+    }
+    MonoMultiRig::pump(1000);
+
+    CHECK(freezeOfW2a(r.out, v, kCh) == 1); // ★2 载入工程的冻结没被清
+    CHECK(sameTracksW2a(before, r.out.crvsSnapshot(), v)); // 段表仍是载入工程那一份
+}
