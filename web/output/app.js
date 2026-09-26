@@ -35,8 +35,6 @@ import {
     footerPrintKey,
     secondsToTimecode,
     shouldShowGuide,
-    errorStoreKey,
-    errorKeysToDrop,
     segmentsEventApplies,
     applySegmentsEvent,
     HISTORY_AVAIL_INIT,
@@ -138,9 +136,8 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
-    // §2.9 errorStoreKey(e) → payload(active:false 即删)。键 = 裸 code,**唯
-    // `lowSample` 用 `lowSample#{ch}` 复合键**(轨级且会同时命中多轨,裸 code 存一条
-    // 会互相覆盖);消费侧走 tab-master.js 的 lowSampleChannels(),与键形解耦。
+    // §2.9 code → payload(active:false 即删)。键 = 裸 code:其余各码都是页级落点,
+    // 同一 code 的后一帧本就该覆盖前一帧。
     errors: new Map(),
     unknownCodes: [], // §5.1 降级纪律①:未知 code 原样入诊断区
     readOnly: false, // secondOutput / conn.outputReadOnly
@@ -1646,8 +1643,6 @@ function renderBanners() {
         "",
     );
 
-    // toast:一次性提示(§5.1 降级纪律②:可关闭)
-    show($("toast-projectCopy"), err.has("projectCopy"));
     // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
     // 「sidecar 不上了」)。此处原为
     //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
@@ -2164,14 +2159,8 @@ if (bridge) {
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
         // §2.9:active 缺省视为 true;false = 条件已解除(持续性横幅据此撤下)。
-        // 键由 errorStoreKey 统一(lowSample = code+ch 复合键);撤下走
-        // errorKeysToDrop —— 契约没保证解除事件必带 ch,不带 ch 的解除必须把该
-        // code 的全部轨级条目一并撤掉,否则黄标永不熄灭。
-        if (e.active === false) {
-            for (const k of errorKeysToDrop(store.errors, e)) {
-                store.errors.delete(k);
-            }
-        } else store.errors.set(errorStoreKey(e), e);
+        if (e.active === false) store.errors.delete(e.code);
+        else store.errors.set(e.code, e);
         if (!KNOWN_CODES.has(e.code) && !store.unknownCodes.includes(e.code)) {
             store.unknownCodes.push(e.code);
         }
@@ -2179,7 +2168,7 @@ if (bridge) {
     });
 }
 
-/** §5.1 九码;表外一律进诊断区(UI 不静默)。 */
+/** §5.1 七码;表外一律进诊断区(UI 不静默)。 */
 const KNOWN_CODES = new Set([
     "srMismatch",
     "secondOutput",
@@ -2187,9 +2176,7 @@ const KNOWN_CODES = new Set([
     "newerState",
     "sidecarMissing",
     "noTimeline",
-    "projectCopy",
     "sidecarSwitched",
-    "lowSample",
 ]);
 
 /**

@@ -126,9 +126,7 @@ const SCENARIO_NAMES = {
         "no-timeline",
         // [SL-247 / J92a] 布防在、采集关 ⇒ 横幅 ⑩(见 state-driver 的 SCENARIO_MAP)。
         "recapture-voided",
-        "project-copy",
         "sidecar-switched",
-        "low-sample",
         "print-guard",
         "first-run",
         "recapture-armed",

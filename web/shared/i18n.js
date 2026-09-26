@@ -111,7 +111,6 @@ export const T = {
         passthrough: "直通中",
         takenOver: "已接管",
         printing: "打印中",
-        lowSample: "样本不足",
         // T33 Wave 4 用户 preview 裁定:短语「播完自动停」读不成句,改完整句(key 不变)
         autoStop: "区域外自动停止",
         reidentify: "重新识别(含手动段)",
@@ -585,8 +584,6 @@ export const T = {
         "tracks.colOn": "ON",
         "tracks.footNote": "15 轨",
         "tracks.emptyRoute": "人声轨的输出路由须保持指向本总线",
-        // 「样本不足」角标保短版(裸词条 lowSample),全句进 tooltip(统筹裁定 B12)
-        "lowSample.full": "样本不足,分析结果可能不稳定",
         "tracks.panAutoHint": "自动模式:由分析曲线驱动",
         // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
         "tracks.leadCenter": "居中",
@@ -876,9 +873,8 @@ export const T = {
         "master.transitionEyebrow": "过渡时间",
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
-        // Output toast ①②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.6 / §5.4)。
+        // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
         // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
-        "toast.projectCopy": "检测到工程副本,已创建独立采集数据副本",
         "toast.sidecarSwitched":
             "采集数据已转存外部文件(>8MB),位置见设置页(路径管理与导入导出待功能卡)",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
@@ -1139,7 +1135,6 @@ export const T = {
         passthrough: "PASSTHROUGH",
         takenOver: "TAKEN OVER",
         printing: "PRINTING",
-        lowSample: "LOW SAMPLE",
         // 完整句(zh 同处纪律);⚠ 长度受工具条动作行约束 —— 37 字符的
         // 「Stop automatically when playback ends」实测把 EN 动作行挤成两行
         // (30px → 48px,可见泳道少一条),修订轮压回 23 字符
@@ -1564,7 +1559,6 @@ export const T = {
         "tracks.footNote": "15 tracks",
         "tracks.emptyRoute":
             "Keep each vocal track's output routing pointed at this bus",
-        "lowSample.full": "Low sample — analysis may be unstable",
         "tracks.panAutoHint": "Auto mode: driven by the analysis curve",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Multiple leads centred",
@@ -1793,8 +1787,6 @@ export const T = {
         "master.transitionEyebrow": "TRANSITION TIME",
 
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
-        "toast.projectCopy":
-            "Project copy detected — a separate capture data copy was created",
         "toast.sidecarSwitched":
             "Capture data was moved to an external file (>8 MB); see Settings (path management and import/export are future work)",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
@@ -1978,7 +1970,6 @@ export const T = {
         passthrough: "DIRECT",
         takenOver: "PRIS EN CHARGE",
         printing: "IMPRESSION",
-        lowSample: "ÉCHANTILLON INSUFFISANT",
         // 同 EN:整句但压短,免得动作行换行(FR 最长态是工具条的宽度基准)
         autoStop: "Arrêt auto hors zone",
         reidentify: "Ré-identifier (incl. modifiés)",
@@ -2411,8 +2402,6 @@ export const T = {
         "tracks.footNote": "15 pistes",
         "tracks.emptyRoute":
             "Le routage de sortie des pistes vocales doit rester dirigé vers ce bus",
-        "lowSample.full":
-            "Échantillon insuffisant — l'analyse peut être instable",
         "tracks.panAutoHint": "Mode auto : piloté par la courbe d'analyse",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Plusieurs voix principales centrées",
@@ -2649,8 +2638,6 @@ export const T = {
         "master.transitionEyebrow": "TEMPS DE TRANSITION",
 
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
-        "toast.projectCopy":
-            "Copie de projet détectée — une copie indépendante des données de capture a été créée",
         "toast.sidecarSwitched":
             "Les données de capture ont été déplacées dans un fichier externe (>8 Mo) ; voir les réglages (gestion des chemins et import/export à venir)",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",

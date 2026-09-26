@@ -913,8 +913,7 @@ log("=== ④ 词条(T31 Wave 2 新增 + 05 §5 禁词)===");
         "master.msEyebrow",
         "master.leadEyebrow",
         "master.transitionEyebrow",
-        // 评审修订(P2-4 / P2-6):toast①② + 缩放确认框 + PRINT 态三处 tooltip
-        "toast.projectCopy",
+        // 评审修订(P2-4 / P2-6):toast② + 缩放确认框 + PRINT 态三处 tooltip
         "toast.sidecarSwitched",
         "scale.confirmBody",
         "scale.keep",
@@ -1099,19 +1098,13 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
     );
 
     // P2-6:本波接线的交互组件零硬编码中文
-    check(
-        /data-gb="toast-projectCopy"[\s\S]{0,400}data-t="toast\.projectCopy"/.test(
-            html,
-        ),
-        "toast① 走词条 toast.projectCopy",
-    );
     // [SL-415] 用户 2026-09-14 裁定「sidecar 不上了」⇒ **toast② 收起**
     // (原判据只断「词条接线在」;口子改成「即便触发条件成立也不产生布局盒」)。
     //
     // ⚠ 本套**无 DOM**(文件头:仓内零 node_modules、无 jsdom),`getClientRects()` 在这
     // 根本不存在 —— **真实布局盒**那一格在页面级 `smoke-ui-layout-page.mjs` G 节:它把
     // `scvb.error{code:"sidecarSwitched"}` 真推进页面,再量 `toast-sidecarSwitched` 的
-    // `getClientRects().length === 0`(与同页 `toast-projectCopy` 的对照一起断)。
+    // `getClientRects().length === 0`(与同页的横幅对照、toast 摘 hidden 对照一起断)。
     // 这里留的是**不随无头浏览器一起 SKIP** 的那一半(node 侧前提),三条缺一不可:
     //   ① 锚点与词条接线还在(**隐藏 ≠ 删除**:将来开关打开,把 `show()` 接回去即用);
     //   ② 模板里恒挂 `hidden`;

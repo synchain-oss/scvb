@@ -14,7 +14,7 @@
 //   §1.1  Output 快照全字段 / §3.1 Input 快照全字段
 //   §2.1-§2.9 Output 事件载荷 / §4.1-§4.5 Input 事件载荷
 //   §1.27 requestWaveform 返回形状(六数组 + valleys[])
-//   §5    共享枚举(九错误码 / claim 六态 / range 三值 / editSegment 五 op / segments reason 十值)
+//   §5    共享枚举(七错误码 / claim 六态 / range 三值 / editSegment 五 op / segments reason 十值)
 //   §7    manifest(本文件的 ENUMS 是 manifest enums 的镜像,**只用于造数据与自检**,
 //         契约的唯一真源永远是 SCVB_CONTRACT.md —— 契约改了要回改这里,不得反向)。
 //   轨道画像(label / pan / vol / 优先级 / 配对 / stereo 标)参照设计稿
@@ -110,9 +110,7 @@ export const ENUMS = Object.freeze({
         "newerState",
         "sidecarMissing",
         "noTimeline",
-        "projectCopy",
         "sidecarSwitched",
-        "lowSample",
     ]),
     claimState: Object.freeze([
         "unassigned",
@@ -961,13 +959,13 @@ export function makeSegments(
 
 /**
  * §2.9 / §4.5 `scvb.error`(两侧同形状)。
- * @param {string} code §5.1 九码之一
+ * @param {string} code §5.1 七码之一
  * @param {object} extra 可覆盖 `ch` / `detail` / `active`
  */
 export function makeError(code, extra = {}) {
     assertEnum("code", code, ENUMS.errorCode);
 
-    // detail 逐码照 §5.1 表;`ch` 只在轨级错误出现(srMismatch/channelConflict/lowSample)
+    // detail 逐码照 §5.1 表;`ch` 只在轨级错误出现(srMismatch/channelConflict)
     const byCode = {
         srMismatch: { ch: 1, detail: { inputSr: 44100, outputSr: 48000 } },
         secondOutput: { detail: { groupId: 1 } },
@@ -977,9 +975,7 @@ export function makeError(code, extra = {}) {
         },
         sidecarMissing: { detail: { path: "SCVB/demo-session.scvbfeat" } },
         noTimeline: { detail: {} },
-        projectCopy: { detail: { sessionGuid: DEFAULT_SESSION_GUID } },
         sidecarSwitched: { detail: { bytes: 8912896 } },
-        lowSample: { ch: 13, detail: { voicedS: 0.9 } },
     };
 
     // `active` 缺省视为 true,故默认不发这个键(§2.9 字段纪律)

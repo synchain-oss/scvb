@@ -1085,9 +1085,7 @@ const KNOWN_UNMAPPED = new Set([
     "printing", // 打印守卫那档,只在白名单里(smoke-output-dist-page:568 记过同形态)
     "newer-state", // 05 正文里的场景,mock 侧从未接线
     "sidecar-missing",
-    "project-copy",
     "sidecar-switched",
-    "low-sample",
 ]);
 
 // [SL-357 补 · 复审第 1 轮] **两张场景名表必须双向对齐。**
@@ -1159,7 +1157,7 @@ const KNOWN_UNMAPPED = new Set([
     const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
 
     // 反向,**逐列**:某一列里有、MAP 里没有 ⇒ `?scenario=` 报「待 T31-T36 接线」
-    // 伪警告。今天 6 个全在 output 列(实测),input 列干净 —— 所以 input 列这条
+    // 伪警告。今天 4 个全在 output 列(实测),input 列干净 —— 所以 input 列这条
     // 是**空集断言**:哪天往 input 列加个没接线的名字,它立刻红。
     const outUnmapped = [...outCol].filter((n) => !mapped.has(n));
     const inUnmapped = [...inCol].filter((n) => !mapped.has(n));

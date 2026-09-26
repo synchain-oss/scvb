@@ -3043,8 +3043,14 @@ try {
     // ★ 三处一起断,而且**每一处都配一条对照** —— 这是本节唯一的假绿防线,别删:
     //   · 横幅 ⑤ / toast② 的触发条件是 `scvb.error`。要是探针没把事件真送进页面
     //     (壳页 API 改名、`ctl.emit` 不在、页面还没 ready),那两条**天然**是 0 布局盒
-    //     —— 一个什么都没做的探针也能全绿。所以先推两条**同类但仍在用**的 code
-    //     (`srMismatch` 横幅 ③ / `projectCopy` toast①),断它们**真有**布局盒。
+    //     —— 一个什么都没做的探针也能全绿。所以先推一条**同类但仍在用**的 code
+    //     (`srMismatch` 横幅 ③),断它**真有**布局盒:证明事件送进去了、这一帧渲染过。
+    //     toast 那侧已**没有任何仍可点亮的 toast**(toast① 随 `projectCopy` 撤回
+    //     一并删除、toast③ 未接线),所以 toast 的对照改成:**同一次同步读里**临时
+    //     摘掉 `toast-sidecarSwitched` 的 `hidden` 再量一次,> 0 才证明那个 0 来自
+    //     `hidden`、而不是整个 toast 区根本不渲染;量完当场挂回,中间不让出主线程,
+    //     页面上看不到这一步,也不影响同一次读里的真判据(真判据先量)。
+    //     删除式:给 `#toast-region` 挂 `display:none` ⇒ 这条 toast 对照红(实测)。
     //   · 「存储状态」卡在 Tab4:不切页的话整个面板都不产生盒,那个 0 是白来的。
     //     所以先切到 Tab4,断同一批设置卡里的诊断卡**真有**布局盒。
     //
@@ -3102,15 +3108,24 @@ try {
             if (!el) return -1;
             return el.getClientRects().length;
         };
+        const unhiddenBox = (n) => {
+            const el = gb(n);
+            if (!el) return -1;
+            const was = el.hidden;
+            el.hidden = false;
+            const k = el.getClientRects().length;
+            el.hidden = was;
+            return k;
+        };
         return JSON.stringify({
             banner: box("banner-sidecarMissing"),
             toast: box("toast-sidecarSwitched"),
             ctrlBanner: box("banner-srMismatch"),
-            ctrlToast: box("toast-projectCopy"),
+            ctrlToast: unhiddenBox("toast-sidecarSwitched"),
         });
     `);
 
-    // ---- G1 夹具:两条同类 code(对照的触发条件)-------------------------------
+    // ---- G1 夹具:同类 code(横幅对照的触发条件)-------------------------------
     check(
         (await pushErr("srMismatch", {
             ch: 1,
@@ -3118,12 +3133,6 @@ try {
             outputSr: 48000,
         })) === "ok",
         "G 夹具:推进 srMismatch(横幅 ③,仍在用的同类 code)",
-    );
-    check(
-        (await pushErr("projectCopy", {
-            sessionGuid: "00000000-0000-0000-0000-000000000000",
-        })) === "ok",
-        "G 夹具:推进 projectCopy(toast①,仍在用的同类 code)",
     );
 
     // ---- G2 推 sidecar 那两条 code -------------------------------------------
@@ -3150,12 +3159,12 @@ try {
     log(
         `  [SL-415] 同一次读出的布局盒:banner-sidecarMissing=${g2.banner} / ` +
             `toast-sidecarSwitched=${g2.toast} / 对照 banner-srMismatch=${g2.ctrlBanner} / ` +
-            `toast-projectCopy=${g2.ctrlToast}`,
+            `toast-sidecarSwitched(摘 hidden)=${g2.ctrlToast}`,
     );
     check(
         g2.ctrlBanner > 0 && g2.ctrlToast > 0,
-        `[SL-415] 对照(同一次读):同类 error 真的点亮了横幅与 toast(实得 ` +
-            `srMismatch=${g2.ctrlBanner} / projectCopy=${g2.ctrlToast})—— ` +
+        `[SL-415] 对照(同一次读):同类 error 真的点亮了横幅、toast 摘掉 hidden 即有盒(实得 ` +
+            `srMismatch=${g2.ctrlBanner} / toast 摘 hidden=${g2.ctrlToast})—— ` +
             "少了它,下面两条 `=== 0` 分不清「真没有」与「还没渲染」",
     );
     check(
@@ -3168,6 +3177,87 @@ try {
         `[SL-415] ★ toast② 在 sidecarSwitched 到达后仍零布局盒(实得 ${g2.toast};` +
             "-1 = 节点被删,也算红)",
     );
+
+    // ---- G2b [SL-528] §2.9 存删走裸 code 键(轨级 code 带 ch 也一样)---------------
+    // `lowSample` 撤回后,`app.js` 的 `scvb.error` 存删从 errorStoreKey / errorKeysToDrop
+    // 内联成 `e.code`。那两个函数对 `lowSample` 以外的码走的就是「键 = 裸 code」那一支,
+    // 这里用轨级的 `srMismatch`(载荷带 ch)把两条分支都走一遍:解除事件**不带 ch** 与
+    // **带 ch** 都必须把横幅 ③ 撤下;中间那次点亮顺带断横幅文案取到了载荷里的 ch(存的
+    // 是整条载荷,不是只存了个键)。
+    // 删除式:把 `app.js` 的 delete 改成按 `code#ch` 删 ⇒ ① 红;把 set 改成按 `code#ch`
+    // 存 ⇒ ② 红(横幅读的是 `err.get("srMismatch")`)。两条均实测红。
+    const emitErr = (err) =>
+        evaluate(
+            "(() => {" +
+                "const s = window.__SCVB_PREVIEW__; " +
+                'if (!s || !s.ctl || typeof s.ctl.emit !== "function") return "no-shell-api"; ' +
+                "const err = " +
+                JSON.stringify(err) +
+                "; " +
+                "const arr = s.ctl.model && s.ctl.model.errors; " +
+                "if (Array.isArray(arr)) { " +
+                "const i = arr.findIndex((e) => e && e.code === err.code); " +
+                "if (err.active === false) { if (i >= 0) arr.splice(i, 1); } " +
+                "else if (i >= 0) arr[i] = err; else arr.push(err); } " +
+                's.ctl.emit("scvb.error", err); return "ok"; })()',
+        );
+    const SR_PROBE = IN(`
+        const el = gb("banner-srMismatch");
+        const tx = gb("banner-srMismatch-text");
+        return JSON.stringify({
+            box: el ? el.getClientRects().length : -1,
+            text: tx ? tx.textContent : null,
+        });
+    `);
+    const waitSr = async (lit) => {
+        let r = {};
+        for (let i = 0; i < 60; i++) {
+            r = JSON.parse((await evaluate(SR_PROBE)) || "{}");
+            if (lit ? r.box > 0 : r.box === 0) break;
+            await sleep(250);
+        }
+        return r;
+    };
+    {
+        const pre = await waitSr(true);
+        check(
+            pre.box > 0,
+            `[SL-528] G2b 前提:横幅 ③ 此刻是亮的(实得 ${pre.box})—— 不亮则下面的「撤下」恒绿`,
+        );
+        check(
+            (await emitErr({ code: "srMismatch", active: false })) === "ok",
+            "G2b 夹具:推进 srMismatch 解除事件(不带 ch)",
+        );
+        const r1 = await waitSr(false);
+        check(
+            r1.box === 0,
+            `[SL-528] ★ ① 不带 ch 的 active:false 撤下横幅 ③(实得 ${r1.box})`,
+        );
+        check(
+            (await emitErr({
+                code: "srMismatch",
+                ch: 3,
+                detail: { inputSr: 44100, outputSr: 48000 },
+            })) === "ok",
+            "G2b 夹具:推进带 ch=3 的 srMismatch",
+        );
+        const r2 = await waitSr(true);
+        check(
+            r2.box > 0 && /3/.test(String(r2.text)),
+            `[SL-528] ★ ② 带 ch 的轨级 code 按裸 code 入库、横幅读得到载荷 ch(实得 box=${r2.box} ` +
+                `text=${JSON.stringify(r2.text)})`,
+        );
+        check(
+            (await emitErr({ code: "srMismatch", ch: 3, active: false })) ===
+                "ok",
+            "G2b 夹具:推进 srMismatch 解除事件(带 ch=3)",
+        );
+        const r3 = await waitSr(false);
+        check(
+            r3.box === 0,
+            `[SL-528] ★ ③ 带 ch 的 active:false 同样撤下横幅 ③(实得 ${r3.box})`,
+        );
+    }
 
     // ---- G3 Tab4「存储状态」卡 ----------------------------------------------
     // ⚠ **切 Tab4 走 state,不点 tab 条。** 本节的 CI 首跑实测:`click("tabnav-settings")`

@@ -37,9 +37,6 @@ const u = (p) => pathToFileURL(join(ROOT, p)).href;
 const src = (p) => readFileSync(join(ROOT, p), "utf8");
 
 const TT = await import(u("web/output/tab-tracks.js"));
-// §2.9 轨级 error 的键与消费(errorStoreKey / lowSampleChannels)在 tab-master.js ——
-// Tab2 轨行与 Tab3 轨头**消费同一份**,故纯函数落在两 tab 的共同上游(T33)。
-const TM = await import(u("web/output/tab-master.js"));
 const MT = await import(u("web/output/canvas/meter.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
@@ -733,7 +730,6 @@ log("=== ④ store → 15 行模型 ===");
                 },
             ],
         },
-        errors: new Map([["lowSample", { code: "lowSample", ch: 2 }]]),
     };
     const rows = TT.rowsFromStore(store);
     eq(rows.length, 15, "15 行");
@@ -795,117 +791,6 @@ log("=== ④ store → 15 行模型 ===");
             "冻结两位仍只由参数面决定",
         );
     }
-    eq(rows[1].low, 1, "轨 2 命中 lowSample(§2.9 轨级 error)");
-
-    // T33 §2.9 lowSample = **code+ch 复合键**(t32/deviations §N):轨级 error 会同时
-    // 命中多轨,按裸 code 存一条时后到的轨把先到的覆盖掉,Tab2/Tab3 只剩一枚黄标。
-    {
-        const many = {
-            ...store,
-            errors: new Map([
-                ["lowSample#2", { code: "lowSample", ch: 2 }],
-                ["lowSample#7", { code: "lowSample", ch: 7 }],
-                ["lowSample#15", { code: "lowSample", ch: 15 }],
-                // 同表里的页级 code 一律**保持裸 code 既有行为**
-                ["sidecarMissing", { code: "sidecarMissing" }],
-            ]),
-        };
-        const r = TT.rowsFromStore(many);
-        eq(
-            [r[1].low, r[6].low, r[14].low],
-            [1, 1, 1],
-            "多轨同时低采样 ⇒ 三轨各自挂标(复合键不再互相覆盖)",
-        );
-        eq(
-            r.filter((x) => x.low).length,
-            3,
-            "只有报到的三轨挂标,其余 12 轨干净",
-        );
-        eq(
-            [...TM.lowSampleChannels(many.errors)].sort((a, b) => a - b),
-            [2, 7, 15],
-            "lowSampleChannels 扫出轨号集合(Tab2/Tab3 消费同一份)",
-        );
-        // 键形解耦:裸 `lowSample` 键(旧写法 / 载荷缺 ch)同样能被消费侧读到
-        eq(
-            [...TM.lowSampleChannels(new Map([["lowSample", { ch: 9 }]]))],
-            [9],
-            "按值扫描 ⇒ 裸 code 键同样命中(消费侧不必知道键怎么拼)",
-        );
-        eq([...TM.lowSampleChannels(null)], [], "无 errors 表 ⇒ 空集,不抛错");
-        eq(
-            TM.errorStoreKey({ code: "lowSample", ch: 7 }),
-            "lowSample#7",
-            "errorStoreKey:lowSample 走 code+ch 复合键",
-        );
-        eq(
-            TM.errorStoreKey({ code: "lowSample" }),
-            "lowSample",
-            "errorStoreKey:载荷缺 ch ⇒ 回落裸 code(不拼出 lowSample#NaN)",
-        );
-        for (const code of ["srMismatch", "channelConflict", "secondOutput"]) {
-            eq(
-                TM.errorStoreKey({ code, ch: 3 }),
-                code,
-                `errorStoreKey:${code} 保持裸 code 既有行为`,
-            );
-        }
-        // active:false 撤下(契约 §2.9 没保证解除事件必带 ch —— 不带 ch 的解除
-        // 必须把该 code 的**全部**轨级条目一并撤掉,否则黄标永不熄灭)
-        {
-            const errs = new Map([
-                ["lowSample#2", { code: "lowSample", ch: 2 }],
-                ["lowSample#7", { code: "lowSample", ch: 7 }],
-                ["sidecarMissing", { code: "sidecarMissing" }],
-            ]);
-            eq(
-                TM.errorKeysToDrop(errs, {
-                    code: "lowSample",
-                    ch: 7,
-                    active: false,
-                }),
-                ["lowSample#7"],
-                "errorKeysToDrop:带 ch ⇒ 只撤该轨",
-            );
-            eq(
-                TM.errorKeysToDrop(errs, {
-                    code: "lowSample",
-                    active: false,
-                }).sort(),
-                ["lowSample", "lowSample#2", "lowSample#7"],
-                "errorKeysToDrop:不带 ch ⇒ 裸键 + 全部复合键一并撤下",
-            );
-            eq(
-                TM.errorKeysToDrop(errs, {
-                    code: "sidecarMissing",
-                    active: false,
-                }),
-                ["sidecarMissing"],
-                "errorKeysToDrop:页级 code 仍是裸键一条(既有行为不变)",
-            );
-            // 端到端:撤下后消费侧一轨不剩
-            for (const k of TM.errorKeysToDrop(errs, {
-                code: "lowSample",
-                active: false,
-            })) {
-                errs.delete(k);
-            }
-            eq(
-                [...TM.lowSampleChannels(errs)],
-                [],
-                "不带 ch 的解除事件走完 ⇒ lowSampleChannels 空集(黄标熄灭)",
-            );
-        }
-        // app.js 存删同口径(delete 走 errorKeysToDrop,存走 errorStoreKey)
-        const appJs = src("web/output/app.js");
-        check(
-            /errorKeysToDrop\(store\.errors, e\)[\s\S]{0,120}errors\.delete\(k\)[\s\S]{0,160}errors\.set\(errorStoreKey\(e\), e\)/.test(
-                appJs,
-            ),
-            "app.js 的 §2.9 存走 errorStoreKey、删走 errorKeysToDrop(active:false 撤得下来)",
-        );
-    }
-
     eq(rows[1].misalign, 4, "轨 2 失准计数入行模型");
     eq(rows[1].status, "warn", "轨 2 = 琥珀失准");
     eq(rows[2].status, "srErr", "轨 3 = 采样率不一致(整行 disabled)");
@@ -1321,7 +1206,6 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
         "tracks.labelEdit",
         "tracks.misaligned",
         "tracks.srErr",
-        "lowSample.full",
         "common.continue",
         "common.cancel",
         "reidentify",
@@ -1506,7 +1390,6 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
                 versionActive: 1,
             },
             conn: { channels: [{ slotState: 2, heartbeatFresh: true }] },
-            errors: new Map([["lowSample#2", { code: "lowSample", ch: 2 }]]),
         };
         const all = TT.rowsFromStore(st);
         const ctx = TT.rowContext(st);
