@@ -4958,14 +4958,17 @@ export function createTabWave(opts) {
         // 判据即可触发,不需要第二个用户动作)就把 PAN 旋钮 / VOL 滑杆的乐观值清空 ——
         // 恰落在最后一次移动与松手之间时,松手读到的回声不是有限数,提交判据为假,
         // 用户拖好的值**不发送、不报错**。
-        //   · 全量类 reason(整表替换 / 换版本 / 复制版本):全清,**连正在拖的那一维也清**
-        //     —— 松手读不到回声就不提交,不会把这一版的值按时间锚写进换过来的那一版;
+        //   · 全量类 reason(整表替换 / 换版本 / 复制版本):全清,并**作废检查器拖动本身**
+        //     (照 cancelBoundDrag 判例)—— 只清回声不够:拖动态还在的话,随后的 pointermove
+        //     会把回声重新写满,松手照样按时间锚把这一版的值写进换过来的那一版(#282 复审);
         //   · 事件没碰回声所在的那一轨:不动(那一轨的段一个都没变);
         //   · 碰了:只保留**正在拖的那一维**(松手要读它),其余清 —— 回推值优先上屏。
         //     (选中段在重绑里失效的话,选中轨必在本次事件里 ⇒ 也走这一支;
         //      那时松手的 canEditSelected() 为空、不提交,留下的回声等下次选段时清。)
         if (segAll) {
             local.echo = {};
+            local.knobDrag = null;
+            local.vslDrag = null;
         } else if (seg.channels.some((c) => c && c.ch === echoCh)) {
             const keep = {};
             if (local.knobDrag && Number.isFinite(local.echo.pan))

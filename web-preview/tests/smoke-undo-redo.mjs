@@ -468,7 +468,7 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
     // 「之前」按**下标**比,不按「紧挨着」比:中间将来再插什么都不会误伤,顺序反了照样红
     // (与上面只读闸那一格同一口径 —— 那一格正是被本卡插进去的一行撑爆过)。
     // [SL-460] 接线点从 `curveEditor.abortEdit();` 换成 `await settlePendingEdits();`
-    // (防抖在飞 = 冲刷、拖动中 = 中止;行为面在 smoke-pending-flush-page.mjs)。
+    // (防抖在飞 = 冲刷、拖动中 = 中止;行为面在 smoke-web-sync-page.mjs)。
     check(
         (() => {
             const h = appJs.slice(appJs.indexOf("async function runHistory("));

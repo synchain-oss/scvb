@@ -983,14 +983,22 @@ try {
             undefined,
             "(s18)**换版本 ⇒ 在拖那一维的回声也清掉**(与 (s5) 相反的那一支)",
         );
-        await mouse("mouseReleased", knob.x, knob.y - 18);
+        // 换版本之后**继续移动**再松手:只清回声、不作废拖动的话,这一下 pointermove
+        // 会把回声重新写满,松手照样提交(#282 复审【建议】2 指出的那条路)。
+        await mouse("mouseMoved", knob.x, knob.y - 30);
+        eq(
+            (await waveDiag()).knobDrag,
+            false,
+            "(s18b)**换版本 ⇒ 检查器拖动本身被作废**(不只是清回声)",
+        );
+        await mouse("mouseReleased", knob.x, knob.y - 30);
         await sleep(400);
         eq(
             (await logEntriesSince(i0)).filter(
                 (e) => e.n === "editSegment" && e.a[1] === "set_values",
             ).length,
             0,
-            "(s19)换版本后那一记松手零提交",
+            "(s19)**换版本后继续移动再松手,零提交**",
         );
         await switchTo(1, "(s20)收尾");
     }
