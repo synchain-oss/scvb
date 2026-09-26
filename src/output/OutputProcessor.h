@@ -834,6 +834,20 @@ private:
         resegmentDueAtMs_ = 0;
         resegmentReason_ = AnalysisDoneReason::None;
     }
+    // [SL-532] 撤销 / 重做真的动了栈时作废在途分析([J110]);调用方已持 lifecycleMutex_。
+    // 与 setStateInformation 载入时那次作废同形:bump 代号 + 清运行态三件,不碰作业对象、
+    // 不 signal 作业线程 —— 它跑完整条 pipeline 后,结果被 handleAsyncUpdate 的代号门丢掉
+    // (与那处同一笔代价,收尾归 SL-525)。
+    // 没有在跑的分析时什么都不动:上一趟落地后的 progress 与代号原样保留。
+    void abandonAnalysisInFlight() noexcept
+    {
+        if (!analysisRunning_.load(std::memory_order_acquire))
+            return;
+        analysisGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        runtime_.analysisRunning = false;
+        runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
+        analysisRunning_.store(false, std::memory_order_release);
+    }
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
     //

@@ -11140,3 +11140,244 @@ TEST_CASE("HOST SL-531:防抖窗内宿主载入工程 ⇒ 重分段不落进刚�
     CHECK(r.out.crvsRevision() == revAfterLoad);
     CHECK(sameTracksW2a(loaded, r.out.crvsSnapshot(), r.out.versionActive())); // 载入的段表原样
 }
+
+// ---------------------------------------------------------------------------
+// [SL-532] 撤销 / 重做真的动了栈时,**已经在跑**的分析整份作废([J110] 用户裁定「取消」)。
+//
+// 修前:undo()/redo() 只丢待触发的防抖([SL-531]),不碰在途分析 ⇒ 分析随后作为新事务落进
+// 撤销(重做)后的状态,并清空重做栈。修法与 setStateInformation 载入那处同形:bump 代号 +
+// 清运行态三件(`abandonAnalysisInFlight`),调用点在 undo()/redo() 的 `if (ok)` 里。
+//
+// 两个时间窗都钉:
+//   · 窗 a(撤销那格):作业线程还在跑;
+//   · 窗 b(重做那格):作业已把结果交进槽、AsyncUpdater 已投递,但还没泵消息(没落地)——
+//     此时 analysisRunning_ 仍为真,只有代号门挡得住;作业不再写进度,「进度归零」才测得稳。
+// 判据用机制(takeAnalysisDone 仍为 None + 修订号不动),不用段数(理由见 SL-255 那组)。
+//
+// 删除式(每格只动一处):
+//   D1 undo() 里那次调用 ⇒ ★U 红;D2 redo() 里那次 ⇒ ★R 红;
+//   D3 helper 里 bump 代号 ⇒ ★U3/★R3 红(运行态两条 CHECK 仍绿);
+//   D4 清 runtime_.analysisRunning ⇒ ★U2/★R2 红;D5 清 analysisRunning_ ⇒ ★U1/★R1 红;
+//   D6 清 analysisProgress ⇒ ★R4 红;
+//   D7 undo() 的调用挪出 `if (ok)` ⇒ ★CU 红;D7r redo() 同 ⇒ ★CR 红;
+//   D8 helper 开头的「没在跑就不动」⇒ ★N 红。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 与 sl531Prepare 同一配方,少了最后那句把 VAD 阈值拧远 —— 本组要的是「在途那一趟若落地,
+// 一定会被看见」,阈值留默认。
+double sl532Prepare(Rig& r, bool analyze)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    captureSpacedBursts(r);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    r.out.setCaptureEnabled(false);
+    if (analyze)
+    {
+        REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+        waitAnalysis(r);
+        REQUIRE(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+    }
+    r.ph.playing = false;
+    r.runBlocks(8, 0.0f);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    return coveredS;
+}
+
+// 不泵消息地等作业线程报到 1.0(流水线最后一次进度回调在交接之前),再等交接完成。
+// 不泵 ⇒ AsyncUpdater 投递的那条落地消息留在队列里,结果「已交接、未落地」。
+bool sl532WaitHandedOffNoPump(Rig& r)
+{
+    for (int waited = 0; waited < 20000; waited += 20)
+    {
+        if (r.out.runtime().analysisProgress.load(std::memory_order_relaxed) >= 1.0f)
+        {
+            juce::Thread::sleep(300);
+            return true;
+        }
+        juce::Thread::sleep(20);
+    }
+    return false;
+}
+
+// 被作废的那一趟没人 signal,线程会跑完;等它把进度推到 1.0 再泵一阵,让它的落地消息(若有)被处理。
+void sl532DrainOrphan(Rig& r)
+{
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (r.out.runtime().analysisProgress.load(std::memory_order_relaxed) >= 1.0f)
+        {
+            break;
+        }
+    }
+    Rig::pumpMessages(1000);
+}
+} // namespace
+
+TEST_CASE("HOST SL-532:分析在跑时撤销 ⇒ 这一趟整份丢弃,重做栈还在", "[host][sl532][analyze][undo]")
+{
+    Rig r;
+    const double coveredS = sl532Prepare(r, /*analyze=*/true); // 撤销栈:[分析 A]
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    REQUIRE(r.out.analysisRunning());
+    REQUIRE(r.out.undo()); // 撤掉 A;B 还在跑(窗 a)
+    CHECK_FALSE(r.out.analysisRunning()); // ★U1
+    CHECK_FALSE(r.out.runtime().analysisRunning); // ★U2
+    const auto revAfterUndo = r.out.crvsRevision();
+
+    sl532DrainOrphan(r);
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★U3
+    CHECK(r.out.crvsRevision() == revAfterUndo);
+    CHECK(r.out.redo()); // 用户可见的那一半:刚撤掉的 A 还能重做回来
+}
+
+TEST_CASE("HOST SL-532:结果已交接未落地时重做 ⇒ 同样丢弃,进度归零", "[host][sl532][analyze][undo]")
+{
+    Rig r;
+    const double coveredS = sl532Prepare(r, /*analyze=*/true);
+    REQUIRE(r.out.undo()); // 让重做栈里有 A;此刻没有在跑的分析
+    Rig::pumpMessages(100);
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    REQUIRE(sl532WaitHandedOffNoPump(r)); // 窗 b:交接完、未落地
+    REQUIRE(r.out.analysisRunning()); // 前提:落地前 analysisRunning_ 仍为真
+    REQUIRE(r.out.redo());
+    CHECK_FALSE(r.out.analysisRunning()); // ★R1
+    CHECK_FALSE(r.out.runtime().analysisRunning); // ★R2
+    CHECK(r.out.runtime().analysisProgress.load(std::memory_order_relaxed) == 0.0f); // ★R4
+    const auto revAfterRedo = r.out.crvsRevision();
+
+    Rig::pumpMessages(1000); // 那条落地消息在这里被处理 —— 代号不符应整份丢弃
+
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::None); // ★R3
+    CHECK(r.out.crvsRevision() == revAfterRedo);
+}
+
+TEST_CASE("HOST SL-532 对照:栈空的撤销不取消在途分析", "[host][sl532][analyze][undo]")
+{
+    Rig r;
+    const double coveredS = sl532Prepare(r, /*analyze=*/false); // 撤销栈为空
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    CHECK_FALSE(r.out.undo()); // 前提:栈空,什么都没撤
+    CHECK(r.out.analysisRunning()); // ★CU 照常在跑
+    waitAnalysis(r);
+    // 这一趟照常落地 —— 同时证明本组「落地会被看见」的判据不是空真。
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+}
+
+TEST_CASE("HOST SL-532 对照:栈空的重做不取消在途分析", "[host][sl532][analyze][undo]")
+{
+    Rig r;
+    const double coveredS = sl532Prepare(r, /*analyze=*/false);
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    CHECK_FALSE(r.out.redo());
+    CHECK(r.out.analysisRunning()); // ★CR
+    waitAnalysis(r);
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+}
+
+TEST_CASE("HOST SL-532 对照:没有在跑的分析时撤销不动运行态", "[host][sl532][analyze][undo]")
+{
+    Rig r;
+    sl532Prepare(r, /*analyze=*/true); // A 已落地:progress=1、不在跑
+    REQUIRE_FALSE(r.out.analysisRunning());
+    REQUIRE(r.out.runtime().analysisProgress.load(std::memory_order_relaxed) == 1.0f);
+
+    REQUIRE(r.out.undo());
+    CHECK(r.out.runtime().analysisProgress.load(std::memory_order_relaxed) == 1.0f); // ★N
+    CHECK_FALSE(r.out.analysisRunning());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-510] 版本复制的「零参数写入 / 零 gesture」(03 §5.3「明确不做的事」)钉在**生产路径**上。
+//
+// 原先这两条只钉在 `OutputAuthority::copyVersion`(曲线层)上,而那份实现零生产调用点
+// ([J109] 已删)—— web 侧三处注释(mock / readback.js / smoke-tab1)拿它当「真机复制不写
+// 参数面」的证据,证的其实是一段没人调用的代码。这里改在 processor 的 CRVS 事务上断。
+// 两格:dst 不是活动版本、dst 是活动版本(后者会触发活动版本的曲线重绑)。
+// 删除式:在 processor copyVersion 的 mutator 里注入一次 setValueNotifyingHost ⇒ ★Z 红。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct CopyWriteSpy final : juce::AudioProcessorListener
+{
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { ++changed; }
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int) override { ++begins; }
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int) override { ++ends; }
+    int changed = 0;
+    int begins = 0;
+    int ends = 0;
+};
+
+std::vector<float> sl510ParamValues(juce::AudioProcessor& p)
+{
+    std::vector<float> v;
+    for (auto* prm : p.getParameters())
+    {
+        v.push_back(prm->getValue());
+    }
+    return v;
+}
+} // namespace
+
+TEST_CASE("HOST SL-510:复制版本零参数写入、零 gesture(生产路径)", "[host][sl510][version][copy]")
+{
+    CopyWriteSpy spy; // 两个 spy 都比 rig 活得久(理由见 HOST SL-231 那格)
+    CopyWriteSpy spy2;
+    Rig r;
+    sl532Prepare(r, /*analyze=*/true); // V1 有段表、V2 空
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.versionActive() == 1);
+    const auto before = r.out.crvsSnapshot();
+    // 前提:V1 与 V2 段表不同,否则「复制没发生」与「复制了同样的东西」分不开。
+    REQUIRE_FALSE(sameTracksW2a(
+        before,
+        [&] {
+            auto c = before;
+            c.versions[1] = c.versions[0];
+            return c;
+        }(),
+        2));
+
+    // 格 1:dst(V2)不是活动版本。
+    r.out.addListener(&spy);
+    const auto p1 = sl510ParamValues(r.out);
+    REQUIRE(r.out.copyVersion(1, 2) == scvb::engine::CopyVersionResult::Ok);
+    CHECK(sl510ParamValues(r.out) == p1); // ★Z
+    CHECK(spy.changed == 0);
+    CHECK(spy.begins == 0);
+    CHECK(spy.ends == 0);
+    r.out.removeListener(&spy);
+    {
+        auto expect = before;
+        expect.versions[1].tracks = expect.versions[0].tracks;
+        CHECK(sameTracksW2a(expect, r.out.crvsSnapshot(), 2)); // 复制真的落地了
+    }
+
+    // 格 2:撤回复制,切到 V2(空),再把 V1 复制进**活动版本**。切版本本身会怎样动参数面
+    // 不在本格判定面内,所以 spy 在切完之后才挂。
+    REQUIRE(r.out.undo());
+    REQUIRE(r.out.setVersionActive(2));
+    Rig::pumpMessages(100);
+    r.out.addListener(&spy2);
+    const auto p2 = sl510ParamValues(r.out);
+    REQUIRE(r.out.copyVersion(1, 2) == scvb::engine::CopyVersionResult::Ok);
+    CHECK(sl510ParamValues(r.out) == p2); // ★Z
+    CHECK(spy2.changed == 0);
+    CHECK(spy2.begins == 0);
+    CHECK(spy2.ends == 0);
+    r.out.removeListener(&spy2);
+}

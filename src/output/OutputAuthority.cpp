@@ -2,51 +2,11 @@
 #include "OutputAuthority.h"
 
 #include <algorithm>
-#include <functional>
 
 #include "SegmentEditService.h" // configureCrvsUndoBudget:CRVS 撤销预算的唯一真源
 
 namespace
 {
-
-// 版本复制撤销动作:捕获旧 dst 曲线(shared_ptr 浅拷贝 —— 曲线对象不可变,浅拷贝即完整语义快照)
-// 与旧 meta;undo 时原样放回,旧曲线对象由 shared_ptr 保活(曲线不可变契约)。
-class CopyVersionAction final : public juce::UndoableAction
-{
-public:
-    CopyVersionAction(scvb::engine::VersionStore& store, int src, int dst, std::function<void()> onChanged)
-        : m_store(store), m_src(src), m_dst(dst), m_oldCurves(store.snapshotCurves(dst)), m_oldMeta(store.meta(dst)),
-          m_onChanged(std::move(onChanged))
-    {
-    }
-
-    bool perform() override
-    {
-        m_store.applyCopy(m_src, m_dst);
-        if (m_onChanged)
-            m_onChanged();
-        return true;
-    }
-
-    bool undo() override
-    {
-        m_store.restoreCurves(m_dst, m_oldCurves);
-        m_store.setMeta(m_dst, m_oldMeta);
-        if (m_onChanged)
-            m_onChanged();
-        return true;
-    }
-
-    int getSizeInUnits() override { return 1; }
-
-private:
-    scvb::engine::VersionStore& m_store;
-    int m_src = 0;
-    int m_dst = 0;
-    std::array<std::shared_ptr<const scvb::CurveEvaluator>, scvb::engine::kNumTracks> m_oldCurves{};
-    scvb::engine::VersionMeta m_oldMeta{};
-    std::function<void()> m_onChanged;
-};
 
 // 版本重命名撤销动作:捕获旧名,undo 时还原。
 class RenameVersionAction final : public juce::UndoableAction
@@ -104,13 +64,13 @@ OutputAuthority::OutputAuthority()
 {
     // 撤销预算的**唯一**装配点。
     //
-    // 本文件匿名 namespace 里的 `CopyVersionAction` / `RenameVersionAction` 的 getSizeInUnits
-    // 恒回 1,在这套字节口径下等于「几乎不占预算」—— 对**这两个 action** 是正确的:它们持有的
-    // 是 shared_ptr 浅拷贝与一个字符串,与整表 CRVS 快照不在一个量级。
+    // 本文件匿名 namespace 里的 `RenameVersionAction` 的 getSizeInUnits 恒回 1,在这套字节口径下
+    // 等于「几乎不占预算」—— 对**这个 action** 是正确的:它持有的只是新旧两个名字,与整表 CRVS
+    // 快照不在一个量级(版本复制原先也有一个同类 action,随零调用点的 `copyVersion` 一并删除,SL-510)。
     // ⚠ 别据此以为「版本改名/复制对撤销预算免费」:**生产路径**上的
     // `ScvbOutputAudioProcessor::setVersionName` / `copyVersion` 走的是 `commitCrvsTransaction`
     // → `CrvsTransactionAction`,同样**按整表段数记全字节**。这里说的只是 authority 自带的
-    // 曲线层 action(#152 第三轮复审【建议】3)。
+    // 版本层 action(#152 第三轮复审【建议】3)。
     scvb::output::configureCrvsUndoBudget(m_undoManager);
 }
 
@@ -179,26 +139,6 @@ void OutputAuthority::setPanCurve(int version, const std::vector<scvb::PanCurveP
     // 非活动版本:只更新本地那张,不发快照;换到该版本时 rebindSources 自会取走。
     if (version == m_versions.versionActive() && m_prepared)
         rebindSources();
-}
-
-scvb::engine::CopyVersionResult OutputAuthority::copyVersion(int src, int dst, scvb::engine::AuthorityMode mode)
-{
-    // 前置校验(§5.3):PRINT 拒绝 / 越界 / src==dst;不满足 → UI 拒绝,不动 state、不进 undo。
-    const scvb::engine::CopyVersionResult result = m_versions.validateCopy(src, dst, mode);
-    if (result != scvb::engine::CopyVersionResult::Ok)
-        return result;
-
-    // 单事务 + 单条撤销(§5.3 line 607):复制是纯 state 深拷贝,零 gesture、零参数写入、零宿主 undo。
-    m_undoManager.beginNewTransaction("Copy V" + juce::String(src) + " → V" + juce::String(dst));
-    m_undoManager.perform(new CopyVersionAction(m_versions, src, dst, [this, dst] {
-        // perform(初始 + redo)与 undo 后,若 dst 是活跃版本则重发快照,保证 DSP 反映复制/撤销结果。
-        if (m_prepared && dst == m_versions.versionActive())
-            rebindSources();
-    }));
-
-    // 注:标记 state dirty + updateHostDisplay(ChangeDetails().withNonParameterStateChanged(true)) 由
-    // 将来 PluginProcessor 接线处执行(本类不持有 AudioProcessor;REAPER 有时忽略,仅尽力)。
-    return scvb::engine::CopyVersionResult::Ok;
 }
 
 scvb::engine::SetNameResult OutputAuthority::setVersionName(int version, const juce::String& name)

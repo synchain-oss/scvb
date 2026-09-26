@@ -2942,7 +2942,12 @@ bool ScvbOutputAudioProcessor::setAnalysisConfig(const juce::String& loudnessMod
 // 换不来「撤掉的就是刚才那一下」。代价:参数值(全局 runtime,不进撤销栈)保留新值,段表
 // 不按它重算 —— 要应用得再点一次分析或再动一下滑杆。
 // 只在返回 true 时丢:栈上什么都没动,就没有「落进撤销后」这回事,防抖照常到点。
-// ⚠ 防抖已经到点、分析已在跑时按撤销,不在本函数管辖内(撤销不取消在途分析)。
+//
+// [SL-532] 同一处还作废**已经在跑**的分析([J110] 用户裁定「取消」):防抖已到点、或用户手点
+// 「分析」之后按撤销,那一趟随后会作为新事务落进撤销后的状态并清空重做栈 —— 与上面防抖那条
+// 同一种症状,只是晚了一步。作废形状照 setStateInformation 载入那处(见 abandonAnalysisInFlight
+// 头注),与切版本、载入工程一样结果整份丢弃。同样只在返回 true 时做:栈空的撤销什么都没改,
+// 在途分析照常落地。
 bool ScvbOutputAudioProcessor::undo()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
@@ -2950,6 +2955,7 @@ bool ScvbOutputAudioProcessor::undo()
     if (ok)
     {
         discardPendingResegment();
+        abandonAnalysisInFlight(); // [SL-532] undo
     }
     return ok;
 }
@@ -2961,6 +2967,7 @@ bool ScvbOutputAudioProcessor::redo()
     if (ok)
     {
         discardPendingResegment();
+        abandonAnalysisInFlight(); // [SL-532] redo
     }
     return ok;
 }

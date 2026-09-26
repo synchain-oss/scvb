@@ -350,7 +350,7 @@ inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projec
 // -----------------------------------------------------------------------------
 // [SL-478] `scvb.error` 的 `noTimeline` 一档:这一拍发不发、发哪一态。
 //
-// **正题**:契约 §5.1 的 `noTimeline`(琥珀横幅⑥ + 采集/输出开关 disabled)**没有生产者**。
+// **正题**:契约 §5.1 的 `noTimeline`(琥珀横幅⑥ + 输出开关 disabled、采集开关只挡「打开」[J107])**没有生产者**。
 // 生产侧的判据一直在(`OutputProcessor::timerCallback` 里「连续无时间线 ≥0.5s → 清注入
 // mask」那一段),但结论只落一行 `DBG`,从不进桥;而 web 侧的消费者(`app.js` 的
 // `err.has("noTimeline")`、`tab-master.js` 的开关闸)早就就绪 ⇒ 恒 false。
@@ -387,6 +387,26 @@ inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibl
     p.active = condition;
     p.nextShown = condition;
     return p;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-509] §1.2 `setCaptureEnabled` 的 `noTimeline` 拒绝支:**只挡「打开」**([J107],用户
+// 2026-09-26 裁定「允许关、拒绝开」)。
+//
+// 缺陷:[SL-478] 接上的这一支原先不分方向,`on` 取 true / false 一律回 `noTimeline`。采集开着时
+// 宿主丢了时间线,用户就关不掉采集 —— 而关采集根本不需要时间线。
+//
+// 判序(契约 §1.2 拒绝态行):`observer` → `noTimeline`(仅 `on=true`)→ `badArg`。所以只有
+// **严格布尔且为真**才落这一支;`on` 不是严格布尔时这里回 false,交给后面的 badArg 判。
+// §1.3 `setOutputEnabled` **不走本函数**,输出开关在 noTimeline 下仍两向都拒([J107] 只裁了
+// 采集开关)。
+//
+// 抽成纯函数:`OutputEditor.cpp` 只编进插件目标、链不进任何测试可执行文件,判据落在这里才能被
+// `tests/core/test_bridge_args.cpp` 离线断言;handler 真的在用它,由 smoke-tab2-interactions.mjs 钉源码形态。
+inline bool noTimelineRejectsCaptureSwitch(bool timelineMissing, const juce::var& onArg)
+{
+    bool on = false;
+    return timelineMissing && strictBool(onArg, on) && on;
 }
 
 // -----------------------------------------------------------------------------

@@ -644,3 +644,30 @@ TEST_CASE("planConditionErrorEmit:noTimeline 的边沿/撤销/去重/丢弃", "[
         CHECK(retract.nextShown); // 撤销帧没发出去,不许当成已撤
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-509] §1.2 `noTimeline` 拒绝支只挡「打开」([J107] 允许关、拒绝开)。
+//
+// 缺陷:[SL-478] 接上这一支时不分方向,采集开着时宿主丢了时间线,用户关不掉采集。
+// handler 真的在用本函数、且 §1.3 输出开关那一支没跟着放开,由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的 [SL-509] 行形态钉子锁住。
+// 删除式两格(各只动 `noTimelineRejectsCaptureSwitch` 里一处):
+//   · 去掉 `&& on` ⇒ ★关 红(回到「开关都拒」);
+//   · 去掉 `timelineMissing &&` ⇒ ★有时间线 红(有时间线也拒开)。
+// ---------------------------------------------------------------------------
+TEST_CASE("noTimelineRejectsCaptureSwitch:无时间线只拒打开,关照常受理", "[output][bridge][SL509]")
+{
+    using scvb::output::noTimelineRejectsCaptureSwitch;
+
+    CHECK(noTimelineRejectsCaptureSwitch(/*timelineMissing=*/true, juce::var(true))); // 拒开
+    CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var(false))); // ★关
+    CHECK_FALSE(noTimelineRejectsCaptureSwitch(/*timelineMissing=*/false, juce::var(true))); // ★有时间线
+
+    // 严格布尔的整数形态与 strictBool 同口径:非 0 = 开。
+    CHECK(noTimelineRejectsCaptureSwitch(true, juce::var(1)));
+    CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var(0)));
+
+    // 判序 observer → noTimeline(仅 on=true)→ badArg:参数不是严格布尔时不落这一支,交给 badArg。
+    CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var()));
+    CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var("true")));
+}

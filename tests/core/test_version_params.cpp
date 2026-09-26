@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_version_params —— T18 JUCE 参数层:OutputAuthority 集成 VersionStore + UndoManager。
-// 断言:copyVersion 零参数写入(setValueNotifyingHost)/ 零 gesture / 零宿主 undo(03 §5.3「明确不做的事」
-// 三条)、PRINT 拒绝、§5.4 交互语义表 2×2 逐格、version_active 钳制、name 往返(save→load)与重命名撤销。
+// 断言:§5.4 交互语义表 2×2 逐格、version_active 钳制、name 往返(save→load)与重命名撤销。
+// 版本复制(03 §5.3)的用例不在这里:本类那份曲线层 copyVersion 零生产调用点,已随 [SL-510] / [J109] 删除;
+// 生产路径(processor 的 CRVS 事务)的「零参数写入 / 零 gesture / PRINT 拒绝」见
+// tests/host/test_host_harness.cpp 的 `HOST SL-510` 与 `HOST SL-484`,VersionStore 层的复制语义见
+// tests/core/test_version.cpp 的 VERSION-COPY-1..6。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -54,19 +57,6 @@ struct VersionTestProcessor final : juce::AudioProcessor
     void setStateInformation(const void*, int) override {}
 };
 
-// 宿主事件 spy:数 setValueNotifyingHost(参数变更)与 gesture 开/关。
-struct SpyListener final : juce::AudioProcessorListener
-{
-    int paramChanged = 0;
-    int gestureBegin = 0;
-    int gestureEnd = 0;
-
-    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { ++paramChanged; }
-    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int) override { ++gestureBegin; }
-    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int) override { ++gestureEnd; }
-    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
-};
-
 scvb::CurveEvaluator constCurve(double pan, double volDb)
 {
     scvb::CurveEvaluator ev;
@@ -90,98 +80,7 @@ struct VersionParamsFixture
     }
 };
 
-// 快照全部 123 参数(0..1 归一化值)。
-std::vector<float> snapshotParams(juce::AudioProcessor& proc)
-{
-    std::vector<float> values;
-    for (auto* p : proc.getParameters())
-        values.push_back(p->getValue());
-    return values;
-}
-
 } // namespace
-
-// ============================================================================
-// §5.3「明确不做的事」三条:各一条断言用例
-// ============================================================================
-
-TEST_CASE("VERSION-COPY-ZERO-1 不调 setValueNotifyingHost(零参数写入,dst==active)", "[version][copy-zero]")
-{
-    SpyListener spy;
-    VersionParamsFixture f;
-    f.proc.addListener(&spy);
-
-    // dst(版本1)为活跃版本;复制后参数面必须逐位不变、宿主参数变更回调零次。
-    auto ev1 = constCurve(30.0, -3.0);
-    auto ev2 = constCurve(-50.0, -2.0);
-    f.auth.setCurve(1, 0, &ev1);
-    f.auth.setCurve(2, 0, &ev2);
-
-    const auto before = snapshotParams(f.proc);
-    REQUIRE(f.auth.copyVersion(2, 1, scvb::engine::AuthorityMode::Follow) == scvb::engine::CopyVersionResult::Ok);
-    const auto after = snapshotParams(f.proc);
-
-    REQUIRE(after == before); // 123 参数逐位不变
-    REQUIRE(spy.paramChanged == 0); // 未触发 audioProcessorParameterChanged
-}
-
-TEST_CASE("VERSION-COPY-ZERO-2 不发 begin/endChangeGesture(零 gesture)", "[version][copy-zero]")
-{
-    SpyListener spy;
-    VersionParamsFixture f;
-    f.proc.addListener(&spy);
-
-    auto ev1 = constCurve(30.0, -3.0);
-    f.auth.setCurve(1, 0, &ev1);
-
-    REQUIRE(f.auth.copyVersion(1, 2, scvb::engine::AuthorityMode::Follow) == scvb::engine::CopyVersionResult::Ok);
-
-    REQUIRE(spy.gestureBegin == 0);
-    REQUIRE(spy.gestureEnd == 0);
-}
-
-TEST_CASE("VERSION-COPY-ZERO-3 不触碰宿主 undo(仅插件自有 UndoManager 单事务)", "[version][copy-zero]")
-{
-    VersionParamsFixture f;
-
-    auto ev1 = constCurve(30.0, -3.0);
-    f.auth.setCurve(1, 0, &ev1);
-
-    REQUIRE(f.auth.undoManager().getNumActionsInCurrentTransaction() == 0);
-    REQUIRE(f.auth.copyVersion(1, 2, scvb::engine::AuthorityMode::Follow) == scvb::engine::CopyVersionResult::Ok);
-
-    // 单事务 + 单条撤销(§5.3):复制自身只占一个事务,undo 一次完整还原 dst。
-    REQUIRE(f.auth.undoManager().canUndo());
-    REQUIRE(f.auth.undoManager().getUndoDescription() == "Copy V1 → V2");
-
-    // 复制前 dst 版本2 无曲线(null);undo 后应回到 null。
-    REQUIRE(f.auth.undoManager().undo());
-    // (VersionStore 未暴露曲线指针,经 DSP 断言:版本2 已空,切到 2 后引擎权威读不到曲线 → 恒 0)
-    f.auth.setVersionActive(2);
-    const auto t = f.auth.processBlock(true, 0.0);
-    REQUIRE(t[0].pan == Approx(0.0f).margin(1e-6));
-}
-
-// ============================================================================
-// PRINT 态调用 copyVersion 被拒绝
-// ============================================================================
-
-TEST_CASE("VERSION-COPY-PRINT PRINT 态拒绝且不动 state", "[version][copy]")
-{
-    VersionParamsFixture f;
-
-    auto ev1 = constCurve(30.0, -3.0);
-    f.auth.setCurve(1, 0, &ev1);
-
-    REQUIRE(f.auth.copyVersion(1, 2, scvb::engine::AuthorityMode::Print) ==
-            scvb::engine::CopyVersionResult::RejectedPrint);
-    REQUIRE_FALSE(f.auth.undoManager().canUndo()); // 拒绝不进 undo
-
-    // dst 版本2 仍空(未复制)。
-    f.auth.setVersionActive(2);
-    const auto t = f.auth.processBlock(true, 0.0);
-    REQUIRE(t[0].pan == Approx(0.0f).margin(1e-6));
-}
 
 // ============================================================================
 // §5.4 交互语义表逐格用例(2 版本 × follow/print 两态;行数变、语义不变)
@@ -266,7 +165,7 @@ TEST_CASE("VERSION-ACTIVE-CLAMP OutputAuthority 越界钳制 + warning", "[versi
 }
 
 // ============================================================================
-// name 字段:往返一致(save→load)、copyVersion 目标名不变、超长/空名边界
+// name 字段:往返一致(save→load)、超长/空名边界
 // ============================================================================
 
 TEST_CASE("VERSION-NAME-ROUNDTRIP save→load 保名", "[version][name]")
@@ -314,16 +213,4 @@ TEST_CASE("VERSION-NAME-BOUNDARY 空值回落默认 V{n}、超长截断", "[vers
     // 超长 → 截断到 16。
     REQUIRE(f.auth.setVersionName(1, "abcdefghijklmnopqrst") == scvb::engine::SetNameResult::Truncated);
     REQUIRE(f.auth.versionName(1) == "abcdefghijklmnop");
-}
-
-TEST_CASE("VERSION-COPY-NAME copyVersion 后目标名不变", "[version][name]")
-{
-    VersionParamsFixture f;
-
-    f.auth.setVersionName(2, "Double");
-    auto ev1 = constCurve(30.0, -3.0);
-    f.auth.setCurve(1, 0, &ev1);
-
-    REQUIRE(f.auth.copyVersion(1, 2, scvb::engine::AuthorityMode::Follow) == scvb::engine::CopyVersionResult::Ok);
-    REQUIRE(f.auth.versionName(2) == "Double"); // name 不随复制覆盖
 }
