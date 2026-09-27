@@ -119,7 +119,8 @@
 - **顺带修掉的一处继承缺陷(行为变化,用户可见)**:桥面 `setChannelConfig` 判「配置有没有变」时,participate 比的是
   **存储值**而不是生效值。一条从没动过的轨(未显式设置 ⇒ 生效 = 参与)在轨道页上只取消勾选「参与自动声像」时,
   存储值 false → false 被判成「没变」、不 bump `configSeq`,而给 Input 的广播区按 `configSeq` 做变化门 ⇒
-  Input 那一侧会一直把这条轨当作「参与」,直到这份工程里别的配置项再改一次。本卡把这段比对收进持锁的
+  Input 页面上那一行只读摘要(`InputBridgeLogic.cpp` 的 `scvb.config.participate_in_auto_pan`,只喂显示)会一直
+  显示「参与」,直到这份工程里别的配置项的**值**再变一次。本卡把这段比对收进持锁的
   `bridgeApplyChannelConfig` 时改为比 `participatesInAutoPan()` 前后值(HOST SL472 单字段格 + 删除式 D16)。
   Output 自己的分析与 `scvb.state` 回推不受这条影响(前者直接读生效值,后者 25Hz 全量比对,不看 `configSeq`)。
 
