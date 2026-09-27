@@ -12,6 +12,17 @@ namespace
 {
 constexpr int kChannelIdMax = 15; // [J01+J59] 0..15,0=未分配
 constexpr int kGroupIdMax = 8; // [J66] 1..8
+
+// interleaved 缓冲前 count 个 float 的绝对值峰值(电平 meter_ 用)。
+float peakAbs(const float* v, int count) noexcept
+{
+    float peak = 0.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        peak = std::max(peak, std::abs(v[static_cast<std::size_t>(i)]));
+    }
+    return peak;
+}
 } // namespace
 
 ScvbInputAudioProcessor::ScvbInputAudioProcessor()
@@ -108,12 +119,12 @@ bool ScvbInputAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts)
     return true;
 }
 
-void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, float* dst, int n)
+void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, int offset, float* dst, int n)
 {
-    // interleaved LR 打包;mono 单通道。[J57] 不下混、不互换。
+    // interleaved LR 打包;mono 单通道。[J57] 不下混、不互换。取 src 的 [offset, offset + n)。
     for (int c = 0; c < srcCh; ++c)
     {
-        const float* s = src[c];
+        const float* s = src[c] + offset;
         for (int i = 0; i < n; ++i)
         {
             dst[static_cast<std::size_t>(i) * static_cast<std::size_t>(srcCh) + static_cast<std::size_t>(c)] = s[i];
@@ -124,7 +135,8 @@ void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, 
 void ScvbInputAudioProcessor::writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n,
                                                 int64_t t0)
 {
-    // 跨零点块(t0<0 且 t0+n>0):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
+    // 跨零点段(t0<=0 且 t0+n>0;[SL-523] 起传进来的是一段:n = 段长,t0 = 段首,t0 == 0 时
+    // skip = 0 整段都写):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
     const int skip = static_cast<int>(-t0);
     if (skip >= n)
     {
@@ -147,16 +159,29 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 {
     const juce::ScopedNoDenormals noDenormals;
 
-    // 块长规划(PR#51 重要#2):采集/写环按夹取后的 captureSamples(research/01 §2.3 越界夹取,
-    // Bridge #169 教训),输出级渲染按 renderSamples = 全块 —— 消除静音档大块尾段残留旧音频的泄漏。
+    // 块长规划(PR#51 重要#2):输出级渲染按 renderSamples = 全块 —— 消除静音档大块尾段残留旧音频的泄漏。
+    // [SL-523] 采集/写环按 captureSamples **分段**把整块写完(与 Output 的 renderSpan 分段同口径,
+    // SL-487)。captureSamples = min(numSamples, preparedMaxBlock_) = 捕获缓冲 capInterleaved_ 的定长,
+    // 越界夹取(research/01 §2.3,Bridge #169 教训)仍在:每段不超过它。此前只写每块前 captureSamples
+    // 个样本 —— 宿主块长超过 prepare 预算(离线 bounce 放大块长 / 播放中超发)时,环里尾段是洞,
+    // Output 尾段读环失败按「不含该轨」混音 ⇒ 导出周期性断音。正常块长下只有一段,与分段前逐位相同。
     const int numIn = buffer.getNumSamples();
     if (numIn <= 0)
     {
         return;
     }
     const scvb::input::InputBlockPlan plan = scvb::input::planBlock(numIn, preparedMaxBlock_);
-    const int n = plan.captureSamples;
+    const int seg = plan.captureSamples; // 每段长度上限
     const int nRender = plan.renderSamples;
+    if (seg <= 0)
+    {
+        // 分段循环按 seg 步进,seg <= 0 会死循环;与 Output 的 `preparedMaxBlock_ <= 0` 早退同口径。
+        // 不可达(prepareToPlay 把 preparedMaxBlock_ 兜底成 > 0、numIn > 0 已在上面判过)。修前这条
+        // 退化路径仍往下走完(换代/时间线记账、特征、渲染);这里整块跳过,尤其是在下面
+        // rampSwitcher_.render 之前返回 ⇒ 宿主缓冲原样透出(静音档下也不静音)。守卫没挪到渲染之后:
+        // 不可达 ⇒ 没有夹具能造出它,挪了也钉不住,只是在实时路径上多一处无测试的改动。
+        return;
+    }
 
     const int srcCh = srcChannels_;
     const float* const* src = buffer.getArrayOfReadPointers();
@@ -170,11 +195,8 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     // 音频线程绝不触碰 session_ 的可变成员(claimedChannel_ 经块视图快照)。
     const scvb::input::InputSessionBlockView block = session_.acquireBlock();
 
-    // 1) 捕获(ADR-003 v2.0 [J57]):mono 直取,stereo interleaved LR 打包,零分配(仅夹取部分)。
-    if (n > 0)
-    {
-        captureFrames(src, srcCh, capInterleaved_.data(), n);
-    }
+    // 1) 捕获(ADR-003 v2.0 [J57]):mono 直取,stereo interleaved LR 打包,零分配。[SL-523] 捕获随
+    //    写环一起按段做(下面两处分段循环里),capInterleaved_ 每次只装一段。
 
     // 2) 时间线定位(负 timeInSamples = 倒计时/pre-roll,[J51] 有效时间线但 Input 不整块写环/写特征)。
     bool playing = false;
@@ -197,16 +219,33 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 
     if (!haveT0 || t0 < 0)
     {
-        if (haveT0 && t0 + n > 0)
+        // [SL-523] 按段走:跨零点那一段(段首 <= 0 < 段尾)经 writeTailFromZero 写 [0, 段尾)并换代;
+        // 段首恰好 == 0 的那一段也走它(skip = 0),否则这一段既不换代、Output 的有效代起点还停在
+        // 跳变前,整段读不出来。它之后的段(只有跨零点的超长块才有)只补写环,**不推 expectedNext_**,
+        // 下一块的换代判定因此与修前相同(修前这种块同样只推到跨零点那一段的段尾,下一块判成跳变 ⇒
+        // 换代 + 特征 startRun(下一块 t0))。本分支不喂特征;若把 expectedNext_ 推到整块尾,下一块
+        // 不再 startRun,特征 hop 记账会比时间线少掉这几段的长度。
+        float peak = 0.0f;
+        for (int off = 0; off < numIn; off += seg)
         {
-            writeTailFromZero(block.audio, capInterleaved_.data(), n, t0);
+            const int m = std::min(seg, numIn - off);
+            captureFrames(src, srcCh, off, capInterleaved_.data(), m);
+            peak = std::max(peak, peakAbs(capInterleaved_.data(), m * srcCh));
+            if (!haveT0)
+            {
+                continue; // 无时间线:只量电平,不写环
+            }
+            const int64_t ts = t0 + off;
+            if (ts <= 0 && ts + m > 0)
+            {
+                writeTailFromZero(block.audio, capInterleaved_.data(), m, ts);
+            }
+            else if (ts > 0)
+            {
+                scvb::AudioRing::write(block.audio, ts, capInterleaved_.data(), m);
+            }
         }
         // 无/负时间线:输出走当前档(步骤 6)。
-        float peak = 0.0f;
-        for (int i = 0; i < n * srcCh; ++i)
-        {
-            peak = std::max(peak, std::abs(capInterleaved_[static_cast<std::size_t>(i)]));
-        }
         meter_.store(peak, std::memory_order_relaxed);
         const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
         rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
@@ -241,9 +280,15 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     expectedNext_ = t0 + nRender;
 
     // 4) 写音频环:时间线寻址,frame index = pos & (ring_frames-1);stereo interleaved LR。
-    if (n > 0)
+    //    [SL-523] 按段写整块:第 k 段写 [t0 + off, t0 + off + m)。每段 write 都把 write_head 发布到
+    //    段尾(单调推进,整块写完 = t0 + numIn,与上面 expectedNext_ 同一个数);段间连续,不换代。
+    float peak = 0.0f;
+    for (int off = 0; off < numIn; off += seg)
     {
-        scvb::AudioRing::write(block.audio, t0, capInterleaved_.data(), n);
+        const int m = std::min(seg, numIn - off);
+        captureFrames(src, srcCh, off, capInterleaved_.data(), m);
+        scvb::AudioRing::write(block.audio, t0 + off, capInterleaved_.data(), m);
+        peak = std::max(peak, peakAbs(capInterleaved_.data(), m * srcCh));
     }
 
     // 5) 特征提取(ADR-007:采集开才写特征段;K 加权与 hop 累加在播放中恒跑)。
@@ -256,24 +301,16 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
             armed); // 经块视图 slot 快照(第3轮红旗) // 经块视图 channel + registry 租约(红旗#2/重要#3)
         planarPtrs_[0] = src[0];
         planarPtrs_[1] = (srcCh >= 2) ? src[1] : nullptr;
-        if (n > 0)
-        {
-            if (n > 0)
-            {
-                session_.featRing().processBlock(planarPtrs_.data(), n);
-            }
-        }
+        // [SL-523] 喂整块:hop 记账按喂进去的样本数推进,而时间线按整块推进(expectedNext_ = t0 + numIn)。
+        // 只喂前 captureSamples 个的话,超长块之后每块少记 (numIn - captureSamples) 个样本,帧被记到
+        // 越来越早的 hop 号上。FeatRing::processBlock 内部已按 prepare 的 maxBlockSamples 分段喂提取器。
+        session_.featRing().processBlock(planarPtrs_.data(), numIn);
     }
     else
     {
         session_.setCapturing(block.registrySlot, false);
     }
 
-    float peak = 0.0f;
-    for (int i = 0; i < n * srcCh; ++i)
-    {
-        peak = std::max(peak, std::abs(capInterleaved_[static_cast<std::size_t>(i)]));
-    }
     meter_.store(peak, std::memory_order_relaxed);
 
     // 6) 输出级仲裁(ADR-002 v1/J12+J32):读 C18 模式字经 RampSwitcher 渲染。
