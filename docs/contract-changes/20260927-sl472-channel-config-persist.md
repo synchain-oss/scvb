@@ -1,6 +1,6 @@
 # 契约变更说明 —— 20260927-sl472-channel-config-persist
 
-> **状态:待批(随实现 PR 挂 `status/frozen-contract`)。** 依据:用户 v5.6.18 真机实测 **J113**(「配对、
+> **状态:已批(用户 2026-09-27,J114:「版本号可以升」)。** 依据:用户 v5.6.18 真机实测 **J113**(「配对、
 > 优先级、命名全部没有保存下来,主唱锁定也没有保存下来」)+ **SL-472**(`channels[15]` 整节从未接过持久化)。
 > 契约 §一 本来就列了这八项,本次是**实现追上契约** + §三「挂账未落盘」一行订正。本文档与实现放在**同一个 PR** 里。
 
@@ -116,11 +116,12 @@
   它读高版本 blob 走 `decideInputStateAbi(...) == RejectNewer` 那一支:**拒载、不回写**(丢的只是「看哪一组 /
   缩放 / 语言」这三项视图偏好,碰不到段表与曲线)—— 与 [SL-416] 那次同一处境。
 - **参数面**:零影响。**桥面**:入参、值域、返回值零改动。**IPC 广播区布局**:零改动。
-- **顺带修掉的一处继承缺陷(行为变化,用户可见)**:桥面 `setChannelConfig` 判「配置有没有变」时,participate 比的是
+- **顺带修掉的一处继承缺陷(行为变化,目前没有 UI 可见面)**:桥面 `setChannelConfig` 判「配置有没有变」时,participate 比的是
   **存储值**而不是生效值。一条从没动过的轨(未显式设置 ⇒ 生效 = 参与)在轨道页上只取消勾选「参与自动声像」时,
   存储值 false → false 被判成「没变」、不 bump `configSeq`,而给 Input 的广播区按 `configSeq` 做变化门 ⇒
-  Input 页面上那一行只读摘要(`InputBridgeLogic.cpp` 的 `scvb.config.participate_in_auto_pan`,只喂显示)会一直
-  显示「参与」,直到这份工程里别的配置项的**值**再变一次。本卡把这段比对收进持锁的
+  Input 桥面 `scvb.config.participate_in_auto_pan`(`InputBridgeLogic.cpp`)那一位会一直停在「参与」,直到这份工程里
+  别的配置项的**值**再变一次。**今天没有 UI 消费这个字段**(`web/input/` 里只有两处注释提到它,
+  `renderRemoteSummary` 不渲染它),所以修前修后用户都看不到差别 —— 因此不进 CHANGELOG。本卡把这段比对收进持锁的
   `bridgeApplyChannelConfig` 时改为比 `participatesInAutoPan()` 前后值(HOST SL472 单字段格 + 删除式 D16)。
   Output 自己的分析与 `scvb.state` 回推不受这条影响(前者直接读生效值,后者 25Hz 全量比对,不看 `configSeq`)。
 
@@ -156,6 +157,7 @@
 
 ## 审批
 
-待批:随实现 PR 挂 `status/frozen-contract`,由用户明确批准后合入(06 §3.7)。依据:用户实测 J113 + SL-472;
+**已批**(用户 2026-09-27,J114,原话「版本号可以升」;统筹在 PR #290 转贴):批准本文档,即 state 容器 abi 5→6、
+CFGS 尾扩 channels 档,并知悉降级代价。以下为报批时的原文:随实现 PR 挂 `status/frozen-contract`,由用户明确批准后合入(06 §3.7)。依据:用户实测 J113 + SL-472;
 契约 §一 本来就列了这八项,本次是实现追上契约 + §三 挂账订正。「旧版读新工程整份拒载(原样回写 + 横幅)」
 与「不升 abi 的尾部追加」二选一,本 PR 按既有做法选了前者,一并报批。
