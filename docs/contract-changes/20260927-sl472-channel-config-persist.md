@@ -115,7 +115,13 @@
 - **Monitor 侧连带**:Monitor 也写同一容器、共用 `kCurrentAbi`,本 PR 之后它保存的 state 一并写 abi=6。
   它读高版本 blob 走 `decideInputStateAbi(...) == RejectNewer` 那一支:**拒载、不回写**(丢的只是「看哪一组 /
   缩放 / 语言」这三项视图偏好,碰不到段表与曲线)—— 与 [SL-416] 那次同一处境。
-- **参数面**:零影响。**桥面**:零改动。**IPC 广播区布局**:零改动。
+- **参数面**:零影响。**桥面**:入参、值域、返回值零改动。**IPC 广播区布局**:零改动。
+- **顺带修掉的一处继承缺陷(行为变化,用户可见)**:桥面 `setChannelConfig` 判「配置有没有变」时,participate 比的是
+  **存储值**而不是生效值。一条从没动过的轨(未显式设置 ⇒ 生效 = 参与)在轨道页上只取消勾选「参与自动声像」时,
+  存储值 false → false 被判成「没变」、不 bump `configSeq`,而给 Input 的广播区按 `configSeq` 做变化门 ⇒
+  Input 那一侧会一直把这条轨当作「参与」,直到这份工程里别的配置项再改一次。本卡把这段比对收进持锁的
+  `bridgeApplyChannelConfig` 时改为比 `participatesInAutoPan()` 前后值(HOST SL472 单字段格 + 删除式 D16)。
+  Output 自己的分析与 `scvb.state` 回推不受这条影响(前者直接读生效值,后者 25Hz 全量比对,不看 `configSeq`)。
 
 ## 判据与机检(每条都实跑,删除式见 PR 描述)
 
@@ -138,7 +144,8 @@
 - `src/output/OutputProcessor.{h,cpp}`(保存侧写七项 / 加载侧写回 + `++configSeq` + 回落计数的 DBG 行;
   持 `lifecycleMutex_` 的 `bridgeApplyChannelConfig` / `channelsSnapshot` 两个口 —— `label` 是 `juce::String`,
   本卡起它被宿主线程上的 get/setStateInformation 读写,消息线程侧的写与读必须同锁,否则是 use-after-free)
-- `src/output/OutputEditor.cpp`(`setChannelConfig` 阶段 2 改走 `bridgeApplyChannelConfig`,语义逐项不变;
+- `src/output/OutputEditor.cpp`(`setChannelConfig` 阶段 2 改走 `bridgeApplyChannelConfig`:比对、赋值、bump 逐项搬移,
+  **唯一有意的行为差是 participate 的变化判定**,见「兼容性影响」最后一条;
   `buildStateSubtree` 与建议表导出读 label 改走 `channelsSnapshot`)
 - `src/output/OutputUiState.h`(CFGS 长度纪律更新到五级 1912 字节)
 - `docs/STATE_SCHEMA.md`(abi 5→6、§一 七项已落盘 / source_channels 不落盘、§三 CFGS 行与挂账订正、尾长分级、迁移链五条)
