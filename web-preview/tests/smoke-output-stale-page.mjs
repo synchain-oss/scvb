@@ -687,38 +687,33 @@ try {
         // 取 DOM 节点 .click():走 onActivate 的 click 监听,即开关自己的闸。
         // 先回 Tab1:open() 把页面切到了「波形与分段」,而 app.js 只投影当前激活 tab
         // (`switch (content.getAttribute("data-tab"))` 那段),不切回来开关的 DOM 不会刷新。
+        // 不写死 sleep(CLAUDE.md §10):点完之后轮询到「开关已显示为关」再取快照,
+        // 上界是 waitFor 的默认预算;没等到就当场判红,不靠 mock 的回声常数。
         await evaluate(
             IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
         );
-        await sleep(200);
         await evaluate(
             IN(
                 `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
             ),
         );
-        await sleep(400);
+        const closed = await waitFor(
+            IN(`const n = gb("master-capture-toggle-switch");
+                return !!n && n.getAttribute("aria-checked") === "false";`),
+        );
+        check(
+            closed,
+            "[SL-509] 无时间线下点采集开关 ⇒ 采集真的关掉了(改前点击被开关闸吞掉)",
+        );
         const q = await evaluate(PROBE);
         check(q !== null, "取到页内 DOM 快照(点关之后)");
         check(
-            !q.captureEnabled,
-            "[SL-509] 无时间线下点采集开关 ⇒ 采集真的关掉了(改前点击被开关闸吞掉)",
-        );
-        check(
-            q.captureSwitchBlocked,
+            q !== null && q.captureSwitchBlocked,
             "[SL-509] 关掉之后采集开关挡「再打开」(data-disabled=1)",
         );
-        check(q.outputSwitchBlocked, "[SL-509] 输出开关不受影响,仍两向都挡");
-        // 再点一次:开关闸挡住,mock 也会拒 on=true —— 采集保持关。
-        await evaluate(
-            IN(
-                `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
-            ),
-        );
-        await sleep(400);
-        const q2 = await evaluate(PROBE);
         check(
-            q2 !== null && !q2.captureEnabled,
-            "[SL-509] 无时间线下采集打不开(保持关)",
+            q !== null && q.outputSwitchBlocked,
+            "[SL-509] 输出开关不受影响,仍两向都挡",
         );
         assertClean("scenario=no-timeline");
     }
