@@ -135,7 +135,8 @@ void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, 
 void ScvbInputAudioProcessor::writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n,
                                                 int64_t t0)
 {
-    // 跨零点块(t0<0 且 t0+n>0):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
+    // 跨零点段(t0<=0 且 t0+n>0;[SL-523] 起传进来的是一段:n = 段长,t0 = 段首,t0 == 0 时
+    // skip = 0 整段都写):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
     const int skip = static_cast<int>(-t0);
     if (skip >= n)
     {
@@ -174,7 +175,12 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     const int nRender = plan.renderSamples;
     if (seg <= 0)
     {
-        return; // 分段循环按 seg 步进,seg <= 0 会死循环;与 Output 的 `preparedMaxBlock_ <= 0` 早退同口径
+        // 分段循环按 seg 步进,seg <= 0 会死循环;与 Output 的 `preparedMaxBlock_ <= 0` 早退同口径。
+        // 不可达(prepareToPlay 把 preparedMaxBlock_ 兜底成 > 0、numIn > 0 已在上面判过)。修前这条
+        // 退化路径仍往下走完(换代/时间线记账、特征、渲染);这里整块跳过,尤其是在下面
+        // rampSwitcher_.render 之前返回 ⇒ 宿主缓冲原样透出(静音档下也不静音)。守卫没挪到渲染之后:
+        // 不可达 ⇒ 没有夹具能造出它,挪了也钉不住,只是在实时路径上多一处无测试的改动。
+        return;
     }
 
     const int srcCh = srcChannels_;
