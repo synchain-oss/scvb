@@ -345,6 +345,8 @@ public:
         std::optional<bool> participate; // 有值 ⇒ 显式设置(participateAutoPanSet = true)
         std::optional<int> pairId;
     };
+    // 返回值 = **生效配置有没有真的变**(变了才 ++configSeq);index 越界同样返回 false、且什么都不写 ——
+    // 所以 false 不等于「写入成功但值相同」,别拿它判写入成败(桥面入口在调用前已校验 ch 1..15)。
     bool bridgeApplyChannelConfig(int channelIndex, const ChannelConfigPatch& patch); // index = ch-1
     std::array<OutputRuntimeState::Channel, scvb::engine::kNumTracks> channelsSnapshot();
 

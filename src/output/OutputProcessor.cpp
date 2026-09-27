@@ -2711,9 +2711,13 @@ bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const 
     }
     if (patch.participate)
     {
-        changed |= *patch.participate != channel.participateAutoPan;
+        // [SL-472 R2] 比**生效值**(participatesInAutoPan()),不比存储值:从没动过的轨
+        // (Set=false、存储 false、生效 true)只下发 false 时,存储值没变而生效值 true→false ——
+        // 比存储值会判成「没变」、不 bump configSeq,广播区就停在「参与」上(此前桥面就地版本的继承缺陷)。
+        const bool before = channel.participatesInAutoPan();
         channel.participateAutoPan = *patch.participate;
         channel.participateAutoPanSet = true;
+        changed |= before != channel.participatesInAutoPan();
     }
     if (patch.pairId)
     {

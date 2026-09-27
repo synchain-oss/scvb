@@ -11646,9 +11646,30 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
             CHECK(r.out.bridgeApplyChannelConfig(5, p5));
             Patch p6;
             p6.participate = true; // 显式参与:与「未设置」存成两个值
-            CHECK(r.out.bridgeApplyChannelConfig(6, p6));
+            // [SL-472 R2] 生效值没变(未设置本来就是参与)⇒ 不算变化、不 bump;但「显式设置」位已落下,
+            // 重开后 c2[6].participateAutoPanSet 那一行钉它确实被存了下来。
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(6, p6));
+            CHECK(r.out.runtime().channels[6].participateAutoPanSet);
         }
         CHECK_FALSE(r.out.bridgeApplyChannelConfig(15, Patch{})); // 越界 index 不写
+        {
+            // [SL-472 R2] participate 按**生效值**判变化:从没动过的轨 8(生效 = 参与)只下发 false,
+            // 必须算变化并 bump —— 按存储值判会得到「false == false 没变」,广播区停在「参与」。
+            // 单字段 patch,不让别的字段的变化把 bump 带出来。
+            CHECK_FALSE(
+                r.out.runtime().channels[8].participateAutoPanSet); // 前提:轨 9 从没动过(CHECK:红了也让后面的格照跑)
+            const std::uint32_t seqBefore = r.out.runtime().configSeq;
+            Patch p8;
+            p8.participate = false;
+            CHECK(r.out.bridgeApplyChannelConfig(8, p8));
+            CHECK(r.out.runtime().configSeq == seqBefore + 1u);
+            // 反方向:显式设回 true(生效值 false → true)同样算变化。
+            Patch p8b;
+            p8b.participate = true;
+            CHECK(r.out.bridgeApplyChannelConfig(8, p8b));
+            // 再下发一次 true:生效值不变 ⇒ 不算变化。
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(8, p8b));
+        }
         Rig::pumpMessages(300);
         // 持锁口的 bump 真的把改动推到了广播区(存盘前,同一实例)。
         CHECK(juce::String::fromUTF8(r.in.bridgeTickSnapshot().broadcast.labels[kIdx]) == kLabelTest);

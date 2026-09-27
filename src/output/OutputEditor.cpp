@@ -1610,7 +1610,8 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
         return;
     }
 
-    const auto& cur = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+    // [SL-472 R2] 不再在这里不持锁地引用 runtime().channels:各分支入口都是 `hasProperty`,
+    // `getProperty` 的缺省值永远取不到,原来传的 `cur.*` 是死引用(行为零变化)。
 
     // 阶段1:先对全部 patch 字段做完整校验到局部临时量,绝不触碰 channel(PR#55 第4轮缺陷2)。
     bool hasEnabled = false;
@@ -1641,7 +1642,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("enabled"))
     {
-        if (!strictBool(patch.getProperty("enabled", cur.enabled), enabled))
+        if (!strictBool(patch.getProperty("enabled", juce::var()), enabled))
         {
             c(badArgResp());
             return;
@@ -1655,12 +1656,12 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("priority"))
     {
-        priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", cur.priority)));
+        priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", juce::var())));
         hasPriority = true;
     }
     if (patch.hasProperty("lead_lock"))
     {
-        if (!strictBool(patch.getProperty("lead_lock", cur.leadLock), leadLock))
+        if (!strictBool(patch.getProperty("lead_lock", juce::var()), leadLock))
         {
             c(badArgResp());
             return;
@@ -1669,7 +1670,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("lead_vol_exempt"))
     {
-        if (!strictBool(patch.getProperty("lead_vol_exempt", cur.leadVolExempt), leadVolExempt))
+        if (!strictBool(patch.getProperty("lead_vol_exempt", juce::var()), leadVolExempt))
         {
             c(badArgResp());
             return;
@@ -1687,7 +1688,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("pair_id"))
     {
-        pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", cur.pairId)));
+        pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", juce::var())));
         hasPairId = true;
     }
 
