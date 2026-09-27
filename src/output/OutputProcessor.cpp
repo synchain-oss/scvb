@@ -1459,9 +1459,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // `runtime_.channels` 这一份内存真身:J113 用户实测「命名 / 配对 / 优先级 / 主唱锁定存盘重开全回默认」。
     // `source_channels` 不写(每拍由 refreshSourceChannels 从音频环段头重测)。participate 按三态写,
     // 「用户从没动过」与「用户选了参与」分开存(理由见 OutputStateCodec.h 那组常量的注释)。
-    // 锁纪律:本函数持 lifecycleMutex_ 读;写方是消息线程上的桥面 setChannelConfig(不持锁,与
-    // segmentation/vad 等 runtime_ 字段同一现状 —— 见 OutputProcessor.h `bridgeSetGuideSeen` 那段注释:
-    // runtime_ 其余字段是消息线程独占)与本文件的 setStateInformation(持同一把锁)。
+    // 锁纪律([SL-472 R1]):本函数持 lifecycleMutex_ 读。`label` 是 juce::String,跨线程竞争是
+    // use-after-free 而不是脏读,所以**所有**读写方都持同一把锁:setStateInformation(本文件)、桥面写入
+    // 走 `bridgeApplyChannelConfig`、25Hz 读取走 `channelsSnapshot`(理由见 OutputProcessor.h 那两个口的注释)。
     static_assert(scvb::state::kOutputChannelCount == static_cast<std::size_t>(scvb::engine::kNumTracks),
                   "CFGS channels 档的轨数必须与 runtime_.channels 一致");
     for (std::size_t t = 0; t < scvb::state::kOutputChannelCount; ++t)
@@ -2140,7 +2140,9 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         dst.leadVolExempt = src.leadVolExempt;
         dst.pairId = static_cast<int>(src.pairId);
     }
-    // 走既有的通道配置推送路径,不另造:桥面 setChannelConfig 改完也只做这一件事(`++configSeq`)。
+    // 走既有的通道配置推送路径,不另造:桥面改完配置也只做这一件事(`++configSeq`)。
+    // 与桥面「值变化才 bump」不同,这里**无条件** bump,是有意的:载入是整份替换,逐项比对省下的只是
+    // 一次广播区重写,而漏 bump 的代价是 Input 侧停在上一份工程的配置上。
     //   · 给 Input 的广播区:下一拍 timerCallback → publishConfigBroadcast 按 configSeq 变化门重写;
     //   · 给本编辑器的 scvb.state:25Hz emitState 每拍按全量 JSON 比对下发(channels 在同一棵子树里),
     //     这一行让 `config_seq` 也跟着变,web 侧据它判「配置换了」。
@@ -2671,6 +2673,64 @@ void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
     // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
     // [SL-234] 百分比换算收拢进 clampUiScalePercent,与加载期共用同一份边界。
     uiScale_ = scvb::bridge::clampUiScalePercent(percent);
+}
+
+bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const ChannelConfigPatch& patch)
+{
+    if (channelIndex < 0 || channelIndex >= scvb::engine::kNumTracks)
+    {
+        return false;
+    }
+    const juce::ScopedLock lock(lifecycleMutex_); // [SL-472 R1] 与 get/setStateInformation 串行(label 是 juce::String)
+    auto& channel = runtime_.channels[static_cast<std::size_t>(channelIndex)];
+    bool changed = false;
+    if (patch.enabled)
+    {
+        changed |= *patch.enabled != channel.enabled;
+        channel.enabled = *patch.enabled;
+    }
+    if (patch.label)
+    {
+        changed |= *patch.label != channel.label;
+        channel.label = *patch.label;
+    }
+    if (patch.priority)
+    {
+        changed |= *patch.priority != channel.priority;
+        channel.priority = *patch.priority;
+    }
+    if (patch.leadLock)
+    {
+        changed |= *patch.leadLock != channel.leadLock;
+        channel.leadLock = *patch.leadLock;
+    }
+    if (patch.leadVolExempt)
+    {
+        changed |= *patch.leadVolExempt != channel.leadVolExempt;
+        channel.leadVolExempt = *patch.leadVolExempt;
+    }
+    if (patch.participate)
+    {
+        changed |= *patch.participate != channel.participateAutoPan;
+        channel.participateAutoPan = *patch.participate;
+        channel.participateAutoPanSet = true;
+    }
+    if (patch.pairId)
+    {
+        changed |= *patch.pairId != channel.pairId;
+        channel.pairId = *patch.pairId;
+    }
+    if (changed)
+    {
+        ++runtime_.configSeq; // 广播区整体版本号,值变化才 bump(PR#55 缺陷4)
+    }
+    return changed;
+}
+
+std::array<OutputRuntimeState::Channel, scvb::engine::kNumTracks> ScvbOutputAudioProcessor::channelsSnapshot()
+{
+    const juce::ScopedLock lock(lifecycleMutex_); // [SL-472 R1] 见头文件:label 跨线程
+    return runtime_.channels;
 }
 
 void ScvbOutputAudioProcessor::bridgeSetGuideSeen(bool seen)

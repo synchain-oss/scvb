@@ -33,7 +33,7 @@
 //     一律整块拒载([SL-279 复审] 起的纪律,SL-411 R8 把措辞收敛成「档内不许半截」);
 //   · **≥ 1912 之后**多出来的字节走 unknownTail 保留回写、并不拒载(任意长度都收)。
 // 真源 = `src/core/state/OutputStateCodec.h` 头注与 `tests/core/test_output_session.cpp` 的
-// 长度断言(`24u + 2u + 1912u` 等);这里只记「它已经不是 8 字节那版口径」这件事,别再按 8 字节推理。
+// 长度断言(`24u + 2u + 52u + 1860u` 等);这里只记「它已经不是 8 字节那版口径」这件事,别再按 8 字节推理。
 //
 // 背景(与字段该放哪一节无关):跨 abi 是**整块**拒载 —— `loadState` 的 abi 判读排在
 // `decodeContainer` 之前就 return,pre-J69 构建(kCurrentAbi=1)读到 abi=2 的工程走 RejectedNewer,

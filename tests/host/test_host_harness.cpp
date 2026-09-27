@@ -11615,25 +11615,45 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
         }
         REQUIRE(r.out.captureStale(kTestChannel)); // 前提:SL-485 那一半在存盘前是亮的
 
-        // 用户在轨道页上改的七项(桥面 setChannelConfig 的等效动作:改 runtime_ + ++configSeq,同 L-4a)。
+        // 用户在轨道页上改的七项 —— 走桥面 setChannelConfig 阶段 2 用的同一个持锁口
+        // `bridgeApplyChannelConfig`([SL-472 R1]),顺带钉住它「值变化才 ++configSeq、返回是否变化」。
         // 每项至少一条轨取非默认值;kTestChannel 那条多项同时非默认,好在 Input 侧广播区里逐项看得到。
-        auto& ch = r.out.runtime().channels;
-        ch[0].label = kLabelVox;
-        ch[0].leadLock = true;
-        ch[0].priority = 10;
-        ch[kIdx].label = kLabelTest;
-        ch[kIdx].priority = 9;
-        ch[kIdx].leadLock = true;
-        ch[kIdx].leadVolExempt = true;
-        ch[kIdx].pairId = 4;
-        ch[kIdx].participateAutoPanSet = true;
-        ch[kIdx].participateAutoPan = false; // 显式不参与(默认是「未设置 ⇒ 参与」)
-        ch[5].enabled = false;
-        ch[5].pairId = 4;
-        ch[6].participateAutoPanSet = true;
-        ch[6].participateAutoPan = true; // 显式参与:与「未设置」存成两个值
-        ++r.out.runtime().configSeq;
-        Rig::pumpMessages(100);
+        using Patch = ScvbOutputAudioProcessor::ChannelConfigPatch;
+        {
+            Patch p0;
+            p0.label = kLabelVox;
+            p0.leadLock = true;
+            p0.priority = 10;
+            CHECK(r.out.bridgeApplyChannelConfig(0, p0));
+            const std::uint32_t seqAfter = r.out.runtime().configSeq;
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(0, p0)); // 同值再下发:不算变化、不 bump
+            CHECK(r.out.runtime().configSeq == seqAfter);
+        }
+        {
+            Patch pt;
+            pt.label = kLabelTest;
+            pt.priority = 9;
+            pt.leadLock = true;
+            pt.leadVolExempt = true;
+            pt.pairId = 4;
+            pt.participate = false; // 显式不参与(默认是「未设置 ⇒ 参与」)
+            CHECK(r.out.bridgeApplyChannelConfig(static_cast<int>(kIdx), pt));
+        }
+        {
+            Patch p5;
+            p5.enabled = false;
+            p5.pairId = 4;
+            CHECK(r.out.bridgeApplyChannelConfig(5, p5));
+            Patch p6;
+            p6.participate = true; // 显式参与:与「未设置」存成两个值
+            CHECK(r.out.bridgeApplyChannelConfig(6, p6));
+        }
+        CHECK_FALSE(r.out.bridgeApplyChannelConfig(15, Patch{})); // 越界 index 不写
+        Rig::pumpMessages(300);
+        // 持锁口的 bump 真的把改动推到了广播区(存盘前,同一实例)。
+        CHECK(juce::String::fromUTF8(r.in.bridgeTickSnapshot().broadcast.labels[kIdx]) == kLabelTest);
+        // 读口:channelsSnapshot 与 runtime_ 同值。
+        CHECK(r.out.channelsSnapshot()[kIdx].label == kLabelTest);
 
         r.out.getStateInformation(blob);
         REQUIRE(blob.getSize() > 0);

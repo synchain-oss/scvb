@@ -36,7 +36,7 @@ analysis:
     # 两枚「需重新分析」徽标分别挂在两个控件旁,合成一个布尔会让它们同亮同灭。
 channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10→15;[SL-472] 除 source_channels 外七项**自本版起随工程落盘**(此前只在内存里,重开全回默认 —— J113 实测)
   enabled: bool
-  label: string                # UI 显示名;落盘上限 24 码点 / 96 字节 UTF-8(与桥面 setChannelConfig 的 24 字符上限同口径)
+  label: string                # UI 显示名;落盘上限 24 码点 / 96 字节 UTF-8(与桥面 setChannelConfig 的 `substring(0, 24)` 同口径:JUCE String 按码点计数)
   source_channels: 1|2         # [J57] 自动检测:mono/stereo 源;**不落盘**(运行期每拍从音频环段头重测,存了也会被下一拍覆盖)
   participate_in_auto_pan: bool # [J83] 未显式设置一律 true(取代 J60 的按源声道推导);落盘保三态(false / true / 未显式设置)
   priority: 0..10              # 宽度优先级,高→角度大

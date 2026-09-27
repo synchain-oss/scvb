@@ -10,6 +10,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
+#include <optional>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -324,6 +325,28 @@ public:
         juce::String appliedCenterSlotPolicy;
     };
     AnalysisConfigPair analysisConfigWithApplied();
+
+    // [SL-472 R1] runtime_.channels 的**跨线程**读写口。本卡起 `getStateInformation` / `setStateInformation`
+    // (宿主可能在非消息线程调)持 lifecycleMutex_ 读写整节,而其中 `label` 是 `juce::String` ——
+    // 与 POD 字段「最坏读到旧值」不同档,引用计数缓冲区的赋值与拷贝撞上是 use-after-free。
+    // 所以消息线程这两处也必须持同一把锁,**别再直接读写 runtime().channels**:
+    //   · 桥面 setChannelConfig 的写入 → `bridgeApplyChannelConfig`(持锁应用,值变化才 ++configSeq,
+    //     返回是否变化);
+    //   · 25Hz buildStateSubtree 的读取 → `channelsSnapshot`(持锁拷贝整节;同一 tick 里
+    //     `crvsSnapshot` / `analysisConfigWithApplied` 已经各取一次这把锁,多一次同量级)。
+    // 本类内部持锁的读点(timerCallback / publishConfigBroadcast / startAnalysis)不经这两个口。
+    struct ChannelConfigPatch
+    {
+        std::optional<bool> enabled;
+        std::optional<juce::String> label;
+        std::optional<int> priority;
+        std::optional<bool> leadLock;
+        std::optional<bool> leadVolExempt;
+        std::optional<bool> participate; // 有值 ⇒ 显式设置(participateAutoPanSet = true)
+        std::optional<int> pairId;
+    };
+    bool bridgeApplyChannelConfig(int channelIndex, const ChannelConfigPatch& patch); // index = ch-1
+    std::array<OutputRuntimeState::Channel, scvb::engine::kNumTracks> channelsSnapshot();
 
     // [SL-284] 最近一次**落地**的分析里最坏的平衡回退级(§6.4 回退链):1..4;从未落地过 = 0。
     //

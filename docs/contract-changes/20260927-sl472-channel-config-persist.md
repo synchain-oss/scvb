@@ -135,7 +135,11 @@
   七个按字段的回落计数器、严格 UTF-8 校验与编码侧截断、长度回退第五级、头注布局)
 - `src/core/state/StateCodec.h`(`kCurrentAbi` 5→6;容器头注)
 - `src/core/state/StateMigration.{h,cpp}`(`migrate_5_to_6` no-op;`kMigrators` 五项)
-- `src/output/OutputProcessor.{h,cpp}`(保存侧写七项 / 加载侧写回 + `++configSeq` + 回落计数的 DBG 行)
+- `src/output/OutputProcessor.{h,cpp}`(保存侧写七项 / 加载侧写回 + `++configSeq` + 回落计数的 DBG 行;
+  持 `lifecycleMutex_` 的 `bridgeApplyChannelConfig` / `channelsSnapshot` 两个口 —— `label` 是 `juce::String`,
+  本卡起它被宿主线程上的 get/setStateInformation 读写,消息线程侧的写与读必须同锁,否则是 use-after-free)
+- `src/output/OutputEditor.cpp`(`setChannelConfig` 阶段 2 改走 `bridgeApplyChannelConfig`,语义逐项不变;
+  `buildStateSubtree` 与建议表导出读 label 改走 `channelsSnapshot`)
 - `src/output/OutputUiState.h`(CFGS 长度纪律更新到五级 1912 字节)
 - `docs/STATE_SCHEMA.md`(abi 5→6、§一 七项已落盘 / source_channels 不落盘、§三 CFGS 行与挂账订正、尾长分级、迁移链五条)
 - `CHANGELOG.md`(预写块一条)

@@ -227,7 +227,7 @@ TEST_CASE("STATE-ABI-1 abi>当前 拒载 + preservedOriginal 原样保留", "[st
 {
     std::vector<std::uint8_t> enc;
     REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), enc));
-    enc[4] = static_cast<std::uint8_t>(scvb::state::kCurrentAbi + 1); // abi 在 offset 4(当前 4 → 5)
+    enc[4] = static_cast<std::uint8_t>(scvb::state::kCurrentAbi + 1); // abi 在 offset 4(相对量:当前 kCurrentAbi → +1)
     StateChunks out;
     StateLoadResult res = scvb::state::loadState(enc.data(), enc.size(), out);
     REQUIRE(res.status == StateLoadStatus::RejectedNewer);
@@ -407,7 +407,7 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1..abi5 迁移 + abi6.bin 格式锁", 
 
         StateChunks chunks;
         StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
-        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=1 → 4(三级 no-op 链)
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=1 → kCurrentAbi(整条 no-op 链)
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
         const Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);

@@ -1351,7 +1351,7 @@ TEST_CASE("Output state 容器:旧版读新 CFGS(高 abi)→ RejectedNewer + 原
 {
     // 复评重要②:旧版(abi=1)读到含 loudness_mode/center_slot_policy 的新(abi=2)blob → RejectedNewer
     // + preservedOriginal 原样回写,绝不把用户 CFGS 覆盖成默认(CLAUDE.md §7.3 / STATE_SCHEMA)。
-    // 模拟「旧版读新」:当前 kCurrentAbi=4,把容器 abi 抬到 kCurrentAbi+1 代表未来/更高版本。
+    // 模拟「旧版读新」:把容器 abi 抬到 kCurrentAbi+1(相对量)代表未来/更高版本。
     scvb::state::OutputState s;
     s.groupId = 5;
     s.loudnessMode = "peak_dbfs";
