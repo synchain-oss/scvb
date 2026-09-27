@@ -132,9 +132,11 @@ private:
     // 每拍排水上限:稳态 1 条/秒/轨,25Hz 下留足余量(宿主卡顿后一次补投也够)。
     static constexpr std::uint32_t kFpDrainMax = 16;
 
-    // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。
-    static void captureFrames(const float* const* src, int srcCh, float* dst, int n);
-    // 跨零点块:写 t0>=0 尾段(R3,01 §5.1 步骤 2)。b = 本块 acquireBlock() 的音频环绑定快照。
+    // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。取 src 各声道的 [offset, offset + n),
+    // n ≤ capInterleaved_ 的每声道定长(preparedMaxBlock_)。[SL-523] offset = 分段写环的段首。
+    static void captureFrames(const float* const* src, int srcCh, int offset, float* dst, int n);
+    // 跨零点段(段首 t0<=0 < 段尾 t0+n;[SL-523] n = 段长、t0 = 段首):写时间线 >= 0 的尾段(R3,
+    // 01 §5.1 步骤 2)。b = 本块 acquireBlock() 的音频环绑定快照。
     void writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n, int64_t t0);
 
     juce::CriticalSection lifecycleMutex_; // 串行化 prepareToPlay/release/setState/claim/心跳([M] 与宿主回调互斥)

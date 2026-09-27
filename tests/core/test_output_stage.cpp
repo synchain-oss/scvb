@@ -139,6 +139,7 @@ TEST_CASE("5s 滞回只作用于 静音→直通 方向", "[input][outputstage]"
 
 TEST_CASE("planBlock:采集夹取、renderSamples 全块(PR#51 重要#2)", "[input][outputstage]")
 {
+    // [SL-523] 起 captureSamples 读作「每段长度上限」:processBlock 按它分段把整块写环,不再只写前这么多。
     using scvb::input::planBlock;
     REQUIRE(planBlock(512, 512).captureSamples == 512);
     REQUIRE(planBlock(512, 512).renderSamples == 512);

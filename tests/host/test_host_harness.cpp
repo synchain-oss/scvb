@@ -10251,10 +10251,9 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
 // Output 按 preparedMaxBlock_ 分段把整块处理完。修前 `n = jmin(numSamples, preparedMaxBlock_)`
 // 后只处理前 n 个样本,buffer 是就地处理 ⇒ 尾段原样留着宿主传入的干信号。
 //
-// ⚠ 本卡只修 Output 侧;导出断音要连 Input 采集一起分段,见 SL-523。Input 侧写环按 `planBlock`
-// 的 captureSamples 夹取(采集/写环只写前 preparedMaxBlock 个样本),超长块的尾段在环里是洞,
-// Output 读不到。所以这里让 Input 按正常块长分段写同一段时间线,只把超长块喂给 Output,
-// 隔离出 Output 的行为。
+// 本用例只钉 Output 侧:让 Input 按正常块长分段写同一段时间线,只把超长块喂给 Output,隔离出
+// Output 的行为。Input 采集那一半(超长块整块分段写环)由 SL-523 修,Input 与 Output 都喂超长块
+// 的用例在下面「HOST SL-523」那几条。
 //
 // 判据形态照 SL-210:干信号用 L=+0.9 / R=-0.9 反相记号(混音是同一条正弦的 L≈R,不可能凑出
 // 这一对),尾段只要有一个样本没被替换就会原样露出它;另断尾段真的带着混音(不是被清成 0)。
@@ -10273,7 +10272,7 @@ TEST_CASE("HOST SL-487:宿主块长超过 prepare 预算,整块含尾段都被�
 
     const auto feedBig = [&](bool bypassed) {
         const std::int64_t t0 = r.ph.timeSamples;
-        // Input 按正常块长把 [t0, t0+kBig) 写进环(见头注:Input 侧超长块不在本卡范围)。
+        // Input 按正常块长把 [t0, t0+kBig) 写进环(见头注:这里只隔离 Output 侧)。
         for (int off = 0; off < kBig; off += kBlock)
         {
             const int len = std::min(kBlock, kBig - off);
@@ -10333,6 +10332,172 @@ TEST_CASE("HOST SL-487:宿主块长超过 prepare 预算,整块含尾段都被�
     feedBig(/*bypassed=*/true);
     CHECK(countDry() == 0);
     CHECK(tailPeak() > 0.05f);
+}
+
+// ===========================================================================
+// [SL-523] Input 采集半边:宿主块长超过 prepare 预算时,Input 按 preparedMaxBlock_ 分段把整块
+// 写进环、把整块喂给特征提取(SL-487 修的是 Output 那一半)。修前 Input 只写每块前
+// preparedMaxBlock 个样本:环里尾段是洞,Output 尾段读环失败按「不含该轨」混音 ⇒ 尾段静音;
+// 特征 hop 记账每块少记尾段那么长,帧落到越来越早的 hop 号上。
+//
+// 判据形态:Output 母线在这台机器上只有本轨一条正弦(0.5 幅、440Hz,相位按时间线绝对位置算)。
+// 尾段按一个周期(109 样本)开窗,每窗与「本该在那个时间线位置上的正弦」求归一化相关:
+//   · 每窗都要有能量 —— 环里有洞 ⇒ 那几窗全零 ⇒ 红;
+//   · 每窗相关 > 0.99 —— 写对了长度但写错了位置(段首偏移没带上 ⇒ 每段都是块首那一段的相位)
+//     ⇒ 相位差 2π·440·off/48000,off = 512/1024/1536 时相关约 -0.35/-0.76/0.87 ⇒ 红。
+//   按周期开窗是为了扛 busXfade 的淡入包络(跨零点那两格要过一次交叉):整段求相关会被包络拉低,
+//   单个周期内包络近似常数。
+// 读「另一条仍绿」要靠 CHECK:REQUIRE 一红就掐断 TEST_CASE,「仍绿」与「压根没跑」同形。
+// ===========================================================================
+namespace
+{
+constexpr int kSl523Big = kBlock * 4 + 100; // 非整数倍:最后一段不满,段界算错也会露出来
+constexpr int kSl523Win = 109; // ≈ 一个 440Hz 周期 @48k
+
+struct WindowCorr
+{
+    int windows = 0; // 窗总数
+    int energetic = 0; // 有能量的窗(RMS > 1e-4)
+    double worst = 2.0; // 有能量窗里的最小相关(没有有能量窗时保持 2.0,由 energetic 判红)
+};
+
+// x[from, to) 按 kSl523Win 开窗;x[i] 对应时间线位置 tStart + i。
+WindowCorr windowCorr(const float* x, int from, int to, std::int64_t tStart)
+{
+    WindowCorr r;
+    for (int w = from; w + kSl523Win <= to; w += kSl523Win)
+    {
+        ++r.windows;
+        double xy = 0.0;
+        double xx = 0.0;
+        double yy = 0.0;
+        for (int i = w; i < w + kSl523Win; ++i)
+        {
+            const double y =
+                std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 * static_cast<double>(tStart + i) / kSr);
+            xy += static_cast<double>(x[i]) * y;
+            xx += static_cast<double>(x[i]) * static_cast<double>(x[i]);
+            yy += y * y;
+        }
+        if (xx <= 1e-8 * kSl523Win)
+        {
+            continue;
+        }
+        ++r.energetic;
+        r.worst = std::min(r.worst, xy / std::sqrt(xx * yy));
+    }
+    return r;
+}
+
+// 宿主推一块超长块:Input 与 Output 都收 kSl523Big 个样本(Input 先,常见宿主顺序)。
+// 返回这一块的 t0;outBig 留着 Output 的输出。播放中推进时间线。
+std::int64_t feedBigBoth(Rig& r, juce::AudioBuffer<float>& inBig, juce::AudioBuffer<float>& outBig)
+{
+    const std::int64_t t0 = r.ph.timeSamples;
+    Rig::fillSine(inBig, 0.5f, t0);
+    r.in.processBlock(inBig, r.midi);
+    outBig.clear(); // 干信号 = 0:尾段没被混音盖到 ⇒ 全零窗,由 energetic 判红
+    r.out.processBlock(outBig, r.midi);
+    if (r.ph.playing)
+    {
+        r.ph.timeSamples += kSl523Big;
+    }
+    return t0;
+}
+} // namespace
+
+TEST_CASE("HOST SL-523:Input 与 Output 都收超长块,尾段按时间线位置带着该轨信号", "[host][sl523]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(40, 0.5f); // 跑稳:注入在、busXfade 稳在替换态
+
+    juce::AudioBuffer<float> inBig{2, kSl523Big};
+    juce::AudioBuffer<float> outBig{2, kSl523Big};
+    std::int64_t t0 = 0;
+    // 连推几块超长块(中间泵消息保心跳),读最后一块:前几块让 busXfade 与 Output 的有效代走稳。
+    for (int b = 0; b < 6; ++b)
+    {
+        t0 = feedBigBoth(r, inBig, outBig);
+        Rig::pumpMessages(10);
+    }
+
+    // 首段:修前也有数据(Input 本来就写前 preparedMaxBlock 个样本),是本格的对照。
+    const WindowCorr head = windowCorr(outBig.getReadPointer(0), 0, kBlock, t0);
+    CHECK(head.energetic == head.windows);
+    CHECK(head.worst > 0.99);
+
+    // 尾段 [kBlock, kSl523Big):修前全零(环里是洞)。
+    const WindowCorr tail = windowCorr(outBig.getReadPointer(0), kBlock, kSl523Big, t0);
+    REQUIRE(tail.windows >= 14); // 前提:窗数算对了(1636 / 109 = 15)
+    CHECK(tail.energetic == tail.windows);
+    CHECK(tail.worst > 0.99);
+}
+
+TEST_CASE("HOST SL-523:跨零点的超长块,0 之后的每一段都写进环", "[host][sl523]")
+{
+    // 两格,各钉负时间线分支的一处:
+    //   · t0 = -100:跨零点那一段是第 0 段(段首 < 0),它之后的段走「只补写环」那一支;
+    //   · t0 = -kBlock:第 1 段段首恰好 == 0,必须走 writeTailFromZero 换代 —— 当成普通段写的话
+    //     不换代,Output 的有效代起点停在跳变前(远大于 0),[0, …) 整段读不出来。
+    // Output 侧跨零点的块前一段直通(负 t0)、后几段混音,中间经 busXfade 交叉(SL-487 renderSpan 头注)。
+    const std::int64_t starts[] = {-100, -static_cast<std::int64_t>(kBlock)};
+    for (const std::int64_t start : starts)
+    {
+        DYNAMIC_SECTION("t0 = " << start)
+        {
+            Rig r;
+            r.ph.playing = true;
+            REQUIRE(r.waitUntilInjected());
+            r.runBlocks(40, 0.5f);
+
+            juce::AudioBuffer<float> inBig{2, kSl523Big};
+            juce::AudioBuffer<float> outBig{2, kSl523Big};
+            r.ph.timeSamples = start; // 定位到 pre-roll(一次跳变)
+            const std::int64_t t0 = feedBigBoth(r, inBig, outBig);
+            REQUIRE(t0 == start);
+
+            // 第 1 段起(时间线 [t0 + kBlock, t0 + kSl523Big),全在 0 之后)。
+            const WindowCorr tail = windowCorr(outBig.getReadPointer(0), kBlock, kSl523Big, t0);
+            REQUIRE(tail.windows >= 14);
+            CHECK(tail.energetic == tail.windows);
+            CHECK(tail.worst > 0.99);
+        }
+    }
+}
+
+TEST_CASE("HOST SL-523:超长块采集时特征 hop 记账跟着时间线走", "[host][sl523]")
+{
+    // 修前 FeatRing 每块只收前 preparedMaxBlock 个样本,而时间线按整块走:kSl523Big 的块下
+    // 特征只记了约 512/2148 ≈ 24% 的长度,覆盖区间停在采集起点之后不远处。这里取采集区段的
+    // **后半段**做窗:修前那里一帧都没有,修后应基本盖满。
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400); // 等 capture_enabled 广播到 Input(同 L-6c)
+    r.runBlocks(8, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/6);
+
+    juce::AudioBuffer<float> inBig{2, kSl523Big};
+    juce::AudioBuffer<float> outBig{2, kSl523Big};
+    const std::int64_t tA = r.ph.timeSamples;
+    for (int b = 0; b < 48; ++b) // ≈ 2.1s 时间线
+    {
+        feedBigBoth(r, inBig, outBig);
+        if (b % 2 == 1)
+        {
+            Rig::pumpMessages(10);
+        }
+    }
+    const std::int64_t tB = r.ph.timeSamples;
+    Rig::pumpMessages(400); // 让 [M] 把在途帧拉完
+
+    const double s0 = (static_cast<double>(tA) + static_cast<double>(tB - tA) / 2.0) / kSr;
+    const double s1 = static_cast<double>(tB) / kSr - 0.1;
+    REQUIRE(s1 - s0 > 0.8); // 前提:窗口够长
+    const auto cov = r.out.coverageOf(kTestChannel, s0, s1);
+    CHECK(cov.coveredS >= 0.9 * (s1 - s0));
 }
 
 // ===========================================================================
