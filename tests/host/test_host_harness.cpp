@@ -10230,7 +10230,8 @@ TEST_CASE("HOST SL-478:宿主不给 timeInSamples 持续 0.5s 以上 ⇒ hostTim
     CHECK_FALSE(rig.out.hostTimelineMissing());
 
     // T5:丢时间线后宿主停掉音频引擎(releaseResources,此后不再有 processBlock)⇒ 不得冻在 true。
-    // 冻住的话 §1.2/§1.3 会一直拒绝,连「关采集」都做不到(#278 复审建议 1)。
+    // 冻住的话 §1.2/§1.3 会一直拒绝(#278 复审建议 1):采集打不开、输出开关两向都拨不动
+    // ([SL-509] 起关采集不再受 noTimeline 挡,这条理由只剩「打不开」这一半)。
     rig.ph.haveTime = false;
     bool raisedAgain = false;
     for (int waited = 0; waited < 3000 && !raisedAgain; waited += 40)

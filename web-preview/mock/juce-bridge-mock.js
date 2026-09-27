@@ -1171,6 +1171,11 @@ function buildOutputBackend(ctx) {
             const opening = on === true || (Number.isInteger(on) && on !== 0);
             if (noTimeline() && opening)
                 return { ok: false, reason: "noTimeline" };
+            // 判序最后一支 badArg:与真桥 `strictBool` 同口径,只收布尔与整数。少了这一支,
+            // noTimeline 下传一个非严格布尔会绕过上面那道(opening 为假)再被 `!!on` 当成
+            // 打开 —— 真桥回 badArg、不改 state,预览里却把采集打开了。
+            if (typeof on !== "boolean" && !Number.isInteger(on))
+                return BAD_ARG();
             // [J87] 用户**显式**拧过这把闸 = 他接管了,撤防时不再替他动(与真桥
             // `ScvbOutputAudioProcessor::setCaptureEnabled` 同款)。
             model.recaptureAutoEnabledCapture = false;

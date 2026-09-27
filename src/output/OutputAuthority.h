@@ -18,10 +18,15 @@
 // T16 的 DspArbiter(核心仲裁 + 统一平滑),并把活动版本的曲线真身(CurveEvaluator)注入快照。
 //
 // T18:本类持有 engine::VersionStore(versions[2] 曲线真身 + 版本名),并经 juce::UndoManager 提供
-// 可撤销的版本重命名([J05])。version_active 是 state(非自动化),值域 1..2,越界钳制 + warning
-// 计数(03 §5.2,不静默取模)。
-// 版本复制(03 §5.3)的生产路径是 `ScvbOutputAudioProcessor::copyVersion`(CRVS 事务),本类只借出
-// `validateCopy` 判据;原先本类那份曲线层 `copyVersion` 零生产调用点,已删([SL-510] / [J109])。
+// 可撤销的版本重命名([J05])。version_active 是 state(非自动化),值域 1..2,越界钳制 +
+// warning 计数(03 §5.2,不静默取模)。
+//
+// 本类的改名今天只被 tests/core/test_version_params.cpp 调用;生产路径的改名走
+// `ScvbOutputAudioProcessor::setVersionName` 的 CRVS 事务。
+//
+// 版本复制(03 §5.3)的生产路径是 `ScvbOutputAudioProcessor::copyVersion`(CRVS 事务),
+// 本类只借出 `validateCopy` 判据;原先本类那份曲线层 `copyVersion` 零生产调用点,
+// 已删([SL-510] / [J109])。
 //
 // 曲线不可变契约(PR #43 终审,硬前置):
 //   setCurve 注入后的曲线对象必须不可变;重分析 = 新建 CurveEvaluator 对象再 setCurve 发布,

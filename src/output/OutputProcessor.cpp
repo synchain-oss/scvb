@@ -214,7 +214,8 @@ void ScvbOutputAudioProcessor::releaseResources()
     sampleRate_.store(
         0.0, std::memory_order_relaxed); // 复位:isPrepared()/sr 守卫在 release 后回到「未 prepare」(PR#55 第10轮缺陷1)
     // [SL-478] 单块时间线标志只在 processBlock 里刷新。宿主先丢时间线、再停音频引擎的话,
-    // 它会冻在 0,hostTimelineMissing() 跟着冻在 true,而那时 §1.2/§1.3 连「关采集」都拒。
+    // 它会冻在 0,hostTimelineMissing() 跟着冻在 true,而那时 §1.2/§1.3 一直拒绝(采集打不开,
+    // 输出开关两向都拨不动;[SL-509] 起关采集不再受它挡)。
     // 这里只复位这个 atomic,由定时器下一拍在消息线程上撤掉 timelineMissing_
     // (releaseResources 不保证在消息线程,那个 bool 是 [M] 独占,不在这里直接写)。
     timelineValid_.store(1, std::memory_order_relaxed);

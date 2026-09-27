@@ -837,7 +837,9 @@ private:
     // [SL-532] 撤销 / 重做真的动了栈时作废在途分析([J110]);调用方已持 lifecycleMutex_。
     // 与 setStateInformation 载入时那次作废同形:bump 代号 + 清运行态三件,不碰作业对象、
     // 不 signal 作业线程 —— 它跑完整条 pipeline 后,结果被 handleAsyncUpdate 的代号门丢掉
-    // (与那处同一笔代价,收尾归 SL-525)。
+    // (与那处同一笔代价,收尾归 SL-525)。这里的约束比载入那处松:undo()/redo() 只从
+    // OutputEditor 的 handleUndo/handleRedo(消息线程)进来,技术上可以照 cancelAnalysis 那样
+    // signal + 退休作业;暂不做,是为了与 SL-525 一并收成同一个形状。
     // 没有在跑的分析时什么都不动:上一趟落地后的 progress 与代号原样保留。
     void abandonAnalysisInFlight() noexcept
     {

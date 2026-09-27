@@ -330,6 +330,15 @@ await withSession("output", "scenario=no-timeline", async (b) => {
         `no-timeline 关掉后再开仍回 noTimeline:${JSON.stringify(open2)}`,
     );
     check(!(await cap()), "被拒的打开不改 state");
+    // 判序最后一支 badArg(与真桥 strictBool 同口径):非严格布尔不落 noTimeline,也不许被
+    // `!!on` 当成打开。删除式:mock 去掉 badArg 那一行 ⇒ ★badArg 两条红(此刻采集是关的,
+    // 缺了那一支 "yes" 会把它打开)。
+    const bad = await b.setCaptureEnabled("yes");
+    check(
+        bad.ok === false && bad.reason === "badArg",
+        `no-timeline setCaptureEnabled("yes") 应回 badArg(★badArg):${JSON.stringify(bad)}`,
+    );
+    check(!(await cap()), "badArg 不改 state(★badArg)");
     for (const on of [true, false]) {
         const r = await b.setOutputEnabled(on);
         check(
