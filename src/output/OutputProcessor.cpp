@@ -1455,6 +1455,29 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.vadPaddingPreMs = static_cast<std::uint32_t>(runtime_.vadPaddingPreMs);
     s.vadPaddingPostMs = static_cast<std::uint32_t>(runtime_.vadPaddingPostMs);
     s.transitionRampMs = static_cast<std::uint32_t>(runtime_.transitionRampMs);
+    // [SL-472] channels[15] 七项随工程落盘 —— STATE_SCHEMA §一 一直把它们列在 state 里,而此前只有
+    // `runtime_.channels` 这一份内存真身:J113 用户实测「命名 / 配对 / 优先级 / 主唱锁定存盘重开全回默认」。
+    // `source_channels` 不写(每拍由 refreshSourceChannels 从音频环段头重测)。participate 按三态写,
+    // 「用户从没动过」与「用户选了参与」分开存(理由见 OutputStateCodec.h 那组常量的注释)。
+    // 锁纪律:本函数持 lifecycleMutex_ 读;写方是消息线程上的桥面 setChannelConfig(不持锁,与
+    // segmentation/vad 等 runtime_ 字段同一现状 —— 见 OutputProcessor.h `bridgeSetGuideSeen` 那段注释:
+    // runtime_ 其余字段是消息线程独占)与本文件的 setStateInformation(持同一把锁)。
+    static_assert(scvb::state::kOutputChannelCount == static_cast<std::size_t>(scvb::engine::kNumTracks),
+                  "CFGS channels 档的轨数必须与 runtime_.channels 一致");
+    for (std::size_t t = 0; t < scvb::state::kOutputChannelCount; ++t)
+    {
+        const auto& src = runtime_.channels[t];
+        auto& dst = s.channels[t];
+        dst.enabled = src.enabled;
+        dst.label = src.label.toStdString(); // UTF-8;超长由 codec 在码点边界截断
+        dst.participateAutoPan = !src.participateAutoPanSet ? scvb::state::kOutputParticipateUnset
+                                 : src.participateAutoPan   ? scvb::state::kOutputParticipateTrue
+                                                            : scvb::state::kOutputParticipateFalse;
+        dst.priority = static_cast<std::uint32_t>(src.priority);
+        dst.leadLock = src.leadLock;
+        dst.leadVolExempt = src.leadVolExempt;
+        dst.pairId = static_cast<std::uint32_t>(src.pairId);
+    }
     s.unknownTail = preservedCfgsTail_; // 未来小版本追加字段原样回写(防静默丢字段)
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
@@ -2100,6 +2123,41 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     runtime_.vadPaddingPreMs = static_cast<int>(s.vadPaddingPreMs);
     runtime_.vadPaddingPostMs = static_cast<int>(s.vadPaddingPostMs);
     runtime_.transitionRampMs = static_cast<float>(s.transitionRampMs);
+    // [SL-472] channels[15] 七项:codec 已逐轨逐项校验(在席且非法 → 该项回落构造默认并计数;缺席的
+    // abi≤5 旧工程 → 构造默认且不计),这里同样**不叠第二道夹取**。`sourceChannels` 不动(不落盘,
+    // 下一拍 refreshSourceChannels 从音频环段头重测)。
+    // 落点与其余 CFGS 字段相同:只带 PRMS 的轨道 / 参数预设(cfg == nullptr)走不到这里,不动通道配置。
+    for (std::size_t t = 0; t < scvb::state::kOutputChannelCount; ++t)
+    {
+        const auto& src = s.channels[t];
+        auto& dst = runtime_.channels[t];
+        dst.enabled = src.enabled;
+        dst.label = juce::String::fromUTF8(src.label.c_str(), static_cast<int>(src.label.size()));
+        dst.participateAutoPanSet = src.participateAutoPan != scvb::state::kOutputParticipateUnset;
+        dst.participateAutoPan = src.participateAutoPan == scvb::state::kOutputParticipateTrue;
+        dst.priority = static_cast<int>(src.priority);
+        dst.leadLock = src.leadLock;
+        dst.leadVolExempt = src.leadVolExempt;
+        dst.pairId = static_cast<int>(src.pairId);
+    }
+    // 走既有的通道配置推送路径,不另造:桥面 setChannelConfig 改完也只做这一件事(`++configSeq`)。
+    //   · 给 Input 的广播区:下一拍 timerCallback → publishConfigBroadcast 按 configSeq 变化门重写;
+    //   · 给本编辑器的 scvb.state:25Hz emitState 每拍按全量 JSON 比对下发(channels 在同一棵子树里),
+    //     这一行让 `config_seq` 也跟着变,web 侧据它判「配置换了」。
+    //   · 启用位图 enabledMask_ / printer_ 的逐轨启用位由 timerCallback 每拍从 runtime_.channels 重算。
+    ++runtime_.configSeq;
+    if (report.channelEnabledFallbacks > 0 || report.channelLabelFallbacks > 0 ||
+        report.channelParticipateFallbacks > 0 || report.channelPriorityFallbacks > 0 ||
+        report.channelLeadLockFallbacks > 0 || report.channelLeadVolExemptFallbacks > 0 ||
+        report.channelPairIdFallbacks > 0)
+    {
+        DBG("SCVB Output: channels[] value out of range, fell back to default (enabled="
+            << report.channelEnabledFallbacks << ", label=" << report.channelLabelFallbacks
+            << ", participate=" << report.channelParticipateFallbacks
+            << ", priority=" << report.channelPriorityFallbacks << ", lead_lock=" << report.channelLeadLockFallbacks
+            << ", lead_vol_exempt=" << report.channelLeadVolExemptFallbacks
+            << ", pair_id=" << report.channelPairIdFallbacks << ")");
+    }
     if (report.vadThresholdDbFallbacks > 0 || report.vadHysteresisDbFallbacks > 0 ||
         report.vadHangoverMsFallbacks > 0 || report.vadPaddingPreMsFallbacks > 0 ||
         report.vadPaddingPostMsFallbacks > 0 || report.transitionRampMsFallbacks > 0)

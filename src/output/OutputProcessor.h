@@ -87,6 +87,10 @@ struct OutputRuntimeState
     juce::String appliedCenterSlotPolicy = "priority_queue";
 
     // channels[15](§1.15;index = ch-1)
+    // [SL-472] 除 `sourceChannels` 外七项**随工程保存**(CFGS 第五档,abi 5→6):`getStateInformation`
+    // 写、`setStateInformation` 恢复,值域由 codec 校验。**下面的初值同时是旧工程(abi≤5)与坏值的回落值**
+    // —— `OutputStateCodec.h` 的 `OutputChannelState` 逐项抄了这一组;改这里的初值要连着那边一起改
+    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。
     struct Channel
     {
         bool enabled = true;
