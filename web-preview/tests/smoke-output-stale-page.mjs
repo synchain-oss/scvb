@@ -17,7 +17,8 @@
 //      `recapture-armed`(布防期,采集是被 §1.23 裁定① 替用户打开的)⇒ 收起 ——
 //      此刻用户正应当保持采集开着播完那一段,⑨ 的「先关掉采集」是反向指令;
 //   ②c [SL-247] `no-timeline`:⑨ 让位给 ⑥ —— noTimeline 下比对停摆的真因不是采集开关,
-//      而采集开关此时还是 disabled,⑨ 的「先关掉采集」既做不到、也把因果说反了;
+//      ⑨ 的「先关掉采集」把因果说反了(照做也没有时间线可播);
+//      [SL-509] 同一档:采集开着时采集开关**仍可点关**,关掉之后才挡「再打开」;输出开关两向都挡;
 //   ③ 各场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
@@ -432,12 +433,14 @@ const PROBE = IN(`
             return n ? n.textContent.trim() : null;
         })(),
         // 采集开关的写闸在 DOM 上是 data-disabled(它是 div 不是表单控件,没有 .disabled)。
-        // tab-master.js 的 isSwitchBlocked() = readOnly || noTimeline,两处都写这一位([SL-478] 前叫 isWriteBlocked)。
+        // tab-master.js 的 isCaptureSwitchBlocked() = readOnly || (noTimeline && 采集是关的)([SL-509];
+        // [SL-478] 起到 SL-509 前与输出开关共用 isSwitchBlocked(),再往前叫 isWriteBlocked)。
         captureSwitchBlocked: (() => {
             const sw = gb("master-capture-toggle-switch");
             return !!sw && sw.getAttribute("data-disabled") === "1";
         })(),
-        // [SL-478] 另一把开关与「分析」按钮:前者该被挡,后者不该(§5.1 noTimeline 只挡两把开关)。
+        // [SL-478] 另一把开关与「分析」按钮:前者该被挡(isSwitchBlocked() = readOnly || noTimeline),
+        // 后者不该(§5.1 noTimeline 只挡两把开关)。
         outputSwitchBlocked: (() => {
             const sw = gb("master-output-toggle-switch");
             return !!sw && sw.getAttribute("data-disabled") === "1";
@@ -642,13 +645,16 @@ try {
     }
 
     // =========================================================================
-    // [SL-247] ④ `noTimeline` 在场:⑨ 必须让位给 ⑥,否则是**做不到且归因说反**的动作。
+    // [SL-247] ④ `noTimeline` 在场:⑨ 必须让位给 ⑥,否则是**归因说反**的动作。
     //
     // 来自 #158 复审(deepseek)。与只读态**不同类**:只读态下「比对暂停是因为采集开着」
     // 仍然为真(只是他关不了),而 noTimeline 下真因是**没有时间线** —— ⑨ 若还在,
-    // 就把停摆归因到采集开关上,而那把开关此时是 disabled(开关闸 = readOnly || noTimeline),
-    // 用户既关不掉也没得播,照做 ⚠ 也不会回来。
-    log("=== ④ scenario=no-timeline:⑨ 让位给 ⑥(否则给的是做不到的动作)===");
+    // 就把停摆归因到采集开关上;照做关掉采集也没得播,⚠ 不会回来。
+    // [SL-509] 同一档接着钉「允许关、拒绝开」([J107]):采集开着 ⇒ 开关可点;点一下真的关掉;
+    // 关掉之后 ⇒ 开关挡「再打开」;输出开关始终两向都挡。
+    log(
+        "=== ④ scenario=no-timeline:⑨ 让位给 ⑥;采集开关允许关、拒绝开(SL-509)===",
+    );
     {
         const p = await open("no-timeline");
         check(p !== null, "取到页内 DOM 快照");
@@ -660,12 +666,13 @@ try {
             p.noTimelineBanner,
             "横幅 ⑥「宿主未提供时间线」在场(它才是说真因的那条)",
         );
-        check(
-            p.captureSwitchBlocked,
-            "前置:采集开关此时确实被写闸挡住(data-disabled=1)—— ⑨ 的「先关掉采集」做不到",
-        );
         check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
-        // [SL-478] §5.1 noTimeline 的 UI 落点是「采集/输出开关 disabled」,只有这两把。
+        // [SL-509] 采集开着 ⇒ 这把开关不挡(只挡「打开」)。改前这里是 data-disabled=1,用户关不掉采集。
+        check(
+            !p.captureSwitchBlocked,
+            "[SL-509] 采集开着时采集开关可点(data-disabled=0)—— noTimeline 只挡「打开」",
+        );
+        // [SL-478] §5.1 noTimeline 的 UI 落点只有采集 / 输出这两把开关。
         // 真桥对分析/参数/过渡/范围都照常受理,Tab1 的写闸此前把它们一并灰掉
         // (那时 noTimeline 恒 false,走不到);生产者接上后必须收窄,否则 Tab1 大面积灰死。
         check(
@@ -675,6 +682,38 @@ try {
         check(
             p.analyzeState !== "disabled" && p.analyzeState !== "(缺节点)",
             `[SL-478] 分析按钮不因 noTimeline 变 disabled(§1.6 无此拒绝态),实得 ${p.analyzeState}`,
+        );
+        // [SL-509] 真点一下:采集关掉(mock 与真桥同口径,noTimeline 下受理 on=false)。
+        // 取 DOM 节点 .click():走 onActivate 的 click 监听,即开关自己的闸。
+        // 先回 Tab1:open() 把页面切到了「波形与分段」,而 app.js 只投影当前激活 tab
+        // (`switch (content.getAttribute("data-tab"))` 那段),不切回来开关的 DOM 不会刷新。
+        // 不写死 sleep(CLAUDE.md §10):点完之后轮询到「开关已显示为关」再取快照,
+        // 上界是 waitFor 的默认预算;没等到就当场判红,不靠 mock 的回声常数。
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        await evaluate(
+            IN(
+                `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
+            ),
+        );
+        const closed = await waitFor(
+            IN(`const n = gb("master-capture-toggle-switch");
+                return !!n && n.getAttribute("aria-checked") === "false";`),
+        );
+        check(
+            closed,
+            "[SL-509] 无时间线下点采集开关 ⇒ 采集真的关掉了(改前点击被开关闸吞掉)",
+        );
+        const q = await evaluate(PROBE);
+        check(q !== null, "取到页内 DOM 快照(点关之后)");
+        check(
+            q !== null && q.captureSwitchBlocked,
+            "[SL-509] 关掉之后采集开关挡「再打开」(data-disabled=1)",
+        );
+        check(
+            q !== null && q.outputSwitchBlocked,
+            "[SL-509] 输出开关不受影响,仍两向都挡",
         );
         assertClean("scenario=no-timeline");
     }

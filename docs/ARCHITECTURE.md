@@ -44,7 +44,7 @@ D5 的三条理由(ADR-002 细则):
 
 ## 5. 时间线寻址 vs 裸 FIFO
 
-共享内存环按**时间线绝对样本位置**寻址(ADR-002):写入地址 = `(timeline_pos & (ring_frames-1)) * channels + c`(stereo interleaved 时 c 为通道下标),读侧按自身 block 的 [t0,t1) 读取。裸 FIFO 在离线渲染 / REAPER 预测性多线程下会因「提前写 + 乱序消费」错位;时间线寻址 + `epoch` 计数器(跳变时 +1,读方丢弃跨代数据)天然容忍预测引擎的提前写(ADR-002/D5)。
+共享内存环按**时间线绝对样本位置**寻址(ADR-002):写入地址 = `(timeline_pos & (ring_frames-1)) * channels + c`(stereo interleaved 时 c 为通道下标),读侧按自身 block 的 [t0,t1) 读取。裸 FIFO 在离线渲染 / REAPER 预测性多线程下会因「提前写 + 乱序消费」错位;时间线寻址 + `epoch` 计数器(时间线跳变或环几何改写时 +1,读方丢弃跨代数据;几何改写见 IPC_CONTRACT §2「几何纪律」)天然容忍预测引擎的提前写(ADR-002/D5)。
 
 ## 6. 失准检测与语义(绝不静默出错)
 

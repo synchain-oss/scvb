@@ -337,8 +337,8 @@ function makeContext(role, world) {
         abiRemote: role === "input" ? world.input.abiRemote : undefined,
         params: role === "output" ? clone(world.output.params) : null,
         // [SL-241] 参数面是**按版本**分开的一份份,不是「切到哪一版就现造一帧画像值」。
-        // 契约:`copyVersion` **零参数写入**(03 §5.3;`tests/core/test_version_params.cpp`
-        // 的 VERSION-COPY-ZERO-1「123 参数逐位不变」),而引擎打印头只驱动**当前激活
+        // 契约:`copyVersion` **零参数写入**(03 §5.3;生产路径由 `tests/host/test_host_harness.cpp`
+        // 的 `HOST SL-510`「参数面逐位不变」钉),而引擎打印头只驱动**当前激活
         // 版本**那 63 个 id。于是一个刚复制出来、还没播过的版本,它的 pan/vol 就是出厂
         // 默认(pan 居中 / vol 0dB)—— 这正是用户实测「复制版本切进去 15 轨齐刷刷居中,
         // 一播放又全对」的数据面成因。
@@ -997,7 +997,10 @@ function buildOutputBackend(ctx) {
         return model.caps.readOnly === true;
     }
 
-    /** 宿主未提供时间线(§5.1 `noTimeline`):采集/输出开关在 observer 之外的拒绝分支。 */
+    /**
+     * 宿主未提供时间线(§5.1 `noTimeline`):采集/输出开关在 observer 之外的拒绝分支。
+     * [SL-509] 采集开关那一支只拒「打开」([J107]),见 `setCaptureEnabled`;输出开关两向都拒。
+     */
     function noTimeline() {
         return model.caps.noTimeline === true;
     }
@@ -1161,8 +1164,18 @@ function buildOutputBackend(ctx) {
         // ---- §1.2 -------------------------------------------------------------
         setCaptureEnabled(on) {
             // [SL-478] 判序与真桥逐条同款:observer → noTimeline(§1.2 拒绝态行)。
+            // [SL-509] noTimeline **只拒「打开」**([J107] 允许关、拒绝开),与真桥
+            // `noTimelineRejectsCaptureSwitch` 同口径:严格布尔且为真(true 或非 0 整数)才拒。
+            // 关采集不需要时间线 —— 采集开着时宿主丢了时间线,用户必须还能关掉它。
             if (readOnly()) return OBSERVER();
-            if (noTimeline()) return { ok: false, reason: "noTimeline" };
+            const opening = on === true || (Number.isInteger(on) && on !== 0);
+            if (noTimeline() && opening)
+                return { ok: false, reason: "noTimeline" };
+            // 判序最后一支 badArg:与真桥 `strictBool` 同口径,只收布尔与整数。少了这一支,
+            // noTimeline 下传一个非严格布尔会绕过上面那道(opening 为假)再被 `!!on` 当成
+            // 打开 —— 真桥回 badArg、不改 state,预览里却把采集打开了。
+            if (typeof on !== "boolean" && !Number.isInteger(on))
+                return BAD_ARG();
             // [J87] 用户**显式**拧过这把闸 = 他接管了,撤防时不再替他动(与真桥
             // `ScvbOutputAudioProcessor::setCaptureEnabled` 同款)。
             model.recaptureAutoEnabledCapture = false;

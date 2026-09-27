@@ -511,14 +511,28 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             );
         }
         // ② §1.2/§1.3 两个 handler:observer 判据之后、badArg 之前回 {ok:false, reason:"noTimeline"}。
-        for (const h of ["handleSetCaptureEnabled", "handleSetOutputEnabled"]) {
-            check(
-                /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(
-                    fnBodyOf(h),
-                ),
-                `[SL-478] ${h}:observer 之后、badArg 之前有 noTimeline 拒绝分支`,
-            );
-        }
+        //   · §1.3 输出开关:条件就是 hostTimelineMissing(),开和关都拒;
+        //   · §1.2 采集开关([SL-509] / [J107]):条件改走纯函数 noTimelineRejectsCaptureSwitch
+        //     (只拒严格的 true;单测在 test_bridge_args.cpp),入参是 hostTimelineMissing() 与 a[0]。
+        //     删除式:把采集 handler 改回裸 `if (processor_.hostTimelineMissing())` ⇒ 下面第二、三条红。
+        check(
+            /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(
+                fnBodyOf("handleSetOutputEnabled"),
+            ),
+            "[SL-478] handleSetOutputEnabled:observer 之后、badArg 之前有 noTimeline 拒绝分支(两向都拒)",
+        );
+        check(
+            /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(scvb::output::noTimelineRejectsCaptureSwitch\(processor_\.hostTimelineMissing\(\),\s*a\.size\(\) > 0 \? a\[0\] : juce::var\(\)\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(
+                fnBodyOf("handleSetCaptureEnabled"),
+            ),
+            "[SL-509] handleSetCaptureEnabled:observer 之后、badArg 之前的 noTimeline 分支走 noTimelineRejectsCaptureSwitch(只拒打开)",
+        );
+        check(
+            !/^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)/m.test(
+                fnBodyOf("handleSetCaptureEnabled"),
+            ),
+            "[SL-509] handleSetCaptureEnabled 不再有不分方向的裸 hostTimelineMissing() 拒绝支",
+        );
         check(
             /^[ \t]*put\(o, "reason", "noTimeline"\);[ \t]*$/m.test(oe),
             "[SL-478] noTimelineResp 的 reason 逐字是 §5.6 闭集里的 noTimeline",

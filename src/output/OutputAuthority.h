@@ -18,15 +18,22 @@
 // T16 的 DspArbiter(核心仲裁 + 统一平滑),并把活动版本的曲线真身(CurveEvaluator)注入快照。
 //
 // T18:本类持有 engine::VersionStore(versions[2] 曲线真身 + 版本名),并经 juce::UndoManager 提供
-// 可撤销的版本复制与重命名(03 §5.3 / [J05])。version_active 是 state(非自动化),值域 1..2,
-// 越界钳制 + warning 计数(03 §5.2,不静默取模)。
+// 可撤销的版本重命名([J05])。version_active 是 state(非自动化),值域 1..2,越界钳制 +
+// warning 计数(03 §5.2,不静默取模)。
+//
+// 本类的改名今天只被 tests/core/test_version_params.cpp 调用;生产路径的改名走
+// `ScvbOutputAudioProcessor::setVersionName` 的 CRVS 事务。
+//
+// 版本复制(03 §5.3)的生产路径是 `ScvbOutputAudioProcessor::copyVersion`(CRVS 事务),
+// 本类只借出 `validateCopy` 判据;原先本类那份曲线层 `copyVersion` 零生产调用点,
+// 已删([SL-510] / [J109])。
 //
 // 曲线不可变契约(PR #43 终审,硬前置):
 //   setCurve 注入后的曲线对象必须不可变;重分析 = 新建 CurveEvaluator 对象再 setCurve 发布,
 //   禁止对已注入对象调用 build()。曲线生命周期须 ≥ OutputAuthority/音频线程寿命 —— VersionStore
 //   与本类发布出的快照均以 std::shared_ptr<const CurveEvaluator> 持有曲线,旧曲线对象由引用它的
 //   快照保活,音频线程绝不读悬垂/被原地改写的对象。
-// 线程契约:setVersionActive/setCurve/copyVersion/setVersionName 均只可在消息线程调用 —— 它们只写
+// 线程契约:setVersionActive/setCurve/setVersionName 均只可在消息线程调用 —— 它们只写
 // 本类消息线程独占的配置并重建「不可变快照」,经 DspArbiter::publish 原子发布(release-store);
 // 音频线程 processBlock 每 block acquire-load 一次、整 block 用同一份快照。旧快照由本类快照池
 // 进程寿命保活,绝不释放。prepare 应在音频启动前调用(它触碰 m_handles 配置,不参与快照发布;
@@ -70,8 +77,7 @@ public:
     // 点列表为空 → LUT 全 0 dB → 增益恒 1(从没画过曲线的工程声音一个字节不变)。
     void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
 
-    // ---- 版本复制 §5.3(消息线程;纯 state 深拷贝,零 gesture、零参数写入;单条撤销)----
-    scvb::engine::CopyVersionResult copyVersion(int src, int dst, scvb::engine::AuthorityMode mode);
+    // ---- 版本复制 §5.3 的判据(执行在 processor 的 CRVS 事务里)----
     // [SL-484] 只校验不执行:生产路径(processor 的 CRVS 复制)借这一份判据,不另写 PRINT 判断。
     scvb::engine::CopyVersionResult validateCopy(int src, int dst, scvb::engine::AuthorityMode mode) const
     {

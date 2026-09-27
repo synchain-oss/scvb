@@ -306,6 +306,51 @@ await withSession("output", "fixture=second-output", async (b) => {
     );
 });
 
+// [SL-509] no-timeline:采集开关「允许关、拒绝开」([J107]),输出开关仍两向都拒。
+// 与真桥 `noTimelineRejectsCaptureSwitch`(src/output/BridgeArgs.h)同口径;场景里采集初始为开。
+// 删除式:mock `setCaptureEnabled` 里去掉 `&& opening` ⇒ ★关 红。
+await withSession("output", "scenario=no-timeline", async (b) => {
+    const cap = async () =>
+        !!(await b.requestInitialState()).global.capture_enabled;
+    check(await cap(), "前置:no-timeline 场景采集初始为开");
+    const open1 = await b.setCaptureEnabled(true);
+    check(
+        open1.ok === false && open1.reason === "noTimeline",
+        `no-timeline setCaptureEnabled(true) 应回 noTimeline:${JSON.stringify(open1)}`,
+    );
+    const close = await b.setCaptureEnabled(false);
+    check(
+        close.ok === true,
+        `[SL-509] no-timeline setCaptureEnabled(false) 应受理(★关):${JSON.stringify(close)}`,
+    );
+    check(!(await cap()), "[SL-509] 关采集真的落进 state");
+    const open2 = await b.setCaptureEnabled(true);
+    check(
+        open2.ok === false && open2.reason === "noTimeline",
+        `no-timeline 关掉后再开仍回 noTimeline:${JSON.stringify(open2)}`,
+    );
+    check(!(await cap()), "被拒的打开不改 state");
+    // 判序最后一支 badArg(与真桥 strictBool 同口径):非严格布尔不落 noTimeline,也不许被
+    // `!!on` 当成打开。删除式:mock 去掉 badArg 那一行 ⇒ ★badArg 两条红(此刻采集是关的,
+    // 缺了那一支 "yes" 会把它打开)。
+    const bad = await b.setCaptureEnabled("yes");
+    check(
+        bad.ok === false && bad.reason === "badArg",
+        `no-timeline setCaptureEnabled("yes") 应回 badArg(★badArg):${JSON.stringify(bad)}`,
+    );
+    check(!(await cap()), "badArg 不改 state(★badArg)");
+    for (const on of [true, false]) {
+        const r = await b.setOutputEnabled(on);
+        check(
+            r.ok === false && r.reason === "noTimeline",
+            `no-timeline setOutputEnabled(${on}) 仍两向都拒:${JSON.stringify(r)}`,
+        );
+    }
+    log(
+        `  no-timeline setCaptureEnabled true/false/true → ${JSON.stringify([open1, close, open2])}`,
+    );
+});
+
 // stereo-mixed&loop=none:daw_loop → noLoop
 await withSession("output", "fixture=stereo-mixed&loop=none", async (b) => {
     const r = await b.setRange("daw_loop", 0, 0);

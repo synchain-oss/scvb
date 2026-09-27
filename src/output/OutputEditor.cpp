@@ -1177,10 +1177,14 @@ void OutputEditor::handleSetCaptureEnabled(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
-    // [SL-478] §1.2 拒绝态:宿主持续不给时间线 ⇒ 不改 state。**开和关都拒**(契约原文「收到调用时
-    // 返回」不分方向;UI 侧此时两把开关都是 disabled,真走到这里的只有绕过 UI 的调用)。
-    // 判序:只读观察在前(observer 连配置都不许写,比「没有时间线」更根本),badArg 在后。
-    if (processor_.hostTimelineMissing())
+    // [SL-478] §1.2 拒绝态:宿主持续不给时间线 ⇒ 不改 state。
+    // [SL-509] **只拒「打开」**([J107] 用户裁定「允许关、拒绝开」):采集开着时宿主丢了时间线,
+    // 用户必须还能关掉它,关采集也不需要时间线。判据在 `noTimelineRejectsCaptureSwitch`(纯函数,
+    // 头注写了为什么抽出去)。§1.3 输出开关那一支不变,仍两向都拒。
+    // 判序:只读观察在前(observer 连配置都不许写,比「没有时间线」更根本),noTimeline 只对严格的
+    // `true` 成立,其余参数形态落到后面的 badArg。
+    if (scvb::output::noTimelineRejectsCaptureSwitch(processor_.hostTimelineMissing(),
+                                                     a.size() > 0 ? a[0] : juce::var()))
     {
         c(noTimelineResp());
         return;
@@ -1202,7 +1206,8 @@ void OutputEditor::handleSetOutputEnabled(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
-    // [SL-478] §1.3 拒绝态,判序与理由同 handleSetCaptureEnabled。
+    // [SL-478] §1.3 拒绝态,判序与理由同 handleSetCaptureEnabled 改前那一版:**开和关都拒**。
+    // [SL-509] 的「允许关」只裁了采集开关([J107]),这里不跟着放开。
     if (processor_.hostTimelineMissing())
     {
         c(noTimelineResp());

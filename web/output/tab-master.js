@@ -533,15 +533,16 @@ export function outputPhase(state, playhead) {
  * disabled + tooltip『打印中不可切组』」,契约 §1.4 `setGroupId` 的「拒绝态」一行写
  * 「PRINT 态由 UI 侧整组 disabled…C++ 侧不新增 `rejected` 码」。
  *
- * 所以本函数**刻意不并进 `isWriteBlocked()`(只读)/ `isSwitchBlocked()`(只读或无时间线)**。改组在
+ * 所以本函数**刻意不并进 `isWriteBlocked()`(只读)/ `isSwitchBlocked()`(只读或无时间线)/
+ * `isCaptureSwitchBlocked()`**。改组在
  * 这两态下必须照走 —— 它是这两态**唯一的出口**:
  *   · 只读观察(§5.1 `secondOutput`):契约 §5.6 把 `{observer:true}` 的两种出处**分开**写,
  *     「Output `setGroupId`(新组已有主 Output)」与「只读观察态下的一切写函数」并列 ——
  *     前者是**改组的结果播报**而不是拒绝。C++ 侧 `OutputEditor::handleSetGroupId` 也确实
  *     不查 `isReadOnly()`:先 `processor_.setGroupId(g)` 落地,再按新组的 claim 结果回
  *     `{ok}` 或 `{observer:true}`。把组卡一起锁掉,等于让 §1.4 那个返回值从 UI 上永远走不到。
- *   · 无时间线(§5.1 `noTimeline`):该行的 UI 落点逐字是「采集/输出开关 disabled」,
- *     没有组卡。
+ *   · 无时间线(§5.1 `noTimeline`):该行的 UI 落点只有采集 / 输出两把开关(采集开关只挡
+ *     「打开」,[SL-509] / [J107]),没有组卡。
  *
  * 用户 v5.6.11 实测 B22 报的就是前者:同组第二个 Output 进只读观察后「所有界面都被锁死
  * 导致无法切换成别的组」—— 无路可退。
@@ -1030,7 +1031,7 @@ export function createTabMaster(opts) {
     // ---- ① 三件套 --------------------------------------------------------
     function wireFlow() {
         onActivate(el.capSwitch, () => {
-            if (isSwitchBlocked()) return;
+            if (isCaptureSwitchBlocked()) return; // [SL-509] 无时间线只挡「打开」
             const s = getStore().state;
             const on = !!(s.global && s.global.capture_enabled);
             call("setCaptureEnabled", !on);
@@ -1120,7 +1121,8 @@ export function createTabMaster(opts) {
      * 只读观察态(契约 §5.1 `secondOutput`)下全写控件失效。
      *
      * **[SL-478] 无时间线(§5.1 `noTimeline`)不在这道闸里**,它只挡采集/输出两把开关,
-     * 见下面的 `isSwitchBlocked()`。§5.1 该行的 UI 落点逐字是「采集/输出开关 disabled」,
+     * 见下面的 `isSwitchBlocked()` / `isCaptureSwitchBlocked()`(后者只挡「打开」,[SL-509])。
+     * §5.1 该行的 UI 落点只有这两把开关,
      * 契约 §1.6-§1.14 的参数/过渡/范围/分析也都没有 noTimeline 拒绝态,真桥照常受理。
      * 这道闸此前写成 `readOnly || noTimeline`,因为 noTimeline 没有生产者、恒 false,
      * 宽出来的那部分一直走不到;SL-478 把生产者接上后它才会生效,所以一并收窄。
@@ -1134,13 +1136,27 @@ export function createTabMaster(opts) {
     }
 
     /**
-     * [SL-478] 采集/输出两把开关的闸:只读观察 **或** 无时间线(§1.2/§1.3 拒绝态;
-     * §5.1 `noTimeline` 行的 UI 落点)。真桥此时对这两个函数回
-     * `{observer:true}` / `{ok:false, reason:"noTimeline"}`。
+     * [SL-478] 输出开关的闸:只读观察 **或** 无时间线(§1.3 拒绝态;§5.1 `noTimeline` 行的
+     * UI 落点)。真桥此时对 `setOutputEnabled` 回 `{observer:true}` /
+     * `{ok:false, reason:"noTimeline"}`,开和关都拒。
+     * 采集开关**不走这道闸**,见下面的 `isCaptureSwitchBlocked()`。
      */
     function isSwitchBlocked() {
         const st = getStore();
         return !!(st.readOnly || st.noTimeline);
+    }
+
+    /**
+     * [SL-509] 采集开关的闸:只读观察,**或**无时间线且采集此刻是关的([J107] 允许关、
+     * 拒绝开;§1.2 拒绝态行)。真桥在无时间线时只对 `setCaptureEnabled(true)` 回
+     * `{ok:false, reason:"noTimeline"}`,关照常受理 —— 采集开着时宿主丢了时间线,这把开关
+     * 必须还能点,否则用户关不掉采集。点击时开关把当前值取反,所以「采集开着」= 这一下是关。
+     */
+    function isCaptureSwitchBlocked() {
+        const st = getStore();
+        if (st.readOnly) return true;
+        const g = (st.state && st.state.global) || {};
+        return !!(st.noTimeline && !g.capture_enabled);
     }
 
     // ---- ⓪ 组选择 --------------------------------------------------------
@@ -1750,10 +1766,17 @@ export function createTabMaster(opts) {
             an === "disabled" && isWriteBlocked() ? "blocked" : "nodata",
         );
 
-        for (const sw of [el.capSwitch, el.outSwitch]) {
-            if (sw)
-                sw.setAttribute("data-disabled", isSwitchBlocked() ? "1" : "0");
-        }
+        // [SL-509] 两把开关的闸不同:采集开关在无时间线时只挡「打开」,输出开关两向都挡。
+        if (el.capSwitch)
+            el.capSwitch.setAttribute(
+                "data-disabled",
+                isCaptureSwitchBlocked() ? "1" : "0",
+            );
+        if (el.outSwitch)
+            el.outSwitch.setAttribute(
+                "data-disabled",
+                isSwitchBlocked() ? "1" : "0",
+            );
 
         // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**,
         // 幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。

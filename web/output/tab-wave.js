@@ -1278,7 +1278,7 @@ export function createTabWave(opts) {
 
     /**
      * 中央写闸(全部上行的唯一闸口;口径同 Tab2:只读观察态挡;hostEcho 不挡,
-     * noTimeline 只挡采集/输出开关不挡本页编辑面)。
+     * noTimeline 只挡采集/输出开关(采集开关只挡「打开」)不挡本页编辑面)。
      */
     function isWriteBlocked() {
         return !!getStore().readOnly;

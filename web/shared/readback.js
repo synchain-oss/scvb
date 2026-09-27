@@ -5,8 +5,8 @@
 // 抽到 shared 的理由与 `param-id.js` 头注同一条,且是同一个病灶的**第二次**发作:
 // SL-211 把「未冻结维度读**曲线段**、不读参数面」这条优先级链修在了 `tab-tracks.js`
 // 里,于是验收**只在 Tab2 成立** —— Tab1 的分布图(`tab-master.js` renderDist)始终
-// 只读参数面。而 `copyVersion` 契约明写**零参数写入**(03 §5.3;
-// `tests/core/test_version_params.cpp` VERSION-COPY-ZERO-1「123 参数逐位不变」),
+// 只读参数面。而 `copyVersion` 契约明写**零参数写入**(03 §5.3;生产路径由
+// `tests/host/test_host_harness.cpp` 的 `HOST SL-510`「参数面逐位不变」钉),
 // 刚复制出来的版本切进去、引擎打印头还没跑过,那 63 个 id 装的就是出厂默认
 // (pan 居中 / vol 0dB)。于是用户实测:**复制版本切进去,声像分布图 15 轨齐刷刷居中,
 // 一播放又全对**(打印头开始驱动参数面)—— 与 SL-211 修掉的是同一幕,只是换了张图。

@@ -1025,7 +1025,7 @@ export function createTabTracks(opts) {
     /**
      * 写权限缺失才挡上行:只读观察(契约 §1.15/§1.16 → `{observer:true}`)。
      * **`hostEcho` 不挡**——契约 §1.12-§1.14 拒绝态行逐字「无」,它只做灰显(口径同 Tab1)。
-     * `noTimeline` 也不挡:它只 disable 采集/输出两个开关(§1.2/§1.3),配置类照常可写。
+     * `noTimeline` 也不挡:它只挡采集/输出两个开关(§1.2/§1.3;采集开关只挡「打开」),配置类照常可写。
      */
     function isWriteBlocked() {
         return !!getStore().readOnly;
