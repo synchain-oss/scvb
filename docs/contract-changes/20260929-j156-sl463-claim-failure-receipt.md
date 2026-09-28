@@ -50,6 +50,8 @@
 | ⑦ | §7 manifest `input.setChannelId` / `input.setGroupId` 的 `returns` | `{ok} \| {conflict:true}` | `{ok} \| {conflict:true} \| {ok:false,reason:"abiMismatch"} \| {ok:false,reason:"unavailable"} \| {ok:false,reason:"badArg"}` |
 
 **命名**:`abiMismatch` 与 §5.2 的 claim 值同拼写、同含义(abi 不符拒连),UI 与诊断看到同一个词;
+⚠ 它只覆盖 registry(以及 §3.3 的 ctrl 段)那一层 —— audio / feat 段的 abi 不符在实现里是 `createSegments()` 失败,
+回 `unavailable`(复审建议,已写进 §3.2 与映射表头注);
 `unavailable` 取自 C++ 的 `InputClaimState::kUnavailable` / `Registry::ClaimResult::kUnavailable`,对应 §5.2 `idle`
 的「段不可用」那一支。没有复用既有的 `ioError`:那一个是 §1.36 导出落盘的文件 I/O 失败,语义不同。
 

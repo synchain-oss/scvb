@@ -156,6 +156,9 @@ juce::var conflictResponse();
 //   kAbiMismatch          → {ok:false, reason:"abiMismatch"}(registry 或 ctrl 段 abi 不符,拒连)
 //   kUnavailable          → {ok:false, reason:"unavailable"}(段打不开 / 映射失败 / claimInput 非冲突失败 /
 //                           createSegments 失败)
+//   ⚠ 版本不符**不全**落在 abiMismatch:audio / feat 段由另一 abi 的 SCVB 建时,createSegments() 里
+//     initHeader 回 kAbiMismatch,openAndClaim() 统一置 kUnavailable ⇒ 回执是 unavailable。
+//     abiMismatch 只覆盖 registry(以及 setGroupId 的 ctrl 段)那一层。
 //   kActive / kUnassigned → {ok:true}
 // 入参是 InputProcessor::setChannelId()/setGroupId() 的**返回值**(请求结果),不是会话此刻的 state():
 // 补偿式回滚成功时 state() 是 kActive(会话回到了旧通道),而这次请求仍然失败 —— 回执要报失败,
