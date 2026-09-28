@@ -1204,6 +1204,16 @@ try {
                 }
                 return true;`),
         );
+        // 本节的「布防态到了页面」看 Tab3 的布防行,而 app.js 只投影**当前激活**的 tab ——
+        // 所以全程要停在 Tab3(open() 已切过去;⑧c 的「立即重分析」也会切回来)。先断一次,
+        // 以后谁在前面插了切 tab,红在这一格而不是「布防态没到」。
+        const onWave = IN(
+            `const c = d.getElementById("content"); return !!c && c.getAttribute("data-tab") === "wave";`,
+        );
+        check(
+            await evaluate(onWave),
+            "⑧ 前置:停在波形页(布防行只在 Tab3 前台刷新)",
+        );
         const MASK = (1 << 2) | (1 << 3); // 轨 3、4
         const toastShown = IN(
             `const n = gb("toast-recaptured"); return !!n && !n.hidden;`,
@@ -1264,6 +1274,17 @@ try {
             "⑧ 前置:壳页预览会话可用(__SCVB_PREVIEW__.mock.recaptureArm)",
         );
         check(await evaluate(toastHidden), "⑧ 前置:初始 toast③ 收起");
+        // 布防行只在 Tab3 前台时由 tabWave.render() 刷新(app.js 只投影当前 tab)⇒ ⑧a/⑧b
+        // 的「布防态到了页面」依赖停在波形页。open() 已切过去,这里显式断一次,别让它隐含。
+        // ⑧d 同理:⑧c 的「立即重分析」会切回波形页,⑧c 里有断言。
+        check(
+            await evaluate(
+                IN(
+                    `const c = d.getElementById("content"); return !!c && c.getAttribute("data-tab") === "wave";`,
+                ),
+            ),
+            "⑧ 前置:停在波形页(布防行的显隐只在这一页刷新)",
+        );
 
         // ---- ⑧a 布防后没播就撤防 ⇒ 不弹(0.0s 没有信息量)
         await setPlaying(false);
@@ -1321,7 +1342,7 @@ try {
                     `const b = gb("header-lang-${lang}"); if (b) b.click(); return true;`,
                 ),
             );
-            await sleep(300);
+            // setLang → refreshI18n → render 同一 tick 同步完成,{s} 当拍就回填,不用等。
             byLang[lang] = (await evaluate(toastText)) || "";
             check(
                 !!m &&
