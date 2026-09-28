@@ -1,0 +1,378 @@
+﻿# SPDX-License-Identifier: GPL-3.0-or-later
+<#
+.SYNOPSIS  SCVB 发布打包的唯一真源(06 §3.8 / 07 T40):把三个 .vst3 bundle + 合规文件组打成一个 zip,
+           另出独立的 .sha256 与 package-summary.md。release.yml 的 Package 步只调用本脚本。
+.DESCRIPTION
+  06 §3.8 六条硬要求在本脚本里的落点(按条号):
+    ① 文件名由版本号算出(-Version,缺省读 CMakeLists.txt 的 project(SCVB VERSION x.y.z)),不写字面量。
+    ② 按目录枚举 *.vst3 bundle,断言**恰好 3 个**且名字恰好是 SCVB Input / Output / Monitor
+       (06 原文写两个,[J75] T45 加了 Monitor;发布是否带 Monitor 仍待用户拍板,本脚本按「带」实现,
+       Monitor 在 INSTALL.txt 里标为可选)。打包保住 `<name>.vst3/Contents/...` 层级。
+    ③ .sha256 为独立文件(sha256sum 格式,`sha256sum -c` 可直接校验);package-summary.md 含
+       version / zipFileName / sizeBytes / sha256 / releaseDate。
+    ④ 生成 INSTALL.txt:安装路径、九条使用规则的前 3 条(从用户手册的生成区原样取,不在这里抄第二份)、
+       未签名插件的「解除锁定 / SmartScreen」步骤(U13)、精确到 tag 的源码声明。
+    ⑤ zip 根目录带 LICENSE.txt(= 仓库 LICENSE,GPLv3 全文)、THIRD-PARTY-NOTICES.md、LICENSES/ 全部许可证
+       全文(至少含 OFL-1.1.txt)。U2 裁定不附 LICENSE-EXCEPTION.md,所以没有它。
+    ⑥ 打包后重新打开 zip 断言:三个 bundle 的 DLL 条目、上面每个合规文件、INSTALL.txt 的源码声明行都在;
+       每个条目解出来的字节与源文件逐一比哈希;根目录不许有清单外的东西。
+  确定性:条目按序数排序,时间戳统一取 SOURCE_DATE_EPOCH / HEAD 提交时间(都取不到才用 1980-01-01),
+  所以同一份输入在同一运行时下重跑,zip 的 sha256 不变。不同 .NET 运行时(PS 5.1 与 7)的 deflate
+  实现不同,跨运行时不保证字节一致。
+.EXAMPLE   pwsh scripts/package.ps1 -Version 1.2.3 -BuildDir build -OutDir dist
+.EXAMPLE   pwsh scripts/package.ps1 -Version 0.0.0-dryrun -BuildDir D:\artifacts -OutDir D:\out
+#>
+param(
+  # 缺省 = CMakeLists.txt 的 project(SCVB VERSION x.y.z)。tag 带 -rc.N 时由 release.yml 传整串(不含 v)。
+  [string]$Version,
+  # 缺省 = "v$Version"。INSTALL.txt 的源码 URL 与手册链接都钉在这个 tag 上。
+  [string]$Tag,
+  [string]$BuildDir = 'build',
+  [string]$OutDir = 'dist',
+  # 缺省 = 仓库 HEAD。只写进 INSTALL.txt / summary 作溯源,不参与判定。
+  [string]$SourceCommit
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+. (Join-Path $PSScriptRoot 'lib/release-version.ps1')
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$RepoSlug = 'synchain-oss/scvb'
+$ExpectedBundles = @('SCVB Input.vst3', 'SCVB Monitor.vst3', 'SCVB Output.vst3')
+
+function Fail([string]$msg) {
+  Write-Host "package.ps1: $msg" -ForegroundColor Red
+  exit 1
+}
+
+# 相对路径按调用者的当前位置解析(PS 5.1 / 7 都认,绝对路径原样返回)。
+function Resolve-Full([string]$p) {
+  return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
+}
+
+function Get-Sha256([string]$path) {
+  return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-StreamSha256([System.IO.Stream]$s) {
+  $h = [System.Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-', '').ToLowerInvariant() }
+  finally { $h.Dispose() }
+}
+
+# 从用户手册的「硬约束」生成区取第 1..3 条原文(markdown 加重与反引号剥掉)。
+# 手册是九条的唯一真源(en 由 gen-hard-rules.mjs 从 docs/hard-rules.i18n.json 生成),本脚本不存副本。
+function Get-FirstThreeRules([string]$mdPath, [string]$heading) {
+  $lines = [IO.File]::ReadAllLines($mdPath, [Text.Encoding]::UTF8)
+  $in = $false
+  $rules = New-Object System.Collections.Generic.List[string]
+  foreach ($l in $lines) {
+    if ($l -eq $heading) { $in = $true; continue }
+    if ($in -and $l -match '^## ') { break }
+    if ($in -and $l -match '^>\s*([0-9]+)\.\s+(.+)$') {
+      $n = [int]$Matches[1]
+      if ($n -ne $rules.Count + 1) { Fail "$mdPath 的「$heading」小节规则编号不连续(期望 $($rules.Count + 1),读到 $n)" }
+      # 剥加重后,中文句号 / 分号后面那个原本隔开 `**` 的空格会悬空,顺手收掉(英文不含这两个字符)。
+      $rules.Add(((($Matches[2] -replace '\*\*', '') -replace '`', '') -replace '(?<=[。；])[ ]+', ''))
+      if ($rules.Count -eq 3) { break }
+    }
+  }
+  if ($rules.Count -ne 3) { Fail "$mdPath 的「$heading」小节里没读到前 3 条规则(读到 $($rules.Count) 条)" }
+  return , $rules.ToArray()
+}
+
+# ── 版本与 tag ────────────────────────────────────────────────────────────────
+$cmakeVersion = Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoot 'CMakeLists.txt')))
+if (-not $cmakeVersion) { Fail 'CMakeLists.txt 里找不到 project(SCVB ... VERSION x.y.z)' }
+if (-not $Version) { $Version = $cmakeVersion }
+# 版本串会进文件名与 URL:只放行 semver 形态,挡住路径分隔符与空白。
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$') {
+  Fail "版本号形态不对:'$Version'(应为 x.y.z 或 x.y.z-<预发布标识>,不带前导 v)"
+}
+if (-not $Tag) { $Tag = "v$Version" }
+if ($Tag -ne "v$Version") { Fail "tag '$Tag' 与版本 '$Version' 不对应(应为 v$Version)" }
+$coreVersion = ($Version -split '-', 2)[0]
+if ($coreVersion -ne $cmakeVersion) {
+  # 不判红:tag 与 CMake 一致性由 release.yml 的 check-release-tag.ps1 管(它对 v0.0.0-test 有专门放行);
+  # 本地拿假版本号试打包也走到这里。只显形。
+  Write-Host "[WARN] 版本 $Version 与 CMakeLists.txt 的 $cmakeVersion 不一致(本地试打包 / 测试 tag 属预期)" -ForegroundColor Yellow
+}
+
+if (-not $SourceCommit) {
+  $SourceCommit = ''
+  try { $SourceCommit = (& git -C $RepoRoot rev-parse HEAD 2>$null | Out-String).Trim() } catch { $SourceCommit = '' }
+}
+
+# 条目时间戳:SOURCE_DATE_EPOCH > HEAD 提交时间 > 1980-01-01(zip 的 DOS 时间下限)。
+$epoch = $null
+if ($env:SOURCE_DATE_EPOCH -match '^[0-9]+$') { $epoch = [long]$env:SOURCE_DATE_EPOCH }
+if ($null -eq $epoch) {
+  try {
+    $ct = (& git -C $RepoRoot log -1 --format=%ct 2>$null | Out-String).Trim()
+    if ($ct -match '^[0-9]+$') { $epoch = [long]$ct }
+  } catch { $epoch = $null }
+}
+if ($null -eq $epoch) { $epoch = 315532800 }
+$entryTime = [DateTimeOffset]::FromUnixTimeSeconds($epoch)
+
+$zipName = "SCVB-v$Version-win64.zip"
+$buildFull = Resolve-Full $BuildDir
+$outFull = Resolve-Full $OutDir
+if (-not (Test-Path -LiteralPath $buildFull -PathType Container)) { Fail "BuildDir 不存在:$buildFull" }
+
+# ── ② 枚举 bundle ─────────────────────────────────────────────────────────────
+$bundles = @(Get-ChildItem -LiteralPath $buildFull -Recurse -Directory -Filter '*.vst3')
+if ($bundles.Count -ne 3) {
+  $bundles | ForEach-Object { Write-Host "  found: $($_.FullName)" }
+  Fail "期望恰好 3 个 .vst3 bundle 目录(SCVB Input / Output / Monitor),实际 $($bundles.Count) 个。BuildDir 里混着多套构建(如 Debug + Release)时请指到单一配置的目录。"
+}
+$names = @($bundles | ForEach-Object { $_.Name } | Sort-Object)
+if (($names -join '|') -ne ($ExpectedBundles -join '|')) {
+  Fail ("bundle 名字不对:实际 [{0}],期望 [{1}]" -f ($names -join ', '), ($ExpectedBundles -join ', '))
+}
+foreach ($b in $bundles) {
+  $dll = Join-Path $b.FullName (Join-Path 'Contents\x86_64-win' $b.Name)
+  if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { Fail "bundle 不完整,缺 $dll" }
+}
+
+# ── ⑤ 合规文件 ────────────────────────────────────────────────────────────────
+$licenseDir = Join-Path $RepoRoot 'LICENSES'
+$licenseFiles = @(Get-ChildItem -LiteralPath $licenseDir -File -Filter '*.txt')
+if (-not ($licenseFiles | Where-Object { $_.Name -eq 'OFL-1.1.txt' })) { Fail 'LICENSES/OFL-1.1.txt 不存在(字体随 .vst3 分发,OFL 全文必须随附)' }
+foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+  if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $f) -PathType Leaf)) { Fail "仓库根缺 $f" }
+}
+
+# ── ④ INSTALL.txt ─────────────────────────────────────────────────────────────
+$sourceUrl = "https://github.com/$RepoSlug/tree/$Tag"
+$sourceLine = "Corresponding source for this exact build: $sourceUrl"
+$rulesEn = Get-FirstThreeRules (Join-Path $RepoRoot 'docs/USER_GUIDE.md') '## Hard rules'
+$rulesZh = Get-FirstThreeRules (Join-Path $RepoRoot 'docs/USER_GUIDE.zh-CN.md') '## 硬约束'
+$guideEn = "https://github.com/$RepoSlug/blob/$Tag/docs/USER_GUIDE.md"
+$guideZh = "https://github.com/$RepoSlug/blob/$Tag/docs/USER_GUIDE.zh-CN.md"
+$vstDir = 'C:\Program Files\Common Files\VST3\'
+$commitLine = if ($SourceCommit) { "Built from commit: $SourceCommit" } else { $null }
+
+$install = New-Object System.Collections.Generic.List[string]
+$install.AddRange([string[]]@(
+  "SCVB (Synchain Vocal Balancer) $Version - Windows x64 (VST3)",
+  '',
+  $sourceLine
+))
+if ($commitLine) { $install.Add($commitLine) }
+$install.AddRange([string[]]@(
+  '',
+  '== English ==',
+  '',
+  'What is in this zip',
+  '  SCVB Input.vst3     required - goes on every vocal track',
+  '  SCVB Output.vst3    required - goes on the vocal bus',
+  '  SCVB Monitor.vst3   optional - read-only window for watching a whole group; install it only if you want it',
+  '  LICENSE.txt, THIRD-PARTY-NOTICES.md, LICENSES\   licence texts',
+  '  INSTALL.txt         this file',
+  'Input and Output are a pair and share one version number. Install both from the same zip.',
+  '',
+  'Requirements: Windows 10 1809+ or Windows 11 (x64), a 64-bit VST3 host,',
+  'and the Microsoft WebView2 Evergreen Runtime (usually already present).',
+  '',
+  'Install',
+  '  1. Check the download. In PowerShell:',
+  "       Get-FileHash .\$zipName -Algorithm SHA256",
+  "     The hash must match $zipName.sha256 and the SHA-256 in the GitHub Release notes.",
+  '     If it does not match, do not install it.',
+  '  2. Unblock the zip BEFORE you extract it. SCVB is not code-signed, and Windows marks files',
+  '     downloaded from the internet. Right-click the zip > Properties > General > tick "Unblock" > OK.',
+  '     (No "Unblock" box means there is nothing to do.) Or in PowerShell:',
+  "       Unblock-File .\$zipName",
+  '     If you already extracted and copied the plugins, unblock them in place from an',
+  '     administrator PowerShell:',
+  "       Get-ChildItem '$($vstDir)SCVB *.vst3' -Recurse | Unblock-File",
+  "  3. Extract, then copy each whole .vst3 folder (not just the file inside it) into",
+  "       $vstDir",
+  '     Windows will ask for administrator permission for that folder.',
+  '  4. Rescan plugins in your DAW.',
+  '',
+  'If Windows SmartScreen or your browser warns about an unknown or unrecognised publisher,',
+  'that is because the plugins are not code-signed. Check the SHA-256 first; then choose',
+  '"More info" > "Run anyway" (or "Keep" in the browser). You can also build SCVB yourself',
+  'from the source link above.',
+  '',
+  'Read before first use - the first 3 of the nine usage rules (the plugin shows all nine on',
+  'first launch; breaking any of them gives silence, wrong panning or failed analysis):'
+))
+for ($i = 0; $i -lt 3; $i++) { $install.Add(("  {0}. {1}" -f ($i + 1), $rulesEn[$i])) }
+$install.AddRange([string[]]@(
+  "All nine rules: $guideEn",
+  '',
+  'Licence: SCVB is free software under the GNU GPL v3 or later (LICENSE.txt).',
+  'Third-party components and their licences: THIRD-PARTY-NOTICES.md and LICENSES\.',
+  "Issues: https://github.com/$RepoSlug/issues",
+  '',
+  '== 中文 ==',
+  '',
+  'zip 里有什么',
+  '  SCVB Input.vst3     必装 —— 插在每条人声轨上',
+  '  SCVB Output.vst3    必装 —— 插在人声总线上',
+  '  SCVB Monitor.vst3   可选 —— 只读的整组观察窗,需要才装',
+  '  LICENSE.txt、THIRD-PARTY-NOTICES.md、LICENSES\   许可证全文',
+  '  INSTALL.txt         本文件',
+  'Input 与 Output 是一对,共用一个版本号,请从同一个 zip 里一起安装。',
+  '',
+  '系统要求:Windows 10 1809+ 或 Windows 11(x64)、64 位 VST3 宿主、',
+  'Microsoft WebView2 Evergreen Runtime(通常系统已自带)。',
+  '',
+  '安装',
+  '  1. 校验下载。在 PowerShell 里运行:',
+  "       Get-FileHash .\$zipName -Algorithm SHA256",
+  "     结果必须与 $zipName.sha256 以及 GitHub Release 正文里的 SHA-256 一致,对不上就不要安装。",
+  '  2. 解压**之前**先解除锁定。SCVB 没有代码签名,Windows 会给从网上下载的文件打标记。',
+  '     右键 zip > 属性 > 常规 > 勾选「解除锁定」> 确定(没有这个勾选框就说明无需处理)。',
+  '     或者在 PowerShell 里运行:',
+  "       Unblock-File .\$zipName",
+  '     如果已经解压并复制过了,用管理员身份打开 PowerShell 就地解除:',
+  "       Get-ChildItem '$($vstDir)SCVB *.vst3' -Recurse | Unblock-File",
+  '  3. 解压,把每个 .vst3 **整个文件夹**(不是里面的单个文件)复制到',
+  "       $vstDir",
+  '     复制到该目录需要管理员权限,按系统提示确认即可。',
+  '  4. 在 DAW 里重新扫描插件。',
+  '',
+  '如果 Windows SmartScreen 或浏览器提示「未知发布者」,原因是插件没有代码签名。请先核对 SHA-256,',
+  '再点「更多信息」>「仍要运行」(浏览器里选「保留」)。你也可以按上面的源码链接自行构建。',
+  '',
+  '首次使用前必读 —— 九条使用规则的前 3 条(插件首次启动会完整弹出九条;违反任何一条都会导致',
+  '静音、错音或分析失效):'
+))
+for ($i = 0; $i -lt 3; $i++) { $install.Add(("  {0}. {1}" -f ($i + 1), $rulesZh[$i])) }
+$install.AddRange([string[]]@(
+  "完整九条:$guideZh",
+  '',
+  '许可证:SCVB 以 GNU GPL v3 或更高版本发布(LICENSE.txt);第三方组件及其许可证见',
+  'THIRD-PARTY-NOTICES.md 与 LICENSES\。',
+  "问题反馈:https://github.com/$RepoSlug/issues",
+  ''
+))
+# 中文一段里的 ** 是写给自己看的强调,txt 不渲染 markdown,落盘前剥掉。
+$installText = (($install.ToArray() -join "`r`n") -replace '\*\*', '')
+
+# ── 组装条目清单:(zip 内路径, 源文件 或 $null=内存内容) ──────────────────────
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("scvb-package-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage | Out-Null
+try {
+  $installPath = Join-Path $stage 'INSTALL.txt'
+  [IO.File]::WriteAllText($installPath, $installText, (New-Object System.Text.UTF8Encoding($true)))
+
+  $entries = @{}   # zip 内路径 -> 源文件全路径
+  foreach ($b in $bundles) {
+    $root = $b.FullName.TrimEnd('\', '/')
+    foreach ($f in @(Get-ChildItem -LiteralPath $root -Recurse -File)) {
+      $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+      $entries[($b.Name + '/' + $rel)] = $f.FullName
+    }
+  }
+  $entries['LICENSE.txt'] = (Join-Path $RepoRoot 'LICENSE')
+  $entries['THIRD-PARTY-NOTICES.md'] = (Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md')
+  foreach ($f in $licenseFiles) { $entries[('LICENSES/' + $f.Name)] = $f.FullName }
+  $entries['INSTALL.txt'] = $installPath
+
+  $keys = [string[]]@($entries.Keys)
+  [Array]::Sort($keys, [StringComparer]::Ordinal)
+
+  # ── 写 zip ──────────────────────────────────────────────────────────────────
+  if (-not (Test-Path -LiteralPath $outFull)) { New-Item -ItemType Directory -Path $outFull | Out-Null }
+  $zipPath = Join-Path $outFull $zipName
+  if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+  $fs = [IO.File]::Open($zipPath, [IO.FileMode]::CreateNew)
+  try {
+    $zip = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+      foreach ($k in $keys) {
+        $e = $zip.CreateEntry($k, [System.IO.Compression.CompressionLevel]::Optimal)
+        $e.LastWriteTime = $entryTime
+        $dst = $e.Open()
+        try {
+          $src = [IO.File]::OpenRead($entries[$k])
+          try { $src.CopyTo($dst) } finally { $src.Dispose() }
+        } finally { $dst.Dispose() }
+      }
+    } finally { $zip.Dispose() }
+  } finally { $fs.Dispose() }
+
+  # ── ⑥ 打包后断言:重新打开 zip,逐条比对 ────────────────────────────────────
+  $zr = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+  try {
+    $inZip = @{}
+    foreach ($e in $zr.Entries) {
+      if ($inZip.ContainsKey($e.FullName)) { Fail "zip 内条目重复:$($e.FullName)" }
+      $s = $e.Open()
+      try { $inZip[$e.FullName] = Get-StreamSha256 $s } finally { $s.Dispose() }
+    }
+    if ($inZip.Count -ne $keys.Count) { Fail "zip 条目数 $($inZip.Count) != 待打包文件数 $($keys.Count)" }
+    foreach ($k in $keys) {
+      if (-not $inZip.ContainsKey($k)) { Fail "zip 内缺条目:$k" }
+      if ($inZip[$k] -ne (Get-Sha256 $entries[$k])) { Fail "zip 内条目与源文件字节不一致:$k" }
+    }
+    $required = @('LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'LICENSES/OFL-1.1.txt', 'INSTALL.txt')
+    foreach ($b in $ExpectedBundles) { $required += "$b/Contents/x86_64-win/$b" }
+    foreach ($r in $required) { if (-not $inZip.ContainsKey($r)) { Fail "zip 内缺必需条目:$r" } }
+    # 根目录白名单:三个 bundle 目录、LICENSES/、三个根文件,别的都不该出现。
+    $allowedTop = @($ExpectedBundles) + @('LICENSES', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
+    foreach ($n in $inZip.Keys) {
+      $top = ($n -split '/', 2)[0]
+      if ($allowedTop -notcontains $top) { Fail "zip 根目录出现清单外的条目:$n" }
+    }
+    $installEntry = $zr.GetEntry('INSTALL.txt')
+    $rd = New-Object System.IO.StreamReader($installEntry.Open(), [Text.Encoding]::UTF8)
+    try { $installBack = $rd.ReadToEnd() } finally { $rd.Dispose() }
+    if (-not ($installBack.Contains($sourceLine))) { Fail "INSTALL.txt 缺精确到 tag 的源码声明行:$sourceLine" }
+  } finally { $zr.Dispose() }
+
+  # ── ③ sha256 与 summary ──────────────────────────────────────────────────────
+  $sha = Get-Sha256 $zipPath
+  $size = (Get-Item -LiteralPath $zipPath).Length
+  $shaPath = "$zipPath.sha256"
+  [IO.File]::WriteAllText($shaPath, "$sha  $zipName`n", (New-Object System.Text.UTF8Encoding($false)))
+
+  $releaseDate = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+  $summary = New-Object System.Collections.Generic.List[string]
+  $summary.AddRange([string[]]@(
+    "# SCVB package summary",
+    '',
+    '| key | value |',
+    '| --- | --- |',
+    "| version | $Version |",
+    "| tag | $Tag |",
+    "| zipFileName | $zipName |",
+    "| sizeBytes | $size |",
+    "| sha256 | $sha |",
+    "| releaseDate | $releaseDate (UTC) |",
+    "| sourceCommit | $SourceCommit |",
+    "| cmakeVersion | $cmakeVersion |",
+    "| bundles | $($ExpectedBundles -join ', ') |",
+    '',
+    "Corresponding source: $sourceUrl",
+    '',
+    '## zip contents',
+    '',
+    '| entry | sha256 |',
+    '| --- | --- |'
+  ))
+  foreach ($k in $keys) { $summary.Add(("| ``{0}`` | {1} |" -f $k, $inZip[$k])) }
+  $summaryPath = Join-Path $outFull 'package-summary.md'
+  [IO.File]::WriteAllText($summaryPath, (($summary.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+  if ($env:GITHUB_OUTPUT) {
+    "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+  }
+
+  Write-Host "package.ps1: OK"
+  Write-Host "  zip      $zipPath ($size bytes, $($keys.Count) entries)"
+  Write-Host "  sha256   $sha"
+  Write-Host "  summary  $summaryPath"
+} finally {
+  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+}
+exit 0

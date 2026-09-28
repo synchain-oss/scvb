@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-08-25
+> 最后更新:2026-09-28
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -12,15 +12,17 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 **铁律:除真源外,任何地方都不得硬编码版本号** —— README、docs、UI HTML、脚本、workflow 一律不写死。README 里的版本靠 badge 动态显示(shields.io 读 GitHub Release)。
 
-下游镜像(发版时必须同步):官网下载页常量、`CHANGELOG.md`、Release tag。
+下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag;官网下载页上线后再加上它的常量。
 
-**两个插件共用同一个版本号、同一次发布。** 它们本来就配对使用,分开编号的直接后果是用户装出不匹配的组合,而 SCVB 会拒绝半兼容连接。
+**三个插件(Input / Output / Monitor)共用同一个版本号、同一次发布、同一个 zip。** Input 与 Output 本来就配对使用,分开编号的直接后果是用户装出不匹配的组合,而 SCVB 会拒绝半兼容连接;Monitor 是可选的只读观察窗,跟着同一个版本走。
 
 ## Tag 规则
 
-- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(GitHub Release 勾 pre-release)。
+- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。
+- 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
+- 其他形态(`v1.2.3-beta.1`、`v1.2` 等)一律被拒。
 - tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**。
-- tag push 时,`.github/workflows/release.yml` 的 **Verify version matches tag** 步会比对 tag 与 `CMakeLists.txt` 的 VERSION,不一致即 fail。
+- tag push 时,`.github/workflows/release.yml` 的 `verify-tag` job 先比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(判据 `scripts/check-release-tag.ps1`,带自测),不一致即 fail,不会进入 20 分钟的构建。
 
 semver 语义(音频插件特化):
 
@@ -44,27 +46,33 @@ semver 语义(音频插件特化):
 - 底部维护 tag 对比链接。
 - **写入时机:每个 PR 自己改 CHANGELOG**,不留到发版时补写。
 
+## 发版流水线现状
+
+推一个 `v*` tag,`.github/workflows/release.yml` 依次跑三个 job:
+
+| job | 做什么 | 失败时 |
+|---|---|---|
+| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」) | 立刻红,不进构建 |
+| `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
+| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
+
+- 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
+- 同一个 tag 重跑:已有草稿就覆盖资产;**已发布的 Release 流水线一律不碰**。
+- 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
+- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
+
 ## 发版清单
 
-> **⚠️ 现状:这份清单还走不通,三处硬阻塞都归 T40。** 下面逐条写的是发版**应当**怎么走;在 T40 落地前照着走会在第 6 步之后连撞:
->
-> | # | 阻塞 | 现状 | 后果 |
-> |---|---|---|---|
-> | 1 | `scripts/package.ps1` **不存在** | `release.yml` 的 Package 步与 `.sha256` 生成都依赖它(文件里的注释写明「由 T40 补齐」) | 第 7 步没有产物可核对;Release 只会拿到空的 `files:` glob |
-> | 2 | **Verify version matches tag 解析错行** | 该步用 `Select-String -Pattern 'VERSION' \| Select-Object -First 1` 取 `CMakeLists.txt` 的第一条 VERSION,而第 1 行是 `cmake_minimum_required(VERSION 3.22)` —— 实测解析出 `3.22`,不是 `project(SCVB VERSION)` 的 `0.1.0` | 任何真实 tag 都会被误判为版本不匹配,workflow 首步即 fail。**这与 #71 在 `scripts/build.ps1` 修掉的是同一个 bug**,`release.yml` 里的那一份当时没跟着改 |
-> | 3 | **`release.yml` 不产出 `.vst3`** | 该 workflow 目前**只有** Verify + Package + 上传三步,没有复用 `build-vst3` 的构建 / ctest / pluginval(文件里的注释写明「完整 build/ctest/pluginval 复用与 `scripts/package.ps1` 由 T40 补齐」) | 即使前两条修好,打包步也没有 `.vst3` 可打 —— 发版链路缺的是**产物本身**,不只是打包脚本 |
->
-> 三条都在 T40 的范围内。在此之前本文件按「目标态」维护,不要把它当成已通链路。
-
+0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `scripts/package.ps1` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。
-3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处。
-4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿。
+3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
+4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经人工审校不得发版**(05 §5:机翻安全警告发到公开产品是明确禁止项)。
-6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号(该步当前解析错行,见上方现状表第 2 条)。
-7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
-8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
-9. **发布后**:把**同一份** zip 与 `.sha256` 上传到官网下载页,并逐字核对官网哈希与 Release 正文里的 SHA-256 一致(README 向用户承诺了这一点);同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
+6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
+7. **核对产物**(草稿 Release 的资产):zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` / `SCVB Monitor.vst3` 三个完整 bundle 齐全,合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
+8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
+9. **发布后**:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**;上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
 ## zip 内必须携带的合规文件组
 
@@ -72,14 +80,18 @@ GPLv3 §4/§5 要求分发时保留法律声明,§6 要求目标码分发伴随�
 
 ```
 SCVB-vX.Y.Z-win64.zip
-├── SCVB Input.vst3/            完整 bundle 目录层级
-├── SCVB Output.vst3/
-├── LICENSE.txt                 GPLv3 全文
+├── SCVB Input.vst3/            完整 bundle 目录层级(必装)
+├── SCVB Output.vst3/           (必装)
+├── SCVB Monitor.vst3/          (可选的只读观察窗)
+├── LICENSE.txt                 GPLv3 全文(= 仓库根 LICENSE)
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
-├── LICENSES/OFL-1.1.txt        字体许可证
-├── LICENSE-EXCEPTION.md        若 U2 采纳:GPLv3 §7 的 WebView2 链接例外
-└── INSTALL.txt                 安装路径 + 对应源码获取地址(GPLv3 §6 的书面声明)
+├── LICENSES/                   仓库 LICENSES/ 下全部许可证全文(OFL-1.1 / MIT / AGPL-3.0 / GPL-3.0)
+└── INSTALL.txt                 安装步骤 + 未签名插件的「解除锁定」与 SmartScreen 说明 + 九条规则前 3 条
+                                + 精确到 tag 的源码获取地址(GPLv3 §6 的书面声明)
 ```
+
+U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认解释,见 `THIRD-PARTY-NOTICES.md`),所以 zip 里没有它。
+以上每一项都由 `scripts/package.ps1` 在打包后重新打开 zip 断言(三个 bundle 的 DLL 条目、每个合规文件、`INSTALL.txt` 的源码声明行、逐条目与源文件字节一致、根目录无清单外条目);`INSTALL.txt` 里的九条规则原文从用户手册的生成区读取,不另存副本。
 
 ## 发布说明模板
 
@@ -88,7 +100,7 @@ SCVB-vX.Y.Z-win64.zip
 ```markdown
 # Synchain Vocal Balancer v{X.Y.Z} (Windows x64)
 
-> SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**。
+> SCVB 的 Input 与 Output 是一对配套插件,**必须同时安装、成对使用**;同一个 zip 里的 Monitor 是可选的只读观察窗。
 
 ## ⚠️ 升级须知
 <!-- 有则填,无则整节删除 -->
@@ -106,17 +118,18 @@ SCVB-vX.Y.Z-win64.zip
 ## 下载与安装
 | 资产 | 说明 |
 |---|---|
-| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3` 与 `SCVB Output.vst3`(完整 bundle 目录),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、(若 U2 采纳)`LICENSE-EXCEPTION.md`、`INSTALL.txt` |
-| `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(由 `scripts/package.ps1` 生成 —— 该脚本尚未落地,见发版清单开头的现状说明) |
+| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3`、`SCVB Output.vst3`(必装)与 `SCVB Monitor.vst3`(可选),都是完整 bundle 目录;解压前先解除锁定(见下),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/`、`INSTALL.txt` |
+| `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(`sha256sum -c` 可直接用) |
+| `package-summary.md` | 版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / zip 内逐条目哈希 |
 
-SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手抄):
+SHA-256(直接从 `package-summary.md` 复制,不要手抄):
 
     <zip 的哈希>
 
 系统要求:Windows 10 1809+ / WebView2 Evergreen Runtime(通常已随 Windows 预装)
 
 <!-- 未签名时必填 -->
-> 首次运行 Windows SmartScreen 可能提示「未知发布者」,点「更多信息 → 仍要运行」。本项目当前未做代码签名,你可以自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)。
+> 本项目未做代码签名(U13)。**解压前先解除锁定**:右键 zip → 属性 → 常规 → 勾选「解除锁定」→ 确定(或 PowerShell `Unblock-File .\SCVB-v{X.Y.Z}-win64.zip`)。若 Windows SmartScreen 或浏览器提示「未知发布者」,先核对 SHA-256,再点「更多信息 → 仍要运行」(浏览器里选「保留」)。你也可以自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)。zip 里的 `INSTALL.txt` 有同样的中英文步骤。
 
 ## 首次使用?
 先读 **[九条使用规则](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#硬约束)** —— 路由摆错会直接出静音。
@@ -137,7 +150,7 @@ SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手�
 
 ## 分发渠道
 
-- **权威产物来源**:GitHub Releases —— 单个 zip(两个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256`。zip 与 SHA-256 都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。
-- **面向用户的推荐入口**:官网下载页(README 把它排在第一位)。官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 这条不成立时,README 里「两处应当一致」的说法就是空头承诺,用户会被引到一条只验传输、不验来源的弱路径上。
+- **权威产物来源**:GitHub Releases —— 单个 zip(三个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256` + `package-summary.md`。三者都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。
+- **官网下载页**:是否上线、何时上线**待定**。上线后必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 这条不成立时,「两处应当一致」的说法就是空头承诺,用户会被引到一条只验传输、不验来源的弱路径上。
 
-**为什么合并成一个 zip**:两个插件本来就配对使用,分开下载最常见的用户故障就是「只装了一个」。
+**为什么合并成一个 zip**:Input 与 Output 本来就配对使用,分开下载最常见的用户故障就是「只装了一个」;Monitor 跟着同一个版本走,放在同一个 zip 里也避免版本错配。
