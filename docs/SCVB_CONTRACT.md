@@ -127,7 +127,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `g: 1..8`(UI 显示 A-H) |
-| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察) |
+| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察)或 `{ok:false, reason:"badArg"}`(`g` 不在 1..8;§0.8 第 2 条) |
 | 语义 | 写 state `group_id`;触发 01 §4.2 改组释放-重连:释放旧组 OutputSlot → Unmap 旧组全部段 → 新组 claim → 判定主/只读。成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新。**与 Input 侧 §3.3 同名同签名**,返回值不同(Output=`observer`,Input=`conflict`)。 |
 | 拒绝态 | PRINT 态由 UI 侧整组 disabled(05 §2.1 ⓪ tooltip「打印中不可切组」);C++ 侧不新增 `rejected` 码 |
 | 撤销 | 否 |
@@ -366,7 +366,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的全部入栈操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |
@@ -631,9 +631,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `n: 0..10`(int) |
-| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned"}`(**T25 定名**,§9.2) |
+| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned" \| "busy"}`(前三个 **T25 定名**,§9.2)或 `{ok:false, reason:"badArg"}`(`n` 不是整数;§0.8 第 2 条) |
 | 语义 | 经 ctrl 命令环投递一条记录 `{seq:u32, channel:u32, op:kSetPriority(=1), value:u64(=n)}`(§6);Output [M] 消费后落 state(唯一真源,ADR-004)并经 `config_seq` 变化回执。**Input UI 只做本地乐观显示,以 `scvb.config` 回执为准**。满环时写方覆盖最旧记录 + 溢出计数,返回 `{queued:false, reason:"ringFull"}`,UI 提示「设置未送达,请重试」(01 §4.4-c)。 |
-| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"` |
+| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"`;命令没能写进环(ctrl 段没打开 / 打开失败)→ `{queued:false, reason:"busy"}`(临时、可重试);参数类型不符 → `{ok:false, reason:"badArg"}` |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §3;ipc §4;01 §4.4-c |
@@ -821,7 +821,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "OutputSnapshot"},
       {"name": "setCaptureEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
       {"name": "setOutputEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
-      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true}"},
+      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "previewAnalyze", "params": ["scope"], "returns": "{intervals,tracks,manualKept}"},
       {"name": "analyze", "params": ["scope", "opts"], "returns": "{ok,affected:{intervals,tracks,manualKept}} | {ok:false,reason:\"busy\"}"},
       {"name": "cancelAnalyze", "params": [], "returns": "{ok}"},
@@ -872,7 +872,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "InputSnapshot"},
       {"name": "setChannelId", "params": ["n"], "returns": "{ok} | {conflict:true}"},
       {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {conflict:true}"},
-      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?}"},
+      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?} | {ok:false,reason:\"badArg\"}"},
       {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "commitUiScale", "params": [], "returns": "{ok}"},
       {"name": "setLang", "params": ["code"], "returns": "{ok}"},

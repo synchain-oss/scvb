@@ -250,23 +250,19 @@ export function applySegmentsEvent(prev, next) {
 //      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起)/
 //      `setVadParams` / `setSegmentation`([J95③a] 起,仅其松手档触发的那一次重分段))
 //      都经 §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
-//      (左列八类 = 上述六类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
-//       ⚠ `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」自 [J82] 起就已过期,
-//       属冻结契约文字、须走 §5 批准流程另开卡订正 —— 本卡不动它,登记在此。)
-//
-// **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
-//   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
-//     `grep -n 'call("setPanCurve"'` 零命中)。它**不会**进本 reducer:契约 §1.17 写明
-//     「写入后经 `scvb.state` 回推 `versions[active].pan_curve`」,§2.8 的 `reason` 十值里
-//     也没有它的份 —— 本 reducer 喂的是段表事件,pan 曲线根本不走那条线。故接线那一卡
-//     要补的是**另一路证据**(scvb.state 里 `pan_curve` 变化 ⇒ 撤销栈长了一条),
-//     不是把它「同批并进本 reducer」。
-//   • `setVersionName` 的**契约争议已经结了**:§0.9 左列现已含 `setVersionName`([J82]),
-//     与实现(`OutputProcessor.cpp` 拿 `authority_.undoManager()` 提交 `"Rename V{n}"` 事务,
-//     且已先做「名字未变则不产生空撤销事务」的短路)一致 —— 裁决 = 入栈。
-//     **仍然成立的缺口只剩一条**:§2.8 不为改名发段表事件,所以 web 侧对「改名入了栈」
-//     这件事**没有证据源**,`historyAfterSegments` 认不到它,改名后 undo 钮仍会误灰。
-//     要补得给它一条证据(回执或新事件),属契约面改动,不在本卡范围;登记在此。
+//      (左列八类 = 上述六类 + `setPanCurve` + `setVersionName`,后两类走证据③。
+//       `docs/SCVB_CONTRACT.md` §1.25 那句旧的「覆盖左列的四类操作」已订正为「全部入栈操作」,
+//       变更文档 `docs/contract-changes/20260928-rc-misc-contract-corrections.md`。)
+//   ③ **本端发起、段表事件不回推的两类**看各自的**回执**([rc-misc g];此前这两类后 undo 钮
+//      会误灰,只有键盘 Ctrl+Z 撤得动):
+//      • `setPanCurve`(§1.17):§2.8 的 reason 十值里没有它,pan 曲线只经 `scvb.state` 回推 ——
+//        而 state 里的 `pan_curve` 变化**不能**当证据(撤销 / 重做 / 切版本 / 读工程同样会改它)。
+//        C++ 侧对它**无条件**压一条事务(`commitCrvsTransaction`),所以回执 `{ok:true}` 就是
+//        「撤销栈长了一条、重做栈被清」的第一手证据 ⇒ `historyAfterPanCurve`;
+//      • `setVersionName`(§1.10,[J82] 入栈):C++ 先做「名字未变则不产生空撤销事务」的短路,
+//        比的是它自己的**权威名**;web 手里的名字经 `scvb.state` 异步回声,会晚一拍(SL-357),
+//        所以 web **判断不了**这次到底压没压步 ⇒ `historyAfterRename` 只置亮 undo、不碰 redo,
+//        与分析那一族同一条原则(拿可自愈的假亮,换掉不可自愈的假灰;#315 第 1 轮复审【重要】1)。
 //
 // 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
 // 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的
@@ -357,6 +353,40 @@ export function historyAfterSegments(prev, seg) {
     // 点一下拿 `ok:false` 就自愈 —— 拿可自愈的假亮,换掉不可自愈的假灰。
     if (ANALYSIS_REASONS.has(seg.reason)) return { ...cur, undo: true };
     return { undo: true, redo: false };
+}
+
+/**
+ * `setPanCurve` 回执 → 新可用性(证据③,[rc-misc g])。
+ *
+ * C++ 对每次受理的 setPanCurve 都压一条事务(不做「点没变」短路),故 `{ok:true}` ⇒
+ * undo 置亮、redo 置灰(新事务清空重做栈)。其余回执(`badArg` / `observer` / 桥没接上的 null)
+ * 都不是「入栈」的证据,原样返回。
+ * @param {{undo:boolean,redo:boolean}|null|undefined} prev
+ * @param {object|null} res `setPanCurve` 的回执
+ */
+export function historyAfterPanCurve(prev, res) {
+    const cur = prev || HISTORY_AVAIL_INIT;
+    if (!res || res.ok !== true) return cur;
+    return { undo: true, redo: false };
+}
+
+/**
+ * `setVersionName` 回执 → 新可用性(证据③,[rc-misc g])。
+ *
+ * C++ 在落盘名未变时**不**压事务,但它比的是自己的权威名,web 这边的旧名经 `scvb.state`
+ * 回声会晚一拍 —— 拿 store 里的旧名去比,撤销一次改名后紧接着再改名时会判错
+ * (#315 第 1 轮复审【重要】1)。所以这里不比名字:只要回执带回了落盘名(改名被受理),
+ * 就**只置亮 undo、不碰 redo**:
+ *   · 真压了步:undo 亮是对的;redo 其实已被清空而钮还亮着 —— 点一下拿 `ok:false` 自愈;
+ *   · 没压步(名字没变):undo 可能是假亮 —— 同样点一下自愈;redo 没动,不会被错灰。
+ * 置灰 redo 才是不可自愈的那种错(灰掉的钮点不动),证据不足时不做。
+ * @param {{undo:boolean,redo:boolean}|null|undefined} prev
+ * @param {object|null} res `setVersionName` 的回执(§1.10:`{ok, name}`)
+ */
+export function historyAfterRename(prev, res) {
+    const cur = prev || HISTORY_AVAIL_INIT;
+    if (!res || typeof res.name !== "string") return cur;
+    return { ...cur, undo: true };
 }
 
 /**
@@ -509,6 +539,27 @@ export function captureVisual(state, playhead) {
     if (!on) return "off";
     if (!playhead || !playhead.isPlaying) return "armed";
     return playhead.inRange ? "capturing" : "outside";
+}
+
+/**
+ * Header 连接摘要 pill 的模型(05 §2.0 第 1 行,[rc-misc h])。
+ *   · N ≥ 1 绿(脉冲)、N = 0 灰「未连接」—— 与此前逐字同款;
+ *   · **采集中**追加「· 采集中」后缀并脉冲。判据取 `captureVisual === "capturing"`
+ *     (开关 ON ∧ 播放中 ∧ 在 range 内),比规格原文「ON 且播放中」窄一档:出了 range
+ *     不写特征,那时挂「采集中」是假话(采集开关自己显示「已离开采集范围」)。
+ *     follow 档 inRange 恒真,两种读法在默认档上逐字相同。
+ * @param {number} n 已连接轨数(connectedCount)
+ * @param {object} state scvb.state
+ * @param {object|null} playhead scvb.playhead
+ */
+export function connPillModel(n, state, playhead) {
+    const capturing = captureVisual(state, playhead) === "capturing";
+    return {
+        tone: n > 0 ? "green" : "gray",
+        pulse: n > 0 || capturing,
+        key: n > 0 ? "state.connected" : "state.notConnected",
+        capturing,
+    };
 }
 
 /**
