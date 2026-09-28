@@ -181,7 +181,7 @@ const store = {
         rejectedPrintingUntil: 0,
         // B-04:布防期内输出开关 ON 过的粘滞位(footer 琥珀警告的「或被打开」半边)
         recapOutputOpened: false,
-        // [SL-373] 用户手动关掉过的**建议类横幅**(⑧⑨⑩;[J150] 起加上宿主提示 ⑪⑫⑬),key = 横幅锚点名,
+        // [SL-373] 用户手动关掉过的**建议类横幅**(⑧⑨⑩;[J150] 起加上宿主提示 ⑫⑬⑭),key = 横幅锚点名,
         // value = 关掉那一刻的**内容签名**。用户 v5.6.8 原话:「上方的黄色警告横幅
         // 加一个 x 可以关掉,不然一直在很烦」。
         //
@@ -666,8 +666,8 @@ langStart.mount();
 // ------------------------------------------------------------- 查看工作流程大卡(与 tour 步 2 同一张大卡)
 // 设置页「查看工作流程」入口:独立 overlay,渲染 workflow.* 五节点 + 优先级;零桥、零 state。
 // ---------------------------------------------------- 说明文档外链(SL-214)
-// 地址由 tab-settings.js 的 docsUrl() 按「界面语言 + 快照里的插件版本号」算出([SL-220]:
-// pin 到与插件同号的 tag,快照没到或版本串不合形态时回退默认分支),规则与已知边界写在那里。
+// 地址由 tab-settings.js 的 docsUrl() 按界面语言取([J149]:固定指向 prod 分支上的手册,
+// 不随插件版本号变),取舍与已知边界写在那里。
 
 /**
  * 在**系统浏览器**里打开说明文档。
@@ -682,7 +682,7 @@ langStart.mount();
  * WebView2 不会自己弹窗。
  */
 function openDocsInBrowser() {
-    const url = docsUrl(lang, store.snapshot);
+    const url = docsUrl(lang);
     // noopener:被打开方拿不到 window.opener,标准外链纪律
     window.open(url, "_blank", "noopener");
 }
@@ -1599,7 +1599,10 @@ function renderHeader() {
  * code,`active:false` 这条撤下机制对它们根本不适用。
  * ⑦ 同样不给 ✕:它自带一枚「继续写入自动化」的动作钮(§1.34),关掉横幅等于把一个
  * **待办**藏起来;⑧⑨⑩ 是纯提示,关掉只少一句话。
- * [J150] ⑪⑫⑬ 宿主专属提示同属建议类(读 §1.1 快照 `host` + §2.1 / §2.6 派生的打印相位,
+ * [SL-218] ⑪ `stateNotFullyRestored` 是 `scvb.error` 的 code,与 ②-⑥ 同一类:契约 §5.1
+ * 降级纪律② 已把它写进「持续性条件」(横幅①-⑥、⑪),不给 ✕,收到 `active:false` 才撤下
+ * (三个撤下时机见契约 §5.1 该行)。
+ * [J150] ⑫⑬⑭ 宿主专属提示同属建议类(读 §1.1 快照 `host` + §2.1 / §2.6 派生的打印相位,
  * 都不是 `scvb.error` 的 code),与 ⑧⑨⑩ 一样带 ✕。
  */
 function renderBanners() {
@@ -1667,6 +1670,11 @@ function renderBanners() {
     // `docs/SCVB_CONTRACT.md` §5.1 的 UI 落点列 / 降级纪律①。
     vs.noTimeline = err.has("noTimeline");
     show($("banner-noTimeline"), vs.noTimeline);
+
+    // ⑪ [SL-218] 上次载入工程时段表没能恢复(§5.1 `stateNotFullyRestored`)。只提示,不挡任何控件:
+    // 段表被保留、原始字节原样写回([SL-524][J122]),用户照常可以编辑或重新分析。
+    // detail 的 missing / rejected 两张 fourcc 表不上屏(给诊断用),横幅只说那一句话。
+    show($("banner-stateNotRestored"), err.has("stateNotFullyRestored"));
 
     // ⑦ 加载守卫(数据源 scvb.state.print_guard,不是 error code)
     show($("banner-printGuard"), !!(s.print_guard && s.print_guard.pending));
@@ -1757,10 +1765,10 @@ function renderBanners() {
         "",
     );
 
-    // ⑪⑫⑬ [J150] 宿主专属提示(03 §4.2 REAPER / §4.4 Live)。宿主取 §1.1 快照的 `host`;
+    // ⑫⑬⑭ [J150] 宿主专属提示(03 §4.2 REAPER / §4.4 Live)。宿主取 §1.1 快照的 `host`;
     // 三条的条件与「本会话」口径见 host-hints.js 头注。都是建议类 ⇒ 与 ⑧⑨⑩ 同走 showDismissible,
     // 文案里没有占位符 ⇒ 签名恒空串,「关过之后还能再出现」全靠「条件为假就删记录」那一半
-    // (⑪:输出关掉再打开;⑫:本会话闩住、不再出;⑬:下一次打印结束)。
+    // (⑫:输出关掉再打开;⑬:本会话闩住、不再出;⑭:下一次打印结束)。
     // 导览期 `vs` 是 demo store,它的宿主是 "other" ⇒ 三条恒不出。
     const hints = hostHintFlags(
         snapshotHost(vs.snapshot),
@@ -1869,14 +1877,14 @@ function showDismissible(gb, on, sig) {
     show(node, seen.get(gb) !== sig);
 }
 
-// [SL-373] ✕ 的接线。只挂建议类:⑧⑨⑩ 三条 + [J150] 宿主专属提示 ⑪⑫⑬ 三条
+// [SL-373] ✕ 的接线。只挂建议类:⑧⑨⑩ 三条 + [J150] 宿主专属提示 ⑫⑬⑭ 三条
 // (理由见 renderBanners 头注:①-⑥ 是 §5.1 降级纪律② 明令不可手动关闭的持续性条件,
 // ⑦ 自带一枚待办动作钮)。
 // 记的是**这一帧 renderBanners 算出的签名**,不是 DOM 里那句话 —— 见 bannerSignature 头注。
 // 钮只在横幅可见时点得到,所以走到这里 bannerSignature 一定有值;真取不到就记空串
 // (与 ⑨⑩ 的常态签名同一个值,行为退化成「这一条关掉了」,不会误判成别的条)。
 // 锚点名收成**一份**:接线循环与 moveFocusOffDismiss() 都读它,
-// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。⑪⑫⑬ 的名字从 host-hints.js 取,
+// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。⑫⑬⑭ 的名字从 host-hints.js 取,
 // 不在这里另抄。
 const DISMISSIBLE_BANNERS = [
     "banner-staleCapture",
@@ -2339,7 +2347,7 @@ if (bridge) {
     });
 }
 
-/** §5.1 七码;表外一律进诊断区(UI 不静默)。 */
+/** §5.1 八码;表外一律进诊断区(UI 不静默)。 */
 const KNOWN_CODES = new Set([
     "srMismatch",
     "secondOutput",
@@ -2348,6 +2356,7 @@ const KNOWN_CODES = new Set([
     "sidecarMissing",
     "noTimeline",
     "sidecarSwitched",
+    "stateNotFullyRestored",
 ]);
 
 /**

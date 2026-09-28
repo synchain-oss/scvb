@@ -96,19 +96,19 @@ log("=== ① host-hints.js 纯函数 ===");
             `hostHintFlags(${JSON.stringify(host)}, output ${state.global.output_enabled ? "ON" : "OFF"})`,
         );
     }
-    // 会话闩锁没置 ⇒ ⑫⑬ 不出(⑪ 不看闩锁)
+    // 会话闩锁没置 ⇒ ⑬⑭ 不出(⑫ 不看闩锁)
     const none = HH.hostHintFlags("reaper", ON, {});
     eq(
         [none.reaperKeepOpen, none.reaperPrintNote],
         [true, false],
-        "REAPER 未进过 PRINT:⑪ 出、⑫ 不出",
+        "REAPER 未进过 PRINT:⑫ 出、⑬ 不出",
     );
     eq(
         HH.hostHintFlags("live", ON, {}).liveReEnable,
         false,
-        "Live 未结束过打印:⑬ 不出",
+        "Live 未结束过打印:⑭ 不出",
     );
-    // ⑬ 还要「这一段写入告一段落」:输出 ON 且还在播(循环回范围里会接着写)⇒ 先不出(#324 复审)
+    // ⑭ 还要「这一段写入告一段落」:输出 ON 且还在播(循环回范围里会接着写)⇒ 先不出(#324 复审)
     const ended = { hintPrintEnded: true };
     const PLAY = { isPlaying: true };
     const STOP = { isPlaying: false };
@@ -121,9 +121,9 @@ log("=== ① host-hints.js 纯函数 ===");
             HH.hostHintFlags("live", ON, ended, null).liveReEnable,
         ],
         [false, true, true, true, true],
-        "⑬:输出 ON∧在播 不出;停走 / 关输出 / 无播放头 出",
+        "⑭:输出 ON∧在播 不出;停走 / 关输出 / 无播放头 出",
     );
-    // ⑪⑫ 不看走带
+    // ⑫⑬ 不看走带
     eq(
         [
             HH.hostHintFlags("reaper", ON, { hintEverPrinted: true }, PLAY)
@@ -132,7 +132,7 @@ log("=== ① host-hints.js 纯函数 ===");
                 .reaperPrintNote,
         ],
         [true, true],
-        "⑪⑫ 在播时照出(不看走带)",
+        "⑫⑬ 在播时照出(不看走带)",
     );
     // state / session 缺席不抛
     const safe = HH.hostHintFlags("reaper", null, null);
@@ -260,21 +260,21 @@ log("=== ③ 词条(三语)===");
     for (const lang of ["zh", "en", "fr"]) {
         check(
             T[lang]["banner.reaperKeepOpen"].startsWith("REAPER"),
-            `${lang} ⑪ 以 REAPER 打头`,
-        );
-        check(
-            T[lang]["banner.reaperPrintNote"].startsWith("REAPER"),
             `${lang} ⑫ 以 REAPER 打头`,
         );
         check(
+            T[lang]["banner.reaperPrintNote"].startsWith("REAPER"),
+            `${lang} ⑬ 以 REAPER 打头`,
+        );
+        check(
             T[lang]["banner.liveReEnable"].startsWith("Live"),
-            `${lang} ⑬ 以 Live 打头`,
+            `${lang} ⑭ 以 Live 打头`,
         );
         check(
             T[lang]["banner.liveReEnable"].includes("Re-Enable Automation"),
-            `${lang} ⑬ 带 Live 按钮原名 Re-Enable Automation`,
+            `${lang} ⑭ 带 Live 按钮原名 Re-Enable Automation`,
         );
-        // ⑫ 的首选项路径与 DAW_COMPATIBILITY §2.2 逐字一致(英文原文,各语言都不译)
+        // ⑬ 的首选项路径与 DAW_COMPATIBILITY §2.2 逐字一致(英文原文,各语言都不译)
         for (const frag of [
             "Preferences → Plug-ins → VST → VST compatibility",
             "Parameter automation notifications",
@@ -282,7 +282,7 @@ log("=== ③ 词条(三语)===");
         ]) {
             check(
                 T[lang]["banner.reaperPrintNote"].includes(frag),
-                `${lang} ⑫ 含「${frag}」`,
+                `${lang} ⑬ 含「${frag}」`,
             );
         }
     }

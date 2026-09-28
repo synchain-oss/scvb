@@ -2,30 +2,30 @@
 // =============================================================================
 // SCVB web-preview —— 宿主专属提示的**页面级**冒烟([J150] ①;03 §4.2 REAPER / §4.4 Live)
 // =============================================================================
-// 为什么要页面级:三条横幅(⑪⑫⑬)的显隐由 app.js 的 renderBanners 按「§1.1 快照 `host`
+// 为什么要页面级:三条横幅(⑫⑬⑭)的显隐由 app.js 的 renderBanners 按「§1.1 快照 `host`
 // × 打印相位 × 本会话闩锁」翻,而打印相位的边沿由 scvb.state 与 scvb.playhead **两路**
 // 事件带来(host-hints.js 头注)。node 侧 `smoke-host-hints.mjs` 只证明「判据会算」,
 // 证明不了「两路事件都真的在记账、算出来的东西真的进了 DOM、✕ 真的关得掉」。
 //
 // 跑什么(全部 `?scenario=connected`:输出开关初始 OFF、走带在播、播放头落在范围内(该世界的 range 是全曲跟随),
 // 所以点一下输出开关就进 PRINT —— 与 smoke-group-lock-page ④ 同一个世界):
-//   ① host=reaper:输出 ON ⇒ ⑪「保持窗口打开」+ ⑫「写完没录到怎么办」同时出、⑬ 不出;
-//      ✕ ⑫ ⇒ 停走再播(再进 PRINT)也不再出(一次性);⑪ 在 ARMED(停走)时仍在(挂的是输出 ON);
-//      ✕ ⑪ ⇒ 输出关掉再打开 ⇒ ⑪ 重新出现(showDismissible「条件为假就删记录」);
-//   ② host=live:打印中 ⑬ 不出;停走(PRINT → ARMED)⇒ ⑬ 出、⑪⑫ 不出;
-//      ✕ ⑬ ⇒ 再播(进 PRINT)不出 ⇒ 再停(又一次打印结束)重新出现;
+//   ① host=reaper:输出 ON ⇒ ⑫「保持窗口打开」+ ⑬「写完没录到怎么办」同时出、⑭ 不出;
+//      ✕ ⑬ ⇒ 停走再播(再进 PRINT)也不再出(一次性);⑫ 在 ARMED(停走)时仍在(挂的是输出 ON);
+//      ✕ ⑫ ⇒ 输出关掉再打开 ⇒ ⑫ 重新出现(showDismissible「条件为假就删记录」);
+//   ② host=live:打印中 ⑭ 不出;停走(PRINT → ARMED)⇒ ⑭ 出、⑫⑬ 不出;
+//      ✕ ⑭ ⇒ 再播(进 PRINT)不出 ⇒ 再停(又一次打印结束)重新出现;
 //   ③ host=cubase:进出 PRINT 各一次,三条自始至终不出(判据看的是打印结束那一帧的 footer
 //      `data-mode="printDone"` —— 同一次 render() 里 renderBanners 先于 renderFooter 跑过);
 //   ④ 不给 host(= 快照默认 other):同 ③;
 //   ⑤ host=live + **走带位置冻住**(`ctl.setHostTimeAvailable(false)`,§2.6 帧逐字不变 ⇒
 //      页面对这种帧不记账,与真桥 diff-then-emit 不发它同形):此时打印边沿**只**从
-//      scvb.state(输出开关)来 —— 打开再关掉输出 ⇒ ⑬ 必须出。这是专为 scvb.state 那一处
+//      scvb.state(输出开关)来 —— 打开再关掉输出 ⇒ ⑭ 必须出。这是专为 scvb.state 那一处
 //      记账造的尺子:它**只**靠那一处。(实测把那一处删掉,② 的第一次打印结束或 ⑥ 的停走
 //      **有时**也会红 —— 那两格进 PRINT 的那一拍来自输出开关,本套一看到 footer 进打印行
 //      就接着动走带,赶不赶得上下一帧 §2.6 看时机;两次实测红的格不一样。那是顺带的,
 //      别拿 ② / ⑥ 当这一处的判据。)
 //   ⑥ host=live + **循环跨出写入范围**(播着、输出 ON,把范围改到播放头之前 ⇒ PRINT → ARMED
-//      但走带还在走):⑬ **不出**(下一圈回到范围里还会接着写,「写入已结束」是反话;
+//      但走带还在走):⑭ **不出**(下一圈回到范围里还会接着写,「写入已结束」是反话;
 //      #324 复审采纳)⇒ 停走之后才出;
 //   各场景都要零未捕获异常、零 console.error。
 //
@@ -455,7 +455,7 @@ async function until(pred, ms = 8000) {
 
 const shown = (p) =>
     p
-        ? `⑪=${p.keepOpen ? "显" : "隐"} ⑫=${p.printNote ? "显" : "隐"} ⑬=${p.live ? "显" : "隐"}` +
+        ? `⑫=${p.keepOpen ? "显" : "隐"} ⑬=${p.printNote ? "显" : "隐"} ⑭=${p.live ? "显" : "隐"}` +
           ` 输出=${p.outputOn ? "ON" : "OFF"} footer=${p.footerMode}`
         : "(没读到页面)";
 
@@ -584,103 +584,103 @@ try {
     log(`(站点根 ${ROOT} → ${base};CDP ${CDP_PORT})`);
 
     // =========================================================================
-    log("=== ① host=reaper:⑪⑫ 进 PRINT 即出;⑫ 一次性;⑪ 关掉后输出重开再出 ===");
+    log("=== ① host=reaper:⑫⑬ 进 PRINT 即出;⑬ 一次性;⑫ 关掉后输出重开再出 ===");
     {
         await open("reaper");
         const p1 = await outputOnIntoPrint("①");
-        check(p1 && p1.keepOpen, `① ⑪「保持窗口打开」出现(实得 ${shown(p1)})`);
+        check(p1 && p1.keepOpen, `① ⑫「保持窗口打开」出现(实得 ${shown(p1)})`);
         check(
             p1 && p1.printNote,
-            `① ⑫「写完没录到怎么办」出现(实得 ${shown(p1)})`,
+            `① ⑬「写完没录到怎么办」出现(实得 ${shown(p1)})`,
         );
-        check(p1 && !p1.live, "① ⑬(Live 专属)不出");
+        check(p1 && !p1.live, "① ⑭(Live 专属)不出");
         eq(
             p1 && p1.keepOpenText,
             T.zh["banner.reaperKeepOpen"],
-            "① ⑪ 文案逐字 = 词条 zh",
+            "① ⑫ 文案逐字 = 词条 zh",
         );
         eq(
             p1 && p1.printNoteText,
             T.zh["banner.reaperPrintNote"],
-            "① ⑫ 文案逐字 = 词条 zh",
+            "① ⑬ 文案逐字 = 词条 zh",
         );
 
-        // ✕ ⑫ ⇒ 收起
-        check(await clickGb("banner-reaperPrintNote-dismiss"), "① 点了 ⑫ 的 ✕");
+        // ✕ ⑬ ⇒ 收起
+        check(await clickGb("banner-reaperPrintNote-dismiss"), "① 点了 ⑬ 的 ✕");
         const p2 = await until((x) => !x.printNote);
-        check(p2 && !p2.printNote, `① ✕ 之后 ⑫ 收起(实得 ${shown(p2)})`);
+        check(p2 && !p2.printNote, `① ✕ 之后 ⑬ 收起(实得 ${shown(p2)})`);
 
-        // 停走(PRINT → ARMED):⑪ 挂的是「输出 ON」,不随打印结束收起;⑬ 仍不出
+        // 停走(PRINT → ARMED):⑫ 挂的是「输出 ON」,不随打印结束收起;⑭ 仍不出
         const p3 = await stopAfterPrint("①");
         check(
             p3 && p3.keepOpen,
-            `① ARMED(停走、输出仍 ON)⑪ 仍在(实得 ${shown(p3)})`,
+            `① ARMED(停走、输出仍 ON)⑫ 仍在(实得 ${shown(p3)})`,
         );
-        check(p3 && !p3.printNote, "① ARMED:⑫ 仍是关着的");
-        check(p3 && !p3.live, "① ARMED:⑬ 不出(宿主不是 Live)");
+        check(p3 && !p3.printNote, "① ARMED:⑬ 仍是关着的");
+        check(p3 && !p3.live, "① ARMED:⑭ 不出(宿主不是 Live)");
 
-        // 再播(再进 PRINT):⑫ 是一次性的,不再出
+        // 再播(再进 PRINT):⑬ 是一次性的,不再出
         check(await setPlaying(true), "① 再播");
         const p4 = await until((x) => printing(x));
         check(p4 && printing(p4), `① 再次进入 PRINT(实得 ${shown(p4)})`);
         check(
             p4 && !p4.printNote,
-            `① ⑫ 一次性:再进 PRINT 也不再出(实得 ${shown(p4)})`,
+            `① ⑬ 一次性:再进 PRINT 也不再出(实得 ${shown(p4)})`,
         );
-        check(p4 && p4.keepOpen, "① ⑪ 仍在");
+        check(p4 && p4.keepOpen, "① ⑫ 仍在");
 
-        // ✕ ⑪ ⇒ 收起;输出关掉(条件为假,删记录)再打开 ⇒ ⑪ 重新出现
-        check(await clickGb("banner-reaperKeepOpen-dismiss"), "① 点了 ⑪ 的 ✕");
+        // ✕ ⑫ ⇒ 收起;输出关掉(条件为假,删记录)再打开 ⇒ ⑫ 重新出现
+        check(await clickGb("banner-reaperKeepOpen-dismiss"), "① 点了 ⑫ 的 ✕");
         const p5 = await until((x) => !x.keepOpen);
-        check(p5 && !p5.keepOpen, `① ✕ 之后 ⑪ 收起(实得 ${shown(p5)})`);
+        check(p5 && !p5.keepOpen, `① ✕ 之后 ⑫ 收起(实得 ${shown(p5)})`);
         check(await clickGb("master-output-toggle-switch"), "① 关掉输出");
         const p6 = await until((x) => !x.outputOn);
         check(
             p6 && !p6.outputOn && !p6.keepOpen,
-            `① 输出 OFF:⑪ 不出(实得 ${shown(p6)})`,
+            `① 输出 OFF:⑫ 不出(实得 ${shown(p6)})`,
         );
         const p7 = await outputOnIntoPrint("① 重开");
         check(
             p7 && p7.keepOpen,
-            `① 输出重新打开 ⇒ ⑪ 重新出现(实得 ${shown(p7)})`,
+            `① 输出重新打开 ⇒ ⑫ 重新出现(实得 ${shown(p7)})`,
         );
-        check(p7 && !p7.printNote, "① ⑫ 本会话仍不再出");
+        check(p7 && !p7.printNote, "① ⑬ 本会话仍不再出");
         assertClean("① host=reaper");
     }
 
     // =========================================================================
-    log("=== ② host=live:打印结束才出 ⑬;关掉后下一次打印结束再出 ===");
+    log("=== ② host=live:打印结束才出 ⑭;关掉后下一次打印结束再出 ===");
     {
         await open("live");
         const p1 = await outputOnIntoPrint("②");
         check(
             p1 && !p1.live && !p1.keepOpen && !p1.printNote,
-            `② 打印中三条都不出(⑬ 要等打印结束;实得 ${shown(p1)})`,
+            `② 打印中三条都不出(⑭ 要等打印结束;实得 ${shown(p1)})`,
         );
         const p2 = await stopAfterPrint("②");
         check(
             p2 && p2.live,
-            `② 打印结束 ⇒ ⑬「点 Re-Enable Automation」出现(实得 ${shown(p2)})`,
+            `② 打印结束 ⇒ ⑭「点 Re-Enable Automation」出现(实得 ${shown(p2)})`,
         );
-        check(p2 && !p2.keepOpen && !p2.printNote, "② ⑪⑫(REAPER 专属)不出");
+        check(p2 && !p2.keepOpen && !p2.printNote, "② ⑫⑬(REAPER 专属)不出");
         eq(
             p2 && p2.liveText,
             T.zh["banner.liveReEnable"],
-            "② ⑬ 文案逐字 = 词条 zh",
+            "② ⑭ 文案逐字 = 词条 zh",
         );
 
-        check(await clickGb("banner-liveReEnable-dismiss"), "② 点了 ⑬ 的 ✕");
+        check(await clickGb("banner-liveReEnable-dismiss"), "② 点了 ⑭ 的 ✕");
         const p3 = await until((x) => !x.live);
-        check(p3 && !p3.live, `② ✕ 之后 ⑬ 收起(实得 ${shown(p3)})`);
+        check(p3 && !p3.live, `② ✕ 之后 ⑭ 收起(实得 ${shown(p3)})`);
 
         check(await setPlaying(true), "② 再播");
         const p4 = await until((x) => printing(x));
         check(p4 && printing(p4), `② 再次进入 PRINT(实得 ${shown(p4)})`);
-        check(p4 && !p4.live, "② 打印中 ⑬ 不出");
+        check(p4 && !p4.live, "② 打印中 ⑭ 不出");
         const p5 = await stopAfterPrint("② 第二次");
         check(
             p5 && p5.live,
-            `② 又一次打印结束 ⇒ ⑬ 重新出现(关掉是那一次,不是永久;实得 ${shown(p5)})`,
+            `② 又一次打印结束 ⇒ ⑭ 重新出现(关掉是那一次,不是永久;实得 ${shown(p5)})`,
         );
         assertClean("② host=live");
     }
@@ -723,19 +723,19 @@ try {
         );
         await sleep(600); // 让冻住之后的第一帧(与之前不同,会记一拍)先落地
         const p1 = await outputOnIntoPrint("⑤");
-        check(p1 && !p1.live, "⑤ 打印中 ⑬ 不出");
+        check(p1 && !p1.live, "⑤ 打印中 ⑭ 不出");
         // 关掉输出 = PRINT → FOLLOW,这个边沿**只**由 scvb.state 带来(§2.6 帧逐字不变)
         check(await clickGb("master-output-toggle-switch"), "⑤ 关掉输出");
         const p2 = await until((x) => !x.outputOn && x.live);
         check(
             p2 && !p2.outputOn && p2.live,
-            `⑤ 关掉输出(打印结束)⇒ ⑬ 出现 —— 边沿是 scvb.state 那一处记上的(实得 ${shown(p2)})`,
+            `⑤ 关掉输出(打印结束)⇒ ⑭ 出现 —— 边沿是 scvb.state 那一处记上的(实得 ${shown(p2)})`,
         );
         assertClean("⑤ host=live 冻住走带");
     }
 
     // =========================================================================
-    log("=== ⑥ host=live + 播着出了写入范围:⑬ 等停走才出 ===");
+    log("=== ⑥ host=live + 播着出了写入范围:⑭ 等停走才出 ===");
     {
         await open("live");
         await outputOnIntoPrint("⑥");
@@ -754,11 +754,11 @@ try {
         );
         check(
             p1 && !p1.live,
-            `⑥ 输出 ON 且还在播 ⇒ ⑬ 先不出(实得 ${shown(p1)})`,
+            `⑥ 输出 ON 且还在播 ⇒ ⑭ 先不出(实得 ${shown(p1)})`,
         );
         check(await setPlaying(false), "⑥ 停走");
         const p2 = await until((x) => x.live);
-        check(p2 && p2.live, `⑥ 停走之后 ⑬ 出现(实得 ${shown(p2)})`);
+        check(p2 && p2.live, `⑥ 停走之后 ⑭ 出现(实得 ${shown(p2)})`);
         assertClean("⑥ host=live 播着出范围");
     }
 } catch (e) {

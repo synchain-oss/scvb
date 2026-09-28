@@ -111,6 +111,7 @@ export const ENUMS = Object.freeze({
         "sidecarMissing",
         "noTimeline",
         "sidecarSwitched",
+        "stateNotFullyRestored",
     ]),
     claimState: Object.freeze([
         "unassigned",
@@ -964,7 +965,7 @@ export function makeSegments(
 
 /**
  * §2.9 / §4.5 `scvb.error`(两侧同形状)。
- * @param {string} code §5.1 七码之一
+ * @param {string} code §5.1 八码之一
  * @param {object} extra 可覆盖 `ch` / `detail` / `active`
  */
 export function makeError(code, extra = {}) {
@@ -981,6 +982,10 @@ export function makeError(code, extra = {}) {
         sidecarMissing: { detail: { path: "SCVB/demo-session.scvbfeat" } },
         noTimeline: { detail: {} },
         sidecarSwitched: { detail: { bytes: 8912896 } },
+        // [SL-218] 只带 PRMS 的预设形态:两节都不在。
+        stateNotFullyRestored: {
+            detail: { missing: ["CFGS", "CRVS"], rejected: [] },
+        },
     };
 
     // `active` 缺省视为 true,故默认不发这个键(§2.9 字段纪律)
