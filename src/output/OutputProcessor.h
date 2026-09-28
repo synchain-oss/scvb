@@ -261,6 +261,14 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
+    // [J150] 宿主标识(闭集 "reaper" / "live" / "cubase" / "other",取值口径见 HostId.h)。
+    // 桥面 §1.1 快照的 `host` 取这里;构造期判定一次,实例寿命内不变。
+    const char* hostId() const { return hostId_; }
+    // [J150] **仅供测试**:让**之后构造**的实例按指定宿主类型判定;传 std::nullopt 恢复按真实宿主判定。
+    // 为什么需要它:harness 进程本身不是任何 DAW,不注入就只测得到 "other" 那一支 ——
+    // 把构造函数里那一行判定换成常量 "other",用例照样全绿。生产代码不得调用。
+    // 与 setSidecarBaseDirForTesting 同款(进程级静态、单测线程写)。
+    static void setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type);
     // [SL-233] **仅供测试**:把 sidecar 落盘根目录改到临时目录,避免单测写真实用户会话目录
     // (崩溃即残留、并行 worktree 互相串扰)。传空 path 恢复默认位置。生产代码不得调用。
     // 与 uidefaults::setStorageDirForTesting 同款(那处的理由逐条适用)。
@@ -822,6 +830,8 @@ private:
     // 存取口径与相邻的 uiLanguage_ / masterChartMode_ 逐字相同(同样由 setStateInformation 写、
     // 桥面按值读),不另立一套同步纪律。
     juce::String sessionGuid_;
+    // [J150] 宿主标识:构造期写一次、之后只读;指向 HostId.h 里的字符串字面量(静态寿命)。
+    const char* hostId_ = "other";
 
     // T29:桥面运行时 state + CRVS 段真身(消息线程独占)。
     OutputRuntimeState runtime_;

@@ -222,6 +222,12 @@ const PERIOD = Object.freeze({
  */
 const AUTO_REQUEST_INITIAL_STATE_MS = 1500;
 
+/**
+ * [J150] `?host=` 的合法值 = 契约 §1.1 快照 `host` 的闭集(native 侧 src/output/HostId.h)。
+ * 预览里只有它决定宿主专属提示(横幅 ⑪⑫⑬)出不出,见 web/output/host-hints.js。
+ */
+export const HOST_VALUES = Object.freeze(["reaper", "live", "cubase", "other"]);
+
 // -----------------------------------------------------------------------------
 // 1. 查询参数解析
 // -----------------------------------------------------------------------------
@@ -248,7 +254,7 @@ function toSearchParams(params) {
 /**
  * 解析预览参数。
  * @returns {{fixture:string, scenario:string|null, loop:"host"|"none"|null,
- *            play:boolean|null, role:string|null, warnings:string[]}}
+ *            play:boolean|null, host:string|null, role:string|null, warnings:string[]}}
  */
 export function parsePreviewQuery(params) {
     const q = toSearchParams(params);
@@ -306,12 +312,26 @@ export function parsePreviewQuery(params) {
     const play =
         rawPlay === null ? null : rawPlay !== "0" && rawPlay !== "false";
 
+    // [J150] 宿主标识(§1.1 快照 `host`,闭集 = HOST_VALUES)。缺省 = 快照生成器的默认 "other"。
+    // 非法值**出警告**不静默吞(同 staleFullEvery):拼错一个字就悄悄跑在 "other" 上,
+    // 拿到的是「提示怎么没出」而不是「参数写错了」。
+    const rawHost = q.get("host");
+    let host = null;
+    if (rawHost !== null) {
+        if (HOST_VALUES.includes(rawHost)) host = rawHost;
+        else
+            warnings.push(
+                `host=${rawHost} 未知(只认 ${HOST_VALUES.join(" / ")}),已按默认 other`,
+            );
+    }
+
     return {
         fixture,
         scenario: rawScenario,
         loop,
         play,
         staleFullEvery,
+        host,
         role: q.get("role"),
         warnings,
     };
@@ -910,6 +930,11 @@ export function buildWorld(opts = {}) {
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
+    // [J150] `?host=`:只改 Output 快照的 `host`(§1.1 快照专属键),其余一个字节不动。
+    // 非法值在 parsePreviewQuery 已经出过警告并落成 null ⇒ 这里不再判。
+    if (outputSnapshot && HOST_VALUES.includes(opts.host)) {
+        outputSnapshot = { ...outputSnapshot, host: opts.host };
+    }
 
     // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
     // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
@@ -1203,6 +1228,9 @@ export function createPreviewSession(opts = {}) {
         // 上一版在 caps 里写了覆写逻辑却没往下传,那段代码一次都没执行过 ——
         // 加参数时**同一个 commit 里就要有一格跑在非默认值上**,否则看不出没接上。
         staleFullEvery: parsed.staleFullEvery,
+        // [J150] 同上一条的接线纪律:`?host=` 只有经这一行才到得了 buildWorld。
+        // 非默认值那一格 = smoke-host-hints.mjs 的 mock 段(host=reaper 必须落进快照)。
+        host: parsed.host,
     });
     const { backend, ctl } = createMockBackend({ role, world });
     const driver = makeDriver(ctl, world);

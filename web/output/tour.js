@@ -170,13 +170,16 @@ export function shouldAutoShowTourAsk(state, snapshot, answeredThisSession) {
  */
 export function buildDemoStore(getT) {
     const snap = FIFTEEN_TRACKS.snapshot;
-    // 快照专属键(session_guid / version / *_global / conn)不进 state 子树(§1.1 语义行);
+    // 快照专属键(session_guid / version / *_global / host / conn)不进 state 子树(§1.1 语义行);
     // state 子树由 makeTourDemoSnapshot 产出,深冻结,渲染侧只读、零就地改写。
+    // [J150] demo 快照的 `host` 是 "other"(makeOutputSnapshot 默认)⇒ 导览期宿主专属提示恒不出;
+    // 它留在 `snapshot` 旁路供 snapshotHost() 读,不进 state。
     const stateFields = { ...snap };
     delete stateFields.session_guid;
     delete stateFields.version;
     delete stateFields.guide_seen_global;
     delete stateFields.tour_seen_global;
+    delete stateFields.host;
     delete stateFields.conn;
 
     // 本地化 demo 轨名(§2.6 demo 注入):channels[i] 的 label 走 i18n demo.ch(i+1);
