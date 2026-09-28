@@ -41,7 +41,7 @@
 2. 电平/失准等高频数据带阈值(电平 0.3 dB 阈值,镜像 Bridge)。
 3. `scvb.groups`、`scvb.config` 为「按频率探测/轮询、**变化才发**」;`mBridgeReady` 后的**首帧必发**按事件类别分三档,保证 UI 不停在空态:
    - **状态类**(`scvb.state` / `scvb.params` / `scvb.conn` / `scvb.config` / `scvb.groups` / `scvb.meters` / `scvb.playhead` / `scvb.segments`)—— **首帧各必发一次**(`scvb.segments` 以 `reason:"snapshot"` 发全部轨全量段表,§2.8);
-   - **采集类**(`scvb.captureProgress`)—— **只在播放中发**(§2.7),首启非播放时不发,空态由 `scvb.state` 承载;
+   - **采集类**(`scvb.captureProgress`)—— **周期帧只在播放中发**(§2.7);**例外([J152])**:`mBridgeReady` 后首帧、`clearCoverage` 受理后(§1.24)**各补发一次全量**(15 轨全带),**不看走带** —— 停着打开面板时覆盖率由首帧这一次承载。空态判定仍以 `scvb.state` 为准(全量帧到达之前那一拍覆盖仍是空的);
    - **条件类**(`scvb.error`)—— **只在条件成立时发**(§2.9/§4.5),**不发空 error**。
 4. 波形按视口拉取,LRU 缓存归 UI 侧(05 §6.3),C++ 不为波形维护推送状态。
 
@@ -76,9 +76,17 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**仅未冻结的手动接管通道**,[J85])、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setChannelConfig`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**两条通道都入**:[J85] 起原只有未冻结的手动接管通道,[J140] 起冻结通道也入)、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18)、**`setChannelConfig`**([J140]:A1-A7,见 §1.15)、**`beginParamGesture`/`setParam`/`endParamGesture`**([J140]:一次 gesture = 一步,见 §1.12-§1.14) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
+
+**[J140] 自动化参数与通道配置入栈**(用户 2026-09-28 裁定;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。以下五条对左列新增的三类(`setChannelConfig`、gesture 三段式、`setTrackManual` 冻结通道)一体适用:
+
+1. **单栈**:与 CRVS 事务同一个 UndoManager,`undo()` 按时间倒序弹最近一步,不论那一步是段表类、参数类还是配置类。
+2. **撤销经宿主参数通路写回**:参数类的撤销 / 重做默认 `beginChangeGesture` → `setValueNotifyingHost` → `endChangeGesture`(唯一例外见本条下文:打印器已替该车道开着 gesture 时只写值),与用户拖旋钮是同一条通路 —— 宿主看到的是一次正常的用户编辑,插件不做任何绕过宿主的静默写。由此:宿主在 Read 档且该参数有自动化数据时,撤销后的值会在播放 / 定位时被宿主按自动化顶回(与用户拖完旋钮被顶回是同一个结局);宿主在 Write / Touch / Latch 档且在走带时,撤销会被宿主录成自动化(与用户编辑同);宿主没有该参数的自动化时,插件撤销是唯一的回退途径。PRINT 区间内打印器已替该车道开着 gesture 时,撤销 / 重做(以及冻结通道的手动写入)只写值、不再自己 begin/end —— 值仍落在打印器那一对 begin/end 之内,宿主侧的配对不被嵌套或提前关闭。打印车道参数(每轨 pan/vol)的撤销带打印器自写位(§3.5 层 2),不被记成 `hostEcho`;宿主随后的回写(ARMED / PRINT 下)照常记 —— UI 的「宿主正在写」如实亮起,而 UI 收到 `scvb.params` 只更新显示、从不回写(§0.5),不会与宿主来回拉扯。
+3. **PRINT / ARMED 与用户编辑同规矩**:这三类的用户编辑在 PRINT / ARMED 下都不拒绝(§1.12-§1.16 拒绝态行),撤销 / 重做同样受理。只读观察态下 UI 不发 `undo()`/`redo()`(`web/output/app.js` `runHistory` 的只读闸),native 侧同样不动栈。
+4. **一步的粒度与合并**:一次 gesture(`begin` 到 `end`)= 一步,起点 == 末值不压步;通道配置值没变不压步。同键、相邻两次提交相距 ≤300ms(与 UI 侧 `MANUAL_COMMIT_MS` 同值)且其间栈顶未变时并成一步 —— 适用于连续量 / 步进量(全局 `width` / `ms_balance` / `lead_select`、每轨 `width`、`priority`、`pair_id`);开关类(`freeze`、`setChannelConfig` 的四个布尔、`label`)每次一步。
+5. **记的是绝对值**:一步记「改前值 → 改后值」;若其间宿主自动化或宿主自己的撤销改动过同一参数,插件撤销写回的仍是记下的改前值(后写者生效,不会产生插件与宿主不同步的状态 —— 参数值始终只有 APVTS 一份)。插件撤销栈与宿主撤销栈互不感知:会把插件参数改动记进自己撤销历史的宿主,也会把插件的撤销当成一次新的参数改动记下。
 
 ---
 
@@ -91,8 +99,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | 无 |
-| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy, applied:{loudness_mode, center_slot_policy}},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool, lang_chosen?:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool, lang_chosen_global?:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
-| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `lang_chosen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(**用户 2026-09-14 裁定 sidecar 不上之后,Tab4「存储状态」行已收起,故本版无 UI 消费面**;字段仍在事件里照常下发,04 §5.4/ADR-007 —— 见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
+| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy, applied:{loudness_mode, center_slot_policy}},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool, lang_chosen?:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool, lang_chosen_global?:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  host?:"reaper"\|"live"\|"cubase"\|"other",`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
+| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `lang_chosen_global` / `host` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(**用户 2026-09-14 裁定 sidecar 不上之后,Tab4「存储状态」行已收起,故本版无 UI 消费面**;字段仍在事件里照常下发,04 §5.4/ADR-007 —— 见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。**`host`**([J150],变更文档 `docs/contract-changes/20260928-j150-snapshot-host.md`)= 宿主标识,**闭集** `"reaper"` / `"live"` / `"cubase"` / `"other"`:C++ 侧按 `juce::PluginHostType` 在 Output 实例构造期判定一次(JUCE 按宿主可执行文件名识别:`isReaper()` / `isAbletonLive()`(各版本)/ `isCubase()`(各版本);Nuendo / Studio One / FL Studio 及其余一律 `"other"`;取值口径的代码真源 = `src/output/HostId.h`),实例寿命内不变,故**只进本快照、不进 §2.1 事件**。用途 = 03 §4.2 / §4.4 的宿主专属界面提示(REAPER:写入自动化期间请保持插件窗口打开 + 首次进入写入时的一次性首选项提示;Live:写入结束后提示点 Re-Enable Automation),**只对 `reaper` / `live` 出提示**。native 本版恒发;字段标 `?` 是给 UI 的容忍纪律:**缺席或不认识的值一律按 `"other"` 处理**(不出任何提示)。取值域今后只许放宽(§0.1 第 3 条)。只读、不属工程 state、不入 state chunk。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步;每个编辑器生命周期至少调用一次 |
@@ -235,7 +243,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}`(`id` 不在上表时,**不得静默忽略**) |
 | 语义 | 三段式转发到 [M] gesture(ADR-006):`beginParamGesture` → 若干次 `setParam` → `endParamGesture`;可被 DAW 录制。写入的一律是**当前激活版本**对应参数。`freeze` 的两枚 UI 开关**写同一参数**的两个位(J65);mock 后端须有对应参数状态(§0.7)。 |
 | 拒绝态 | 无(PRINT/ARMED 下照常允许——这是宿主可录的用户操作面) |
-| 撤销 | 否(自动化参数不入插件 UndoManager) |
+| 撤销 | **是**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。**一次 gesture = 一步**:`beginParamGesture` 记起点、`setParam` 记末值、`endParamGesture` 时起点 ≠ 末值才压步(拖了又拖回原处、`pointercancel` 回滚到抓握值都不压)。撤销写回起点、重做写回末值,都经宿主 gesture 通路(§0.9 第 2 条)。合并与 PRINT 口径见 §0.9 第 3、4 条;`freeze` 不合并。每轨参数按压步时的 ParamID 记账:切版本后撤销写回的仍是原版本那一个参数。改前为「否(自动化参数不入插件 UndoManager)」 |
 | 线程/频率 | [M];拖动期间 `setParam` 由 UI 侧节流(建议 ≤50Hz),`begin`/`end` 各一次 |
 | 真源 | 05 §1.4(v2.1/J65 全集);01 §6.3「仅全局三件」为 J65 之前的旧文,不采纳(§8.3) |
 
@@ -248,7 +256,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:**未显式设置一律 true**(J83 取代 J60 的按源声道推导 —— `source_channels` 来自轨道总线布局而非素材声道数,mono 素材放在 stereo 轨上就报 2;排除权在轨道页每轨的开关)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。 |
 | **不可写字段** | `source_channels`(1\|2)为 **Input 实测检测值**,只读、经 `scvb.state.channels[].source_channels` 下推;**`auto_pan`/`auto_vol` 已删除**(J65,改由每轨 `freeze` 自动化参数承载)。patch 含上述键 → `{ok:false, reason:"badArg"}` |
 | 拒绝态 | 只读观察态(`outputReadOnly=true`)下全 UI 写控件 disabled;C++ 侧收到写入返回 `{observer:true}` 且不改 state |
-| 撤销 | 否 |
+| 撤销 | **是**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。一次调用 = 一步,**只记 `patch` 里给了的字段**的前后值(不整行快照:Input 远程改优先级 §3.4 不入栈,整行还原会把它一并撤掉);`participate_in_auto_pan` 连「是否显式设置过」一起还原([J83] 的未设置态)。生效配置没变不压步。撤销 / 重做后 `config_seq+1` 并经 `scvb.state` 回推、ctrl 广播区刷新,与写入同一条路。`priority` / `pair_id` 的单字段连按按 §0.9 第 4 条合并。改前为「否」 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §2.2;字段集 params-v0 §二 `channels[15]` |
 
@@ -260,8 +268,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true, replacedSegments:int, replacedLocked:int}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}`(`ch`/`panOrVol` 非法,或 `value` **非有限**——NaN/±Inf 一律拒绝,不得静默夹取:冻结维度上这个数就是 DSP 的音频目标值)。**`replacedSegments`/`replacedLocked` 只对手动接管通道有意义(= 该维被改写的段数 / 其中原本上锁的段数,[J131]);冻结通道恒 0**(确实没替换任何段,如实统计,[J85] 变更文档裁定②) |
 | 语义 | 轨 `pan`/`vol` 的手动静态值。**[J85] 按调用时该维度的 `freeze` 位分成两条通道,写入面不同**(变更文档 `20260826-j85-freeze-param-plane.md`,PR #106):<br>**① 冻结通道**(该维度 `freeze` 对应位 = **1**)—— 静态值**只**写**当前激活版本**对应的 `v{v}_t{t:02d}_pan` / `_vol` 参数,**曲线真身一个字节都不动**、不产生任何段。**为什么不许写曲线**:整表烘焙成全时限常值之后,解冻回读曲线读到的仍是那条常值段,而重分析按 ADR-008 v1.1 不覆盖 `origin=user` 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到引擎分析曲线上(v5.3 A2 实测)。冻结按定义是**可逆的临时接管**,「解冻即回引擎分析曲线继续运动」是它的语义本身。<br>**② 手动接管通道**(该维度 `freeze` 对应位 = **0**)—— 用户主动「设为手动」。**[J131] 起只固定被写的那一维**(变更文档 `20260928-j131-sl180-manual-one-dim.md`):**当前激活版本**该轨段表**非空**时,段数与每段 `t0`/`t1` 不变,**每一段**的该维度值改写为 `value`、**另一维逐段原样保留**(拖音量卡箍不再把 pan 曲线压平,反之亦然);段表**为空**时写入**覆盖全时间线的单段常值**(04 §1.5 方案 A 的编码),另一维取默认(pan 0 / vol 0 dB)。两种情形下被写的段一律标 `origin=user_edited`(J34)、`locked=false`,**不新增任何 state 字段**;写段表之后**追加**把同一个值写进同一对参数。重分析按 ADR-008 v1.1 不覆盖这些 `origin=user` 段;**会连 `locked` 段一并改写并摘锁** —— J34 的 locked 保护只约束重分析。「某一维是手动常值」的判定 = 该轨每段都是 `user_edited` 且该维各段值相等(`web/shared/readback.js` `manualDimOf`,native `DistReadback.h` 同名),读回逐维按它分叉;⚠ 这是按值**推断**,另一维各段碰巧全等时会被一并判成手动(已知近似,见变更文档「已知连带」)。⚠ 段内稳态值逐段保留,但段间过渡斜坡宽度按两维较大者反推(02 §8.2),被固定的那一维原先主导的边界上,另一维的斜坡会变窄。<br>**两条通道都落参数面、都包 `beginChangeGesture()` / `endChangeGesture()`**(变更文档 `20260825-t37-r3-track-manual-param-plane.md`,PR #87)。**为什么必须落参数面**:`DspArbiter` 对**冻结**维度读的是 host 参数而**不读曲线**,打印器对冻结车道也只把参数当前值重写成平直线(#68/J78)—— 冻结维度上没有任何读者会去看曲线。**为什么必须包 gesture**:裸 `setValueNotifyingHost` 在宿主看来是一次没有起止的孤立写入,Cubase 这类宿主要么记成孤立自动化点、要么在 Read 档下当场把值顶回去(那样这条写入根本不生效)。原文「零 gesture」以本条为准作废 —— 其原意「不要为手动值制造一串连续写入」仍然满足:UI 侧松手才发一次(`MANUAL_COMMIT_MS` 300ms 防抖),一次编辑 = 一对 begin/end。<br>**两条通道都按 §2.8 回推**:写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨**当前**段表 —— 冻结通道段表没变也照发(reason 枚举闭合不受影响;UI 用这一帧作为「已落地」信号清本地乐观值,不发会让乐观值挂死)。回推**之前**同步补一帧 `scvb.params`,两帧同拍到达 —— 冻结通道的新值只在参数面上,晚一拍会让 UI 先丢乐观值再读到旧参数值(旋钮回弹)。`value` 越界按 §1.16 的 `value` 域夹取,**非有限值不夹取、直接 badArg**。版本切换会换出另一版本的手动值。 |
 | 拒绝态 | 只读观察态 → `{observer:true}` |
-| 撤销 | **按通道分叉([J85])**。<br>**冻结通道:否** —— 它不产生任何 CRVS 变更,**一步都不往插件 UndoManager 里压**。⚠ 代价记在此处,不静默:用户在冻结态调了 pan 再按 Ctrl+Z,弹掉的是**上一笔不相干的 CRVS 事务**,看到的变化与刚做的操作无关。不压「空事务」是刻意的 —— 那只会让 Ctrl+Z 变成「按一下没反应、再按一下跳掉一笔旧编辑」。冻结通道唯一改的是自动化参数,而 §0.9 已明确「自动化参数不入插件 UndoManager」。<br>**手动接管通道:是**(仅回滚曲线真身)。⚠ 撤销事务(`commitCrvsTransaction`)只快照/还原 CRVS 段表,**参数面不回滚**。这是有意的:参数面是宿主的自动化面,插件自己的 UndoManager 去回滚它会与宿主撤销栈打架。<br>若将来要让冻结中调整也可撤销,唯一正路是走**宿主 gesture**,不是插件 undo |
-| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」(裁定时原文;[J131] 起改为「将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销」)两句对**冻结通道**都不成立(不替换任何段、不入撤销栈),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。[J85] 时 i18n 文案未改;[J131] 起三语文案改为「只替换这一项、另一项保留」(key 不变)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
+| 撤销 | **两条通道都入栈**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。<br>**冻结通道:是**(一次调用 = 一步)—— 只回滚参数面那一下(`v{v}_t{t:02d}_pan` / `_vol` 的改前值),经宿主 gesture 通路写回(§0.9 第 2 条),段表不动。不合并(UI 已按 `MANUAL_COMMIT_MS` 把连按防抖成一次提交)。<br>**手动接管通道:是**(一次调用 = 一步,**连冻结位一起**)—— 这一步含三样:CRVS 段表快照(`commitCrvsTransaction`)、参数面那一下、以及 UI 随后把该维度冻结位置 1 的那次 gesture(`web/output/tab-tracks.js` `sendManual` 的跟进)。native 在接管时先压一个冻结位占位,跟进的 `endParamGesture` 满足「同一个 `v{v}_t{t:02d}_freeze`、栈顶仍是接管那一步、起点 = 接管时的冻结值、末值 = 起点 \| 该维度位」时并进这一步;任何一条不符则按普通参数步另起一步。于是一次 Ctrl+Z 让段表、旋钮 / 卡箍的值与冻结开关一起回到拖之前。<br>改前为「按通道分叉([J85]):冻结通道否;手动接管通道是(仅回滚曲线真身,参数面不回滚)」,其理由「插件 UndoManager 回滚参数面会与宿主撤销栈打架」已按 [J140] 核实并改判:回滚走的是宿主 gesture 通路,对宿主而言与一次用户编辑无异,见 §0.9 第 2、5 条 |
+| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」(裁定时原文;[J131] 起改为「将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销」)的前半句对**冻结通道**不成立(不替换任何段;后半句「可撤销」自 [J140] 起对它也成立,但确认条要拦的是改写段表这件破坏性的事),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。[J85] 时 i18n 文案未改;[J131] 起三语文案改为「只替换这一项、另一项保留」(key 不变)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
 | 真源 | 05 §1.4 / §2.2;编码 04 §1.5 |
 
 ### 1.17 `setPanCurve(points)`
@@ -354,7 +362,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `tracksMask: u16`;`startS: f64`;`endS: f64` |
 | 返回 | `{ok:true, clearedS:f64}`(实际清除的总时长秒数,供 UI 反馈)或 `{observer:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 显式清除选中轨×区间的采集特征数据(04 §1.1「被用户显式清除」的唯一入口),UI 侧须二次确认。清除后经 `scvb.captureProgress`/`scvb.state` 回推覆盖率变化;波形侧由 UI 重新 `requestWaveform`。 |
+| 语义 | 显式清除选中轨×区间的采集特征数据(04 §1.1「被用户显式清除」的唯一入口),UI 侧须二次确认。清除后经 `scvb.captureProgress`(受理后补发一次 15 轨全量,**不看走带**,§2.7 [J152])/`scvb.state` 回推覆盖率变化;波形侧由 UI 重新 `requestWaveform`。 |
 | 拒绝态 | `tracksMask=0` 或 `startS>=endS` → `{ok:false, reason:"badArg"}`;只读观察态 → `{observer:true}` |
 | 撤销 | 否(**不入撤销栈**:采集数据不属曲线真身) |
 | 线程/频率 | [M];用户确认后触发 |
@@ -366,7 +374,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的全部入栈操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的**全部**入栈操作(单栈,按时间倒序;旧文「四类」自 [J82] 起即已过期,订正见变更文档 `20260928-rc-misc-contract-corrections.md` ② 与 `20260928-j140-undo-coverage.md`)。执行后受影响面回推:参数面经 `scvb.params`、通道配置与 `pan_curve` 等其余 state 面经 `scvb.state`,两者**先于**段表同拍补发([J140]:接管一步的撤销同时改段表与冻结位,晚一拍会让冻结开关 / 旋钮先弹一下),段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8)。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |
@@ -378,7 +386,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `ch: 1..15`;`startS: f64`;`endS: f64`(`startS < endS`);`cols: int`(1..4096,视口像素列数) |
 | 返回 | `{ minDb:f32[cols], maxDb:f32[cols], vad:u8[cols], covered:u8[cols], stale:u8[cols], passId:u32[cols], valleys:f64[] }` 或 `{ok:false, reason:"badArg"}`(无数组字段) |
-| 语义 | 拉取式下采样(canvas 分块渲染)。C++ 从特征流(`kw_ms`/`peak`)降采样出每列 min/max dB 包络、VAD 判决位、覆盖位、stale 位与 passId(不同采集轮次底色微差)。**`valleys[]`(T25 新增字段,见 §9.2)** = 该区间内的**能量谷时间点列表(秒,升序)**,供边界拖拽吸附(05 §6.3 明文「由 C++ 在 `requestWaveform` 附带谷点列表」但未定字段名)。未覆盖列:`covered=0` 且 `minDb=maxDb=-INF 哨兵 -160`。 |
+| 语义 | 拉取式下采样(canvas 分块渲染)。C++ 从特征流(`kw_ms`/`peak`)降采样出每列 min/max dB 包络、VAD 判决位、覆盖位、stale 位与 passId(不同采集轮次底色微差)。**`valleys[]`(T25 新增字段,见 §9.2)** = 该区间内的**能量谷时间点列表(秒,升序)**,供边界拖拽吸附(05 §6.3 明文「由 C++ 在 `requestWaveform` 附带谷点列表」但未定字段名)。**[J145] 谷点取值口径**:只在该轨**已覆盖**的 hop 上、按覆盖段逐段检测(未覆盖不当静音,不跨空洞连谷);帧响度 ℓ(02 §0.2,与 §3.2 同一口径)经 5 hop 平滑后的局部极小平坦区,**地形 prominence**(向两侧各走到第一个更低的点为止的最大值,取两侧较小者减谷底)**大于 minDepth** 才算一个谷 —— minDepth 与 02 §3.2 候选谷同一条(取**受理这一次调用时**的 `analysis.segmentation.sensitivity`,3–12 dB,默认 6 dB;回包不带灵敏度维度,UI 的块缓存也不按它分键);时刻取谷底 hop 的**中心** `(hop+0.5)·hop_s`;请求窗两侧各带 3 s 上下文参与检测,回包只含落在 `[startS, endS)` 内的;条数上限 = `cols`,超出时留 prominence 最大的那些;该轨在「请求窗 + 上下文」内的已覆盖 hop 超过 360000(1 h)时回空数组。`passId` / `stale` 在 v1 **恒 0**(§9.3 附注允许的首版回退常量;UI 的「不同采集轮次底色微差」因此不出现)。变更记录 `docs/contract-changes/20260929-j145-waveform-valleys.md`。未覆盖列:`covered=0` 且 `minDb=maxDb=-INF 哨兵 -160`。 |
 | 拒绝态 | 参数越界(`ch`/`cols` 越界、`startS >= endS`) |
 | 撤销 | 否 |
 | 线程/频率 | **[M] 受理,结果以 Promise 异步 resolve**(降采样可在 [W] 完成后回 [M] 兑现——每次调用要从特征环降采样 6 个 `cols` 长数组 + 谷点检测,视口约 1000 列 × 每可见轨一次,不宜在消息线程同步做完);**一次调用一次 resolve,绝不进事件流**(01 §6.4)。UI 侧按视口变化拉取,静止 120ms 后取新块,块内 LRU 缓存归 UI(05 §6.3)。**定案(DeepSeek native 评审,2026-08-16):异步**——JUCE 8 `withNativeFunction` 的 Promise completion 可任意线程回调,降采样放 [W] 完成后回 [M] 兑现;native 须保证每次调用**恰好一次** completion(含 `badArg`),UI promise 永不悬挂 |
@@ -557,11 +565,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 | 项 | 定义 |
 |---|---|
-| 频率 | **播放中 2 Hz**(非播放不发) |
+| 频率 | **周期帧:播放中 2 Hz**(非播放不发)。**例外帧([J152])**:`mBridgeReady` 后首帧、`clearCoverage` 受理后(§1.24)**各补发一次全量**,**不看走带**,不占 2 Hz 节拍 |
 | 载荷 | `{ channels:[ { ch:1..15, addedRanges:[{startS:f64, endS:f64}], coveragePct:f32 } ] }` |
-| 字段纪律 | **增量**:**`addedRanges`**(**T25 定名**,§9.2)= 自上一帧新增覆盖的区间(合并后)——它是宪法字段 `features.per_channel[].coverage_ranges[]`(params-v0 §二)的**增量投影**,与 state 真身**语义不同故不同名**(真身是全量区间表,本字段是本帧增量),按 §0.2 规则②取 lowerCamelCase;05 §1.4 该行原文为「每轨 `coverage_ranges` 增量」。`coveragePct` = 该轨在 `global.range`(follow 态取全时间线已分析域)内的覆盖百分比 0..100(**T25 定名**,§9.2,供 Tab3 轨头「覆盖率」显示)。仅包含**本帧有变化**的轨。 |
-| UI 消费 | 泳道底部 2px 覆盖条实时延伸、Tab3 轨头覆盖率 |
-| 真源 | 05 §1.4 / §2.3 |
+| 字段纪律 | **增量**:**`addedRanges`**(**T25 定名**,§9.2)= 自上一帧新增覆盖的区间(合并后)——它是宪法字段 `features.per_channel[].coverage_ranges[]`(params-v0 §二)的**增量投影**,与 state 真身**语义不同故不同名**(真身是全量区间表,本字段是本帧增量),按 §0.2 规则②取 lowerCamelCase;05 §1.4 该行原文为「每轨 `coverage_ranges` 增量」。`coveragePct` = 该轨在 `global.range` 内的覆盖百分比 0..100(**T25 定名**,§9.2,供 Tab3 轨头「覆盖率」显示);follow 态没有显式范围,取已知时间线:**播放中** = [0, 播放头),**停着**(只会是例外帧)= [0, max(播放头, 已采集时间线末端))(已采集末端 = 全轨覆盖的最大终点,与 §1.6 follow 档「分析全部」的终点同一个量)。周期帧仅包含**本帧有变化**的轨。<br>**例外帧**([J152]):`channels` 含**全部 15 轨**(本帧无变化、从未采集的轨也在,报 `coveragePct:0`);`addedRanges` 仍是相对上一帧的增量 —— 首帧与 `clearCoverage` 之后增量基线为空,故为窗口内的全部覆盖区间;分母窗口为空时(follow 态、从未采集、播放头在 0)各轨照发 `coveragePct:0`、`addedRanges:[]`。 |
+| UI 消费 | 泳道底部 2px 覆盖条实时延伸、Tab3 轨头覆盖率、Tab1 分析行「范围内 {p}% 已覆盖」 |
+| 真源 | 05 §1.4 / §2.3;例外帧:[J152] |
 
 ### 2.8 `scvb.segments`
 

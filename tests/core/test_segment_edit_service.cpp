@@ -9,10 +9,12 @@
 #include <juce_data_structures/juce_data_structures.h>
 
 #include <limits>
+#include <vector>
 
 #include "AnalyzeScopeMath.h"
 #include "SuggestionScopeArgs.h" // [SL-256] §1.36 入参归一
 #include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
+#include "ParamUndo.h" // [SL-536] 参数撤销动作
 #include "engine/FreezeBits.h"
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
@@ -345,6 +347,51 @@ TEST_CASE("analyzeAllRange:follow 档取已采集时间线,与播放头无关", 
     const auto bad = analyzeAllRange(2, 9.0, 3.0, 12.5);
     CHECK(bad.startS == 0.0);
     CHECK(bad.endS == 12.5);
+}
+
+// ---------------------------------------------------------------------------
+// [J152] §2.7 captureProgress 的 coveragePct 分母窗口(纯函数)。
+// 帧内容与接线由 tests/host/test_host_harness.cpp 的 `HOST J152` 用真 processor 钉;
+// 这里只钉窗口算术的四个分支,每条都写着「改成什么就红」。
+// ---------------------------------------------------------------------------
+TEST_CASE("captureProgressWindow:follow 档停着取 max(播放头, 已采集末端),播放中取播放头", "[output][coverage][J152]")
+{
+    using scvb::output::captureProgressWindow;
+
+    // ① follow + 停着 + 播放头在 0(重开工程的典型形态):取已采集末端。
+    //    ← 去掉 max 只留播放头即红:窗口为空,已采集的覆盖一格都报不出来。
+    const auto reopened = captureProgressWindow(/*playing=*/false, 0, 0.0, 0.0, /*playheadS=*/0.0, /*extentS=*/42.0);
+    CHECK(reopened.startS == 0.0);
+    CHECK(reopened.endS == 42.0);
+    CHECK(reopened.valid());
+
+    // ② follow + 停着 + 播放头在已采集末端之后:取播放头(max 的另一半)。
+    //    ← 去掉 max 只留已采集末端即红。
+    const auto pastExtent = captureProgressWindow(false, 0, 0.0, 0.0, 60.0, 42.0);
+    CHECK(pastExtent.endS == 60.0);
+
+    // ③ follow + 播放中:只取播放头(周期帧的既有口径),已采集末端不参与。
+    //    ← 播放中也取 max 即红:这里 42 > 10。
+    const auto playing = captureProgressWindow(true, 0, 0.0, 0.0, 10.0, 42.0);
+    CHECK(playing.startS == 0.0);
+    CHECK(playing.endS == 10.0);
+
+    // ④ follow + 停着 + 从未采集 + 播放头在 0:窗口为空(例外帧由调用方按 0% 照发)。
+    const auto fresh = captureProgressWindow(false, 0, 0.0, 0.0, 0.0, 0.0);
+    CHECK_FALSE(fresh.valid());
+
+    // ⑤ 范围档:照用 global.range,走带与已采集末端都不参与。
+    const auto manualStopped = captureProgressWindow(false, 2, 3.0, 9.0, 0.0, 42.0);
+    CHECK(manualStopped.startS == 3.0);
+    CHECK(manualStopped.endS == 9.0);
+    const auto manualPlaying = captureProgressWindow(true, 1, 3.0, 9.0, 5.0, 42.0);
+    CHECK(manualPlaying.startS == 3.0);
+    CHECK(manualPlaying.endS == 9.0);
+
+    // ⑥ 播放头负值(宿主没给 timeInSamples 时调用方传 0;这里防御负数)夹到 0。
+    const auto negative = captureProgressWindow(false, 0, 0.0, 0.0, -5.0, 0.0);
+    CHECK_FALSE(negative.valid());
+    CHECK(negative.endS == 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -953,5 +1000,76 @@ TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][sugg
         REQUIRE_FALSE(bothNan.badArg);
         CHECK(bothNan.scope.startSec < 0.0);
         CHECK(bothNan.scope.endSec < 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-536 / J140] ParamWriteAction:参数改动进插件撤销栈的基件。
+// 钉的是四件事,每件都对应一个「做错了宿主会看见」的形态:
+//   ① alreadyApplied 的动作压栈时**不写**(UI 的 gesture 已经把值写进去了,再写一次 = 宿主平白
+//      多录一个同值 gesture);之后的重做**照写**;
+//   ② 撤销写旧值、重做写新值,都经注入的 writer(processor 里那个 writer 包着宿主 gesture);
+//   ③ 旧 == 新的一步什么都不写(接管占位没被填上的那一格);
+//   ④ undo() 恒回 true —— JUCE 的 ActionSet 只要一个动作回 false 就清空**整条**撤销历史。
+// ---------------------------------------------------------------------------
+TEST_CASE("PARAM-UNDO-1:ParamWriteAction 的写入时机与撤销 / 重做", "[segedit][service][SL536]")
+{
+    std::vector<float> writes;
+    const auto writer = [&writes](float v) { writes.push_back(v); };
+
+    SECTION("alreadyApplied:压栈不写,撤销写旧值,重做写新值")
+    {
+        juce::UndoManager um;
+        um.beginNewTransaction("p");
+        REQUIRE(um.perform(new scvb::output::ParamWriteAction(writer, 0.25f, 0.75f, /*alreadyApplied=*/true)));
+        CHECK(writes.empty()); // ①
+        REQUIRE(um.undo());
+        REQUIRE(writes.size() == 1);
+        CHECK(writes[0] == 0.25f); // ② 旧值
+        REQUIRE(um.redo());
+        REQUIRE(writes.size() == 2);
+        CHECK(writes[1] == 0.75f); // ① 之后的重做照写
+    }
+
+    SECTION("未 applied:压栈即写新值(接管 / 冻结通道那两路不用它,留给将来的直写调用方)")
+    {
+        juce::UndoManager um;
+        um.beginNewTransaction("p");
+        REQUIRE(um.perform(new scvb::output::ParamWriteAction(writer, 0.1f, 0.9f, /*alreadyApplied=*/false)));
+        REQUIRE(writes.size() == 1);
+        CHECK(writes[0] == 0.9f);
+    }
+
+    SECTION("旧 == 新:撤销与重做都不写;setNewValue 填上之后才写(接管占位)")
+    {
+        juce::UndoManager um;
+        um.beginNewTransaction("p");
+        auto* a = new scvb::output::ParamWriteAction(writer, 0.0f, 0.0f, true);
+        REQUIRE(um.perform(a));
+        REQUIRE(um.undo());
+        REQUIRE(um.redo());
+        CHECK(writes.empty()); // ③
+        a->setNewValue(1.0f); // UndoManager 持有 a;栈顶未变,指针有效
+        REQUIRE(um.undo());
+        REQUIRE(writes.size() == 1);
+        CHECK(writes[0] == 0.0f);
+    }
+
+    SECTION("undo() 恒 true:同一事务里的另一个动作不会因为它被连带清栈")
+    {
+        juce::UndoManager um;
+        um.beginNewTransaction("p");
+        REQUIRE(um.perform(new scvb::output::ParamWriteAction(nullptr, 0.0f, 1.0f, true))); // writer 空也不失败
+        REQUIRE(um.undo());
+        CHECK(um.canRedo()); // 回 false 的话 JUCE 会 clearUndoHistory ⇒ 连重做都没有
+    }
+
+    SECTION("absorb:新值推进、旧值保持(一串连按撤回到这一串之前)")
+    {
+        scvb::output::ParamWriteAction first(writer, 0.2f, 0.3f, true);
+        const scvb::output::ParamWriteAction second(writer, 0.3f, 0.4f, true);
+        REQUIRE(first.absorb(second));
+        CHECK(first.oldValue() == 0.2f);
+        CHECK(first.newValue() == 0.4f);
     }
 }

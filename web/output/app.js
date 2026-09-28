@@ -43,6 +43,8 @@ import {
     historyAfterPanCurve,
     historyAfterRename,
     historyAfterSegments,
+    historyAfterUndoableWrite,
+    withUndoEvidence,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -79,6 +81,12 @@ import {
     shouldShowTourAsk,
     shouldAutoShowTourAsk,
 } from "./tour.js";
+import {
+    HOST_HINT_BANNERS,
+    hostHintFlags,
+    snapshotHost,
+    trackPrintEdges,
+} from "./host-hints.js";
 import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
 import {
     disableNativeContextMenu,
@@ -146,6 +154,9 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
+    // [J152] ch → true:本会话里报过 > 0 的轨。Tab1 覆盖率的分母(见 tab-master coveragePercent):
+    // 全量帧里从没采过的轨报 0 不进分母,**采过、后来被清光**的轨仍在分母里 —— 否则整轨清光后数字不降。
+    coverageSeen: {},
     // §2.9 code → payload(active:false 即删)。键 = 裸 code,同一 code 的后一帧覆盖
     // 前一帧。轨级的 srMismatch / channelConflict(载荷带 ch)也不例外 —— srMismatch 的
     // 横幅 ③ 口径就是一次只显示一个轨号(05 §2.0),这是既定行为,不是漏了复合键。
@@ -175,7 +186,7 @@ const store = {
         rejectedPrintingUntil: 0,
         // B-04:布防期内输出开关 ON 过的粘滞位(footer 琥珀警告的「或被打开」半边)
         recapOutputOpened: false,
-        // [SL-373] 用户手动关掉过的**建议类横幅**(⑧⑨⑩),key = 横幅锚点名,
+        // [SL-373] 用户手动关掉过的**建议类横幅**(⑧⑨⑩;[J150] 起加上宿主提示 ⑫⑬⑭),key = 横幅锚点名,
         // value = 关掉那一刻的**内容签名**。用户 v5.6.8 原话:「上方的黄色警告横幅
         // 加一个 x 可以关掉,不然一直在很烦」。
         //
@@ -197,6 +208,12 @@ const store = {
         // (null = 不显)。纯会话态:不入 state chunk、不落盘、不进契约。
         recapTracker: recapTrackerInit(),
         recapDone: null,
+        // [J150] 宿主专属提示的打印边沿记账(只由 host-hints.js 的 trackPrintEdges 写,
+        // 三格语义见该函数头注)。与上面 `wasPrinting` **分开**:那一格由 renderFooter
+        // 在 render 里推进(rAF 合帧),这三格逐事件推进,两者的采样点不同,混用会互相吃边沿。
+        hintEverPrinted: false,
+        hintPrintEnded: false,
+        hintWasPrinting: false,
     },
 };
 
@@ -462,10 +479,21 @@ document.addEventListener("pointermove", (e) => {
     glowLast = el;
 });
 
+// ------------------------------------------------------------- 撤销证据③(SL-536)
+// [SL-536 / J140] `setChannelConfig`(A1-A7)与 gesture 收尾 `endParamGesture`(冻结 / W /
+// Tab1 三件)自本卡起入插件撤销栈,但它们**没有**段表事件可认(证据②认不到)。两个 tab 的
+// 上行都经各自的 `call()` 直取 `bridge[name]`,所以给它们一份包过回执的**同形**桥
+// (包法与判据见 tab-master.js `withUndoEvidence` / `historyAfterUndoableWrite`)。
+// 包在这里而不是各 tab 里:header 两钮属外壳,可用性 reducer 的全部喂点都在本文件。
+const tabBridge = withUndoEvidence(bridge, () => {
+    store.session.history = historyAfterUndoableWrite(store.session.history);
+    requestRender();
+});
+
 // ------------------------------------------------------------- Tab1(tab-master.js)
 const tabMaster = createTabMaster({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -478,7 +506,7 @@ tabMaster.mount();
 // 全部由事件算出,行内全部上行调用也在该文件(本文件只做订阅转发)。
 const tabTracks = createTabTracks({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -1020,6 +1048,9 @@ function settlePendingEdits() {
         curveEditor.flushPending(),
         tabTracks.flushPending(),
         tabWave.flushPending(),
+        // [SL-536] Tab1 的 WIDTH / MS BALANCE 滑轨自本卡起入栈:按住拖动中按 Ctrl+Z ⇒ 中止
+        // (回到抓握值并收束 gesture),与上面「指针仍按着 ⇒ 中止」同一条规矩。
+        tabMaster.flushPending(),
     ]);
 }
 
@@ -1381,6 +1412,20 @@ function trackRecapDone() {
     }
 }
 
+/**
+ * [J150] 宿主专属提示的打印边沿记账 —— 与上面 trackRecapOutput 同一条理由逐事件做。
+ * PRINT 相位由两路事件共同决定(§2.1 的输出开关 / 加载守卫 + §2.6 的播放 / 在区间内),
+ * 所以 scvb.state 与 scvb.playhead 两处各调一次,缺哪一处都会漏掉那一路带来的边沿。
+ * 判据与三格语义见 host-hints.js。
+ * 只写**真** store:导览期渲染的是 demo store,它的宿主是 "other",三条提示本来就不出。
+ */
+function trackHostHintEdges() {
+    trackPrintEdges(
+        store.session,
+        outputPhase(store.state, store.playhead) === "print",
+    );
+}
+
 /** 整页重渲染**请求**(rAF 合帧;高频路径一律走它,不要直呼 render())。 */
 function requestRender() {
     if (renderQueued) return;
@@ -1576,6 +1621,8 @@ function renderHeader() {
  * [SL-218] ⑪ `stateNotFullyRestored` 是 `scvb.error` 的 code,与 ②-⑥ 同一类:契约 §5.1
  * 降级纪律② 已把它写进「持续性条件」(横幅①-⑥、⑪),不给 ✕,收到 `active:false` 才撤下
  * (三个撤下时机见契约 §5.1 该行)。
+ * [J150] ⑫⑬⑭ 宿主专属提示同属建议类(读 §1.1 快照 `host` + §2.1 / §2.6 派生的打印相位,
+ * 都不是 `scvb.error` 的 code),与 ⑧⑨⑩ 一样带 ✕。
  */
 function renderBanners() {
     const vs = viewStore();
@@ -1737,6 +1784,24 @@ function renderBanners() {
         "",
     );
 
+    // ⑫⑬⑭ [J150] 宿主专属提示(03 §4.2 REAPER / §4.4 Live)。宿主取 §1.1 快照的 `host`;
+    // 三条的条件与「本会话」口径见 host-hints.js 头注。都是建议类 ⇒ 与 ⑧⑨⑩ 同走 showDismissible,
+    // 文案里没有占位符 ⇒ 签名恒空串,「关过之后还能再出现」全靠「条件为假就删记录」那一半
+    // (⑫:输出关掉再打开;⑬:本会话闩住、不再出;⑭:下一次打印结束)。
+    // 导览期 `vs` 是 demo store,它的宿主是 "other" ⇒ 三条恒不出。
+    const hints = hostHintFlags(
+        snapshotHost(vs.snapshot),
+        s,
+        vs.session,
+        vs.playhead,
+    );
+    showDismissible("banner-reaperKeepOpen", hints.reaperKeepOpen, "");
+    showDismissible("banner-reaperPrintNote", hints.reaperPrintNote, "");
+    showDismissible("banner-liveReEnable", hints.liveReEnable, "");
+    // ⑭ 的压制只改显隐、**不经** showDismissible:那条路的 `on` 一假就删「关过」的记录
+    // (#324 复审第 2 轮;理由见 host-hints.js 头注)。
+    if (hints.liveReEnableHold) show($("banner-liveReEnable"), false);
+
     // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
     // 「sidecar 不上了」)。此处原为
     //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
@@ -1834,17 +1899,20 @@ function showDismissible(gb, on, sig) {
     show(node, seen.get(gb) !== sig);
 }
 
-// [SL-373] ✕ 的接线。只挂 ⑧⑨⑩ 三条(理由见 renderBanners 头注:①-⑥ 是 §5.1
-// 降级纪律② 明令不可手动关闭的持续性条件,⑦ 自带一枚待办动作钮)。
+// [SL-373] ✕ 的接线。只挂建议类:⑧⑨⑩ 三条 + [J150] 宿主专属提示 ⑫⑬⑭ 三条
+// (理由见 renderBanners 头注:①-⑥ 是 §5.1 降级纪律② 明令不可手动关闭的持续性条件,
+// ⑦ 自带一枚待办动作钮)。
 // 记的是**这一帧 renderBanners 算出的签名**,不是 DOM 里那句话 —— 见 bannerSignature 头注。
 // 钮只在横幅可见时点得到,所以走到这里 bannerSignature 一定有值;真取不到就记空串
 // (与 ⑨⑩ 的常态签名同一个值,行为退化成「这一条关掉了」,不会误判成别的条)。
-// 三条锚点名收成**一份**:接线循环与 moveFocusOffDismiss() 都读它,
-// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。
+// 锚点名收成**一份**:接线循环与 moveFocusOffDismiss() 都读它,
+// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。⑫⑬⑭ 的名字从 host-hints.js 取,
+// 不在这里另抄。
 const DISMISSIBLE_BANNERS = [
     "banner-staleCapture",
     "banner-fpPausedByCapture",
     "banner-recaptureVoided",
+    ...HOST_HINT_BANNERS,
 ];
 for (const gb of DISMISSIBLE_BANNERS) {
     const btn = $(gb + "-dismiss");
@@ -2038,6 +2106,7 @@ if (bridge) {
             s && s.full ? stripFull(s) : deepMerge(store.state, stripFull(s));
         trackRecapOutput(); // B-04 粘滞位:逐事件做边沿判定(render 是合帧的)
         trackRecapDone(); // [J125] 同理:撤防那一跳必须逐事件看,合帧会吞掉它
+        trackHostHintEdges(); // [J150] 同上:打印边沿逐事件记账
         syncUiFromState();
         tabMaster.refreshPreview();
         requestRender();
@@ -2179,6 +2248,13 @@ if (bridge) {
             prevPlayhead,
             p,
         );
+        // [J150] 打印边沿逐事件记账(PRINT 三与条件里的「播放 ∧ 在区间内」只在本事件里变)。
+        // 逐字相同的一帧不带新信息,跳过 —— 与真桥同形:native 侧 diff-then-emit(§0.4)
+        // 根本不会发这样的帧。于是「走带位置冻住」的宿主上,输出开关带来的边沿**只**
+        // 由 scvb.state 那一处接住;smoke-host-hints-page 的 ⑤ 靠这一点把那一处钉住。
+        // ⚠ 这个 `!same` **不是正确性闸**:trackPrintEdges 对同值幂等,去掉它结果不变、
+        // 也没有任何一格会红;它只负责让 ⑤ 分得清两路来源(#324 复审)。
+        if (!same) trackHostHintEdges();
         // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
         // **覆写前**的 `playhead` 一起算 ——
         //   · `playingAt` 先覆写再算 ⇒ `prevPlayingAt` 永远是本帧时刻,「停满去抖窗」恒不成立;
@@ -2273,6 +2349,7 @@ if (bridge) {
         // `addedRanges` 是本帧新增区间 —— Tab1 只消费前者(泳道底部的 2px 覆盖条归 T33)。
         for (const c of (cp && cp.channels) || []) {
             store.coverage[c.ch] = c.coveragePct;
+            if (c.coveragePct > 0) store.coverageSeen[c.ch] = true; // [J152] 见 store 头注
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
@@ -2383,17 +2460,23 @@ async function bootInner() {
         // guide_seen_global / tour_seen_global / conn)。只把 state 子树并入
         // store.state,元数据留在 store.snapshot 旁路 —— 混入会让后续 §2.1
         // 增量深合并把它们当 state 字段拖着走(PR #52 bot 建议)。
+        // [J150] `host` 同属快照专属键(宿主标识,读法见 host-hints.js 的 snapshotHost),
+        // 同样留在 store.snapshot 旁路、不进 state 子树。
         const {
             session_guid: _sg,
             version: _ver,
             guide_seen_global: _gg,
             tour_seen_global: _tg,
+            host: _host,
             conn: snapConn,
             ...stateFields
         } = snap;
         store.state = deepMerge(store.state, stripFull(stateFields));
         trackRecapOutput(); // 快照落地也算一拍(布防中打开着输出重开面板)
         trackRecapDone(); // [J125] 同上:布防中重开面板 ⇒ 从这一拍起计时
+        // [J150] 宿主提示的打印边沿**不在这里**记一拍:此刻还没有任何 §2.6 帧(§0.6 门控),
+        // store.playhead 为 null ⇒ 相位不可能是 PRINT,记了也是空转。打印中重开面板时,
+        // 第一帧 scvb.playhead 就会把「进过 PRINT」记上。
         store.conn = snapConn || store.conn;
         store.ready = true;
         syncUiFromState();

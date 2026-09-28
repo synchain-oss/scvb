@@ -148,6 +148,7 @@ const SCENARIO_NAMES = {
         "slow-state-echo", // [SL-354] 真桥时序:写回执先到、scvb.state 后到一拍
         "applied-echo-drop", // [SL-354] 写落地后补一帧缺 analysis.applied 的全量快照
         "sync-state-echo", // [SL-357] 同步回声逃生口(默认异步之后的旧语义)
+        "captured-unanalyzed", // [J152] 重开已采未析的工程、停着:覆盖在、段表空
     ],
     input: [
         "occupied",
