@@ -67,7 +67,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 动手之前先读这几条。违反其中任何一条,得到的不是「效果差一点」,而是直接坏掉:
 
 <!-- BEGIN GENERATED hard-rules:zh -->
-> ⚠️ **必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。**
+> ⚠️ **必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、声像位置错误或分析失效。**
 >
 > 1. **人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。** 不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)
 > 2. **SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。** 位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。(ADR-002 / J45)

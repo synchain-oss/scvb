@@ -501,6 +501,69 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),
         "zh clickAnywhere 交互说明",
     );
+
+    // [J153] 用户拍板的四处中文原文(zh 为真源,en/fr 跟随)。每处**正反各钉一次**:
+    // 只钉「旧词不在」挡不住整句被删空或改走样,只钉「新词在」挡不住把旧句拼回来(新旧并存)。
+    const zh = (k) => T.zh[k];
+    // 12.1 默认档按代码实况写:未显式设置一律参与([J83];真源 = OutputProcessor.h 的
+    //      `participatesInAutoPan()`),立体声轨不例外。旧句「立体声轨默认关闭」是 [J60] 口径。
+    //      ⚠ fr 的正向模式带左括号:`activé par défaut` 是旧句 `désactivé par défaut` 的子串,
+    //      不带锚点的话旧句也能满足正向那一条。
+    check(
+        !/默认关/.test(zh("tour.step25.body")),
+        "zh step25 不再写「立体声轨默认关闭」(J153 12.1 / J83)",
+    );
+    check(
+        /默认开,含立体声轨/.test(zh("tour.step25.body")),
+        "zh step25 写明默认开、含立体声轨(J153 12.1)",
+    );
+    check(
+        !/off by default/i.test(T.en["tour.step25.body"]),
+        "en step25 不再写 stereo off by default(J153 12.1)",
+    );
+    check(
+        /\(on by default, stereo tracks included\)/.test(
+            T.en["tour.step25.body"],
+        ),
+        "en step25 写明 on by default、含立体声轨(J153 12.1)",
+    );
+    check(
+        !/désactivé par défaut/.test(T.fr["tour.step25.body"]),
+        "fr step25 不再写 stéréo désactivé par défaut(J153 12.1)",
+    );
+    check(
+        /\(activé par défaut, pistes stéréo comprises\)/.test(
+            T.fr["tour.step25.body"],
+        ),
+        "fr step25 写明 activé par défaut、含立体声轨(J153 12.1)",
+    );
+    // 12.2 「错音」→「声像位置错误」。字典级再扫一遍:`guide.title` 是 gen-hard-rules.mjs 从
+    //      USER_GUIDE.zh-CN.md 生成的,这里扫的是生成物,所以改真源后重生成把「错音」带回来也会红。
+    check(
+        !/错音/.test(zh("tour.step37.body")) &&
+            /静音或声像位置错误/.test(zh("tour.step37.body")),
+        "zh step37 写「声像位置错误」而非「错音」(J153 12.2)",
+    );
+    check(
+        /静音、声像位置错误或分析失效/.test(zh("guide.title")),
+        "zh guide.title 写「声像位置错误」(J153 12.2)",
+    );
+    const cuoYin = Object.keys(T.zh).filter((k) =>
+        String(T.zh[k]).includes("错音"),
+    );
+    eq(cuoYin, [], "zh 词条值零「错音」(J153 12.2)");
+    // 12.3 双击点即删,不用先选中(curve-editor.js 的 dblclick:hitTest 命中即 deleteAt)。
+    check(
+        !/选中后/.test(zh("tour.step15.body")) &&
+            /拖动调整角度与增益,双击删除;/.test(zh("tour.step15.body")),
+        "zh step15 删掉「选中后」(J153 12.3)",
+    );
+    // 12.4 组是 A–H 那个概念,配对圆点说的是 pair_id 相同的两轨。
+    check(
+        !/同组/.test(zh("tour.step23.body")) &&
+            /同一配对的两轨行首显示同色圆点/.test(zh("tour.step23.body")),
+        "zh step23 写「同一配对的两轨」而非「同组两轨」(J153 12.4)",
+    );
 }
 
 // =============================================================================
