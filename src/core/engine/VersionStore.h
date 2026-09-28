@@ -14,8 +14,9 @@
 // 曲线不可变契约(PR #43 终审,硬前置):
 //   - 版本持有的曲线一经 setCurve 注入即不可变 —— 任何「改版本曲线内容」都必须新建 CurveEvaluator
 //     对象再注入,禁止对已注入对象调用 build()。
-//   - 曲线生命周期须 ≥ OutputAuthority/音频线程寿命。本存储以 std::shared_ptr<const CurveEvaluator>
-//     持有曲线:setCurve/copyVersion 一律「新建对象 + 替换 shared_ptr」,绝不原地改写已发布对象;
+//   - 曲线生命周期须覆盖音频线程可能读它的全部时段(SL-445 前写作「≥ 音频线程寿命」)。
+//     本存储以 std::shared_ptr<const CurveEvaluator> 持有曲线:
+//     setCurve/copyVersion 一律「新建对象 + 替换 shared_ptr」,绝不原地改写已发布对象;
 //     旧对象由仍引用它的快照(std::shared_ptr)保活,音频线程绝不读到悬垂或被原地改写的曲线。
 namespace scvb::engine
 {

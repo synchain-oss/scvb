@@ -21,6 +21,8 @@ constexpr const char* kKeyLang = "lang_global"; // 选中的语言值本身(跨�
 // 共用一个键会在 Input 也实现 §3.6 落盘后互相污染(Input 存 300 → Output 构造读回 300,
 // 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
 constexpr const char* kKeyUiScale = "ui_scale_percent_output";
+// [rc-misc c] Monitor 的档位表(DesignBox kMonitorPresets)又是另一套,同样分键。
+constexpr const char* kKeyUiScaleMonitor = "ui_scale_percent_monitor";
 
 // [SL-258] guide_seen 全局位**同样按角色分键**。原注释写「两个 *_seen_global 是 Output 专属
 // (Input 没有引导页/导览),无需分键」—— 那是 [J80]/T48 之前的旧事实,Input 现在有首启轻量
@@ -177,6 +179,26 @@ void setUiScalePercent(int percent)
     if (f == nullptr)
         return;
     f->setValue(kKeyUiScale, percent);
+    f->saveIfNeeded();
+}
+
+int uiScalePercentMonitor()
+{
+    const auto f = openFile();
+    if (f == nullptr)
+        return 0;
+    const int percent = f->getIntValue(kKeyUiScaleMonitor, 0);
+    return inRange(percent) ? percent : 0; // 范围外视为未设置(不可信字节)
+}
+
+void setUiScalePercentMonitor(int percent)
+{
+    if (!inRange(percent))
+        return;
+    const auto f = openFile();
+    if (f == nullptr)
+        return;
+    f->setValue(kKeyUiScaleMonitor, percent);
     f->saveIfNeeded();
 }
 

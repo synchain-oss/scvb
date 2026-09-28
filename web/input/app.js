@@ -444,17 +444,39 @@ function wirePriority() {
         render();
     });
     // 松手档:经 ctrl 命令环写 remoteSetPriority(契约 §3.4)
+    // [SL-20/21] 只有 {queued:true} 算送达;其余一律回滚乐观值 —— 闸门早退(unassigned/offline)、
+    // 回执 null(桥调用抛错)、queued:false 的任何 reason(ringFull/outputOffline/unassigned/busy)。
+    // 此前只认 ringFull,其余拒绝路径会让滑杆停在一个从未送达的值上,直到下一次 scvb.config 回执。
     slider.addEventListener("change", () => {
         const next = Number(slider.value);
-        if (priorityBlockReason() !== null) return;
+        const seq = ++prioritySeq;
+        if (priorityBlockReason() !== null) {
+            rollbackPriority(next, seq);
+            return;
+        }
         call("remoteSetPriority", next).then((res) => {
-            if (res && res.queued === false && res.reason === "ringFull") {
-                // 满环:设置未送达 —— 回滚乐观值(契约 §3.4 的 UI 提示由 footer 承担)
-                store.local.priorityLocal = null;
-                render();
+            if (!(res && res.queued === true)) {
+                rollbackPriority(next, seq);
             }
         });
     });
+}
+
+// 每次松手自增;回滚只认最新一次松手(见 rollbackPriority)。
+let prioritySeq = 0;
+
+/**
+ * 回滚优先级乐观值。只回滚**这一次**松手留下的值,两个条件缺一不可:
+ * · seq 必须是最新一次松手 —— 否则「拖到 X 松手、又拖走再拖回 X 松手」时,第一次的拒绝会把
+ *   第二次还在路上的乐观值清掉(值相等分辨不出是哪一次);
+ * · priorityLocal 仍是这次送出的值 —— 回执回来之前用户又拖了一下(还没松手,seq 没变),
+ *   正在拖的滑杆不能被打回去(新值自己的 change 会再走一遍)。
+ */
+function rollbackPriority(sent, seq) {
+    if (seq !== prioritySeq) return;
+    if (store.local.priorityLocal !== sent) return;
+    store.local.priorityLocal = null;
+    render();
 }
 
 function currentPriority() {

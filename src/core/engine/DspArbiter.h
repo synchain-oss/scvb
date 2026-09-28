@@ -3,6 +3,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include "analysis/PanCurve.h"
@@ -16,7 +17,8 @@
 // 切换 30ms,切换只换目标不重置当前值 → 零跳变。
 // 线程契约:来源经「不可变快照 + std::atomic<const Snapshot*>」发布 —— 消息线程构建完整快照后
 // release-store;音频线程每 block acquire-load 一次、整 block 用同一份快照(无撕裂)。旧快照由发布方
-// 保活(进程寿命),绝不在音频线程可能仍读时释放。
+// 保活,绝不在音频线程可能仍读时释放。[SL-445] 起发布方不再进程寿命保活:音频线程每 block 末尾经
+// oldestHeldSeq() 报「我还可能碰的最老快照序号」,发布方只在**消息线程**释放序号严格小于它的快照。
 namespace scvb::engine
 {
 
@@ -35,7 +37,7 @@ public:
 
     // 每轨的「活动版本」取值来源。raw* 裸指针由 Output 侧持有(APVTS 生命周期);curve 由
     // std::shared_ptr<const CurveEvaluator> 持有 —— 曲线不可变契约(PR #43 终审):setCurve 注入后
-    // 曲线对象必须不可变、生命周期 ≥ 音频线程寿命;快照持 shared_ptr 保活旧曲线,音频线程只经
+    // 曲线对象必须不可变、生命周期覆盖音频线程可能读它的全部时段;快照持 shared_ptr 保活旧曲线,音频线程只经
     // const 解引用采样,零分配、零锁、绝不 write 曲线真身。
     // 值域契约:raw* 全部来自 APVTS getRawParameterValue(),JUCE 8 返回的是**去归一化**的实际单位
     // (ParameterAdapter::unnormalisedValue = convertFrom0to1(getValue())),不是 0..1 归一化值 ——
@@ -59,8 +61,12 @@ public:
         // pan_curve 存在 `CrvsData.versions[]` 上,per-version 而非 per-track。活动版本的那张
         // 在 rebindSources 里塞进来;null → G≡0(等价于点列表为空,PanCurveLut 默认全 0)。
         // 与 TrackSources::curve 同一套不可变契约:LUT 对象发布后绝不原地重建,改曲线 = 新建
-        // 一张再发新快照,旧张由快照池保活 —— 音频线程换表那一瞬间读到的必是某张完整的表。
+        // 一张再发新快照,旧张由快照池保活到音频线程确认不再用它 —— 音频线程换表那一瞬间读到的
+        // 必是某张完整的表。
         std::shared_ptr<const scvb::PanCurveLut> panCurveLut;
+        // [SL-445] 发布序号:发布方按发布顺序严格递增地填(从 1 起);0 = 不参与回收记账
+        // (单测里自建快照池的 fixture 不填,oldestHeldSeq 就恒报 0,等于「什么都别放」)。
+        std::uint64_t seq = 0;
     };
 
     struct TrackValues
@@ -72,9 +78,21 @@ public:
 
     void prepare(double sampleRate, const DspArbiterConfig& cfg = {});
 
-    // 消息线程(或音频停摆期):release-store 新快照。调用前快照须已完整构造;旧快照由发布方保活
-    // (进程寿命)。音频线程在 processBlock 开头 acquire-load 一次。
+    // 消息线程(或音频停摆期):release-store 新快照。调用前快照须已完整构造;旧快照由发布方保活,
+    // 何时可放见 oldestHeldSeq()。音频线程在 processBlock 开头 acquire-load 一次。
     void publish(const Snapshot* snapshot);
+
+    // 消息线程:[SL-445] 回收判据。音频线程每次 processBlock 末尾 release-store「本块结束时仍可能
+    // 再碰的最老快照的 seq」:平时 = 本块那份快照;换表淡入窗口开着时 = 持有**旧表**的那份
+    // (m_prevPanCurveLut 是裸指针,跨块解引用,它的存活只靠那份快照)。
+    // 发布方 acquire-load 后可以释放 seq **严格小于**它的快照,理由:
+    //   · 音频线程之后能碰到的只有「这个数对应的那份及更新的」—— 下一块 load 的是最新发布,
+    //     序号只会更大;淡入窗口重开时拿的是上一块那份(≥ 已报的数);
+    //   · 上一块那份(m_prevSnapshot,判「换版本」用的指针比较)与它持有的 LUT(判「换表」用的
+    //     指针比较)都 ≥ 这个数、不会被放 ⇒ 新快照 / 新表不可能复用它们的地址,指针比较不会 ABA;
+    //   · 音频线程对旧快照的读都在它那次 release-store 之前,发布方 acquire 之后才 delete。
+    // 从没跑过 processBlock ⇒ 恒 0 ⇒ 什么都不放(退化成旧的「全留着」,不会更糟)。
+    std::uint64_t oldestHeldSeq() const noexcept { return m_oldestHeldSeq.load(std::memory_order_acquire); }
 
     // 音频线程:每 block 算 raw 目标、检测切换并 arm 平滑。返回 raw(未平滑)目标。
     std::array<TrackValues, kNumTracks> processBlock(bool engineAuthority, double tSec);
@@ -84,7 +102,8 @@ public:
 
     // 音频线程:本 block 生效的 G 查表。processBlock 已从**同一份** acquire-load 的快照里锁定它,
     // 与本块的 TrackValues 同源同块;整块逐样本复用,期间不再触碰原子。
-    // 返回 null → G≡0(未接线 / 未发布过快照)。裸指针的存活由快照池的 shared_ptr 兜底(进程寿命)。
+    // 返回 null → G≡0(未接线 / 未发布过快照)。裸指针的存活由快照池的 shared_ptr 兜底
+    // (本块这份快照 seq ≥ oldestHeldSeq,发布方不会放它)。
     const scvb::PanCurveLut* panCurveLut() const noexcept { return m_panCurveLut; }
 
     // 音频线程:本**样本**生效的 G 查表视图(含换表交叉淡入)。须在 nextSample() 之后读 ——
@@ -128,9 +147,13 @@ private:
     DspArbiterConfig m_cfg;
     double m_sampleRate = 0.0;
     std::atomic<const Snapshot*> m_snapshot{nullptr}; // 消息线程写 / 音频线程读
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "oldestHeldSeq must be lock-free");
+    std::atomic<std::uint64_t> m_oldestHeldSeq{0}; // [SL-445] 音频线程写 / 消息线程读;见 oldestHeldSeq()
 
     // 以下全部为音频线程独占状态(仅 processBlock/nextSample 访问,不跨线程):
     const Snapshot* m_prevSnapshot = nullptr; // 上块快照指针(用于检测版本切换)
+    std::uint64_t m_prevSnapshotSeq = 0; // [SL-445] 上块快照的 seq(= 持有 m_panCurveLut 的那份)
+    std::uint64_t m_prevLutSeq = 0; // [SL-445] 持有 m_prevPanCurveLut 的那份快照的 seq(窗口开着时有效)
     // —— 换表交叉淡入(02 §8.1 步骤 5;窗口时长 = §2.4 的 30ms 切换档)——
     // ⚠ 触发判据是 **LUT 对象指针**变没变,**不是**快照变没变:`rebuildAllCurves` 跑一次就会
     // 造 15 个新快照(每轨 setCurve 各发一次),按快照判会让**每次段编辑**都触发淡入 ——

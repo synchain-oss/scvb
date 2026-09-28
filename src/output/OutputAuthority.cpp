@@ -228,7 +228,7 @@ void OutputAuthority::rebindSources()
 {
     const int v = m_versions.versionActive() - 1; // 0-based
 
-    // 构建不可变快照,完整构造后原子发布;旧快照进池保活(进程寿命)。
+    // 构建不可变快照,完整构造后原子发布;旧快照进池保活,音频线程确认后在下面释放([SL-445])。
     auto snap = std::make_unique<scvb::engine::DspArbiter::Snapshot>();
     const auto curves = m_versions.snapshotCurves(m_versions.versionActive());
     for (int t = 0; t < kNumTracks; ++t)
@@ -244,8 +244,16 @@ void OutputAuthority::rebindSources()
     // 活动版本的 G 查表(02 §8.1 步骤 5)。从没设过 pan_curve 的版本这里是 null ⇒ 音频线程按 G≡0 走。
     snap->panCurveLut = m_panCurveLut[static_cast<std::size_t>(v)];
 
+    snap->seq = ++m_nextSnapshotSeq;
+
     m_arbiter.publish(snap.get()); // release-store
-    m_snapshotPool.push_back(std::move(snap)); // 进程寿命保活
+    m_snapshotPool.push_back(std::move(snap));
+
+    // [SL-445] 回收:音频线程已确认不会再碰的(seq 严格小于它报的数)从队头放掉。刚发布的那份
+    // seq 最大、不可能小于确认值(确认值只来自已发布的快照),所以 size>1 只是多一道保险。
+    const std::uint64_t held = m_arbiter.oldestHeldSeq();
+    while (m_snapshotPool.size() > 1 && m_snapshotPool.front()->seq < held)
+        m_snapshotPool.pop_front();
 }
 
 } // namespace scvb::output

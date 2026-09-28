@@ -13,7 +13,7 @@
 // 跨线程发布协议(T16 DspArbiter 同款 Snapshot 模式):
 //   绑定是「不可变快照 + std::atomic<const AudioRingBinding*>」发布 —— 消息线程 bind() 构造完整
 //   绑定后 release-store;音频线程每 block acquire-load 一次、整 block 复用同一份(无撕裂)。旧绑定
-//   由本类 owned_ 保活(进程寿命,与 DspArbiter「旧快照由发布方保活」一致);绑定内裸指针指向的段
+//   由本类 owned_ 保活(进程寿命;DspArbiter 自 SL-445 起改为确认后回收,本类未跟进);绑定内裸指针指向的段
 //   由调用方(InputSession)经 SegmentHandle 租约/宽限期保活,音频线程块内使用、绝不跨块持有。
 //
 // write() 按时间线绝对样本位置寻址:frame index = timeline_pos & (ring_frames-1),
@@ -78,7 +78,7 @@ public:
 
 private:
     std::atomic<const AudioRingBinding*> binding_{nullptr}; // 消息线程写 / 音频线程读
-    std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命,T16 同款)
+    std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命;T16 已改回收,SL-445)
 };
 
 } // namespace scvb
