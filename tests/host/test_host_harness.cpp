@@ -10508,8 +10508,8 @@ TEST_CASE("HOST SL-523:超长块采集时特征 hop 记账跟着时间线走", "
 // hasData 恒假,混音循环整轨跳过 —— 淡出平滑器在空转,没乘在任何样本上。
 //
 // 机台:MonoMultiRig 三条 mono 轨,只有 ch1 喂正弦,ch2/ch3 喂静音。后两条留在 inject 里,
-// 所以关掉 ch1 之后 inject ≠ 0,走的是逐轨混音路径(不是「全关 ⇒ 总线级直通交叉」那一支,
-// 那一支不在本卡范围);而母线输出恰好等于 ch1 这一条的贡献。
+// 所以关掉 ch1 之后 inject ≠ 0,走的是逐轨混音路径(「关掉的是最后一条轨、inject 变 0」那一幕
+// 由下面 SL-521 的用例钉);而母线输出恰好等于 ch1 这一条的贡献。
 // ===========================================================================
 namespace
 {
@@ -10676,26 +10676,33 @@ TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当�
     // 「上一段真混进过」的记账必须在每条早退路径上作废:早退不推进 fade,ch1 的 fade 冻在 1。
     // 若记账跨过了直通段,恢复混音时 ch1 会被当成释放中、从 1 淡出 —— 一条已经关掉的轨
     // 在母线上响 80ms。
+    //
+    // [SL-521] 直通段原先靠「三条全关 ⇒ inject == 0」造;SL-521 起那一幕会先让 ch1 走完淡出
+    // (fade 落到 0)再直通,不再是「fade 冻在 1 的直通段」,这一格就钉不住记账了。改用
+    // 「只给 Output 一个没有时间线的 playhead」造直通段(noTimeline 早退,同样不推进 fade);
+    // Input 仍按原 playhead 推块,inject 不掉。
     MonoMultiRig r;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
 
-    // 三条全关 ⇒ inject == 0 ⇒ 总线直通(不推进逐轨 fade)。
-    for (int ch = 1; ch <= 3; ++ch)
+    FakePlayHead noTime;
+    noTime.playing = true;
+    noTime.haveTime = false;
+    r.out.setPlayHead(&noTime);
+    for (int k = 0; k < 4; ++k)
     {
-        setTrackEnabled(r.out, ch, false);
+        soloBlock(r, 0.5f);
     }
+    setTrackEnabled(r.out, 1, false);
     MonoMultiRig::pump(100);
-    for (int k = 0; k < 12; ++k)
+    for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f);
     }
 
-    // 只把两条静音轨开回来 ⇒ inject ≠ 0、重回混音路径;ch1 仍关着,母线必须逐位为 0。
-    setTrackEnabled(r.out, 2, true);
-    setTrackEnabled(r.out, 3, true);
-    MonoMultiRig::pump(100);
+    // 时间线回来 ⇒ 重回混音路径(ch2/ch3 一直在 inject 里);ch1 已关,母线上不许有它。
+    r.out.setPlayHead(&r.ph);
     checkNoResidualRelease(r);
 }
 
@@ -10757,6 +10764,103 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     }
 
     checkNoResidualRelease(r);
+}
+
+// ===========================================================================
+// [SL-521] 播放中关掉**最后一条**轨:inject 变 0,旧实现走「总线直通」早退,busXfade 从混音
+// 交叉回直通时,混音侧传的是 accum —— 上一段混音的样本。交叉要走 80ms(7.5 块),每块都把
+// 关轨前最后一块的样本按递减增益重放一遍:一小段重复/咔嗒。
+//
+// 现在这一幕与 SL-488 的「多轨关一轨」走同一条逐轨淡出路径(ch1 仍被读环、fade 乘在真样本上),
+// 只是总线交叉的目标改为直通;淡出走完后直通段的混音侧给 0。
+//
+// 机台同 SL-488:ch1 正弦 0.5,Output 的宿主输入为 0,所以母线输出 = ch1 的贡献。
+// ===========================================================================
+namespace
+{
+// 两块样本的归一化相关(任一为全零 ⇒ 0)。
+double corrOf(const std::vector<float>& a, const std::vector<float>& b)
+{
+    double xy = 0.0;
+    double xx = 0.0;
+    double yy = 0.0;
+    for (std::size_t i = 0; i < a.size() && i < b.size(); ++i)
+    {
+        xy += static_cast<double>(a[i]) * b[i];
+        xx += static_cast<double>(a[i]) * a[i];
+        yy += static_cast<double>(b[i]) * b[i];
+    }
+    return (xx > 0.0 && yy > 0.0) ? xy / std::sqrt(xx * yy) : 0.0;
+}
+} // namespace
+
+TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,不重放已输出过的样本", "[host][sl488][sl521]")
+{
+    constexpr float kOther = 1.0e-3f; // ch2/ch3 的小信号:只为让电平表能证明它们「被读 / 不再被读」
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
+
+    // 前提 1:ch2/ch3 此刻真在混音里(电平表只给读到环的轨报电平)。
+    soloBlock(r, 0.5f, /*bypassed=*/false, kOther);
+    REQUIRE(r.out.meterSnapshot().trackPeak[1] > 0.0f);
+
+    // 先关 ch2/ch3,跑满它们的淡出,让 ch1 成为唯一还在 inject 里的轨。
+    setTrackEnabled(r.out, 2, false);
+    setTrackEnabled(r.out, 3, false);
+    MonoMultiRig::pump(100);
+    SoloBlock last;
+    for (int k = 0; k < 12; ++k)
+    {
+        last = soloBlock(r, 0.5f, /*bypassed=*/false, kOther);
+    }
+    // 前提 2:ch2/ch3 已不再被读(否则关 ch1 后 inject ≠ 0,走的是 SL-488 那一支,本格什么都没证明);
+    // ch1 仍稳定在母线上。
+    REQUIRE(r.out.meterSnapshot().trackPeak[1] == 0.0f);
+    REQUIRE(r.out.meterSnapshot().trackPeak[2] == 0.0f);
+    REQUIRE(r.out.meterSnapshot().trackPeak[0] > 0.0f);
+    REQUIRE(peakOf(last.l) > 0.1f);
+    REQUIRE(corrWithSine(last) > 0.99);
+
+    // 关掉最后一条轨。
+    setTrackEnabled(r.out, 1, false);
+    MonoMultiRig::pump(100);
+    std::vector<SoloBlock> tail;
+    for (int k = 0; k < 12; ++k)
+    {
+        tail.push_back(soloBlock(r, 0.5f, /*bypassed=*/false, kOther));
+    }
+
+    // ① 关轨后的首块:仍在响、块边界连续(与关轨前末样本之差在一个样本步进的量级)。
+    CHECK(peakOf(tail[0].l) > 0.05f);
+    CHECK(std::abs(tail[0].l.front() - last.l.back()) < 0.05f);
+
+    // ② 淡出期间(前 7 块,80ms = 7.5 块)每一块都是「继续往下走的正弦」,不是关轨前最后一块的
+    //    缩放副本。修前每块 = last × 递减增益 ⇒ 与 last 的相关恒为 1;而继续走的正弦与 last 的
+    //    相位差是每块 0.693 周的整数倍,相关最高约 0.88(第 3 块),所以 0.99 分得开两者。
+    //    corrWithSine 那条从另一侧钉同一件事:修前那几块与本块时刻的正弦相关都 < 0.9。
+    for (std::size_t k = 0; k < 7; ++k)
+    {
+        INFO("关轨后第 " << k << " 块");
+        CHECK(corrOf(tail[k].l, last.l) < 0.99);
+        CHECK(corrWithSine(tail[k]) > 0.9);
+    }
+
+    // ③ 包络单调不增(逐轨 fade 与总线交叉两个增益都在往下走),且不超过关轨前的电平。
+    CHECK(peakOf(tail[0].l) <= peakOf(last.l) + 1.0e-4f);
+    for (std::size_t k = 0; k + 1 < 8; ++k)
+    {
+        INFO("关轨后第 " << k << " -> " << (k + 1) << " 块");
+        CHECK(peakOf(tail[k + 1].l) <= peakOf(tail[k].l) + 1.0e-4f);
+    }
+
+    // ④ 淡出走完:之后母线 = 宿主输入(这里为 0),逐位为 0;ch1 不再被读环。
+    for (std::size_t k = 8; k < 12; ++k)
+    {
+        CHECK(peakOf(tail[k].l) == 0.0f);
+    }
+    CHECK(r.out.meterSnapshot().trackPeak[0] == 0.0f);
 }
 
 // ===========================================================================
