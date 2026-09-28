@@ -318,6 +318,13 @@
   (自动化写入已在 Cubase 15 上实测),REAPER 改为 Tier 2(部分验证),Ableton Live 与
   Studio One 改为 Tier 3(未验证);已知限制补登三条:单轨渲染得到静音文件(替换式渲染会覆盖
   原素材)、同机同时开两个工程会抢 channel、宿主停用 Output 后约 5.5 秒无声(#298)
+- **发版流水线可以真正跑了**:推 `vX.Y.Z` / `vX.Y.Z-rc.N` tag 后,先核对 tag 与 `CMakeLists.txt` 的
+  `project(SCVB VERSION)`(此前取错行、任何真 tag 都会被判不匹配),再调用与出包硬门同一份的构建 /
+  ctest / pluginval,然后由新增的 `scripts/package.ps1` 打出 `SCVB-v<版本>-win64.zip`(Input / Output /
+  可选的 Monitor 三个 bundle + `LICENSE.txt` + `THIRD-PARTY-NOTICES.md` + `LICENSES/` + `INSTALL.txt`,
+  后者含精确到 tag 的源码地址与未签名插件的解除锁定 / SmartScreen 步骤)、独立 `.sha256` 与
+  `package-summary.md`,最后建**草稿** Release,发布仍由维护者手动。`THIRD-PARTY-NOTICES.md` 点名的许可证在
+  `LICENSES/` 里缺全文时,正式版与 rc tag 在构建之前就会停下。`v0.0.0-test` 可用来演练整条链路(#297)
 - 轨道页那枚「音量」开关统一叫「**参与音量调节**」:首启导览第 24 步(原标题「音量豁免」,
   正文按「开 = 不参与」写,与开关实际极性相反)、设置页中心槽策略下的说明、用户手册轨道页
   一行,三语都改成与轨道页列头说明同一个说法(开 = 参与,默认全开)。开关行为不变(#301)
