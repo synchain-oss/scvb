@@ -1036,6 +1036,86 @@ TEST_CASE("SL-446(第 5 轮):用户主动 setChannelId() 成功后,存档跟着�
     p.releaseResources();
 }
 
+TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不开、寻址回退旧组——"
+          "存档仍记工程组号,用户主动改组后才跟着走",
+          "[host][input][sl458]")
+{
+    // 场景:实例已在 kTestGroup 上活跃;载入的工程写的是 kProjectGroup,而那一组的 ctrl 段是
+    // abi 损坏的残段 ⇒ setStateInformation() 里 ctrl_.changeGroup() 失败,groupId_ 回退到
+    // kTestGroup(寻址回退是既有设计,本卡不改)。缺陷是存档也读 groupId_,随后一次保存就把
+    // 工程里的组号覆盖成了回退组。
+    // 三个写 savedGroupId_ 的落点各配一格:①载入解码处 ②setGroupId() 同组 no-op ③setGroupId() 成功。
+    constexpr int kProjectGroup = 6; // 本文件里无常驻段的组(同 HOST SL-381 的 kFreeGroup)
+    constexpr int kUserGroup = 5; // ③ 用户改去的组(同 HOST I3 的空组)
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    // 预置 kProjectGroup 的 ctrl 段并把 abi 写坏(同 tests/core 里「换组失败返回 kAbiMismatch」
+    // 那格的构造,换成真 Win32 段)。句柄在本用例结束前一直持有,段不会被内核回收。
+    scvb::SegmentBackendWin32 backend;
+    scvb::SegmentView bad;
+    REQUIRE(backend.createOrOpen(L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup),
+                                                                      scvb::SegmentKind::kCtrl),
+                                 scvb::kCtrlSegmentSize, bad) == scvb::InitResult::kOk);
+    auto* header = static_cast<scvb::CtrlHeader*>(bad.base);
+    REQUIRE(backend.initHeader(bad, &header->magic, &header->abi, &header->generation, scvb::kCtrlBroadcastOffset,
+                               /*initData=*/{}, /*allowOverwrite=*/true) == scvb::InitResult::kOk);
+    header->abi.store(99, std::memory_order_release);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(kTestChannel) == scvb::input::InputClaimState::kActive);
+
+    const auto savedGroup = [&victim]() -> int {
+        juce::MemoryBlock stateBlob;
+        victim.getStateInformation(stateBlob);
+        scvb::state::StateChunks chunks;
+        if (scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                         chunks) != scvb::state::DecodeStatus::Ok)
+            return -1;
+        const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+        scvb::state::InputState loaded;
+        if (cfg == nullptr || !scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded))
+            return -1;
+        return static_cast<int>(loaded.groupId);
+    };
+
+    scvb::state::InputState project;
+    project.channelId = static_cast<std::uint32_t>(kTestChannel);
+    project.groupId = static_cast<std::uint32_t>(kProjectGroup);
+    project.uiScale = 100;
+    project.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(project, payload));
+    scvb::state::StateChunks chunksOut;
+    chunksOut.abi = scvb::state::kCurrentAbi;
+    chunksOut.set(scvb::state::kFourccCfgs, payload);
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunksOut, blob));
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    // 前提:寻址确实回退了(否则下面那条存档断言恒真,测不出东西)。
+    REQUIRE(victim.bridgeTickSnapshot().groupId == kTestGroup);
+
+    // ① 存档记工程组号,不是回退组。
+    CHECK(savedGroup() == kProjectGroup);
+
+    // ② 用户在界面上明确点了当前(回退)组:寻址 no-op,但存档要改成这一组。
+    victim.setGroupId(kTestGroup);
+    CHECK(victim.bridgeTickSnapshot().groupId == kTestGroup);
+    CHECK(savedGroup() == kTestGroup);
+
+    // ③ 用户改到别的组且换段成功:寻址与存档都跟着走。
+    victim.setGroupId(kUserGroup);
+    CHECK(victim.bridgeTickSnapshot().groupId == kUserGroup);
+    CHECK(savedGroup() == kUserGroup);
+
+    victim.releaseResources();
+    backend.unmap(bad);
+}
+
 TEST_CASE("SL-446(轮 8 复审【重要】):releaseResources() 之后 configuredChannelId 原样留着——"
           "displayChannelId() 整套设计唯一的支点",
           "[host][input][sl446]")

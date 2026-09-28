@@ -417,17 +417,31 @@ function wirePriority() {
         render();
     });
     // 松手档:经 ctrl 命令环写 remoteSetPriority(契约 §3.4)
+    // [SL-20/21] 只有 {queued:true} 算送达;其余一律回滚乐观值 —— 闸门早退(unassigned/offline)、
+    // 回执 null(桥调用抛错)、queued:false 的任何 reason(ringFull/outputOffline/unassigned/busy)。
+    // 此前只认 ringFull,其余拒绝路径会让滑杆停在一个从未送达的值上,直到下一次 scvb.config 回执。
     slider.addEventListener("change", () => {
         const next = Number(slider.value);
-        if (priorityBlockReason() !== null) return;
+        if (priorityBlockReason() !== null) {
+            rollbackPriority(next);
+            return;
+        }
         call("remoteSetPriority", next).then((res) => {
-            if (res && res.queued === false && res.reason === "ringFull") {
-                // 满环:设置未送达 —— 回滚乐观值(契约 §3.4 的 UI 提示由 footer 承担)
-                store.local.priorityLocal = null;
-                render();
+            if (!(res && res.queued === true)) {
+                rollbackPriority(next);
             }
         });
     });
+}
+
+/**
+ * 回滚优先级乐观值。只回滚**这一次**松手留下的值:回执回来之前用户又拖了一下,
+ * priorityLocal 已是新的拖动值,旧请求被拒不能把正在拖的滑杆打回去(新值自己的 change 会再走一遍)。
+ */
+function rollbackPriority(sent) {
+    if (store.local.priorityLocal !== sent) return;
+    store.local.priorityLocal = null;
+    render();
 }
 
 function currentPriority() {

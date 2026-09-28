@@ -182,6 +182,12 @@ private:
     // 上引入静默的行为变化。
     int savedChannelId_ = 0;
     int groupId_ = 1;
+    // [SL-458] 工程存档里 group_id 该记的值,与 groupId_(实际寻址的组:session/ctrl 段跟它走)
+    // 分开。两者只在「载入工程时目标组 ctrl 段打不开(残段/abi 不符)、寻址回退到上一组」这一个
+    // 场景下分叉 —— 此前存档直接读 groupId_,随后任何一次保存都会把工程里的组号覆盖成回退组。
+    // 只在 setStateInformation() 解码时与用户主动 setGroupId() 时写入(同 savedChannelId_ 的做法)。
+    // ⚠ 与 groupId_ 同初值(1),全新实例的存档字节不变。
+    int savedGroupId_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
     bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态(持久化待 SL-238)
