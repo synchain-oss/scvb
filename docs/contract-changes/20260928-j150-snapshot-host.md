@@ -59,7 +59,7 @@ J150 与 03 §4.2 引的横幅原文是「打印期间请保持插件窗口打�
   的源码钉子锁住 `buildSnapshot` 里那一行 `put(o, "host", juce::var(processor_.hostId()));`。
 - **页面**:`smoke-host-hints.mjs`(纯函数真值表 / mock `?host=` 接线 / 三语词条 / 模板与接线钉子)+
   `smoke-host-hints-page.mjs`(无头 Chrome:reaper / live / cubase / 缺省 四个宿主 × 进出 PRINT,
-  以及「走带位置冻住时边沿只从 scvb.state 来」一格)。
+  以及「走带位置冻住时边沿只从 scvb.state 来」「Live 播着出写入范围不出、停走才出」两格)。
 - 删除式逐落点一格(读数见 PR 描述)。
 
 ## 兼容性影响

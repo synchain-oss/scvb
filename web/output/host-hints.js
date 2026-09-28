@@ -53,7 +53,10 @@ export function snapshotHost(snapshot) {
  *
  * 就地写 `session` 的三格:
  *   · `hintEverPrinted`   本会话进过 PRINT(只置不清);
- *   · `hintPrintEnded`    上一次 PRINT 已结束、下一次还没开始;
+ *   · `hintPrintEnded`    上一次 PRINT 已结束、下一次还没开始(进 PRINT 清位。⚠ 清位这一句在
+ *                         **页面上不可分辨**:PRINT 必然「输出 ON ∧ 在播」,而 hostHintFlags 的
+ *                         ⑬ 在这时本来就不出 —— 它保的是这一格的记账语义,由 smoke-host-hints
+ *                         的逐拍真值表钉住,不是由页面级那一套);
  *   · `hintWasPrinting`   上一拍是不是 PRINT(边沿记忆)。
  *
  * @param {object} session   store.session
