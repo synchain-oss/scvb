@@ -164,12 +164,36 @@ export function shouldAutoShowTourAsk(state, snapshot, answeredThisSession) {
  * 渲染层却要显示 demo —— 于是 demo 是另一份对象,app.js 的 viewStore() 在 tour
  * 激活期把它当作唯一渲染源,结束即切回真实 store。纯 UI 展示层,不触引擎、不写 state。
  *
+ * **版本号与 abi 例外:取真快照的**(`realSnapshot.version`)。导览期间设置页的版本行与页脚显示的
+ * 是「你装的这个插件」的版本。此前 demo 快照带着 mock 固定值(`mock-data.js` 的 `PLUGIN_VERSION`,
+ * 不跟随真源),导览一走到设置页就显示「v0.1.0 · abi 1」,与插件实际版本不同。
+ * 真快照没有合法的 `version`(`plugin` 非空字符串、`abi` 整数)时,demo 快照**不带** `version`,
+ * 不回落到 mock 值:设置页版本行留空,页脚沿用导览前的文字(app.js 只在快照带 version 时改写页脚)。
+ * 预览里导览显示的仍是 mock 的版本号,那是因为预览的「真快照」本身就来自 mock 桥。
+ *
+ * @param {Function} [getT] 当前语言词条表的取值函数(本地化 demo 轨名 / 版本名)
+ * @param {object} [realSnapshot] app.js 真实 store 的 `snapshot`(§1.1);只读它的 `version`
  * @returns {object} 与 app.js store 同形:{ ready, state, snapshot, params, conn,
  *   groups, playhead, playingAt, segments, coverage, errors, unknownCodes, readOnly,
  *   noTimeline, loopMissing, session }
  */
-export function buildDemoStore(getT) {
-    const snap = FIFTEEN_TRACKS.snapshot;
+export function buildDemoStore(getT, realSnapshot) {
+    // demo 快照是深冻结的共享对象,不就地改:换一份只有 `version` 不同的浅拷贝,其余键引用照旧。
+    const snap = { ...FIFTEEN_TRACKS.snapshot };
+    delete snap.version;
+    const realVersion = realSnapshot && realSnapshot.version;
+    if (
+        realVersion &&
+        typeof realVersion.plugin === "string" &&
+        realVersion.plugin !== "" &&
+        Number.isInteger(realVersion.abi)
+    ) {
+        snap.version = Object.freeze({
+            plugin: realVersion.plugin,
+            abi: realVersion.abi,
+        });
+    }
+    Object.freeze(snap);
     // 快照专属键(session_guid / version / *_global / host / conn)不进 state 子树(§1.1 语义行);
     // state 子树由 makeTourDemoSnapshot 产出,深冻结,渲染侧只读、零就地改写。
     // [J150] demo 快照的 `host` 是 "other"(makeOutputSnapshot 默认)⇒ 导览期宿主专属提示恒不出;
@@ -285,6 +309,9 @@ export function createTour(opts) {
     // tour 结束(完成或 Skip)即刻通知外壳落「本会话已答」位 —— 不能等 setTourSeen 的
     // 异步回执与下一拍 scvb.state,否则询问卡会在结束的那一帧重新弹出(bug A-2)。
     const onEnd = opts.onEnd || (() => {});
+    // 真实 store 的 §1.1 快照(app.js 传 `() => store.snapshot`)。buildDemoStore 只从中取
+    // `version`:导览期间设置页 / 页脚显示真插件的版本号,而不是 demo 的 mock 值。
+    const getRealSnapshot = opts.getRealSnapshot || (() => null);
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -537,7 +564,7 @@ export function createTour(opts) {
     function start() {
         if (active) return;
         preTourTab = getActiveTab();
-        demoStore = buildDemoStore(getT);
+        demoStore = buildDemoStore(getT, getRealSnapshot());
         active = true;
         step = 1;
         overlay.hidden = false;

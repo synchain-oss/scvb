@@ -11,7 +11,7 @@
 //      「sidecar 不上了」⇒ 那一步整步移除)。单靠「锚点数组逐条对拍」挡不住它回来 ——
 //      把 storage 插回表里、再照抄进那份期望数组,两处一起改就是全绿;这条负向断言才是牙齿。
 //   ② shouldShowTourAsk 四种组合(J50a 镜像)+ 兜底直弹的「本会话已答」闸(T37 bug A-2);
-//   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
+//   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS + 版本号取真快照(给不出就不带);
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
 //     落工程位与全局位,再取快照往返不丢;
 //   ⑤ 词条:tour.* 三语齐、占位符三语一致、step8 措辞纪律(无「写入完成」);
@@ -311,7 +311,15 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
     const snapBefore = FIFTEEN_TRACKS.snapshot;
     const ds = TOUR.buildDemoStore();
     check(ds.ready === true, "demo store ready=true");
-    check(ds.snapshot === snapBefore, "snapshot 引用复用(只读)");
+    // 快照是 demo 快照的浅拷贝:只有 `version` 换成真快照的(见下面「版本号取真快照」),
+    // 其余键引用复用(只读)。
+    check(
+        Object.keys(snapBefore)
+            .filter((k) => k !== "version")
+            .every((k) => ds.snapshot[k] === snapBefore[k]),
+        "snapshot 除 version 外逐键引用复用 demo 快照(只读)",
+    );
+    check(Object.isFrozen(ds.snapshot), "demo store 的 snapshot 冻结");
     check(ds.state !== snapBefore, "state 子树为独立对象");
     check(ds.session && typeof ds.session === "object", "session 独立可变对象");
     eq(ds.conn, snapBefore.conn, "conn 复用 demo 快照");
@@ -382,6 +390,46 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
         "en/fr 版本名无中文",
     );
     eq(dsEn.state.versions[1].name, "V2", "V2 版本名保持原样(不本地化)");
+
+    // 版本号取真快照(rc1 切版 PR):导览期间设置页 / 页脚显示的是真插件的版本,
+    // 不是 demo 快照里那个 mock 固定值。真快照给不出合法 version 时**不带** version
+    // (设置页版本行留空),而不是回落到 mock 值。
+    // 这一格只钉纯函数;「真的把真快照传进来」那一跳由 smoke-tour-version-page.mjs 在页面上钉。
+    const real = { version: { plugin: "0.9.0", abi: 2 } };
+    const dsReal = TOUR.buildDemoStore(undefined, real);
+    eq(
+        dsReal.snapshot.version,
+        { plugin: "0.9.0", abi: 2 },
+        "传入真快照 ⇒ demo 快照的 version = 真快照的 {plugin, abi}",
+    );
+    check(
+        dsReal.snapshot.version !== real.version,
+        "version 是拷贝,不与真快照共用对象(demo 仓冻结,不能冻住真 store 的对象)",
+    );
+    check(!Object.isFrozen(real.version), "真快照的 version 没被冻结 / 改写");
+    eq(
+        FIFTEEN_TRACKS.snapshot.version.plugin,
+        snapBefore.version.plugin,
+        "FIFTEEN_TRACKS.snapshot.version 未被改写",
+    );
+    check(
+        !Object.prototype.hasOwnProperty.call(dsReal.state, "version"),
+        "version 仍只在 snapshot 旁路,不进 state 子树",
+    );
+    for (const [label, bad] of [
+        ["不传真快照", undefined],
+        ["真快照为 null", null],
+        ["真快照无 version", {}],
+        ["plugin 非字符串", { version: { plugin: 9, abi: 1 } }],
+        ["plugin 空串", { version: { plugin: "", abi: 1 } }],
+        ["abi 非整数", { version: { plugin: "0.9.0", abi: "1" } }],
+    ]) {
+        const d = TOUR.buildDemoStore(undefined, bad);
+        check(
+            !Object.prototype.hasOwnProperty.call(d.snapshot, "version"),
+            `${label} ⇒ demo 快照不带 version(不回落到 mock 的 ${snapBefore.version.plugin})`,
+        );
+    }
 }
 
 // =============================================================================

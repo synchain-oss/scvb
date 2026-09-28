@@ -1,7 +1,7 @@
 # 发布前验证清单 —— v0.9.0-rc.1
 
 > 状态:进行中 —— **任何一项未勾不得发布**
-> 最后更新:2026-09-28(核对基线:`feature/v1` @ `e3a7f5a1`)
+> 最后更新:2026-09-28(核对基线:`feature/v1` @ `e3a7f5a1`;切 rc.1 版本节的那个 PR 在 `5b1c908e`(#332 合并后)+ 该 PR 自身的改动上刷新了一轮,刷新过的项在证据里标「(`5b1c908e`)」)
 > 来源:masterPlan 10 §6.1 的 A–K 逐项照搬;L 段是本版裁定追加的硬门。
 > 相关:上机矩阵 [daw-matrix.md](daw-matrix.md) · 支持等级 [daw-support-tiers.md](daw-support-tiers.md) · null test 记录 [audio/nulltest-log.md](audio/nulltest-log.md)
 
@@ -10,13 +10,13 @@
 - **版本路线(J123)**:`CMakeLists.txt` 改为 `0.9.0`,打 tag `v0.9.0-rc.1`;rc 测过后再发 `v1.0.0`,届时另建 `release-checklist-v1.0.0.md`,**不沿用本文件的勾**。
 - **允许「N/A + 理由」**(10 §6.0),理由写在该项里。
 - 每项分四行:**查什么 / 怎么查 / 证据 / 状态**。状态口径:
-  - **✅ 已核**:写本文件时在 `e3a7f5a1` 上亲自看过证据,命令与结果写在「证据」里;
+  - **✅ 已核**:在核对基线上亲自看过证据(`e3a7f5a1`;证据里标了「(`5b1c908e`)」的是在 `5b1c908e` 上),命令与结果写在「证据」里;
   - **⏳ CI**:由 tag 所指提交上的 CI 给出(tag 推上去后 `release.yml` 调用 `build-vst3.yml`,见 #297);此前的绿 run 只作参考,列在证据里;
   - **⏳ 统筹**:统筹要做的核对、派工,或要提请用户裁定;
   - **⏳ 用户上机 / ⏳ 用户**:只能用户在真机或仓库设置里做,步骤见 §3;
   - **N/A**:不适用,理由写在该项里。
 - 打勾规则:只有 ✅ 与 N/A 勾 `[x]`,⏳ 一律 `[ ]`。
-- 文中的「文件:行号」都是 `e3a7f5a1` 上的位置,别的 PR 合入后会漂;以同处写出的用例名 / 小节标题为准。
+- 文中的「文件:行号」除标了 `5b1c908e` 的以外都是 `e3a7f5a1` 上的位置,别的 PR 合入后会漂;以同处写出的用例名 / 小节标题为准。
 - **本文件的结论是阶段性的**(J129 / J139):打 tag 前,统筹要在 tag 所指提交上把全部 ✅ 项的「怎么查」重跑一遍,结果变了就改回 ⏳;再全量重扫一次漏项(L3)。
 
 ## 1. 汇总
@@ -25,7 +25,7 @@
 
 | 段 | 项数 | ✅ / N/A | ⏳ 用户 | ⏳ 统筹 | ⏳ CI |
 | --- | --- | --- | --- | --- | --- |
-| A 代码与版本 | 5 | 1 | 0 | 4 | 0 |
+| A 代码与版本 | 5 | 1 | 0 | 3 | 1 |
 | B 自动化门禁 | 6 | 0 | 1 | 1 | 4 |
 | C UI 与无障碍 | 4 | 0 | 0 | 2 | 2 |
 | D 音质 | 5 | 0 | 3 | 2 | 0 |
@@ -33,13 +33,13 @@
 | F DAW 矩阵 | 4 | 1 | 3 | 0 | 0 |
 | G 兼容性与数据安全 | 4 | 3(均 N/A) | 0 | 1 | 0 |
 | H 文档 | 8 | 2 | 0 | 6 | 0 |
-| I 许可与合规 | 4 | 1 | 0 | 3 | 0 |
+| I 许可与合规 | 4 | 3 | 0 | 1 | 0 |
 | J 打包与发布 | 6 | 0 | 3 | 1 | 2 |
 | K 回滚预案 | 2 | 1(N/A) | 0 | 1 | 0 |
-| L 本版追加 | 3 | 0 | 0 | 3 | 0 |
-| **合计** | **54** | **9** | **13** | **24** | **8** |
+| L 本版追加 | 3 | 1 | 0 | 2 | 0 |
+| **合计** | **54** | **12** | **13** | **20** | **9** |
 
-「⏳ 用户」13 项:11 项要上机(B4、D1、D2、D5、E1–E3、F1、F2、F4、J3),2 项在 GitHub 上操作(J5 发布草稿、J6 tag 保护)。其中 E2(整理 PERF 结果)与 E3(MEM-1..4 定容项对照代码常量核)各带一份统筹要做的活,计数只算在「⏳ 用户」里,统筹过「⏳ 统筹」24 项时别漏这两处。
+「⏳ 用户」13 项:11 项要上机(B4、D1、D2、D5、E1–E3、F1、F2、F4、J3),2 项在 GitHub 上操作(J5 发布草稿、J6 tag 保护)。其中 E2(整理 PERF 结果)与 E3(MEM-1..4 定容项对照代码常量核)各带一份统筹要做的活,计数只算在「⏳ 用户」里,统筹过「⏳ 统筹」20 项时别漏这两处。
 
 ## 2. 清单
 
@@ -49,19 +49,24 @@
   - 查什么:顶层 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 与 tag 一致。
   - 怎么查:`git show v0.9.0-rc.1:CMakeLists.txt | grep -n "project(SCVB"` 应为 `VERSION 0.9.0`;tag 推上去后 `release.yml` 的 `verify-tag` job 绿(#297 的 `scripts/check-release-tag.ps1`:rc tag 只比对 `X.Y.Z` 部分,rc 与正式版对应同一个 CMake 版本)。
   - 证据:`e3a7f5a1` 上 `CMakeLists.txt:8` 是 `project(SCVB VERSION 0.1.0)`;CI run 36364806176 的 pluginval 输出也是 `SCVB Input v0.1.0`。#331 已改为 `project(SCVB VERSION 0.9.0)`,在它的 head 上本地跑 `scripts/check-release-tag.ps1 -Tag v0.9.0-rc.1` 退出 0(kind=rc),`-Tag v1.0.0` 退出 1。
-  - 状态:⏳ 统筹(#297 已合;版本号由 #331 改;tag 推上去后看 `verify-tag`)
+    (`5b1c908e`)`CMakeLists.txt:8` 是 `project(SCVB VERSION 0.9.0)`;切版 PR #333 的 head 上 `check-release-tag.ps1 -SelfTest` 19 格全过、`-Tag v0.9.0-rc.1` 退出 0(kind=rc);#332 的 CI run 36489830961 里 pluginval 输出 `SCVB Input v0.9.0` / `SCVB Monitor v0.9.0` / `SCVB Output v0.9.0`。另:核心库自报的版本串此前写死 `0.1.0`,#333 改为从 CMake 注入。
+  - 状态:⏳ CI(版本号与判据都已就位,剩 tag 推上去后 `verify-tag` 那一跑)
 
 - [ ] **A2 CHANGELOG 已更新**
   - 查什么:含破坏性变更、已知限制、DAW Tier 变化。
   - 怎么查:按 J123 在出 RC 时把 `## [Unreleased]` 改为 0.9.0 的版本节(节名与日期按 `docs/RELEASE.md` 发版清单第 2 步);`### ⚠️ 契约变更` 每条都带 `docs/contract-changes/` 文档;每条带 PR 号(CI `check-changelog-drafts.mjs` 判)。
   - 证据:`[Unreleased]` 已有 `### ⚠️ 契约变更` 小节;Tier 变化与三条已知限制已由 #298 写进 `### 变更`(以「README 与用户手册:安装改为从本仓库 Releases 页下载」开头的那条)。版本节尚未建。
-  - 状态:⏳ 统筹
+    (`5b1c908e` + #333)#333 已把 `[Unreleased]` 切成 `## [0.9.0-rc.1] - 2026-09-29`(条目逐字搬,文末对比链接补齐,留空的 `[Unreleased]`)。按条目逐条扫(一条 = 行首 `- ` 起到下一个空行 / 标题):⚠️ 契约变更 28、新增 53、变更 45、修复 110。**两处没过**:
+    ① 两条没有任何 PR 号 —— ⚠️ 契约变更「VAD 五项与过渡时间随工程保存」(SL-416)与修复「快速起停之后,『宿主自动化在写』徽标仍会在播放中途消失」;
+    ② ⚠️ 契约变更里五条没有 `docs/contract-changes/` 文档链接 ——「插件自有撤销栈的深度与内存改为显式定参」(#152)、「你画的 pan 增益曲线现在真的会响」(#270)、「范围设置……写明『不随工程保存』」与「Input 的 `idle` 态定义补全」(#281,两条都自述为契约文本追上既有行为)、「轨道页的设置现在会随工程保存」(#290;`docs/contract-changes/20260927-sl472-channel-config-persist.md` 在仓里,条目没链)。其余 23 条引用的 22 份文档都在仓里。`check-changelog-drafts.mjs` 绿(它只判括号里的号落没落地,不判「有没有号」)。
+  - 状态:⏳ 统筹(版本节已建;补上面两处要改已上线条目的原文,由统筹定补还是写理由)
 
 - [ ] **A3 带破坏性标签的 PR 均经用户显式批准**
   - 查什么:10 §6.1 写的是 `breaking:params` / `breaking:ipc-abi` / `breaking:state` 三个标签。**本仓没有这三个标签**(`gh label list` 无命中),实际用的是 `status/frozen-contract`。
   - 怎么查:`gh pr list -R synchain-oss/scvb --state all --label status/frozen-contract`,已合并的逐个对到用户裁定(J 号)或 PR 里的用户批准记录。
   - 证据(2026-09-28):带该标签的 PR 合并 41、关闭未合 9、在飞 7;`docs/contract-changes/` 下 41 份变更文档(另有 `TEMPLATE.md`)。
-  - 状态:⏳ 统筹(逐个对 J 号;在飞 7 个合并时各自补)
+    (`5b1c908e`,2026-09-28 晚)合并 61、关闭未合 9、在飞 0(`gh pr list --state merged|closed|open --label status/frozen-contract`,closed 70 含合并的 61);`docs/contract-changes/` 下 60 份(不含 `TEMPLATE.md`)。
+  - 状态:⏳ 统筹(逐个对 J 号;在飞已清零)
 
 - [ ] **A4 `spikes/` 为空、无 spike 残留**
   - 查什么:`spikes/` 目录为空(J16);无 spike 调试代码(`SpikeCurve`、`--flap-heartbeat`、FPS 角标、processBlock 计时)。`tests/tools/scvb_diag` 是常驻工具,不删。
@@ -72,7 +77,7 @@
 - [x] **A5 git 历史无 secret**
   - 查什么:secret scanning 与 push protection 已开(06 §2.2);历史里没有密钥。
   - 怎么查:`gh api repos/synchain-oss/scvb -q .security_and_analysis`;`gh api "repos/synchain-oss/scvb/secret-scanning/alerts?state=open" -q length`。
-  - 证据(2026-09-28):`secret_scanning` 与 `secret_scanning_push_protection` 均为 `enabled`;开放告警 0;全历史泄漏扫描 SL-268(2026-09-28)无密钥;每个 PR 的 `compliance` job 另跑 gitleaks(扫工作区)。
+  - 证据(2026-09-28):`secret_scanning` 与 `secret_scanning_push_protection` 均为 `enabled`;开放告警 0;全历史泄漏扫描 SL-268(2026-09-28)无密钥;每个 PR 的 `compliance` job 另跑 gitleaks(扫工作区)。(`5b1c908e`)同两条命令重跑,结果相同。
   - 状态:✅ 已核
 
 ### B. 自动化门禁(L0–L2)
@@ -81,12 +86,13 @@
   - 查什么:构建(/W4 零 warning)+ ctest 全绿 + pluginval strictness 5。10 §6.1 写「两个 bundle」,按 J137 现为**三个**(Input / Output / Monitor)。
   - 怎么查:tag 所指提交的 `release.yml` → `build` job(调用 `build-vst3.yml`)全绿;日志里 `100% tests passed` 且 pluginval 三行 `SUCCESS`。
   - 证据(参考,都不是 tag 提交):`feature/v1` 最近一次 dispatch 全量 run 36364806176(`72e4501`,即 v5.6.19 测试包):ctest 7/7 个套件通过,pluginval `--strictness-level 5 --skip-gui-tests` 三个 bundle 各 `SUCCESS`;最近一次 PR 全量 run 36403067073(#298 的 head `b220fc3`):同样 7/7 + 三个 `SUCCESS`。`e3a7f5a1` 本身没有构建 run。
+    (`5b1c908e`)#332 的 PR 全量 run 36489830961:`100% tests passed, 0 tests failed out of 7`,三个 bundle `v0.9.0` 各 `SUCCESS`,日志里 `warning C` 0 条。
   - 状态:⏳ CI
 
 - [ ] **B2 CI `clang-format` 绿(含桥契约一致性)**
   - 查什么:10 §6.1 把桥契约一致性写在 clang-format 里;现行 workflow 里它在 `docs-truth` job(`check-bridge-parity.mjs`)。两个 required check 都要绿。
   - 怎么查:合入 tag 提交的那个 PR 的 Format workflow。
-  - 证据(参考):#298 head 的 Format run 36403067004:`clang-format`、`docs-truth`、`web-smoke` 均绿。
+  - 证据(参考):#298 head 的 Format run 36403067004:`clang-format`、`docs-truth`、`web-smoke` 均绿。(`5b1c908e`)#332 的 Format run 36489830978 同样三个均绿。
   - 状态:⏳ CI
 
 - [ ] **B3 三条宪法守卫绿**
@@ -118,9 +124,9 @@
 ### C. UI 与无障碍
 
 - [ ] **C1 web 冒烟全绿**
-  - 与 10 §6.1 不同:没有 `web-preview/smoke/run.mjs` 与「六个 fixture」;现行是 `web-preview/tests/smoke-*.mjs` 共 32 套,CI `web-smoke` job 逐套跑。
+  - 与 10 §6.1 不同:没有 `web-preview/smoke/run.mjs` 与「六个 fixture」;现行是 `web-preview/tests/smoke-*.mjs`(`e3a7f5a1` 上 32 套;`5b1c908e` 上 44 套,#333 再加 `smoke-tour-version-page.mjs` 共 45 套),CI `web-smoke` job 逐套跑。
   - 怎么查:tag 提交的 `web-smoke` 绿,**且** job summary 里「跳过(缺浏览器)0、没跑成 0」—— SKIP / FLAKY 退出码不判红,只看绿会漏。
-  - 证据(参考):#298 head 的 Format run 36403067004:32 套全部跑了,该步 0 条 warning。
+  - 证据(参考):#298 head 的 Format run 36403067004:32 套全部跑了,该步 0 条 warning。(`5b1c908e`)#332 的 run 36489830978:44 套全部跑了,「Run web smokes」一步 0 条 `::warning::`。
   - 状态:⏳ CI
 
 - [ ] **C2 axe-core 零 serious / 零 critical**
@@ -135,7 +141,7 @@
 
 - [ ] **C4 i18n 新增文案都有 key,无硬编码字面量**
   - 怎么查:`node scripts/check-i18n.mjs`(与 CI `docs-truth` 同一条命令,查 zh / en / fr 键对等与红字九条);「无硬编码字面量」靠复审 prompt 第 6 节,没有机检。
-  - 证据(参考):#298 head 的 `docs-truth` 绿。
+  - 证据(参考):#298 head 的 `docs-truth` 绿。(`5b1c908e`)#332 的 `docs-truth` 绿;#333 head 上本地 `node scripts/check-i18n.mjs` 退出 0。
   - 状态:⏳ CI
 
 ### D. 音质(10 §4)
@@ -175,7 +181,7 @@
   - 状态:⏳ 用户上机(统筹协助整理)
 
 - [ ] **E3 MEM-1..7 在预算内;5 分钟稳态无泄漏**
-  - 相关已知项:SL-445 拖 Q 滑杆时内存增长(J128;修复 PR #306 在飞)。
+  - 相关已知项:SL-445 拖 Q 滑杆时内存增长(J128;修复 PR #306 已于 2026-09-28 合并,上机时顺带看它)。
   - 怎么查:MEM-5 / MEM-7 与 5 分钟稳态上机量(§3 的 U-5);MEM-1..4 是按设计定容的项,由统筹对照代码常量核;MEM-6 只记录。
   - 状态:⏳ 用户上机(统筹核定容项)
 
@@ -192,7 +198,7 @@
 
 - [x] **F3 `daw-support-tiers.md` 与 README 的 Tier 表同步**
   - 怎么查:对照 [daw-support-tiers.md](daw-support-tiers.md) §2、`docs/DAW_COMPATIBILITY.md` §4、`README.md` / `README.zh-CN.md` 的支持 DAW 表,DAW / 版本 / Tier 逐行一致。
-  - 证据(`e3a7f5a1`):四处都是 Cubase 14 / 15 Tier 1、REAPER 7 Tier 2、Ableton Live 12 Tier 3、Studio One 6 Tier 3,FL Studio 不在 v1 矩阵。README 第 38 行写明它转贴自 DAW_COMPATIBILITY §4,那里是真源;本文件跟随。
+  - 证据(`e3a7f5a1`):四处都是 Cubase 14 / 15 Tier 1、REAPER 7 Tier 2、Ableton Live 12 Tier 3、Studio One 6 Tier 3,FL Studio 不在 v1 矩阵。README 第 38 行写明它转贴自 DAW_COMPATIBILITY §4,那里是真源;本文件跟随。(`5b1c908e`)四处逐行重对,仍一致。
   - 状态:✅ 已核
 
 - [ ] **F4 MUTE / FRZ 行为与上一版逐字比对**
@@ -201,7 +207,7 @@
 
 ### G. 兼容性与数据安全
 
-- [x] **G1 用上一 release 保存的工程在新版打开** —— N/A:首个公开版本,没有上一 release(2026-09-28 `gh api repos/synchain-oss/scvb/releases` 与 `/tags` 均为空)。参考:内部测试包之间「旧工程在新包打开」已在 v5.6.19 测试包 A-P8 验过(用户实测「过」),它不替代本项。
+- [x] **G1 用上一 release 保存的工程在新版打开** —— N/A:首个公开版本,没有上一 release(2026-09-28 `gh api repos/synchain-oss/scvb/releases` 与 `/tags` 均为空;`5b1c908e` 时两者仍为 0 条)。参考:内部测试包之间「旧工程在新包打开」已在 v5.6.19 测试包 A-P8 验过(用户实测「过」),它不替代本项。
 - [x] **G2 用新版保存的工程在上一 release 打开** —— N/A:理由同 G1。另:`docs/RELEASE.md` 发布说明模板的「升级须知」已写明新版工程在旧版(含内部测试包)里会被拒载。
 - [ ] **G3 sidecar 缺失 / 篡改 / CoW 三条路径手测**
   - 实况:v1 出厂不再写 sidecar(SL-395,开关关),只保留读旧工程;自动化用例 `FEAT-SIDECAR-1..11`(`tests/core/test_state_features_roundtrip.cpp`)覆盖「仍能读 embedded=0」「删 sidecar 后特征缺失」「双开同 GUID copy-on-write」「路径穿越防护」等;**「篡改」没有同名用例**。
@@ -218,7 +224,7 @@
 
 - [ ] **H2 ⚠ 单轨 Freeze / Render in Place 得静音文件的红字,三处一致**
   - 查什么:USER_GUIDE + KNOWN_ISSUES + UI 首次导出提示三处一致。
-  - 证据:KNOWN_ISSUES `KI-4` 有(第 33 行起)。**USER_GUIDE 里没有**:`grep -c -i -E "freeze|render in place|静音文件|替换式|原素材"` 在 `USER_GUIDE.zh-CN.md` 为 0,在 `USER_GUIDE.md` 为 2,但那两行说的都是 SCVB 自己的冻结 P / V,不是这条。**UI 里没有首次导出提示**:同一模式在 `web/shared/i18n.js` 0 处。
+  - 证据:KNOWN_ISSUES `KI-4` 有(第 33 行起)。**USER_GUIDE 里没有**:`grep -c -i -E "freeze|render in place|静音文件|替换式|原素材"` 在 `USER_GUIDE.zh-CN.md` 为 0,在 `USER_GUIDE.md` 为 2,但那两行说的都是 SCVB 自己的冻结 P / V,不是这条。**UI 里没有首次导出提示**:同一模式在 `web/shared/i18n.js` 0 处。(`5b1c908e`)同一条 grep 在 `USER_GUIDE.zh-CN.md` 仍为 0、`USER_GUIDE.md` 仍为 2;在 `i18n.js` 命中 12 处,逐条看过全是 SCVB 自己的冻结 P / V(`tracks.colFreeze*`、`tour.step26.*`、`workflow.tweak` 等),**不是**宿主 Freeze / Render in Place 的提示 —— 结论不变。
   - 状态:⏳ 统筹(USER_GUIDE 补一处指向 KI-4;UI 提示做不做要用户裁)
 
 - [ ] **H3 DAW 的 mute / solo / 推子对 SCVB 通路无效(J45)**
@@ -226,7 +232,7 @@
   - 状态:⏳ 统筹
 
 - [x] **H4 同机同时只支持一个使用 SCVB 的工程**
-  - 证据:`docs/KNOWN_ISSUES.md` KI-5(第 41 行起)。
+  - 证据:`docs/KNOWN_ISSUES.md` KI-5(第 41 行起;`5b1c908e` 上仍在第 41 行)。
   - 状态:✅ 已核
 
 - [ ] **H5 Output 停摆直通兜底:三处一致 + L-5 / F-1 实测**
@@ -249,32 +255,36 @@
 ### I. 许可与合规(GPLv3)
 
 - [x] **I1 `LICENSE` 为 GPLv3 全文**
-  - 证据:`LICENSE` 674 行,开头是 `GNU GENERAL PUBLIC LICENSE` / `Version 3, 29 June 2007`。
+  - 证据:`LICENSE` 674 行,开头是 `GNU GENERAL PUBLIC LICENSE` / `Version 3, 29 June 2007`(`5b1c908e` 上相同)。
   - 状态:✅ 已核
 
-- [ ] **I2 第三方组件清单与许可在仓库根 `THIRD-PARTY-NOTICES.md`**
+- [x] **I2 第三方组件清单与许可在仓库根 `THIRD-PARTY-NOTICES.md`**
   - 证据:版本都对得上 —— JUCE 8.0.8 ↔ `.juce-version`;WebView2 SDK 1.0.2957.106 ↔ `CMakeLists.txt` 的 `WEBVIEW2_VERSION`;Catch2 v3.5.4、libebur128 v1.2.6 ↔ `tests/CMakeLists.txt` 的 `GIT_TAG`;pluginval v1.0.4 ↔ `.pluginval-version`。**许可证本身有缺口**(发布盘点第二轮):`LICENSES/` 缺 BSD-3-Clause 全文、VST3 SDK 许可证写成 MIT、JUCE 静态链入的 libjpeg / HarfBuzz / SheenBidi / libpng / zlib 未登记 —— 由 PR #314 补,在飞。
-  - 状态:⏳ 统筹(#314 合并后复核)
+    (`5b1c908e`,#314 已合)三处缺口都补上了:`LICENSES/BSD-3-Clause.txt` 在;VST3 SDK 一行改为 JUCE 8.0.8 内置的 3.7.12、「Steinberg VST3 License 或 GPLv3」二选一(原文副本 `third_party/notices/vst3sdk.LICENSE.txt`);zlib 1.3.1 / libpng 1.6.37 / libjpeg 6b / HarfBuzz 10.1.0 / SheenBidi 各有一行,许可证全文(`Zlib.txt` / `libpng-2.0.txt` / `IJG.txt` / `MIT-Modern-Variant.txt` / `Apache-2.0.txt`)与上游声明(`third_party/notices/` 七份)都在。上面五个版本号与各自真源再对一遍仍一致。`scripts/package.ps1 -Preflight -Version 0.9.0-rc.1 -Tag v0.9.0-rc.1` 退出 0(「随二进制分发」表点名的许可证 11 个在 `LICENSES/` 里都有全文,NOTICES 点名的声明文件 3 个都在)。
+  - 状态:✅ 已核
 
 - [ ] **I3 README 与 release notes 写明 GPLv3 源码获取途径**
   - 证据:README 已写(`README.zh-CN.md` 第 13 行许可证、第 51 行 Releases、第 83 行起从源码构建,含 `git clone https://github.com/synchain-oss/scvb.git`);release notes 模板有「自行从源码构建」链接;`INSTALL.txt` 精确到 tag 的源码地址由 #297 的 `package.ps1` 生成。
   - 状态:⏳ 统筹(release notes 定稿时核)
 
-- [ ] **I4 二进制未内嵌不兼容许可的资源(字体尤其)**
+- [x] **I4 二进制未内嵌不兼容许可的资源(字体尤其)**
   - 证据:字体都是 OFL-1.1(`THIRD-PARTY-NOTICES.md` 字体四行);OFL §3 保留名由 CI `compliance` 的 `check-font-names.py` 守;发布盘点第二轮指出「字体版权行指向不存在的表」,由 #314 修。
-  - 状态:⏳ 统筹(#314 合并后复核)
+    (`5b1c908e`,#314 已合)`THIRD-PARTY-NOTICES.md` 现有「字体版权行」表,四行与用 fontTools 读出的四个 `.woff2` 的 nameID 0(Windows / 0x409)逐字一致;`python scripts/check-font-names.py` 通过(OFL-1.1 §3:呈现名与 49 份 css/js/html 的字体栈都不含保留名)。编进插件的其余资源是 `web/` 下的自研源码(GPL-3.0-or-later)与 JUCE JS helper(AGPL-3.0-or-later,`REUSE.toml` 声明),`compliance` 的 `reuse lint` 在 #332 上绿。
+  - 状态:✅ 已核
 
 ### J. 打包与发布
 
 - [ ] **J1 `SCVB-vX.Y.Z-win64.zip` 内含全部 `.vst3` bundle**
   - 10 §6.1 写「两个」,按 J137 为**三个**(Monitor 可选)。
   - 怎么查:tag 推上去后 `release.yml` 的 `release` job 由 `scripts/package.ps1` 打包并解包断言;再下载草稿 Release 的 zip 看一眼。
-  - 状态:⏳ CI(依赖 #297)
+  - 证据:(`5b1c908e`)#297 已合;#333 head 上 `package.ps1 -Preflight` 退出 0。
+  - 状态:⏳ CI(tag 推上去后看 `release` job)
 
 - [ ] **J2 zip 内合规文件组断言通过**
   - 查什么:zip 根目录有 `LICENSE.txt`(GPLv3 全文)、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、`third_party/notices/`(上游声明原文,HarfBuzz 的逐行版权只在其中的 `harfbuzz.COPYING`)、`INSTALL.txt`(含精确到 tag 的源码 URL);`LICENSE-EXCEPTION.md` 按 U2 **不附**。
   - 实况:#297 的 `package.ps1` 在 `verify-tag` 阶段做许可证全文覆盖检查,BSD-3-Clause 全文补上(#314)之前 rc tag 会停在 preflight。
-  - 状态:⏳ CI(依赖 #297、#314)
+    (`5b1c908e`)#297 / #314 / #330(zip 带上 `third_party/notices/`)都已合;#333 head 上 `package.ps1 -Preflight -Version 0.9.0-rc.1 -Tag v0.9.0-rc.1` 退出 0。zip 内断言只在打包时跑,要等 tag。
+  - 状态:⏳ CI
 
 - [ ] **J3 干净 Windows 11 上解压安装,DAW 扫得到并正常工作**
   - 怎么查:§3 的 U-7。
@@ -289,7 +299,7 @@
   - 状态:⏳ 用户(步骤见 U-8)
 
 - [ ] **J6 tag 保护生效(`v*`,06 §7.2)**
-  - 证据:2026-09-28 `gh api repos/synchain-oss/scvb/rulesets` 返回 `[]`,旧式 tag protection 接口 404 ⇒ **目前没有 `v*` tag 保护**。
+  - 证据:2026-09-28 `gh api repos/synchain-oss/scvb/rulesets` 返回 `[]`,旧式 tag protection 接口 404 ⇒ **目前没有 `v*` tag 保护**。(`5b1c908e` 同日晚)rulesets 仍为空数组。
   - 状态:⏳ 用户(仓库设置,步骤见 U-8)
 
 ### K. 回滚预案
@@ -301,10 +311,11 @@
 
 ### L. 本版追加(不在 10 §6.1,来自发版流程与裁定)
 
-- [ ] **L1 fr 红字审校完成**
+- [x] **L1 fr 红字审校完成**
   - 查什么:`docs/hard-rules.i18n.json` 的 `frReview.status` 为 `reviewed`(`docs/RELEASE.md` 发版清单第 5 步;J127 改为 AI 三语交叉核对,用户授权)。
   - 证据:当前 `frReview.status` = `pending`;置 `reviewed` 的 PR #299 在飞。
-  - 状态:⏳ 统筹
+    (`5b1c908e`)`frReview.status` = `reviewed`(#299 置位,date 2026-09-28);其后两次改动红字的 PR 都按 J127 同一方式复核并记在 `frReview.note` 里(J149 轮:rule2 / rule9 的 prod 地址;J153 轮:#319 改的 zh 标题)。`node scripts/gen-hard-rules.mjs --check` 退出 0 —— 它逐条比对 `zhSha256` 与 zh 真源,zh 在复核之后再被改过就会红。
+  - 状态:✅ 已核
 
 - [ ] **L2 参数面冻结评审完成**
   - 查什么:J123 —— 第一个公开 tag 一打,ParamID 与 state 布局即永久冻结(J21),打 tag 前必须完成冻结评审。
