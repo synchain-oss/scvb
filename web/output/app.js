@@ -61,6 +61,13 @@ import {
     staleTrackCount,
 } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
+import {
+    recapTrackerInit,
+    recapOnState,
+    recapOnPlayhead,
+    mergeRecapDone,
+    fmtRecapSeconds,
+} from "./recapture-toast.js";
 import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
 import { createTabSettings, docsUrl } from "./tab-settings.js";
@@ -182,6 +189,11 @@ const store = {
         // [D1] header 撤销/重做两钮的可用性(契约无 canUndo/canRedo 信号 ⇒ 回执驱动;
         // 判据与两条不变式见 tab-master.js 的 historyAfterCall / historyAfterSegments)
         history: HISTORY_AVAIL_INIT,
+        // [J125] toast③ 的记账(判据与口径见 recapture-toast.js 头注)。`recapTracker` =
+        // 本次布防期间播放头走过的选区时长;`recapDone` = 待显示的那条 toast
+        // (null = 不显)。纯会话态:不入 state chunk、不落盘、不进契约。
+        recapTracker: recapTrackerInit(),
+        recapDone: null,
     },
 };
 
@@ -529,6 +541,46 @@ for (const gb of [
         el.addEventListener("click", () => {
             activateTab("wave");
             tabWave.locateRecapture();
+        });
+    }
+}
+
+// [J125] toast③ 的两枚钮。「立即重分析」= 跳 Tab3 + 走与「重分析选区」同一条 §1.6
+// `analyze(scope)`(05 §2.0「一键跳 §2.3 重分析」);scope 用 toast 记下的范围,不读当前选区。
+// 两枚钮都先把 toast 收掉再干活:重分析回执要等一拍,期间再点一次就是第二次分析。
+// 收掉之前先把焦点交给当前那枚 tab(同 moveFocusOffDismiss 的理由:藏起一个正持焦的
+// 元素,Chromium 会把焦点丢回 <body>,键盘用户得从卡片开头重走一遍 Tab)。
+{
+    const focusOff = (btn) => {
+        if (document.activeElement !== btn) return;
+        const tab = document.querySelector(
+            '[role="tab"][aria-selected="true"]',
+        );
+        if (tab && typeof tab.focus === "function")
+            tab.focus({ preventScroll: true });
+    };
+    const goto = $("toast-recaptured-goto");
+    if (goto) {
+        goto.addEventListener("click", () => {
+            const done = store.session.recapDone;
+            store.session.recapDone = null;
+            requestRender();
+            if (!done) return;
+            activateTab("wave");
+            focusOff(goto);
+            tabWave.reanalyzeRange({
+                tracksMask: done.tracksMask,
+                startS: done.startS,
+                endS: done.endS,
+            });
+        });
+    }
+    const close = $("toast-recaptured-close");
+    if (close) {
+        close.addEventListener("click", () => {
+            focusOff(close);
+            store.session.recapDone = null;
+            requestRender();
         });
     }
 }
@@ -1285,6 +1337,21 @@ function trackRecapOutput() {
     }
 }
 
+/**
+ * [J125] toast③:「布防 → 撤防」那一跳逐 §2.1 事件判(理由同上面 B-04:render 是合帧的,
+ * 同一帧里 armed 先落后起就看不见那一跳)。新到的一条与还开着的那条**合并**,不顶掉。
+ */
+function trackRecapDone() {
+    const r = recapOnState(store.session.recapTracker, store.state);
+    store.session.recapTracker = r.tracker;
+    if (r.done) {
+        store.session.recapDone = mergeRecapDone(
+            store.session.recapDone,
+            r.done,
+        );
+    }
+}
+
 /** 整页重渲染**请求**(rAF 合帧;高频路径一律走它,不要直呼 render())。 */
 function requestRender() {
     if (renderQueued) return;
@@ -1641,6 +1708,20 @@ function renderBanners() {
     // toast 本体与词条 `toast.sidecarSwitched` 都留着(`index.html` 里恒挂 `hidden`),
     // 开关真打开时把这一行接回来即可。`sidecarSwitched` 同样仍在 `KNOWN_CODES` 里。
 
+    // [J125] toast③「已重采集 X.Xs,建议重分析该范围」+「立即重分析」(05 §2.0 / §2.3)。
+    // 读 viewStore() 的 session:导览期那是 demo session(没有这一格)⇒ 收起,退出导览再回来。
+    // 只有 ✕ 与「立即重分析」收它(新到的一条并进来,不另起一条)—— 带动作钮的提示不自己消失,
+    // 否则用户还没读完「立即重分析」就没了(05 §2.0「可关闭/自动消失」取前者)。
+    {
+        const done = (vs.session || {}).recapDone || null;
+        show($("toast-recaptured"), !!done);
+        if (done) {
+            fill($("toast-recaptured-text"), "toast.recaptured", {
+                s: fmtRecapSeconds(done.seconds),
+            });
+        }
+    }
+
     // 未知 code:原样显示并入 Tab4 诊断区(ADR-002 / ipc §5,UI 不静默)
     const diag = $("settings-diagnostics-list");
     if (diag && vs.unknownCodes.length) {
@@ -1918,6 +1999,7 @@ if (bridge) {
         store.state =
             s && s.full ? stripFull(s) : deepMerge(store.state, stripFull(s));
         trackRecapOutput(); // B-04 粘滞位:逐事件做边沿判定(render 是合帧的)
+        trackRecapDone(); // [J125] 同理:撤防那一跳必须逐事件看,合帧会吞掉它
         syncUiFromState();
         tabMaster.refreshPreview();
         requestRender();
@@ -2048,6 +2130,13 @@ if (bridge) {
         const prevPlayhead = store.playhead;
         const wasStopped = !!prevPlayhead && prevPlayhead.isPlaying === false;
         store.playhead = p;
+        // [J125] toast③ 的秒数:相邻两帧的播放头位移(上一帧同样必须取覆写前的那个局部量)。
+        store.session.recapTracker = recapOnPlayhead(
+            store.session.recapTracker,
+            store.state,
+            prevPlayhead,
+            p,
+        );
         // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
         // **覆写前**的 `playhead` 一起算 ——
         //   · `playingAt` 先覆写再算 ⇒ `prevPlayingAt` 永远是本帧时刻,「停满去抖窗」恒不成立;
@@ -2259,6 +2348,7 @@ async function bootInner() {
         } = snap;
         store.state = deepMerge(store.state, stripFull(stateFields));
         trackRecapOutput(); // 快照落地也算一拍(布防中打开着输出重开面板)
+        trackRecapDone(); // [J125] 同上:布防中重开面板 ⇒ 从这一拍起计时
         store.conn = snapConn || store.conn;
         store.ready = true;
         syncUiFromState();

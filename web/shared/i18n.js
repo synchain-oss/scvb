@@ -884,11 +884,13 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
         // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
-        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
         // [SL-94 / J133] 回到契约 §5.1 逐字栏:不指路设置页(v1 那一行已收起,SL-415),
         // 不写内部排期词。v1 出厂态不可达(自动转存关闭,SL-395),文案为开关打开那天留着。
         "toast.sidecarSwitched":
             "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // [J125] toast③(05 §2.0 逐字;{s} = 这次重采集的时长,一位小数,app.js 填)
+        "toast.recaptured": "已重采集 {s}s,建议重分析该范围",
+        "toast.recapturedGoto": "立即重分析",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
@@ -1801,6 +1803,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
         "toast.sidecarSwitched":
             "Capture data exceeded 8 MB and was moved to an external file — anyone you send the project to will need to capture again",
+        "toast.recaptured":
+            "Re-captured {s} s; re-analyzing this range is recommended",
+        "toast.recapturedGoto": "Re-analyze now",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
         "scale.keep": "Save",
         "master.printLock.group": "Can't switch group while writing automation",
@@ -2652,6 +2657,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "toast.sidecarSwitched":
             "Les données de capture ont dépassé 8 Mo et ont été déplacées dans un fichier externe — toute personne à qui vous envoyez le projet devra refaire la capture",
+        "toast.recaptured":
+            "{s} s re-capturées ; il est conseillé de ré-analyser cette plage",
+        "toast.recapturedGoto": "Ré-analyser maintenant",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
         "scale.keep": "Enregistrer",
         "master.printLock.group":

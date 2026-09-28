@@ -9075,24 +9075,28 @@
                             8MB,已转存外部文件——发给他人需重新采集</span
                         >
                     </div>
+                    <!-- [J125] toast③(05 §2.0 / §2.3「重采集选区」行):撤防那一跳后由 app.js
+                         renderBanners 显隐,{s} 由 app.js 填(recapture-toast.js 记账)。 -->
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast③「已重采集 X.Xs,建议重分析该范围」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            已重采集 X.Xs,建议重分析该范围
-                        </span>
-                        <!-- 词条待立:「立即重分析」按钮(05 §2.0,字典缺) -->
+                        <span
+                            data-gb="toast-recaptured-text"
+                            data-t="toast.recaptured"
+                            >已重采集 {s}s,建议重分析该范围</span
+                        >
                         <button
+                            type="button"
                             class="sc-btn--dark"
                             data-gb="toast-recaptured-goto"
-                            data-gb-todo="词条待立"
+                            data-t="toast.recapturedGoto"
                         >
                             立即重分析
                         </button>
                         <button
+                            type="button"
                             class="sc-toast__close"
                             data-gb="toast-recaptured-close"
-                            aria-label="close"
+                            data-t-aria="banner.dismiss"
                         >
                             ✕
                         </button>
