@@ -1490,7 +1490,12 @@ try {
         await evaluate(
             IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
         );
-        await sleep(400);
+        // 不写死等待时长(SL-357):等到分析行翻成「有数据」那一帧(等不到就超时,下面的断言照样红)。
+        await waitFor(
+            IN(`const f = gb("master-flow");
+                return !!f && f.getAttribute("data-analyze-nodata") === "0";`),
+            5000,
+        );
         const T1 = IN(`
             const s = window.__SCVB_PREVIEW__;
             const m = s && s.ctl && s.ctl.model;
@@ -1541,13 +1546,22 @@ try {
         const cleared1 = await evaluate(`(() => {
             const s = window.__SCVB_PREVIEW__;
             if (!s || !s.mock || typeof s.mock.clearCoverage !== "function") return null;
-            return s.mock.clearCoverage(1, 0, 100000);
+            return s.mock.clearCoverage(1 << 0, 0, 100000); // tracksMask:bit0 = 第 1 轨
         })()`);
         check(
             !!cleared1 && cleared1.ok === true,
             `J152c clearCoverage(第 1 轨)受理(实得 ${JSON.stringify(cleared1)})`,
         );
-        await sleep(400);
+        await waitFor(
+            IN(`const m = window.__SCVB_PREVIEW__ && window.__SCVB_PREVIEW__.ctl.model;
+                const cov = gb("master-analyze-coverage");
+                if (!m || !cov) return false;
+                const v = Array.from(m.coveragePct.values());
+                const allP = Math.round(v.reduce((a, x) => a + x, 0) / v.length);
+                const mm = /([0-9]+)%/.exec(cov.textContent);
+                return !!mm && Number(mm[1]) === allP;`),
+            5000,
+        );
         const c = await evaluate(T1);
         if (check(c !== null, "J152c 取到页内 DOM 快照")) {
             const mc = /(\d+)\s*%/.exec(c.covText || "");
@@ -1570,7 +1584,11 @@ try {
             !!cleared && cleared.ok === true,
             `J152b clearCoverage 受理(实得 ${JSON.stringify(cleared)})`,
         );
-        await sleep(400);
+        await waitFor(
+            IN(`const f = gb("master-flow");
+                return !!f && f.getAttribute("data-analyze-nodata") === "1";`),
+            5000,
+        );
         const b = await evaluate(T1);
         if (check(b !== null, "J152b 取到页内 DOM 快照")) {
             check(b.playing === false, "J152b 前置:仍然停着");

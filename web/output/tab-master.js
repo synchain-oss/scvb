@@ -645,6 +645,9 @@ export function analyzeNoData(coveragePct, segTotalN, previewTracks = null) {
  *     没采过的轨不该稀释这个数 —— 它问的是「采过的轨,在范围内覆盖了多少」;
  *   · 但**采过、后来被整轨清光**的轨必须留在分母里(`seen` 记着它),否则 4 轨清光 1 轨
  *     仍显示 100% —— 例外② 要的正是「清除之后数字跟着动」。
+ *     ⚠ `seen` 是**会话级**记账:store 随插件窗口(页面)重建而清空。重开窗口后,之前被整轨清光的轨
+ *     在首帧里报 0、又不在 `seen` 里,会退出分母 —— 那时的数字按「此刻有覆盖的轨」算。
+ *     native 侧没有「这条轨采过」的持久记录可读,这是本口径钉不住的那一半。
  * 已报到的轨全是 0 且都不在 `seen` 里时回 0 而不是 null:范围里确实一格覆盖都没有,这是真话。
  * **一轨都没报到时返回 null**,调用方据此把整行隐掉(不显示假的 0%)。
  * @param {Object<string, number>} coverage ch → coveragePct(app.js 的 store.coverage)
