@@ -143,7 +143,18 @@ struct OutputRuntimeState
     std::atomic<bool> langChosen{false};
 
     // 运行时态(不入 state chunk、不随工程持久化)
-    bool printGuardPending = false;
+    // 加载守卫(04 §5.3 / 契约 §1.3、§1.34 / 05 §2.0 横幅⑦)。三个写点,全在 processor 里:
+    //   · setStateInformation:CFGS 解码成功后置为「恢复出来的 output_enabled」—— 恢复 ON 即待确认;
+    //   · confirmPrintGuard(桥面 §1.34 唯一确认入口):置 false;
+    //   · applyOutputEnabled(false):输出一关,「随工程恢复的 ON」这个条件就不在了,守卫随之解除
+    //     (契约未写这一格;不解除的话横幅会在开关 OFF 时仍说「输出开关处于写入自动化状态」)。
+    // 行为读方 = timerCallback 的三态求值(为真时即便「播放中 ∧ 在区间内」也只给 ARMED);
+    // 展示读方 = 桥面 emit(scvb.state.print_guard,经 printGuardPending())。
+    // 同一实例上宿主再次 setStateInformation(带插件状态的宿主撤销、A/B 对比、载入预设)也会
+    // 重新置位 —— 有意如此:processor 分不出「重开工程」与「宿主重灌状态」,宁可多要一次确认
+    // 也不在状态被换掉之后照旧打印。代价是这类操作后横幅⑦会再出现一次(USER_GUIDE 已写)。
+    // atomic:setStateInformation 可在宿主线程上跑,桥面 emit 在消息线程 25Hz 读(同 guideSeen 的理由)。
+    std::atomic<bool> printGuardPending{false};
     bool recaptureArmed = false;
     std::uint16_t recaptureTracksMask = 0;
     double recaptureStartS = 0.0;
@@ -213,6 +224,9 @@ public:
     void setGroupId(int groupId);
     void setCaptureEnabled(bool on);
     void setOutputEnabled(bool on);
+    // [加载守卫] 契约 §1.34 confirmPrintGuard 的落地方(幂等,零 gesture)。
+    void confirmPrintGuard();
+    bool printGuardPending() const { return runtime_.printGuardPending.load(std::memory_order_acquire); }
 
     // [J87] 局部重采集布防(04 §4.2;桥面 §1.23 recaptureArm 的落地方)。两个口都在 [M]。
     // 放在 processor 而不是 editor 里,是因为**撤防有两条触发路径**:桥面显式撤防,与 25Hz
@@ -439,6 +453,7 @@ public:
         // 桥面只允许 §5.6 八值闭集里的 reason,而 §7 manifest 给 analyze 只登记了 "busy"。
         // 「范围∩覆盖=∅」按 §1.6 拒绝态行回 {ok:false, affected:{0,0,0}}(**不带 reason**),
         // 所以这里不再自造 "noData"/"notPrepared" 字符串,只留一个 busy 布尔。
+        // [SL-535] 「有覆盖的轨此刻都没连上 Input」同样落这个拒绝态(分析只认已连接的轨)。
         bool busy = false;
         int intervals = 0; // 影响面预估(受理回执用)
         int tracks = 0;
@@ -489,7 +504,8 @@ public:
     // 抑制条件按契约 §1.18 —— **只有** PRINT 态或分析进行中([J47]);排的时候看一次、
     // 到点再看一次(300ms 里状态可能已经变了)。
     void armResegment(AnalysisDoneReason reason);
-    // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」。
+    // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」
+    // ([SL-535] 起只数此刻已连接的轨,与 startAnalysis 同一条参与判据)。
     AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
 
     // ---- [J146] 拖动档预览(契约 §1.18/§1.19 的「拖动档」;事件 §2.10 scvb.vadPreview)--------------
@@ -566,6 +582,11 @@ private:
     void syncVizSegment();
     // [M] 组装 viz 发布输入并交给 vizPublisher_(内部 4Hz 分频)。调用方须已持 lifecycleMutex_。
     void publishVizFrame(std::uint64_t nowMs);
+    // [SL-535] 此刻「已连接」的轨掩码(bit t = 轨 t+1)。判据 = `isConnectedForDisplay`,
+    // 与 UI 显示「未连接」的口径同一个函数(不用 registry 的 connectedMask:那一份还剔掉挂起/失准,
+    // 宿主在静音段挂起 Input 是常态,不该让这条轨退出分析)。调用方须已持 lifecycleMutex_。
+    // 消费方:viz 发布的 connectedMask、分析的参与面(startAnalysis / previewAnalysis)。
+    std::uint16_t connectedForDisplayMask(std::uint64_t nowMs) const;
 
     // [A] 读全局三件 raw(host 恒权威,不参与仲裁)。
     float readGlobalWidth() const noexcept;
@@ -611,7 +632,8 @@ private:
     class AnalysisJob;
     friend class AnalysisJob;
     // [SL-209] 分析产物合入段表(finishAnalysis 的 mutator;须持 lifecycleMutex_)。
-    // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 范围内有覆盖,即 analyzedTracks):
+    // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 已连接 ∩ 范围内有覆盖,即 analyzedTracks;
+    // 「已连接」为 [SL-535] 所加):
     // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
     // [SL-414 第 2 推] `minSegmentMs` / `sampleRate` = **本作业自己的**两个兜底入参
     // (`config_.segmentation.minSegmentMs` / `config_.sampleRate`,随 PendingAnalysis 交接),
@@ -754,6 +776,29 @@ private:
     // 时 loadedChunks_ 会被整个换成 {PRMS},而那条路不走 readFeaturesChunk、两位也就不复位 ——
     // 「什么都不做就是原样回写」的前提当场失效,那份不认识的字节永久消失(#147 三轮复审)。
     std::vector<std::uint8_t> preservedFeatChunk_;
+
+    // [SL-524] CRVS 拒载(chunk 在、decodeCrvs 不收:字节坏 / [SL-483] 段值非有限或越界 / minor 更高)
+    // 之后要原样带走的**原始 CRVS 字节**。此前保存一律从 live crvsData_ 重编码,而拒载时 live 表
+    // 是「保留下来的旧表」(新开实例 = 空表)⇒ 下一次保存就把用户原来的段表与版本永久覆盖掉。
+    // [J122] 口径:拒载后保存**原样写回**这份字节(不重编码),直到用户做了任何改变段表/版本的操作;
+    // 从那以后保存写新表(否则会反过来丢掉用户之后的编辑)。
+    // 「改过没有」按**内容**判:拒载那一刻把 live 表编码存进 crvsAtRejectEncoded_,保存时 live 编码
+    // 与它不同 ⇒ 改过。这样不必在每个写 crvsData_ 的入口各挂一个标记(漏一个就是丢用户编辑),
+    // 任何改动路径(编辑 / 分析 / 重新识别 / 复制版本 / 改名 / 撤销重做)都被同一处比较覆盖。
+    // 这里的「保存」指**任何一次** getStateInformation 调用,不只是用户手动存盘:宿主在撤销点、自动保存、
+    // 预设比对时都会调。所以「改了又撤销回原样」之后写原字节还是新表,取决于中间宿主有没有取过 state:
+    // 没取过 ⇒ live 表与拒载时逐字节相同,仍写原字节;取过 ⇒ 那一次已判出「改过」,保留态解除且不再恢复,
+    // 之后写 live 表(原字节从此不再写回)。两种结果都不丢用户的编辑。
+    // 已开实例的情形(有意,按 [J122] 同一口径):实例里已有段表 A,再载入一份 CRVS 被拒的 B,
+    // 界面仍显示 A(SL-217 保留),保存却写回 B 的原字节 —— 那份字节才是宿主给的工程内容;
+    // 代价是 A 在下次重开时不再出现(B 仍被拒 ⇒ 空表),除非用户在此之前改动过段表。
+    // 拒载时界面没有提示,这一半未接线。
+    // 解除只在两处:判出「改过」且容器编码成功的那次保存,或下一次 CRVS 成功解码。载入**不带** CRVS 的
+    // blob(轨道/参数预设) 不动它 —— 与 [SL-217]「缺 chunk 不等于删除」同口径,也不能指望 loadedChunks_ 还留着原字节
+    // (那条路会把 loadedChunks_ 整个换成 {PRMS},理由同上面 preservedFeatChunk_)。
+    bool crvsPreserved_ = false;
+    std::vector<std::uint8_t> preservedCrvsChunk_;
+    std::vector<std::uint8_t> crvsAtRejectEncoded_;
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

@@ -72,7 +72,7 @@ import {
     labelPlaceholder,
     tt,
 } from "./tab-tracks.js";
-import { format, outputPhase } from "./tab-master.js";
+import { connectedChannels, format, outputPhase } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -176,7 +176,7 @@ export function mergeGuardedByDrag(nowMs, lastCommitMs) {
  * 手动还是锁定)一个字节都不动。相邻自动段要不要并起来是另一件事,不在本入口里做。
  *
  * `openEnded` 段(§2.8)是**唯一**允许省 `endS` 的一档:它的 `t1S` 只是一个
- * **保守下界**,不是真末端 —— 那是 `setTrackManual` 造的「单段全时限常值」,
+ * **保守下界**,不是真末端 —— 那是 `setTrackManual` 在空段表上造的「单段全时限常值」,
  * CRVS 里 t1 是 1<<40 哨兵。对它取 `endS = t1S` 会把段的右半截留在手动态。
  * 省掉 `endS` 后真桥按 `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」
  * 推末端 —— **末端取哪个跟 Range 档位走**:`follow` 档是已采集时间线末端,
@@ -547,7 +547,7 @@ export function fmtTimeMs(s) {
  * 只参与取大;没有时下限压在 FALLBACK 上(播放头越过 5 分钟仍能把估计抬上去)。
  */
 /**
- * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 的单段全时限常值,
+ * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 在空段表上写入的单段全时限常值,
  * CRVS 里 t1 = 1<<40 哨兵)表达的是「一直到时间线末端」,不是一个真时刻 —— 对它取
  * `+Infinity` 才能让「包含 / 相交 / 重叠」这些判断得到正确答案。
  *
@@ -716,9 +716,11 @@ export function reanalyzeBlockReason(o) {
     if (s.blocked) return "wave.armReason.readOnly";
     if (!s.picked) return "wave.armReason.noTracks";
     if (!s.hasSel) return "wave.armReason.noSelection";
-    // 全局空态与「本选区无覆盖」共用同一句(「当前范围内无采集数据——调整范围或先采集」):
+    // 全局空态与「本选区无覆盖」共用同一句(`master.step2.desc.noData`):
     // 对用户而言要做的下一步逐字相同,分成两句只是让人多读一行。
     if (!s.hasData) return "master.step2.desc.noData";
+    // [SL-535] dry-run 只数已连接的轨:「有数据但那些轨都没连上 Input」也落这里,
+    // 所以 `master.step2.desc.noData` 的文案把这种情形一起说了。
     if (s.previewTracks === 0) return "master.step2.desc.noData";
     return null;
 }
@@ -2276,8 +2278,37 @@ export function createTabWave(opts) {
     function locateRecapture() {
         const rec = (getStore().state || {}).recapture || null;
         if (!rec || !rec.armed) return;
-        const s0 = num(rec.startS, 0);
-        const s1 = num(rec.endS, 0);
+        locateScope(rec.tracksMask, rec.startS, rec.endS);
+    }
+
+    /**
+     * [J125] toast③「立即重分析」:选区与勾选轨定位到刚重采完的那一块,然后走与
+     * 「重分析选区」**同一条** §1.6 `analyze(scope)`(不新增桥调用)。
+     *
+     * 定位是为了让用户看得见重分析作用在哪 —— 与布防 badge 的跳转同口径
+     * (`locateScope`);scope 直接用 toast 带来的三个值,不从 DOM 回读,
+     * 免得定位时被时间线时长夹过的选区改掉了要分析的范围。
+     * 拒绝回执(busy / 无覆盖)照「重分析选区」那样出工具条行内提示。
+     */
+    async function reanalyzeRange(scope) {
+        if (!scope || isWriteBlocked()) return null;
+        const req = {
+            tracksMask: Math.trunc(num(scope.tracksMask, 0)),
+            startS: num(scope.startS, 0),
+            endS: num(scope.endS, 0),
+        };
+        if (!req.tracksMask || !(req.endS > req.startS)) return null;
+        locateScope(req.tracksMask, req.startS, req.endS);
+        const res = await call("analyze", req);
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
+        requestRender();
+        return res;
+    }
+
+    function locateScope(tracksMask, startS, endS) {
+        const s0 = num(startS, 0);
+        const s1 = num(endS, 0);
         if (s1 > s0) {
             setSelection(s0, s1);
             const vp = timeline.viewport();
@@ -2286,7 +2317,7 @@ export function createTabWave(opts) {
                 timeline.set({ startS: s0 - pad, endS: s1 + pad });
             }
         }
-        const mask = Math.trunc(num(rec.tracksMask, 0));
+        const mask = Math.trunc(num(tracksMask, 0));
         const picked = [];
         for (let ch = 1; ch <= LANE_COUNT; ch++) {
             if (mask & (1 << (ch - 1))) picked.push(ch);
@@ -5212,6 +5243,18 @@ export function createTabWave(opts) {
         onPlayhead(local.playheadEv);
     }
 
+    /**
+     * [SL-535] `scvb.conn` 到达:已连接轨号集合变了就重取 dry-run。
+     * 预览的 `tracks` 只数已连接的轨,「重分析选区」灰不灰、灰的理由都读它 —— Input 接回来之后
+     * 不重取,按钮会一直灰到选区恰好又变一次。
+     */
+    function onConn(conn) {
+        const key = connectedChannels(conn).join(",");
+        if (key === local.connKey) return;
+        local.connKey = key;
+        schedulePreview();
+    }
+
     return {
         mount,
         render,
@@ -5219,6 +5262,7 @@ export function createTabWave(opts) {
         onCaptureProgress,
         onPlayhead,
         onVadPreview, // [J146] §2.10
+        onConn,
         // tour 视图层增强(T36b 第四轮:步 28 放大泳道 / 步 29 示例选区;只动渲染,不写 state)
         zoomLanes,
         showDemoSelection,
@@ -5227,6 +5271,8 @@ export function createTabWave(opts) {
         // 布防 badge 三处的共用跳转口径(05 行 300 ①;Tab1/Tab2 badge 经
         // app.js 切到本页后调用,定位选区 + 勾选目标轨)
         locateRecapture,
+        // [J125] toast③「立即重分析」(app.js 切到本页后调;同 §1.6 analyze 路径)
+        reanalyzeRange,
         // [SL-460][SL-469] app.js 的 settlePendingEdits() 在撤销 / 切版本前调。
         flushPending,
         // [SL-492][SL-496][SL-497] 只读诊断快照(页面级冒烟用;零写入口)。

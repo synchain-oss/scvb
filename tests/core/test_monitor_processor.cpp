@@ -6,6 +6,8 @@
 // 编译时定义 SCVB_MONITOR_HEADLESS —— 不实例化 WebView2 编辑器(真机 GUI 归 gate 8)。
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <cstring>
 #include <memory>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include "MonitorProcessor.h"
+#include "UiDefaultsStore.h"
 
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
@@ -71,6 +74,44 @@ bool bitwiseEqual(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<flo
     return true;
 }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// [rc-misc c] 整个测试二进制都不读写开发机上真实的 UI 全局默认文件。
+//
+// MonitorProcessor 构造时会读 `%APPDATA%/Synchain/SCVB/ui-defaults.settings`(语言 / 缩放默认)。
+// 只在新用例里切临时目录的话,其余用例(直通 / 段 / 组 / state 往返 / playhead / harness)照样
+// 打开真实文件 —— 眼下它们不断言默认值,但一旦有人补一条「出厂 zh / 100」,结果就取决于跑在
+// 哪台机器上(#315 第 1 轮复审【重要】2)。这里给**每个测试用例**切一个独立临时目录,结束即删。
+// 用例体内若自己再切(见「新实例读语言/缩放的系统级全局默认」),以用例体内的为准。
+// ---------------------------------------------------------------------------
+namespace
+{
+class UiDefaultsIsolation final : public Catch::EventListenerBase
+{
+public:
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testCaseStarting(Catch::TestCaseInfo const&) override
+    {
+        dir_ =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("scvb-mon-uidefaults-iso-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        dir_.createDirectory();
+        scvb::uidefaults::setStorageDirForTesting(dir_);
+    }
+
+    void testCaseEnded(Catch::TestCaseStats const&) override
+    {
+        scvb::uidefaults::setStorageDirForTesting({});
+        dir_.deleteRecursively();
+    }
+
+private:
+    juce::File dir_;
+};
+} // namespace
+
+CATCH_REGISTER_LISTENER(UiDefaultsIsolation)
 
 TEST_CASE("Monitor:0 自动化参数(123 参数面一个不动)", "[monitor][params]")
 {
@@ -345,6 +386,73 @@ TEST_CASE("Monitor:state 往返(组/缩放/语言;不可信字节拒载)", "[mon
     REQUIRE(c.groupId() == 1);
     c.setStateInformation(nullptr, 0);
     REQUIRE(c.groupId() == 1);
+}
+
+// ---------------------------------------------------------------------------
+// [rc-misc c] 新实例读系统级全局默认(语言 / Monitor 缩放),工程 state 仍优先。
+//
+// 缺陷:Monitor 构造时语言写死 "zh"、缩放写死 100,不读 UiDefaultsStore —— 用户在 Output 里
+// 选了 EN/FR,每次新插 Monitor 都弹回中文;Monitor 自己「保持」过的缩放也不跨实例生效。
+// 写全局默认的那一半在 MonitorEditor(编不进测试目标),由 smoke-monitor.mjs 的源码钉子守。
+// ---------------------------------------------------------------------------
+TEST_CASE("Monitor:新实例读语言/缩放的系统级全局默认,工程 state 优先", "[monitor][uidefaults][rcmisc]")
+{
+    namespace ud = scvb::uidefaults;
+    struct TempStore
+    {
+        juce::File dir =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("scvb-mon-uidefaults-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        TempStore()
+        {
+            dir.createDirectory();
+            ud::setStorageDirForTesting(dir);
+        }
+        ~TempStore()
+        {
+            ud::setStorageDirForTesting({});
+            dir.deleteRecursively();
+        }
+    } store;
+
+    SECTION("从没设过 ⇒ 出厂 zh / 100")
+    {
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiLanguage() == "zh");
+        CHECK(p.uiScalePercent() == 100);
+    }
+
+    SECTION("全局默认 en / Monitor 150 ⇒ 新实例沿用")
+    {
+        ud::setLangGlobal("en");
+        ud::setUiScalePercentMonitor(150);
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiLanguage() == "en");
+        CHECK(p.uiScalePercent() == 150);
+    }
+
+    SECTION("缩放按角色分键:Output 的缩放默认不串到 Monitor")
+    {
+        ud::setUiScalePercent(200); // Output 那一份
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiScalePercent() == 100);
+    }
+
+    SECTION("工程 state 压过全局默认")
+    {
+        ScvbMonitorAudioProcessor a; // 干净存储下存一份 zh/100 以外的值
+        a.setUiLanguage("fr");
+        a.setUiScalePercent(75);
+        juce::MemoryBlock blob;
+        a.getStateInformation(blob);
+
+        ud::setLangGlobal("en");
+        ud::setUiScalePercentMonitor(150);
+        ScvbMonitorAudioProcessor b;
+        b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(b.uiLanguage() == "fr");
+        CHECK(b.uiScalePercent() == 75);
+    }
 }
 
 // ---------------------------------------------------------------------------
