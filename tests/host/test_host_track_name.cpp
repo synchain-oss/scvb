@@ -172,6 +172,12 @@ TEST_CASE("HOST J150:宿主轨道名自动填进 label,改名跟着改,Input 侧
     r.in.updateTrackProperties(juce::AudioProcessor::TrackProperties{});
     REQUIRE(r.settleWithControl("Ctl A"));
     CHECK(r.label(kIdx) == "Lead Vox 2");
+    // ……而且 Input 手里的名字也还在:用户清空 label(回到自动)后,填回来的仍是「Lead Vox 2」。
+    // Output 从不因「空名字」清 label,所以只看上一行分不出 Input 有没有把名字丢成空串;这一格才分得出。
+    ScvbOutputAudioProcessor::ChannelConfigPatch clear;
+    clear.label = juce::String();
+    r.out->bridgeApplyChannelConfig(static_cast<int>(kIdx), clear);
+    CHECK(TrackRig::pumpUntil([&] { return r.label(kIdx) == "Lead Vox 2"; }));
 
     // 没有 Input 的轨不受影响。
     CHECK(r.label(0).isEmpty());
