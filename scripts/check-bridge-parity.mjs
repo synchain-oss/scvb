@@ -240,6 +240,7 @@ const EXPECTED_ENUM_ARRAYS = {
         "sidecarMissing",
         "noTimeline",
         "sidecarSwitched",
+        "stateNotFullyRestored",
     ],
     claimState: [
         "unassigned",

@@ -254,6 +254,13 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             continue;
         }
 
+        // [SL-216 / J136] 本区间的主唱(lead_select 记录里占比最大的值;0 = 无)。
+        // 选中的那一轨在本区间并入集合 C —— 与 lead_lock 同一条路径(AutoAssign 的 fixed 分支:
+        // 恒 P=0、不占槽;lead_exclusive 档据此剔除中心),其余声部按剩下的轨数排槽,平衡把它当
+        // 居中那一轨算。不另造一条「主唱」分支:C 的语义(02 §5.2/§5.6)原样适用,包括
+        // 「pair 成员被锁 → pair 忽略」「冻结 pan 也让位」这两条既有优先级。
+        const int intervalLead = majorityLead(cfg.leadRuns, gi.t0, gi.t1);
+
         // 本区间的活跃轨 → TrackMeta(z 取该区间内的平均能量)。
         std::vector<TrackMeta> metas;
         metas.reserve(gi.tracks.size());
@@ -272,7 +279,7 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             m.channelIndex = t;
             m.priority = tc.priority;
             m.pairId = tc.pairId;
-            m.leadLock = tc.leadLock;
+            m.leadLock = tc.leadLock || intervalLead == t + 1;
             m.leadVolExempt = tc.leadVolExempt;
             m.freeze = tc.freeze;
             m.participateInAutoPan = tc.participateInAutoPan;

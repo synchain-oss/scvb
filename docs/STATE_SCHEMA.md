@@ -1,7 +1,7 @@
 # STATE_SCHEMA —— SCVB state schema 与 abi 兼容规则(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-09-28(**纯订正,零行为 / 零布局 / 零 abi 变更**:头注与 §4.1 FEAT 那句「升级提示 UI 通路尚未接线」与 §三 正文自相矛盾,改成与实现一致的口径 —— Output 侧容器级 abi 已接线、Input 侧本版不做、FEAT 节 codecVer 这一级没有 UI 提示;变更文档 `docs/contract-changes/20260928-rc-misc-contract-corrections.md`。上一次实质变更 = 2026-09-27 [SL-472],§一 `channels[15]` 七项随工程落盘,变更文档 `docs/contract-changes/20260927-sl472-channel-config-persist.md`)
+> 最后更新: 2026-09-28(同日三处:① [J136] / [SL-216] **新增独立 fourcc 块 `LEAD`**:`lead_select` 在时间线上的播放记录,分析据此把主唱并入槽位/平衡计算;§一 加 `lead_timeline[]`、§三 表加一行并补一条载荷/兼容说明。**容器 abi 不变**(仍为 6)—— 新块走「未知 fourcc 原样保留回写」,旧工程无此块即「没有记录」;详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`;② [SL-218] / [SL-219]([J134] / [J135]),**零布局 / 零 abi / 零迁移**:§三「CRVS minor 更高」一条的接线实况改实 —— 原样回写与琥珀横幅⑪ 已接,详见 `docs/contract-changes/20260928-sl218-219-state-not-restored.md`;③ **纯订正,零行为 / 零布局 / 零 abi 变更**:头注与 §4.1 FEAT 那句「升级提示 UI 通路尚未接线」与 §三 正文自相矛盾,改成与实现一致的口径 —— Output 侧容器级 abi 已接线、Input 侧本版不做、FEAT 节 codecVer 这一级没有 UI 提示;变更文档 `docs/contract-changes/20260928-rc-misc-contract-corrections.md`。上一次实质变更 = 2026-09-27 [SL-472],§一 `channels[15]` 七项随工程落盘,变更文档 `docs/contract-changes/20260927-sl472-channel-config-persist.md`)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` **v2.3** + 计划 04 §5 蒸馏转正;J81 修宪转正:`ui.lang_chosen` / Input `ui.guide_seen`)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -40,9 +40,10 @@ channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10�
   source_channels: 1|2         # [J57] 自动检测:mono/stereo 源;**不落盘**(运行期每拍从音频环段头重测,存了也会被下一拍覆盖)
   participate_in_auto_pan: bool # [J83] 未显式设置一律 true(取代 J60 的按源声道推导);落盘保三态(false / true / 未显式设置)
   priority: 0..10              # 宽度优先级,高→角度大
-  lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58)
+  lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58;[J136] lead_select 的播放记录在分析里与它走同一条路径)
   lead_vol_exempt: bool        # 音量豁免——独立选项(J58 用户澄清)
   pair_id: 0|1..7              # 成对关联(0=无;15 轨最多 7 对)
+lead_timeline[]:               # [J136/SL-216] lead_select 的播放记录 {t0_samples, t1_samples, lead: 0..15},按 t0 升序、互不重叠;走带播放时逐块记下(后放覆盖先放),分析按区间取多数值;编码落点 = 独立块 `LEAD`(§三)
 versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");复制语义不变
   curves_per_track[15]:        # 分析产物:分段时间线曲线(真身,ADR-005)
     segments[]: {t0_samples, t1_samples, pan, vol_db, origin: auto|user_edited|user_created, locked: bool}   # J34
@@ -144,8 +145,10 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 | `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags}) |
 | `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
 | `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
+| `LEAD` | lead_timeline[]([J136] / [SL-216];`lead_select` 的播放记录,分析输入) | 自定义紧凑二进制(u16 minor=1 + u16 保留 + u32 条数 + 条数 × {i64 t0, i64 t1, u32 lead}) |
 
 - **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
+- **`LEAD` 块**([J136] / [SL-216],用户 2026-09-28「216 改成进分析计算」):`lead_select` 是宿主自动化参数,插件拿不到宿主的自动化曲线,只能在**播放经过时**看到它的值,所以 Output 在走带播放(时间线有效、t0 ≥ 0)时逐块记下它,分析按区间取记录里的多数值,选中轨在该区间按主唱锁处理(§一 `lead_lock` 同一条路径)。载荷(小端):`u16 minor`(=1)| `u16` 保留(写 0)| `u32 条数`(≤ 65536)| 条数 × `{i64 t0, i64 t1, u32 lead}`(20 字节;t0 ≥ 0、t0 < t1、按 t0 升序互不重叠、lead ∈ 0..15)。**写侧**:没有记录就不写这一块。**读侧**:只在载入带 `CFGS` 的完整工程时处理(只带 `PRMS` 的预设不动内存里的记录);无此块 → 记录清空(旧工程 / 从没播过);长度、顺序或值域任一不合法 → 整块不用、记录清空(派生数据,重放一遍即可补回,不为它整份拒载工程);`minor` 高于本构建 → 按「没有记录」分析,**保存时原样回写那份字节**(自留一份,不依赖 `loadedChunks_`)。**abi 不升**:新版写 → 旧版读,旧版不认识的 `LEAD` 按上一条原样保留回写(旧版分析不读它,但也不丢);旧版写 → 新版读,无此块即「没有记录」,分析与改动前逐位相同。
 - **`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在尾字段整档齐全时**才生效([SL-416] 起是 loudness/center 两个 + applied 两个 + segmentation 三个 + vad/ramp 六个 = 52 字节;[SL-472] 起再 + channels 15×124 = **1912 字节**)),已知字段的失败态还分三种 —— 头部**五个**(`group_id`/`capture_enabled`/`output_enabled`/`version_active`/`langBytes`)越界即**整块拒载**,尾部枚举/值域字段越界**回落默认并计数**,`ui.scale` 在本节解码器里**不作范围校验**(原样透出,由上层处理);`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。
 - **`CFGS.analysis.segmentation.mode` 是 v1 保留位**([SL-413],用户 2026-09-14 裁 ②;真源 02 §0.3):
   §一 那一档的 `mode` 在 v1 里**不露头** —— UI 全仓没有对应控件(**不是「藏起来了」,是
@@ -184,7 +187,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
   - 旧版读新 blob(abi 更高)一律走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。
   - **尾部长度是分档校验的**(准确措辞见 `OutputStateCodec.h` 头注,SL-411 R8 收敛过):remaining 只接受 0(abi=1)/ 8(abi=2)/ 16(abi=3)/ 28(abi=4)/ 52(abi=5)/ 1912 及 1912+;**档内少一个字节**(落在 (0,8)、(8,16)、(16,28)、(28,52)、(52,1912))一律整块拒载 —— 一整档是同一个构建写下去的,半截不可能是任何真实产物;而 **≥1912 之后多出来的尾巴任意长度都收**,由 `unknownTail` 原样保留回写。别把它读成「追加必须整档」:尾部加字段不必升 abi,只有**在已知档之间**插字段才必须走迁移链。「不必」是**允许不升、不是禁止升** —— 尾部追加升不升 abi 由报批裁定([SL-411]/[SL-416]/[SL-472] 三档都是尾部追加、都升了 abi;[SL-472] 那次依据 J114)。
   详见 `docs/contract-changes/20260825-cfgs-persistence.md`(abi 1→2)、`docs/contract-changes/20260905-sl279-applied-analysis-settings.md`(abi 2→3)、`docs/contract-changes/20260914-sl411-segmentation-persist.md`(abi 3→4)、`docs/contract-changes/20260914-sl416-vad-persist.md`(abi 4→5)与 `docs/contract-changes/20260927-sl472-channel-config-persist.md`(abi 5→6)。
-- **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 升级提示」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。⚠ **这一条与上面 ② 不是同一个触发面,`[SL-412]` 的接线**没有**覆盖它**:`OutputProcessor` 里 `stateAbiMismatch_` 只在容器 abi 那一支置位,而 CRVS minor 那一支落的是另一个位 `crvsNotRestored_`,今天**两个位都没有 UI 通路**,CRVS 这一支照旧只落一行 `DBG`。**仍未接线**,别把 ② 那句「Output 侧已接线」读成这里也接了。
+- **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 升级提示」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。**接线实况([SL-524] / [SL-218] / [SL-219],2026-09-28)**:① 原样回写 —— 被拒的 CRVS 字节(不分「坏」还是「更高 minor」)保存时**逐字节写回**,直到用户在这个实例里改动段表 / 版本;改动之后按 [J122] 写新表(那一刻起新版曲线真身被本构建的段表取代 —— 这是 J122 裁定的取舍:不写新表就会丢掉用户之后的编辑)。② 提示 —— 编辑器发 `scvb.error{stateNotFullyRestored, detail:{rejected:["CRVS"]}}`,琥珀横幅⑪「段表没能恢复,原数据会原样保留」(`SCVB_CONTRACT.md` §5.1)。横幅**不分**「更高 minor」与「载荷损坏」,不专说「请升级」—— 两者在 `decodeCrvs` 里是同一个 `false`。⚠ 这一条与上面 ② 仍不是同一个触发面:容器 abi 那一支是 `stateAbiMismatch_` + 红横幅④ `newerState`,CRVS 这一支是 `stateNotRestoredMask_` + 琥珀横幅⑪。
 - **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=6),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id + **`uiGuideSeen` 尾扩**,[J81]/J80)。
 
 ## 四、FEAT 节编码与 sidecar 契约(转正项)

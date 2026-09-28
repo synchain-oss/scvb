@@ -44,6 +44,8 @@ add_library(scvb_core STATIC
   analysis/VadPreview.h
   analysis/AutoAssign.cpp
   analysis/AutoAssign.h
+  analysis/LeadTimeline.cpp
+  analysis/LeadTimeline.h
   ipc/SegmentLayout.h
   ipc/ISegmentBackend.h
   ipc/SegmentBackendWin32.h

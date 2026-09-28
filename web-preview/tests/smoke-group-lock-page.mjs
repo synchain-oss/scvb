@@ -36,6 +36,9 @@
 //      判定/记账在 `BRIDGEARGS-SL412`、拒载态置位在 `HOST SL412`、调用点在
 //      `smoke-tab2-interactions.mjs` 的源码钉子。搭本套的车是因为 ① 已经在同一个页面、
 //      同一条路径上断「error 码 → 屏上那条横幅」(横幅②),④ 与 ② 是同一类判据。
+//   ⑥c [SL-218] `scvb.error{stateNotFullyRestored}` 同形三步:琥珀横幅⑪ 上屏、文案逐字等于
+//      词条 `banner.stateNotRestored`、不改变输出开关的挡否;`active:false` ⇒ 撤下。条件源在
+//      `HOST SL-219`、判定在 test_bridge_args.cpp `[SL218]`、调用点在 smoke-tab2 的源码钉子。
 //   ⑦ [SL-490] 分析在途(`analysis_run.running`)⇒ 版本 chip `data-disabled="1"`、tooltip 逐字
 //      是词条 `master.analyzing`、点了**不发** setVersionActive(计数)且当前版本不变、分析没被
 //      取消;对照臂:不在途 ⇒ 点了照常切、恰好发一次;⑦c:mock 在途时收到真切换 ⇒ 取消分析
@@ -913,6 +916,82 @@ try {
         "⑥b 横幅④ 在 6s 内撤下",
     );
     assertClean("⑥ newerState 横幅");
+
+    // ---- ⑥c [SL-218] `stateNotFullyRestored` ⇒ 琥珀横幅⑪ 上屏、文案逐字、active:false 撤下 ----
+    // 与 ⑥ 同一条下行口(壳页 driver 会话的 ctl.emit),同一套「上屏 → 读文案 → 撤下」三步。
+    // 另断两件:它是琥珀不是红(类名里没有 --red),以及它不挡控件(输出开关不因它变 disabled)。
+    const emitNotRestored = (active) =>
+        `(() => {
+            const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+            if (!s || !s.ctl || typeof s.ctl.emit !== "function") return false;
+            s.ctl.emit("scvb.error", {
+                code: "stateNotFullyRestored",
+                detail: { missing: ["CFGS", "CRVS"], rejected: [] },
+                active: ${active ? "true" : "false"},
+            });
+            return true;
+        })()`;
+    const NOT_RESTORED_BANNER = IN(`
+        const n = gb("banner-stateNotRestored");
+        const t = n ? n.querySelector("[data-t]") : null;
+        const sw = gb("master-output-toggle-switch");
+        return {
+            node: !!n,
+            shown: !!n && !n.hidden,
+            red: !!n && n.classList.contains("sc-banner--red"),
+            text: t ? t.textContent.trim() : null,
+            outputBlocked: !!sw && sw.getAttribute("data-disabled") === "1",
+        };
+    `);
+    const notRestoredBefore = await evaluate(NOT_RESTORED_BANNER);
+    check(notRestoredBefore.node, "⑥c 横幅⑪ 的节点在(锚点名没漂)");
+    check(
+        !notRestoredBefore.shown,
+        "⑥c 推事件之前横幅⑪ 是收着的(否则下面「上屏」恒真)",
+    );
+    check(
+        await evaluate(emitNotRestored(true)),
+        "⑥c 从 mock 推一帧 scvb.error{stateNotFullyRestored, active:true}",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-stateNotRestored"); return !!n && !n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥c 横幅⑪ 在 6s 内上屏",
+    );
+    {
+        const b = await evaluate(NOT_RESTORED_BANNER);
+        eq(
+            b.text,
+            String(T.zh["banner.stateNotRestored"]),
+            "⑥c 横幅⑪ 文案逐字等于词条 banner.stateNotRestored",
+        );
+        check(!b.red, "⑥c 横幅⑪ 是琥珀(不带 sc-banner--red)");
+        // 比前后而不是断绝对值:本套前面几档会改页面态,输出开关此刻挡不挡与本条无关。
+        eq(
+            b.outputBlocked,
+            notRestoredBefore.outputBlocked,
+            "⑥c 横幅⑪ 只提示,输出开关的挡否不因它改变",
+        );
+        log(`  [SL-218] 横幅⑪ 文案 = 「${b.text}」`);
+    }
+    check(
+        await evaluate(emitNotRestored(false)),
+        "⑥c 再推一帧 active:false 撤销帧",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-stateNotRestored"); return !n || n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥c 横幅⑪ 在 6s 内撤下(active:false)",
+    );
+    assertClean("⑥c stateNotFullyRestored 横幅");
 
     // =========================================================================
     // [SL-490] ⑦ 分析在途:版本 chip 禁用 + tooltip「分析中…」,点了**不发** setVersionActive

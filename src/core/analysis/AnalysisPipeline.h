@@ -24,6 +24,7 @@
 
 #include "analysis/AutoAssign.h"
 #include "analysis/EnergyVad.h"
+#include "analysis/LeadTimeline.h"
 #include "analysis/Segmentation.h"
 
 namespace scvb::analysis
@@ -37,7 +38,7 @@ struct PipelineTrackConfig
     bool enabled = true; // §1.15;false = 整轨不参与分析
     double priority = 5.0; // 0..10
     int pairId = 0; // 0 = 无配对
-    bool leadLock = false; // 分析期主唱锁:恒居中、不占槽
+    bool leadLock = false; // 分析期主唱锁:恒居中、不占槽(全程;逐区间的 lead_select 另见 leadRuns)
     bool leadVolExempt = false; // 透传
     int freeze = 0; // bit0 = pan 冻结,bit1 = vol 冻结
     bool participateInAutoPan = true; // [J83] 未显式设置一律 true
@@ -57,6 +58,12 @@ struct PipelineConfig
     AutoAssignConfig assign;
     BalanceConfig balance;
     std::array<PipelineTrackConfig, kPipelineTracks> tracks{};
+
+    // [SL-216 / J136] `lead_select` 在时间线上的记录(样本域,按 t0 升序、互不重叠;Output 在走带
+    // 播放时逐块记下)。逐区间取 `majorityLead`:结果 n ∈ 1..15 且轨 n 在该区间活跃 ⇒ 这一轨
+    // 在**这个区间**按主唱锁处理(并入集合 C:恒居中、不占槽,02 §5.2),其余声部据此排槽、
+    // 平衡也把它当作居中的那一轨来算。空 = 没有记录 ⇒ 与改动前逐位相同。
+    std::vector<LeadRun> leadRuns;
 };
 
 // K 加权均方(线性能量)→ LUFS(BS.1770 的 −0.691 偏置;静音回 −120 替身)。

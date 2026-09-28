@@ -1,47 +1,136 @@
 name: Release
+
+# ── 发版流水线(T40;06 §3.8 / 07 T40)─────────────────────────────────────────
+# 推一个 v* tag ⇒ 三个 job 串行:
+#   1. verify-tag  tag 与 CMakeLists.txt 的 project(SCVB VERSION x.y.z) 对得上才往下走(排在 20 分钟的
+#                  构建之前,对不上立刻红)。规则见 scripts/lib/release-version.ps1:vX.Y.Z 与 vX.Y.Z-rc.N
+#                  的 X.Y.Z 必须等于 CMake 版本;v0.0.0-test[.N] 是演练专用,不比对版本。判据先自测再实判。
+#   2. build       **调用 build-vst3.yml**(workflow_call),与出包硬门同一份配方:构建(/W4 零 warning)
+#                  → ctest → 三个 bundle 的 pluginval,最后把 .vst3 按 tag 名上传成 artifact。
+#   3. release     取回 artifact → scripts/package.ps1 打 zip / .sha256 / package-summary.md →
+#                  用 gh CLI 建**草稿** Release(不发布;维护者核对后在网页上手动发布)。
+# 权限:workflow 级只给 contents: read;只有 release job 拿 contents: write。
+# 不用 softprops/action-gh-release:runner 上自带 gh CLI,少一个持写权限的第三方依赖(06 §3.8 的替代方案)。
+# 不设 workflow_dispatch:手动跑既没有 tag 可比对,也没有 tag 可挂 Release。演练用 v0.0.0-test(docs/RELEASE.md)。
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
-  release:
-    # [SL-307] **刻意禁用**,让下面那句「T01 只落 release 骨架并保持 disable」成为真话 ——
-    # 在此之前它只是注释里那么写,而 `on.push.tags: ["v*"]` 是 armed 的:推一个 v* tag 会真的
-    # 把这个 job 跑起来。**红在第一步 `Verify version matches tag`**,不是 Package:那步用
-    # `Select-String -Pattern 'VERSION' | Select-Object -First 1` 取的是 `CMakeLists.txt:1` 的
-    # `cmake_minimum_required(VERSION 3.22)`,实测解析出 `3.22` 而非 `project(SCVB VERSION 0.1.0)`
-    # 的 `0.1.0`,任何真实 tag 都判不匹配(`docs/RELEASE.md` 现状表第 2 条;与 #71 在
-    # `scripts/build.ps1` 修掉的是同一个 bug)。即便那步修好,`Package` 还会撞上本仓不存在的
-    # `scripts/package.ps1`(同表第 1 条),而且本 workflow 压根不产出 `.vst3`(第 3 条)——
-    # 三条都在 T40 范围内。
-    # 用 `if: false` 而不是摘掉 `on.push.tags`:两条触发路径(tag push 与手动 dispatch)要**一起**
-    # 禁掉才对得上「disable」;只摘 tags 的话手动 dispatch 仍会跑进那个不存在的脚本。触发面原样
-    # 留着,当作「T40 之后该长什么样」的记录。
-    # **解除条件:T40 交付 `scripts/package.ps1` 时删掉本行 `if: false`。**
-    if: false
-    runs-on: windows-2022
-    permissions: { contents: write }
+  verify-tag:
+    name: verify-tag
+    # pwsh 用 runner 镜像自带的(windows-2022 上同样不钉版);两个脚本在 PS 7 与 5.1 上都实跑过。
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      kind: ${{ steps.check.outputs.kind }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # 复用 build-vst3 的全部构建步骤(建议抽成 composite action .github/actions/build-scvb)。
-      # T01 只落 release 骨架并保持 disable;完整 build/ctest/pluginval 复用与 scripts/package.ps1
-      # 由 T40 补齐(06 §3.8 六条硬要求 / 07 T40)。
-      - name: Verify version matches tag
+        with:
+          persist-credentials: false
+      # 两步分开写:pwsh 块只带出最后一条命令的退出码,合在一起的话「自测红、实判绿」会整步变绿。
+      - name: Tag gate self-test
         shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-release-tag.ps1 -SelfTest
+      - name: Verify version matches tag
+        id: check
+        shell: pwsh
+        # tag 名经 env 传入,不直接插值进脚本正文(它是推送者给的字符串)。
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: pwsh -NoProfile -File scripts/check-release-tag.ps1 -Tag "$env:TAG_NAME"
+      # 不依赖构建产物的打包检查(许可证全文覆盖、INSTALL.txt 的规则提取)提前到构建之前,
+      # 缺许可证全文之类的问题不必白烧 20 分钟构建才红。release job 打包时会再判一次。
+      - name: Package preflight
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+          KIND: ${{ steps.check.outputs.kind }}
         run: |
-          $projLine = (Select-String -Path CMakeLists.txt -Pattern 'VERSION' | Select-Object -First 1).Line
-          $v = (($projLine -split 'VERSION')[1]).Trim().TrimEnd(')')
-          $tag = "${{ github.ref_name }}".TrimStart('v')
-          if ($v -ne $tag) { Write-Error "CMake VERSION=$v != tag $tag"; exit 1 }
+          $extra = @()
+          if ($env:KIND -eq 'test') { $extra += '-AllowMissingLicenseTexts' }
+          pwsh -NoProfile -File scripts/package.ps1 -Preflight -Version "$env:VERSION" -Tag "$env:TAG_NAME" @extra
+
+  build:
+    name: build
+    needs: verify-tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-vst3.yml
+
+  release:
+    name: release
+    needs: [verify-tag, build]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    permissions:
+      contents: write # 建草稿 Release + 上传资产;整个流水线只有这一处有写权限
+    steps:
+      # 默认浅克隆:package.ps1 只要 HEAD 的提交时间(给 zip 条目定时间戳,保证重跑字节一致)。
+      # 不把 token 留在 .git/config:打包步用不到它,建 Release 那步经 GH_TOKEN 单独拿。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SCVB-VST3-win64-release-${{ github.ref_name }}
+          path: vst3-artifact
       - name: Package
         shell: pwsh
-        run: pwsh scripts/package.ps1 -Version "${{ github.ref_name }}".TrimStart('v') -BuildDir build -OutDir dist
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+          KIND: ${{ needs.verify-tag.outputs.kind }}
+        # 只有演练 tag 放行「LICENSES/ 缺许可证全文」(降为警告并记进 summary);正式版与 rc 缺就红。
+        run: |
+          $extra = @()
+          if ($env:KIND -eq 'test') { $extra += '-AllowMissingLicenseTexts' }
+          pwsh -NoProfile -File scripts/package.ps1 -Version "$env:VERSION" -Tag "$env:TAG_NAME" -BuildDir vst3-artifact -OutDir dist @extra
       - name: Publish job summary (供 Release note 与官网常量直接复制)
         shell: pwsh
         run: Get-Content dist/package-summary.md | Out-File $env:GITHUB_STEP_SUMMARY -Append
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2 —— 必须 pin SHA
-        with:
-          draft: true # 人工确认 release notes 后再发布
-          files: |
-            dist/SCVB-v*-win64.zip
-            dist/SCVB-v*-win64.zip.sha256
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          KIND: ${{ needs.verify-tag.outputs.kind }}
+          PRERELEASE: ${{ needs.verify-tag.outputs.prerelease }}
+        run: |
+          $zip = "dist/SCVB-v$env:VERSION-win64.zip"
+          $assets = @($zip, "$zip.sha256", 'dist/package-summary.md')
+          foreach ($a in $assets) { if (-not (Test-Path -LiteralPath $a)) { Write-Error "缺资产 $a"; exit 1 } }
+          $title = "Synchain Vocal Balancer v$env:VERSION (Windows x64)"
+          if ($env:KIND -eq 'test') { $title = "[pipeline test - delete me] $title" }
+
+          # 同一个 tag 重跑:已有**草稿**就覆盖资产并把正文重置为新的 summary(否则正文里的 SHA-256
+          # 会是上一次的);已发布的 Release 一律不碰。三种状态各走各的分支,不靠真值语义兜底。
+          # 「没有 Release」是正常路径上的非零退出:显式关掉 native 命令的 ErrorActionPreference 联动,
+          # 不让它在 $found 求值之前变成终止错误(pwsh 7.3+ 才有这个变量,默认 false,这里写死不依赖默认)。
+          $PSNativeCommandUseErrorActionPreference = $false
+          $isDraft = gh release view "$env:TAG_NAME" --json isDraft -q .isDraft 2>$null
+          $found = ($LASTEXITCODE -eq 0)
+          # 已发布 ⇒ 有意判红(不是 exit 0):重跑一个已发布的 tag 需要人来看一眼,别当 bug 改成放行。
+          if ($found -and $isDraft -eq 'false') { Write-Error "tag $env:TAG_NAME 的 Release 已发布,流水线不改已发布的 Release"; exit 1 }
+          if ($found -and $isDraft -ne 'true') { Write-Error "读不懂 gh release view 的 isDraft='$isDraft',不动它"; exit 1 }
+          if ($found) {
+            Write-Host "已有草稿 Release:覆盖上传资产,正文重置为本次的 package-summary.md(手改过的正文会被覆盖)"
+            gh release upload "$env:TAG_NAME" @assets --clobber
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            gh release edit "$env:TAG_NAME" --notes-file dist/package-summary.md
+            exit $LASTEXITCODE
+          }
+
+          $flags = @('--draft', '--verify-tag', '--title', $title, '--notes-file', 'dist/package-summary.md')
+          if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
+          gh release create "$env:TAG_NAME" @assets @flags
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "::notice::草稿 Release 已建:$env:TAG_NAME。核对资产后按 docs/RELEASE.md 的模板改写正文,再在网页上手动发布。"
