@@ -450,7 +450,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:true}`(**幂等**:`pending` 已为 false 时仍返回 `{ok:true}`) |
-| 语义 | 加载守卫(04 §5.3)「继续引擎驱动」按钮的**唯一确认入口**:置 `print_guard.pending=false`(运行时态,不入 state chunk、不随工程持久化),本工程会话内横幅⑦不再出现;确认前引擎行为止于 ARMED(§1.3),确认后若满足 PRINT 三与条件(输出 ON ∧ 播放 ∧ 在 range 内)即恢复正常 PRINT。**零 gesture**;变更经 `scvb.state.print_guard` 回推。成例:R4 `setGuideSeen`(用户可见承诺须有唯一写入口)。 |
+| 语义 | 加载守卫(04 §5.3)「继续引擎驱动」按钮的**唯一确认入口**:置 `print_guard.pending=false`(运行时态,不入 state chunk、不随工程持久化),本工程会话内横幅⑦不再出现;确认前引擎行为止于 ARMED(§1.3),确认后若满足 PRINT 三与条件(输出 ON ∧ 播放 ∧ 在 range 内)即恢复正常 PRINT。**「本工程会话」的边界(J154)**:宿主对同一实例再次灌入插件状态(`setStateInformation` 恢复出 `output_enabled=ON`,如带插件状态的 DAW 撤销、A/B 对比、载入预设),就本条而言算作新的一次工程会话 —— 守卫重新置位,横幅⑦再次出现,须再次确认。**零 gesture**;变更经 `scvb.state.print_guard` 回推。成例:R4 `setGuideSeen`(用户可见承诺须有唯一写入口)。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M];横幅⑦按钮触发,每工程会话至多一次有效 |

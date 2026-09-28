@@ -26,6 +26,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array> // [SL-393] segTableOf 的逐字段快照
+#include <atomic> // [加载守卫] HostWriteSpy 计数
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -1305,6 +1306,197 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
 // 全记成缺口,于是每个静音边界都闪一次「失准」,1s 恢复窗过后自愈。用户看到的正是
 // 「偶发短暂失准后自愈」。真失准(写方套圈)不在此列,仍照计。
 // ---------------------------------------------------------------------------
+namespace
+{
+// [SL-495/SL-462] 造一份「工程里存的是 channel=ch」的 Input state 字节。
+std::vector<std::uint8_t> sl462InputStateBlob(std::uint32_t ch)
+{
+    scvb::state::InputState saved;
+    saved.channelId = ch;
+    saved.groupId = static_cast<std::uint32_t>(kTestGroup);
+    saved.uiScale = 100;
+    saved.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(saved, payload));
+    scvb::state::StateChunks chunksOut;
+    chunksOut.abi = scvb::state::kCurrentAbi;
+    chunksOut.set(scvb::state::kFourccCfgs, payload);
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunksOut, blob));
+    return blob;
+}
+} // namespace
+
+TEST_CASE("HOST SL-495:冲突态的 Input 在占用方释放后自己接管,不用用户重选", "[host][input][sl495]")
+{
+    // 删除式:把 timerCallback 里的 retryConflictClaim(now) 删掉,「释放后接管」那两条必红。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(5) == scvb::input::InputClaimState::kConflict);
+
+    // 占用方还在:重试照跑但抢不到,停在冲突态,配置号不被改写。
+    Rig::pumpMessages(1300);
+    {
+        const auto snap = victim.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kConflict);
+        CHECK(snap.channelId == 0);
+        CHECK(snap.configuredChannelId == 5);
+    }
+
+    // 占用方改号(等价用户删掉原轨 / 改了它的通道)。
+    REQUIRE(occupant.setChannelId(0) == scvb::input::InputClaimState::kUnassigned);
+
+    // 1Hz 节流:最多等 ~2.5s(一个重试周期 + 4Hz 分支的粒度 + 余量)。
+    bool active = false;
+    for (int i = 0; i < 25 && !active; ++i)
+    {
+        Rig::pumpMessages(100);
+        active = victim.bridgeTickSnapshot().claimState == scvb::input::InputClaimState::kActive;
+    }
+    CHECK(active);
+    CHECK(victim.bridgeTickSnapshot().channelId == 5);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-495:未分配的 Input 不参与重试(没有要抢的号)", "[host][input][sl495]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+    ScvbInputAudioProcessor p;
+    p.setGroupId(kTestGroup);
+    p.setPlayHead(&ph);
+    p.prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(1300);
+    const auto snap = p.bridgeTickSnapshot();
+    CHECK(snap.claimState == scvb::input::InputClaimState::kUnassigned);
+    CHECK(snap.channelId == 0);
+    p.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:已绑定实例载入工程撞车、回滚成功 —— 记下一次性冲突信号(号 = 工程里的号)", "[host][input][sl462]")
+{
+    // 删除式:删掉 setStateInformation() 里的 noteLoadConflict(loadResult, ...),
+    // loadConflictChannelId==5 那条必红(回滚成功后 claim 是 active,别处没有第二个出口)。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0); // 点击路径不记(RPC 返回值承载)
+
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    const auto snap = victim.bridgeTickSnapshot();
+    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive); // 回滚成功,仍在 3 上
+    CHECK(snap.channelId == 3);
+    CHECK(snap.loadConflictChannelId == 5);
+    CHECK(snap.loadConflictGroupId == kTestGroup);
+    // 发出前的「仍然成立」核验在此刻为真(5 被 occupant 新鲜占着,本实例在 3 上)。
+    CHECK(scvb::input::bridge::loadConflictStillHolds(snap.loadConflictChannelId, snap.loadConflictGroupId,
+                                                      snap.groupId, snap.channelId, snap.conn.occupiedMask));
+
+    // 界面确认(ack)后清掉;别的 serial 的确认不清这一次。
+    const auto serial = snap.loadConflictSerial;
+    victim.bridgeAckLoadConflict(serial + 1);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 5);
+    victim.bridgeAckLoadConflict(serial);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0);
+
+    // 再载入一次同样撞车 ⇒ 又记一次;用户随后主动选通道 ⇒ 作废。
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    REQUIRE(victim.bridgeTickSnapshot().loadConflictChannelId == 5);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:首次 prepareToPlay() 前已绑通道又载入工程,起播时撞车回滚 —— 同样记信号", "[host][input][sl462]")
+{
+    // SL-455 那个窗口:prepared_==false 时 setStateInformation() 不 re-claim,撞车发生在随后的
+    // prepareToPlay() 里。删除式:删掉 prepareToPlay() 里的 noteLoadConflict(...),本格必红。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive); // 起播前交互式绑定
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size())); // 未 prepared:只改配置
+    victim.prepareToPlay(kSr, kBlock); // 抢 5 撞车 → 回滚回 3
+
+    const auto snap = victim.bridgeTickSnapshot();
+    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive);
+    CHECK(snap.channelId == 3);
+    CHECK(snap.loadConflictChannelId == 5);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:全新实例载入工程时硬冲突 —— 不走一次性信号,claim 停在 conflict", "[host][input][sl462]")
+{
+    // 这一支由首帧基线(initialClaimErrorBaseline)+ claim 边沿补发 channelConflict,
+    // noteLoadConflict 只收「回滚成功」那一种;这里钉住它不越界(否则同一次冲突会弹两次)。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    victim.prepareToPlay(kSr, kBlock);
+
+    const auto snap = victim.bridgeTickSnapshot();
+    CHECK(snap.claimState == scvb::input::InputClaimState::kConflict);
+    CHECK(snap.configuredChannelId == 5);
+    CHECK(snap.loadConflictChannelId == 0);
+    CHECK(scvb::input::bridge::initialClaimErrorBaseline(
+              scvb::input::bridge::claimValue(snap.claimState, snap.conn.maskBit, false))
+              .isEmpty());
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
 TEST_CASE("HOST P1-7:宿主在静音段挂起 Input,短暂停流不报失准", "[host][t37][v5][misalign]")
 {
     Rig r;
@@ -7184,6 +7376,154 @@ TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToP
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 重开 output_enabled=ON 的工程:确认前打印器止于 ARMED(04 §5.3 / 契约 §1.3、§1.34)。
+//
+// 修前 `printGuardPending` 没有任何写 true 的地方:横幅⑦与「继续写入自动化」钮都在,三态求值
+// 却不看它 —— 工程一重开、一按播放就进 PRINT,把 DAW 车道(常留在 Latch)上已录的自动化盖掉。
+//
+// 两个落点各有一格删除式:
+//   ① setStateInformation 里「恢复 ON ⇒ 置待确认」—— 删掉则 `CHECK(printGuardPending())` 与
+//      「确认前零写入」两格都红;
+//   ② timerCallback 三态求值里的 `!guardPending` —— 删掉则只有「确认前零写入」那几格红,
+//      `CHECK(printGuardPending())` 仍绿(故那一格必须是 CHECK 不是 REQUIRE,否则分不开)。
+// 判据落点 = 挂在真 processor 上的 AudioProcessorListener(宿主替身),不看打印器内部计数。
+// 进 Print 档不走「采集 + 分析」:setTrackManual 写一条覆盖全时间线的常值段(同 SL-489 那格)。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct HostWriteSpy final : juce::AudioProcessorListener
+{
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { ++writes; }
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int) override { ++begins; }
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int) override { ++ends; }
+
+    std::atomic<int> writes{0};
+    std::atomic<int> begins{0};
+    std::atomic<int> ends{0};
+};
+} // namespace
+
+TEST_CASE("HOST 加载守卫:恢复 output=ON 的工程,确认前播放零写入,确认后恢复打印", "[host][loadguard][print]")
+{
+    HostWriteSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(8);
+
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+
+    // 造一份「输出 ON」的工程 blob。先关一次让打印器走 endAllGestures 回到干净起点;
+    // 开 → 存 → 关 三步之间**不泵消息**:25Hz tick 在消息线程,不泵就不会插进来进 PRINT。
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.setOutputEnabled(true);
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(r.out.printGuardPending()); // 前置:本会话里没被恢复过,不该有守卫
+
+    // ★ 宿主重开工程。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.outputEnabled()); // 前置:blob 里确实是 ON
+    CHECK(r.out.printGuardPending()); // ← 落点①删掉即红
+
+    r.out.addListener(&spy);
+
+    // 确认前:播放中 ∧ 播放头在区间内(常值段覆盖全时间线),满足 PRINT 三与条件 —— 仍须零写入。
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() == 0); // ← 落点①或②删掉即红
+    CHECK(spy.writes.load() == 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
+
+    // 确认(契约 §1.34,幂等)⇒ 下一拍起恢复正常 PRINT。这一段同时证明上面的「零写入」
+    // 不是因为区间/走带条件本来就不满足 —— 条件一点没变,只多了这一次确认。
+    r.out.confirmPrintGuard();
+    r.out.confirmPrintGuard();
+    CHECK_FALSE(r.out.printGuardPending());
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() > 0);
+    CHECK(spy.writes.load() > 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 守卫的其余写点:恢复 OFF 不设守卫(且清掉上一个工程残留的);关输出即解除
+// (桥面 OFF 与 [J92a] 手动开采集连带关输出两条路都走 applyOutputEnabled);
+// 守卫在时再发 setOutputEnabled(true) **不算确认**(契约 P-1 候选②「复用 setOutputEnabled(true)
+// 作确认信号」已被 A-29 否决,确认入口只有 §1.34);确认过后宿主再灌 ON ⇒ 重新置位([J154])。
+// 删除式:删掉 applyOutputEnabled 里的清除 ⇒ 「桥面 OFF」与「J92a」两格红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出不算确认", "[host][loadguard]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    juce::MemoryBlock onBlob;
+    juce::MemoryBlock offBlob;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.setOutputEnabled(true);
+        donor.getStateInformation(onBlob);
+        donor.setOutputEnabled(false);
+        donor.getStateInformation(offBlob);
+    }
+
+    ScvbOutputAudioProcessor out;
+    // 新建实例的 outputEnabled_ 初值就是 true,但那不是「随工程恢复」—— 不该有守卫。
+    CHECK(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 恢复 ON ⇒ 待确认;再载一个 OFF 工程 ⇒ 清掉。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending());
+    out.setStateInformation(offBlob.getData(), static_cast<int>(offBlob.getSize()));
+    CHECK_FALSE(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 守卫在时开输出(已经是 ON)不算确认。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setOutputEnabled(true);
+    CHECK(out.printGuardPending());
+
+    // 桥面关输出 ⇒ 解除;再开回来不重新设守卫(走 UI 的 OFF→ON 一次性确认)。
+    out.setOutputEnabled(false);
+    CHECK_FALSE(out.printGuardPending()); // ← applyOutputEnabled 的清除删掉即红
+    out.setOutputEnabled(true);
+    CHECK_FALSE(out.printGuardPending());
+
+    // [J92a] 手动开采集连带关输出 ⇒ 同样解除。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setCaptureEnabled(true);
+    REQUIRE_FALSE(out.outputEnabled()); // 前置:互斥确实把输出关了
+    CHECK_FALSE(out.printGuardPending()); // ← 同上
+
+    out.setCaptureEnabled(false);
+
+    // [J154] 契约 §1.34「本工程会话」的边界:确认过之后,宿主对同一实例再灌一次输出=开的状态
+    // (带插件状态的撤销 / A/B 对比 / 载入预设)算新的一次会话 ⇒ 守卫重新置位。
+    // 放在本用例最后:J154 未取的选项 (b)「同一实例确认过就不再重置」会让这个实例此后每次重灌都
+    // 不再置位,放在前面会连带把后面各段的前置 REQUIRE 一起弄红,分不出是哪一格钉住了它。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.confirmPrintGuard();
+    REQUIRE_FALSE(out.printGuardPending());
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending()); // ← 改成 (b) 即红
 }
 
 // ===========================================================================
