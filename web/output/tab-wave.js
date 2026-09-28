@@ -20,8 +20,10 @@
 //   • **Wave 1** = 静态结构:store → 泳道模型**只读投影**(轨头六件 / 空态 /
 //     布防 badge / 菊花态 / 按钮判据),canvas 静态层(包络/VAD/未覆盖/stale/
 //     passId/覆盖条,canvas/waveform.js)与共享动态层(曲线/边界,本文件画)。
-//   • **Wave 2(本文件现状)** = 全部交互:滑杆两段式(拖动 ≤50Hz 整包预览,
-//     松手 300ms 防抖在 C++ 侧,UI 只显示倒计时条 + 消费 §2.8)/ 四动作 + 确认框 /
+//   • **Wave 2(本文件现状)** = 全部交互:滑杆两段式(拖动 ≤50Hz 整包下发 ——
+//     [J146] 起每一发都由 C++ 即时重判决并经 §2.10 `scvb.vadPreview` 回发预览:本页画
+//     预览分段边界虚影 + 重拉瓦片刷新 VAD 着色(`onVadPreview`);松手 300ms 防抖在 C++ 侧,
+//     UI 只显示倒计时条 + 消费 §2.8)/ 四动作 + 确认框 /
 //     选区拖拽 + 设为范围 / 边界拖拽吸附 + 分割合并 / 点选 + shift 连选 /
 //     检查器编辑 + 锁定(selectedSegs 每次 §2.8 事件后重绑,brief §0.7)/
 //     缩放平移(静止 120ms 取新块、拖动先 blit)/ 布防 badge + footer 警告 /
@@ -864,6 +866,90 @@ export function rulerTicks(vp) {
 /** 拖动期参数下发节流周期(ms;40Hz ≤ brief §0.8 的 50Hz 上限)。 */
 export const PARAM_THROTTLE_MS = 25;
 
+/**
+ * [J146] 拖动档预览刷新 VAD 着色的节流(ms)。预览事件随拖动最多 40Hz 到达,但每刷一次
+ * VAD 列就是「每条可见泳道一次 `requestWaveform`」—— 跟 40Hz 走会把桥打满。取视口的
+ * 「静止 120ms 才取新块」同一档(`IDLE_REFETCH_MS`,§1.27 / 05 §6.3):拖动中约 8Hz 刷一次,
+ * 停手 120ms 内一定刷到最后一帧。虚影本身不受此节流(它只画已到手的载荷,不取数)。
+ */
+export const VAD_PREVIEW_REFETCH_MS = IDLE_REFETCH_MS;
+
+/** [J146] 预览分段边界虚影的画法:VAD 绿(与 VAD 标注带同色系)细点划,与 auto 白虚线 / 手动白实线分得开。 */
+export const PREVIEW_EDGE_STYLE = Object.freeze({
+    color: "rgba(122, 205, 178, 0.9)",
+    dash: [2, 3],
+    width: 1,
+});
+
+/**
+ * [J146] §2.10 载荷 → 本页的预览态。畸形载荷一律当「不在预览中」(`active:false`),
+ * 不抛:事件是纯下行的,抛出来只会把整个事件分发打断。
+ * @returns {{seq:number, active:boolean, startS:number, endS:number, byCh:Map<number,{t0S:number,t1S:number}[]>}}
+ */
+export function normalizeVadPreview(pv) {
+    const out = {
+        seq: Number.isFinite(pv && pv.seq) ? pv.seq : -1,
+        active: false,
+        startS: 0,
+        endS: 0,
+        byCh: new Map(),
+    };
+    if (!pv || pv.active !== true) return out;
+    if (!Number.isFinite(pv.startS) || !Number.isFinite(pv.endS)) return out;
+    out.active = true;
+    out.startS = pv.startS;
+    out.endS = pv.endS;
+    for (const c of Array.isArray(pv.channels) ? pv.channels : []) {
+        if (!c || !Number.isInteger(c.ch) || c.ch < 1 || c.ch > LANE_COUNT) {
+            continue;
+        }
+        const spans = [];
+        for (const sp of Array.isArray(c.spans) ? c.spans : []) {
+            if (
+                sp &&
+                Number.isFinite(sp.t0S) &&
+                Number.isFinite(sp.t1S) &&
+                sp.t1S > sp.t0S
+            ) {
+                spans.push({ t0S: sp.t0S, t1S: sp.t1S });
+            }
+        }
+        out.byCh.set(c.ch, spans);
+    }
+    return out;
+}
+
+/**
+ * [J146] 一条泳道要画的预览边界(秒,升序)。
+ *   · 每个预览段两端各一条;相接的两段(谷切分切开的)共用一条,不画两遍;
+ *   · **落在用户段(origin≠auto 或 locked)内部的不画**:松手那一趟逐字节不动用户段(J34),
+ *     在那里画「将会切在这里」是假话。恰好落在用户段端点上的照画(那条边本来就在)。
+ * @param {{t0S:number,t1S:number}[]} spans 该轨预览段(升序、互不重叠)
+ * @param {object[]} segs 该轨当前段表(§2.8 段形状)
+ */
+export function previewEdgesOf(spans, segs) {
+    const EPS = 1e-6;
+    const user = [];
+    for (const g of Array.isArray(segs) ? segs : []) {
+        if (!g) continue;
+        if (g.locked === true || (g.origin && g.origin !== "auto")) {
+            user.push([num(g.t0S, 0), segEndS(g)]);
+        }
+    }
+    const out = [];
+    let last = -Infinity;
+    for (const sp of Array.isArray(spans) ? spans : []) {
+        for (const t of [sp.t0S, sp.t1S]) {
+            if (!Number.isFinite(t)) continue;
+            if (Math.abs(t - last) < EPS) continue;
+            last = t;
+            if (user.some(([a, b]) => t > a + EPS && t < b - EPS)) continue;
+            out.push(t);
+        }
+    }
+    return out;
+}
+
 /** previewAnalyze 节流(ms;契约 §1.5「UI 侧节流调用」)。 */
 export const PREVIEW_THROTTLE_MS = 250;
 
@@ -1258,6 +1344,13 @@ export function createTabWave(opts) {
         toolbarNoteTimer: 0,
         preview: null, // previewAnalyze 结果缓存(A-07)
         previewTimer: 0,
+        // [J146] §2.10 拖动档预览态(normalizeVadPreview 的产物)+ VAD 列刷新的节流账。
+        vadPreview: normalizeVadPreview(null),
+        vadRefetchTimer: 0,
+        vadRefetchAt: 0,
+        vadRefetchWin: null, // 待刷新的时间窗(几帧合并成一次;{startS,endS})
+        vadRefetchCount: 0, // 诊断:真的刷过几次(页面级冒烟据此分辨「刷了」与「没刷」)
+        vadEdgesDrawn: 0, // 诊断:上一帧动态层画了几条虚影
         rangeTip: null, // {x,y}:「设为范围」一次性提示(§7)
         vpIdleTimer: 0, // 视口静止 120ms 才取新块的计时(§6.3)
         panDrag: null, // 空白拖拽平移 {lastX}
@@ -2428,7 +2521,8 @@ export function createTabWave(opts) {
 
     // ------------------------------------------------------- mount:工具条接线
     function mountToolbar() {
-        // 7 滑杆两段式:拖动档 ≤50Hz 整包预览;松手档只显示倒计时条,
+        // 7 滑杆两段式:拖动档 ≤50Hz 整包下发、C++ 每一发即时重判决并经 §2.10 回发预览
+        // ([J146];本页由 onVadPreview 画虚影 + 刷 VAD 着色);松手档只显示倒计时条,
         // **300ms 防抖在 C++ 侧,UI 不自建定时器去 analyze**(brief §0.5)
         for (const s of els.sliders || []) {
             if (!s.track) continue;
@@ -4830,6 +4924,45 @@ export function createTabWave(opts) {
             ctx.setLineDash([]);
         }
 
+        // ④ [J146] 拖动档预览虚影(§2.10):每轨当前参数下的 S1 段边界。单独一趟循环 ——
+        //    上面那趟对「还没有段表的轨」直接 continue,而首次分析前拖滑杆恰恰要在这类轨上看预览。
+        //    眼睛钮灭 = 本轨边界都不画,虚影同理(防遮挡语义一致)。
+        let ghostEdges = 0;
+        const pv = local.vadPreview;
+        if (pv.active) {
+            ctx.setLineDash(PREVIEW_EDGE_STYLE.dash);
+            ctx.strokeStyle = PREVIEW_EDGE_STYLE.color;
+            ctx.lineWidth = PREVIEW_EDGE_STYLE.width;
+            for (const ch of visibleLanes()) {
+                const spans = pv.byCh.get(ch);
+                if (!spans) continue;
+                const eye = local.lanes.get(ch);
+                if (
+                    eye &&
+                    eye.eye &&
+                    eye.eye.getAttribute("aria-pressed") === "false"
+                ) {
+                    continue;
+                }
+                const segCh = segmentsOfCh(store.segments, ch);
+                const y0 = (ch - 1) * laneH;
+                for (const t of previewEdgesOf(
+                    spans,
+                    (segCh && segCh.segments) || [],
+                )) {
+                    const x = timeToX(vp, w, t);
+                    if (x < 0 || x > w) continue;
+                    ctx.beginPath();
+                    ctx.moveTo(x, y0);
+                    ctx.lineTo(x, y0 + laneH);
+                    ctx.stroke();
+                    ghostEdges++;
+                }
+            }
+            ctx.setLineDash([]);
+        }
+        local.vadEdgesDrawn = ghostEdges;
+
         // ③ 边界拖拽预览线(释放才发 §1.22:拖动期纯本地;吸附命中谷点时
         //    琥珀加亮 = A-14 的「竖线加亮」反馈,Alt 关吸附则维持白亮线)
         const d = local.boundDrag;
@@ -4982,6 +5115,58 @@ export function createTabWave(opts) {
     }
 
     /**
+     * [J146] §2.10 `scvb.vadPreview`:拖动档预览到达 / 结束。
+     *   · 虚影:存下每轨预览段,动态层下一帧按它画(不取数,随事件即时);
+     *   · VAD 着色:预览期间 C++ 的 `requestWaveform.vad` 取即时重判决(§1.27),所以这里只需
+     *     让写回窗内的块失效、重拉 —— 节流到 `VAD_PREVIEW_REFETCH_MS`,几帧的窗合并成一次;
+     *     结束帧(active:false)同样要刷一次:覆盖层撤了,VAD 列回到分析写下的那份。
+     * 旧 seq 的帧丢弃(同一次拖动里事件与回执交错到达时,不让旧帧盖新帧)。
+     */
+    function onVadPreview(raw) {
+        const next = normalizeVadPreview(raw);
+        const prev = local.vadPreview;
+        if (next.seq >= 0 && prev.seq >= 0 && next.seq <= prev.seq) return;
+        local.vadPreview = next;
+        const wins = [];
+        if (prev.active) wins.push({ startS: prev.startS, endS: prev.endS });
+        if (next.active) wins.push({ startS: next.startS, endS: next.endS });
+        for (const wv of wins) {
+            local.vadRefetchWin = local.vadRefetchWin
+                ? {
+                      startS: Math.min(local.vadRefetchWin.startS, wv.startS),
+                      endS: Math.max(local.vadRefetchWin.endS, wv.endS),
+                  }
+                : wv;
+        }
+        scheduleVadRefetch();
+        local.overlayDirty = true;
+        schedulePaint();
+    }
+
+    function scheduleVadRefetch() {
+        if (local.vadRefetchTimer || !local.vadRefetchWin) return;
+        const wait = Math.max(
+            0,
+            VAD_PREVIEW_REFETCH_MS - (nowMs() - local.vadRefetchAt),
+        );
+        local.vadRefetchTimer = setTimeout(() => {
+            local.vadRefetchTimer = 0;
+            const win = local.vadRefetchWin;
+            local.vadRefetchWin = null;
+            if (!win) return;
+            local.vadRefetchAt = nowMs();
+            local.vadRefetchCount++;
+            // 软失效(keepStale:默认):旧块挪进影子给过渡帧垫底,新块到了再换 —— 刷 VAD 列
+            // 不该让泳道闪一下。只动与写回窗相交的块(窗外的 VAD 列松手后也不变)。
+            for (let ch = 1; ch <= LANE_COUNT; ch++) {
+                waveSource.invalidate(ch, [win]);
+            }
+            local.staticDirty = true;
+            schedulePaint();
+        }, wait);
+    }
+
+    /**
      * §2.7(播放中 2Hz):覆盖条延伸 → 该轨块缓存失效 + 静态层脏。
      * **只失效与 `addedRanges` 相交的块**:2Hz 增量事件通常只新增很小一段,
      * 整轨清会把 8 块 LRU 全丢 ⇒ 采集中反复整轨重取(pr-agent)。载荷没带
@@ -5033,6 +5218,7 @@ export function createTabWave(opts) {
         onSegments,
         onCaptureProgress,
         onPlayhead,
+        onVadPreview, // [J146] §2.10
         // tour 视图层增强(T36b 第四轮:步 28 放大泳道 / 步 29 示例选区;只动渲染,不写 state)
         zoomLanes,
         showDemoSelection,
@@ -5055,6 +5241,19 @@ export function createTabWave(opts) {
             paramInflight: {
                 vad: !!local.paramInflight.vad,
                 seg: !!local.paramInflight.seg,
+            },
+            // [J146] 拖动档预览:页面级冒烟要分辨「预览到了 / 虚影画了 / VAD 列刷了」三件事,
+            // 画面上分不开(虚影与既有 auto 虚线同处一层,VAD 带又只有 3px)。
+            vadPreview: {
+                seq: local.vadPreview.seq,
+                active: local.vadPreview.active,
+                lanes: local.vadPreview.byCh.size,
+                spans: [...local.vadPreview.byCh.values()].reduce(
+                    (n, a) => n + a.length,
+                    0,
+                ),
+                edgesDrawn: local.vadEdgesDrawn,
+                refetches: local.vadRefetchCount,
             },
         }),
     };

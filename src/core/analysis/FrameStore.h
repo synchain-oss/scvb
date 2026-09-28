@@ -66,6 +66,7 @@ public:
     {
         pages_.clear();
         coverage_.clear();
+        ++mutationSeq_;
     }
     HopRange gate() const noexcept { return gate_; }
 
@@ -86,7 +87,11 @@ public:
     bool vadInvalidateOnWrite() const noexcept { return vadInvalidateOnWrite_; }
 
     // 打洞:coverage_.punch(r)(重采集/清除用;页数据留待后续覆盖)。
-    void invalidate(HopRange r) { coverage_.punch(r); }
+    void invalidate(HopRange r)
+    {
+        coverage_.punch(r);
+        ++mutationSeq_;
+    }
 
     // [SL-226] 持久化回灌入口(工程加载:FEAT → FrameStore)。与 write() 的三点不同,每一点都是
     // 必需的,别把它合回 write():
@@ -99,7 +104,11 @@ public:
     void restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uint8_t vad);
 
     // [SL-226] 整段并入覆盖记账(回灌配套;不变量仍由 CoverageMap 维持)。
-    void addCoverage(HopRange r) { coverage_.add(r); }
+    void addCoverage(HopRange r)
+    {
+        coverage_.add(r);
+        ++mutationSeq_;
+    }
 
     // [SL-226] 批量导出一段([begin,end) 追加到三个 out)。逐 hop 调 kwDbq/peakDbq/vadP 是**每个
     // hop 三次 std::map 查找**,满配 20min×15 轨 ≈ 540 万次 —— 而这段跑在 getStateInformation
@@ -148,6 +157,12 @@ public:
     uint64_t coveredHops(HopRange r) const { return coverage_.coveredHops(r); }
     bool coversFully(HopRange r) const { return coverage_.coversFully(r); }
 
+    // [J146] kw/peak/覆盖记账的**修改序号**:write(真写进去的那一次)/ restoreHop / addCoverage /
+    // invalidate / reset 各 +1;**只动 vadP 的两个入口(setVadP / setVadPosteriorRange)不算** ——
+    // 它们不改变「特征本身」。拖动档预览拿它判「缓存的与参数无关的那一半(VAD 基准 / ℓ 包络)
+    // 还能不能用」:序号没变 ⇒ 特征没变 ⇒ 缓存有效。只增不减,不参与持久化。
+    uint64_t mutationSeq() const noexcept { return mutationSeq_; }
+
     std::size_t pageCount() const noexcept { return pages_.size(); }
     std::size_t allocatedBytes() const noexcept { return pages_.size() * sizeof(FeatPage); }
 
@@ -160,6 +175,7 @@ private:
     CoverageMap coverage_;
     bool readOnly_ = true; // 采集 OFF/未布防默认只读:Output 布防路径必须先 setReadOnly(false) 才能记账
     bool vadInvalidateOnWrite_ = false; // [SL-240] 见 setVadInvalidateOnWrite()
+    uint64_t mutationSeq_ = 0; // [J146] 见 mutationSeq()
     HopRange gate_{0, std::numeric_limits<uint64_t>::max()};
 };
 

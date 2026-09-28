@@ -72,20 +72,49 @@ float percentile(const std::vector<float>& values, double p)
     return sorted[rank - 1];
 }
 
-struct VadModel
+// 02 §2.2 第 3 步:阈值(与参数有关的那一半的入口;基准见 computeVadBaseline)。
+struct VadThresholds
 {
-    std::vector<float> l; // ℓ[k](dB)
-    float F = 0.0f; // 底噪基准(全 hop P10)
-    float A = 0.0f; // 活跃基准(活跃候选子集 P95,或退化全 hop P95)
     float ton = 0.0f; // T_on
     float toff = 0.0f; // T_off
-    bool activeEmpty = true; // 活跃候选子集 S 是否为空
 };
 
-// 02 §2.2 第 2、3 步:自适应基准与阈值。
-VadModel buildModel(const float* kwMs, std::size_t n, const VadParams& p)
+VadThresholds thresholdsFor(const VadBaseline& b, const VadParams& p)
 {
-    VadModel m;
+    // 阈值:保证 T_on ≥ T_off + 1(滞回方向)。
+    float ton = b.A - p.thresholdDb;
+    const float tfloor = std::max(b.F + 6.0f, kTFloorMin);
+    float toff = std::max(ton - p.hysteresisDb, tfloor);
+    ton = std::max(ton, toff + 1.0f);
+    return VadThresholds{ton, toff};
+}
+
+// 拆分前那个 VadModel 的只读视图(基准 + 阈值,字段同名同义),让状态机与后处理的正文一行不改。
+// ℓ 存成指针(不是引用成员):基准对象活得比视图久(调用方持有),下标访问写法与原先一致。
+struct VadModelView
+{
+    const float* l = nullptr;
+    float A = 0.0f;
+    float ton = 0.0f;
+    float toff = 0.0f;
+    bool activeEmpty = true;
+};
+
+VadModelView modelView(const VadBaseline& b, const VadParams& p)
+{
+    const VadThresholds th = thresholdsFor(b, p);
+    return VadModelView{b.l.data(), b.A, th.ton, th.toff, b.activeEmpty};
+}
+
+} // namespace
+
+// 02 §2.2 第 1、2 步:帧响度与自适应基准(与参数无关;[J146] 拆出,理由见头文件)。
+// 定义放在匿名命名空间之后:要用里面的 computeFrameLoudness / percentile / 常量。
+VadBaseline computeVadBaseline(const float* kwMs, std::size_t n)
+{
+    VadBaseline m;
+    if (n == 0)
+        return m;
     computeFrameLoudness(kwMs, n, m.l);
 
     m.F = percentile(m.l, 10.0);
@@ -100,18 +129,8 @@ VadModel buildModel(const float* kwMs, std::size_t n, const VadParams& p)
     }
     m.activeEmpty = activeL.empty();
     m.A = m.activeEmpty ? percentile(m.l, 95.0) : percentile(activeL, 95.0);
-
-    // 阈值:保证 T_on ≥ T_off + 1(滞回方向)。
-    float ton = m.A - p.thresholdDb;
-    const float tfloor = std::max(m.F + 6.0f, kTFloorMin);
-    float toff = std::max(ton - p.hysteresisDb, tfloor);
-    ton = std::max(ton, toff + 1.0f);
-    m.ton = ton;
-    m.toff = toff;
     return m;
 }
-
-} // namespace
 
 // [SL-382] ℓ 的唯一口径(判据与理由逐字见 EnergyVad.h 的头注)。定义放在匿名命名空间
 // **之后**:它要用里面的 `kLufsOffset` / `clampedEnergy`,而那两个只对本 TU 可见 ——
@@ -139,11 +158,19 @@ const char* VadResult::warningMessage() const
 
 VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const VadParams& p, float* posteriorOut)
 {
+    if (n == 0)
+        return VadResult{};
+    return runEnergyVadOnBaseline(computeVadBaseline(kwMs, n), firstHop, p, posteriorOut);
+}
+
+VadResult runEnergyVadOnBaseline(const VadBaseline& base, int64_t firstHop, const VadParams& p, float* posteriorOut)
+{
     VadResult result;
+    const std::size_t n = base.l.size();
     if (n == 0)
         return result;
 
-    const VadModel m = buildModel(kwMs, n, p);
+    const VadModelView m = modelView(base, p);
 
     // 后验 p[k](02 §2.4):p_raw 不截断、p 截断到 [0,1] 存 features.vad_posterior[]。
     // 无论守卫分支如何,后验均按当前阈值可算(供 UI 热图)。
@@ -295,7 +322,8 @@ void EnergyVad::computeFromFeatures(const float* kwMs, std::size_t numHops, cons
     if (posteriorRawOut == nullptr || numHops == 0)
         return;
 
-    const VadModel m = buildModel(kwMs, numHops, p);
+    const VadBaseline base = computeVadBaseline(kwMs, numHops);
+    const VadModelView m = modelView(base, p);
     const float denom = m.ton - m.toff; // ≥ 1
     for (std::size_t k = 0; k < numHops; ++k)
         posteriorRawOut[k] = (m.l[k] - m.toff) / denom; // p_raw 不截断(§2.7)

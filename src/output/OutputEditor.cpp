@@ -310,6 +310,17 @@ void OutputEditor::emitTick()
             pendingAnalyzedReason_ = ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     }
 
+    // [J146] §2.10 拖动档预览。拖动调用里已经当场发过;这里补两类:① 预览在调用**之外**结束
+    // (分析落地 / 丢弃事件 / 空闲)那一帧 active:false;② 隐藏期被挡下、恢复可见后该补的那一帧。
+    // 排在段表之后:松手那一趟落地时,UI 先拿到新段表、再撤掉虚影,中间不会有一拍两样都没有。
+    // 条件类(§0.4 第 3 条第三档):首帧只在**正处于预览中**时补发,空闲时不发空帧。
+    if (first)
+    {
+        vadPreviewSentSeq_ = processor_.vadPreview().seq;
+        vadPreviewForce_ = processor_.vadPreview().active;
+    }
+    emitVadPreview();
+
     // scvb.error:仅条件成立时发(§2.9)。
     //
     // [SL-412] `newerState` 是本编辑器的**第一个** error 生产者(此前 `emitError` 零调用方,
@@ -617,6 +628,56 @@ void OutputEditor::emitPlayhead()
     }
 
     emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
+}
+
+void OutputEditor::emitVadPreview()
+{
+    // §2.10:载荷 = 预览的**整份当前态**(不是增量),按 seq diff —— seq 没动就是什么都没变。
+    const auto& pv = processor_.vadPreview();
+    if (pv.seq == vadPreviewSentSeq_ && !vadPreviewForce_)
+    {
+        return;
+    }
+    // 与 `emitIfChanged` 同一条纪律:不可见时**不推进基线**(载荷会被丢),恢复可见后下一拍补发。
+    if (!webView().isVisible())
+    {
+        return;
+    }
+    juce::var channels = mkArray();
+    if (pv.active)
+    {
+        for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+        {
+            if ((pv.tracksMask & (1u << t)) == 0)
+            {
+                continue;
+            }
+            juce::var spans = mkArray();
+            for (const auto& sp : pv.spans[static_cast<std::size_t>(t)])
+            {
+                juce::var seg = obj();
+                put(seg, "t0S", sp.first);
+                put(seg, "t1S", sp.second);
+                push(spans, seg);
+            }
+            juce::var c = obj();
+            put(c, "ch", t + 1);
+            put(c, "spans", spans);
+            push(channels, c);
+        }
+    }
+    juce::var payload = obj();
+    put(payload, "seq", static_cast<juce::int64>(pv.seq));
+    put(payload, "active", pv.active);
+    if (pv.active)
+    {
+        put(payload, "startS", pv.startS);
+        put(payload, "endS", pv.endS);
+    }
+    put(payload, "channels", channels);
+    webView().emitEventIfBrowserIsVisible(Event::VadPreview, payload);
+    vadPreviewSentSeq_ = pv.seq;
+    vadPreviewForce_ = false;
 }
 
 void OutputEditor::emitCaptureProgress()
@@ -1922,6 +1983,11 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     // 所以现在没问题;但从此**调一次 = 排一整条流水线**。若要接状态恢复、预设加载、
     // Input 远端同步这类新调用方,得在那一侧自己去重,别指望这里替你挡。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    // [J146] 拖动档(§1.18):每次调用即时重判决,预览经 §2.10 `scvb.vadPreview` 当场回发。
+    // 放在 `armResegment` 之后:空闲结束判据要看「防抖排上了没有」,顺序反了第一拍会被误收。
+    // 与松手档同一条「调一次 = 做一次」:去重归 web 侧(见上面那段头注)。
+    processor_.previewVadSegmentation();
+    emitVadPreview();
     c(okResp());
 }
 
@@ -1991,6 +2057,9 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     // [SL-255] 同 §1.18,reason 落 "segmentation"(§1.19);同样在 `if (changed)` 之外,
     // 理由逐字见 handleSetVadParams 那处的头注。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
+    // [J146] 拖动档(§1.19 同 §1.18):即时重判决 + 当场回发预览,理由逐字见 handleSetVadParams。
+    processor_.previewVadSegmentation();
+    emitVadPreview();
     c(okResp());
 }
 

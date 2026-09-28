@@ -35,6 +35,7 @@ add_executable(scvb_tests
   core/test_transition.cpp
   core/test_loudness.cpp
   core/test_vad.cpp
+  core/test_vad_preview.cpp # [J146] 拖动档预览核与流水线 S1 同源
   core/test_segmentation.cpp
   core/analysis_reanalysis_test.cpp
   core/test_hungarian.cpp

@@ -53,7 +53,7 @@
  *       ① manifest 可解析;
  *       ② 名字合法(lowerCamelCase / scvb.*)且侧内无重复;
  *       ③ **完备性**:与 05 §1.4 对齐的冻结期望表 EXPECTED 逐项零差异 + 四个计数断言
- *          (Output 35 函数 / 9 事件,Input 7 函数 / 5 事件)——防「契约被误删/误改名而脚本仍绿」;
+ *          (计数以下方 EXPECTED_COUNTS 为准,本行不再抄数 —— 抄过的 35/9、7/5 都已过期)——防「契约被误删/误改名而脚本仍绿」;
  *       ④ **跨侧同名函数签名一致**(params 顺序敏感);
  *       ⑤ 无禁止复活名单命中,且每个禁止名都在契约 §8.2 名单行内以反引号整词列明
  *          (只在 §8.2 段落内匹配:`curves` / `misalign` 等子串会被 `curves_per_track`、
@@ -62,8 +62,8 @@
  *       ⑦ **manifest 与正文双向可见**:manifest 每项在**对应侧**正文段落内有条目
  *          (正文按 "## 3. Input" 切成 output/input 两段,§5 起截断,避免 side-blind);
  *          反向,正文里定义的每个函数/事件条目也必须被 manifest 收录。
- *       ⑧ 相对 05 §1.4 的授权增量只有 3 项(setAnalysisConfig、Input scvb.error、confirmPrintGuard),
- *          在 EXPECTED 表旁注明来源,使脚本本身成为「对 05 §1.4 零差异 + 3 项显式增量」的断言。
+ *       ⑧ 相对 05 §1.4 的授权增量逐项在 EXPECTED 表旁注明来源(清单见 EXPECTED 头注),使脚本本身
+ *          成为「对 05 §1.4 零差异 + 显式增量」的断言。
  *
  * 退出码:发现任何差异 / 命中禁止名 / 自检失败 => 1;全部通过 => 0。
  *
@@ -126,6 +126,9 @@ const FORBIDDEN = [
  *     docs/contract-changes/20260825-export-suggestions.md([J81] 转正)
  *   - input.functions  的 `setGuideSeen`      —— 授权来源 05 §3 文末 J80 节 / T48;变更文档
  *     docs/contract-changes/20260825-input-guide-seen.md([J81] 转正)
+ *   - output.events    的 `scvb.vadPreview`   —— 授权来源 05 §1.4 `setVadParams` 行「拖动档……回发
+ *     VAD/边界预览」(未定事件名)+ 用户裁定 [J146];变更文档
+ *     docs/contract-changes/20260929-j146-vad-drag-preview.md
  * 其余每一项都能在 05 §1.4 的表内逐字找到。
  */
 const EXPECTED = {
@@ -178,6 +181,7 @@ const EXPECTED = {
             "scvb.captureProgress",
             "scvb.segments",
             "scvb.error",
+            "scvb.vadPreview", // ← 授权增量⑦(05 §1.4 setVadParams 行「回发 VAD/边界预览」+ [J146];变更文档 20260929-j146-vad-drag-preview)
         ],
     },
     input: {
@@ -202,7 +206,7 @@ const EXPECTED = {
 };
 /** 计数自检 —— 与契约 §7 文末「计数自检」行同源。 */
 const EXPECTED_COUNTS = {
-    output: { functions: 36, events: 9 },
+    output: { functions: 36, events: 10 }, // [J146] +scvb.vadPreview
     input: { functions: 8, events: 5 },
 };
 
@@ -1262,6 +1266,29 @@ function checkEventPayloadFields() {
                 "stale",
             ],
         },
+        // [J146] §2.10 三层都对拍:顶层 / 每轨 / 每段。锚点取 `spans:` —— 全契约只有 §2.10 的载荷行
+        // 带它(`t0S` 在 §2.8 的载荷行里也有,拿它当锚会先命中那一行)。
+        {
+            event: "scvb.vadPreview",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "payload",
+            otherLevels: [],
+        },
+        {
+            event: "scvb.vadPreview(channels[])",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "c",
+            otherLevels: [],
+        },
+        {
+            event: "scvb.vadPreview(spans[])",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "seg",
+            otherLevels: [],
+        },
     ];
 
     for (const c of CASES) {
@@ -1274,8 +1301,9 @@ function checkEventPayloadFields() {
             );
             continue;
         }
+        // `\??`:可选字段在载荷行里写作 `key?:type`(§2.10 的 `startS?:` 等),同样算已登记。
         const docFields = new Set(
-            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map(
+            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g)].map(
                 (m) => m[1],
             ),
         );

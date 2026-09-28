@@ -64,6 +64,17 @@ struct PipelineConfig
 // 流水线产段时用它,桥面 emit 时按 FEAT 重算也用它([SL-257] 真值化)。
 double lufsFromMeanKw(double meanKwLinear);
 
+// [J146] 谷切分的 ℓ 包络:逐 hop `frameLoudnessDb(kw)`(ℓ 的唯一口径,见 EnergyVad.h)。out 先清空。
+void envelopeDbInto(const float* kwMs, std::size_t n, std::vector<float>& out);
+
+// [J146] S1 单轨的后一半:VAD 段里超过 `seg.maxSegmentS` 的按谷切分(02 §3.2),短段原样保留;
+// 返回 hop 域段序列(绝对时间线)。**分析流水线与拖动档预览(契约 §1.18)共用这一份**。
+// `kwMs[0..n)` 对应绝对 hop `firstHop..firstHop+n`;`envDb` 为空时按需由 `envelopeDbInto` 现建
+// (流水线的惰性口径),非空则视为已建好(预览传缓存)。任一段找不到自然切点时置 *noNaturalCut。
+std::vector<VadSegment> splitLongVadSegments(const std::vector<VadSegment>& vadSegs, std::int64_t firstHop,
+                                             const SegmentationParams& seg, double hopSec, const float* kwMs,
+                                             std::size_t n, std::vector<float>& envDb, bool* noNaturalCut);
+
 // 每轨的特征切片(调用方从 FrameStore 里按范围抠出来的快照:kw 线性能量 + 峰值)。
 // 长度必须一致 = 范围内 hop 数;未覆盖的 hop 由调用方填静音(kw=0)。
 // covered 标记哪些 hop 真有采集数据 —— 全 false 的轨直接跳过(不产生段)。
