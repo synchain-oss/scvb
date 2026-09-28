@@ -272,7 +272,7 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
     eq(
         TT.needsManualConfirm(0, "vol", false),
         true,
-        "[J85] 未冻结 + 未确认过 ⇒ 弹(整表压成常值段是破坏性操作,要用户点头)",
+        "[J85] 未冻结 + 未确认过 ⇒ 弹(把每一段的这一维改写成常值是破坏性操作,要用户点头;另一维保留,[J131])",
     );
     eq(
         TT.needsManualConfirm(0, "pan", false),
@@ -285,7 +285,7 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         "[J85] 冻结 vol ⇒ 不弹(不替换任何段,确认条要拦的改写段表不成立;[J140] 起可撤销)",
     );
     eq(TT.needsManualConfirm(1, "pan", false), false, "[J85] 冻结 pan ⇒ 不弹");
-    // **逐维**而非整行:冻 pan 不该让 vol 那一维也免弹(vol 仍会整表压曲线)。
+    // **逐维**而非整行:冻 pan 不该让 vol 那一维也免弹(拖 vol 仍会把每一段的 vol 改写成常值,[J131])。
     eq(
         TT.needsManualConfirm(1, "vol", false),
         true,

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// CtrlPlane —— ctrl 段(Output→Input 配置广播 + OutputGlobalInfo + Input→Output 命令环)+
+// CtrlPlane —— ctrl 段(Output→Input 配置广播 + [J150] Input→Output 轨道名区 + OutputGlobalInfo +
+// Input→Output 命令环)+
 // 停摆看门狗([R3/J52])。组内语义(ipc v1.5 [J66]):构造带 group(1..8),所有读写作用于本组
 // g{G}.ctrl 段;跨组互不可见。只经消息线程;音频线程不触碰 ctrl 段。
 //
@@ -102,6 +103,42 @@ static_assert(alignof(CtrlBroadcast) == 64);
 // 而隐式补齐意味着布局取决于编译器 —— 共享内存结构不接受这种不确定性。
 static_assert(sizeof(CtrlBroadcast) == 2048, "CtrlBroadcast 须恰好 32 个 cacheline(无隐式填充)");
 
+// ---------------------------------------------------------------------------
+// [J150] 轨道名区(Input→Output,每轨一条)。Input 由宿主 updateTrackProperties 拿到本轨的
+// DAW 轨道名,写进自己 channel 的那一条;Output [M] 读出后按「用户没改过名」的规则决定要不要
+// 填进 channels[].label(填不填、何时填是 Output 的事,本区只运输)。
+//
+// 落点:紧跟 CtrlBroadcast 之后(偏移 64+2048=2112),**仍在 T06 冻结的 9344 字节广播区预算之内**
+// —— 与 [J81] 广播区布局同一个论证:不移动、不改写任何既有结构体,段名 / abi 不变,只新增一个块。
+// 旧 Output 不读这块;新 Output 配旧 Input 读到的是全零(seq==0 = 从未写过),两向都退化成
+// 「没有轨道名」。
+//
+// 写方 = 持有该 channel 的那个 Input 的 [M](每条单写);读方 = 本组 kActive 的 Output 的 [M]。
+// 每条自带 seqlock(奇偶),撕裂即本拍放弃、不自旋 —— 与 CtrlBroadcast 同款协议,只是按条独立。
+//
+// 归属判据 `owner_heartbeat_ms`:写入时本 slot 的 `InputSlot.heartbeat_ms` 当前值。读方只在它与
+// 该 slot 此刻的 heartbeat_ms **相等**时采信 —— 离开的 Input(换通道 / 换组 / 崩溃)留下的旧条目
+// 在新主人第一次写心跳(claim 时即写)后就失配,不必靠任何一方去清。
+// ---------------------------------------------------------------------------
+
+// 轨道名字节槽:UTF-8、NUL 结尾。宿主轨道名可能长于 label 的 24 码点上限,这里多运一些
+// (≤99 字节,写方在最后一个完整 UTF-8 序列边界截断),截到 24 码点是 Output 落 label 时的事。
+inline constexpr std::size_t kCtrlTrackNameBytes = 100;
+
+struct alignas(64) CtrlTrackName
+{
+    std::atomic<u32> seq; // 0   seqlock:写前置奇(seq|1)→ 写载荷 → 写后 +1(偶);0 = 从未写过
+    u32 _pad; // 4
+    u64 owner_heartbeat_ms; // 8   写入时本 slot 的 InputSlot.heartbeat_ms(归属判据,见上)
+    char utf8[kCtrlTrackNameBytes]; // 16..116  UTF-8、NUL 结尾;空串 = 宿主没给轨道名
+    char _tail[12]; // 116..128 显式补齐到 64 的整数倍(理由同 CtrlBroadcast::_tail)
+};
+static_assert(sizeof(CtrlTrackName) == 128, "CtrlTrackName 定长两条 cacheline(无隐式填充)");
+static_assert(alignof(CtrlTrackName) == 64);
+static_assert(offsetof(CtrlTrackName, owner_heartbeat_ms) == 8);
+static_assert(offsetof(CtrlTrackName, utf8) == 16);
+static_assert(offsetof(CtrlTrackName, _tail) == 116);
+
 // 读写用的普通 POD 快照(无原子,可自由拷贝;与 OutputGlobalInfoSnapshot 同款 API 形状)。
 struct CtrlBroadcastSnapshot
 {
@@ -142,6 +179,13 @@ static_assert(kCtrlRingsOffset % 64 == 0);
 static_assert(kCtrlRingsOffset + kMaxChannels * sizeof(CtrlRing) == kCtrlSegmentSize,
               "ctrl 段 15 命令环须恰好占满预算");
 static_assert(sizeof(CtrlBroadcast) <= kCtrlBroadcastBytes, "CtrlBroadcast 不得越过广播区预算");
+// [J150] 轨道名区紧跟 CtrlBroadcast,15 条 × 128 = 1920 字节,止于 4032,仍在广播区预算(9408)之内。
+inline constexpr std::size_t kCtrlTrackNamesOffset = kCtrlBroadcastOffset + sizeof(CtrlBroadcast); // 2112
+static_assert(kCtrlTrackNamesOffset == 2112);
+static_assert(kCtrlTrackNamesOffset % 64 == 0);
+static_assert(kCtrlTrackNamesOffset + kMaxChannels * sizeof(CtrlTrackName) <=
+                  kCtrlBroadcastOffset + kCtrlBroadcastBytes,
+              "轨道名区不得越过广播区预算(越过即踩进 OutputGlobalInfo)");
 
 // fp_report 载荷打包(J46):value = (u64(tile_idx) << 48) | (hash & 0x0000FFFFFFFFFFFF)。
 // tile_idx 高 16 位(≈18.2 小时时间线上限的截断语义);fingerprint 截断低 48 位。
@@ -267,8 +311,19 @@ public:
     void* broadcastBase() const { return base_ != nullptr ? base_ + kCtrlBroadcastOffset : nullptr; }
     static constexpr std::size_t broadcastBytes() { return kCtrlBroadcastBytes; }
 
+    // ---- 轨道名区([J150],Input→Output,每轨一条)----
+    // Input [M] 写本 channel 那一条。**只有持有该 channel 的 Input 才可以调**(每条单写,与命令环
+    // 同一条 SPSC 纪律)。utf8 超过 kCtrlTrackNameBytes-1 字节时在最后一个完整 UTF-8 序列边界截断;
+    // 段未打开 / channel 非法 → 静默不写。
+    void writeTrackName(u32 channel, u64 ownerHeartbeatMs, const std::string& utf8);
+    // Output [M] 读。返回 false = 段未打开 / channel 非法 / 从未写过(seq==0)/ 本次 seqlock 撕裂 /
+    // 载荷不是严格 UTF-8(对端字节不可信,读方自保)。true 时 name = NUL 之前的字节(可能是空串 =
+    // 宿主没给轨道名),ownerHeartbeatMs = 写方记下的归属判据。
+    bool readTrackName(u32 channel, u64& ownerHeartbeatMs, std::string& name) const;
+
 private:
     CtrlRing* ringAt(u32 channel) const;
+    CtrlTrackName* trackNameAt(u32 channel) const;
     OutputGlobalInfo* globalInfo() const;
     CtrlBroadcast* broadcast() const;
     bool anyOnlineWriteHeadAdvanced() const;

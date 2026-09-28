@@ -80,6 +80,8 @@ Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain,
 
 Open each Input and give it a channel id. Channel ids may not repeat within one group (hard rule 5). The group selector is eight capsules, A–H, defaulting to A; a single song project will not normally need a second group — groups exist for "one DAW project containing several unrelated vocal buses". On the Output side, pick the same group in Tab 1.
 
+**Track names fill in automatically**: once an Input has a channel and is connected to the Output, that track's name on the Output Tracks tab is taken from the DAW track name of the vocal track it sits on (anything past 24 characters is cut off); rename the track in your DAW and the name here follows. A track whose name you have **edited yourself** on the Tracks tab stops following DAW renames; **clear** the name to go back to automatic (while the Input is connected, the current track name is filled back in right away). When the Input disconnects (set to unassigned, its track deleted, and so on — the same test the UI uses for "not connected") the last track name is kept. If the host does not provide track names, nothing is filled in and the field keeps whatever it had (the placeholder if it was never filled).
+
 ### Capture
 
 Turn on **Capture** in the Output, then play back as usual. Capture writes only while the switch is ON **and** the transport is rolling; whatever you play is what gets captured, and replaying a section overwrites the old data for it. SCVB **stores no audio** — only one feature frame every 10 ms (see "Sessions and files").

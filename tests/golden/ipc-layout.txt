@@ -91,6 +91,14 @@ field CtrlBroadcast._reserved offset 16
 field CtrlBroadcast.channels offset 64
 field CtrlBroadcast.labels offset 544
 field CtrlBroadcast._tail offset 2044
+# [J150] ctrl 段轨道名区(Input→Output,每轨一条):紧跟 CtrlBroadcast、仍在广播区预算内。不升 abi:不移动、不改写任何既有结构体(与 J81 广播区同一论证)。
+struct CtrlTrackName size 128 align 64
+field CtrlTrackName.seq offset 0
+field CtrlTrackName._pad offset 4
+field CtrlTrackName.owner_heartbeat_ms offset 8
+field CtrlTrackName.utf8 offset 16
+field CtrlTrackName._tail offset 116
+offset ctrl_track_names 2112
 struct CtrlRing size 448 align 64
 field CtrlRing.write_pos offset 0
 field CtrlRing.read_pos offset 4

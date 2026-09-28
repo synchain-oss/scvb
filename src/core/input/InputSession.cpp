@@ -219,6 +219,14 @@ bool InputSession::isHealthy(u64 nowMs) const
     return (mask & (1u << (ch - 1))) != 0;
 }
 
+u64 InputSession::ownSlotHeartbeatMs() const
+{
+    // claimedChannel_ 非 0 ⇔ 本实例此刻真持有那条 slot(openAndClaim 的失败分支要么从未写过、要么显式
+    // 写 0 —— SCVB_CONTRACT §3.1 channel_id 那条把它写成了对外承诺);为 0 时 inputSlot(0) 回 nullptr。
+    const InputSlot* is = registry_.inputSlot(claimedChannel_.load(std::memory_order_acquire));
+    return is != nullptr ? is->heartbeat_ms.load(std::memory_order_acquire) : 0;
+}
+
 InputConnSnapshot InputSession::connSnapshot(u64 nowMs) const
 {
     InputConnSnapshot s;
