@@ -571,6 +571,21 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             !/^\s+if \(first \|\| analyzed \|\|/m.test(oe),
             "[SL-199] 不再有手写的 segments 重发条件(已收进 segmentsResendNeeded)",
         );
+
+        // [rc-misc b] Output 版本号与 Input/Monitor 同源取 JucePlugin_VersionString(CMake project VERSION)。
+        // 此前两处写死版本字面量,升版本号后 Output 页头与设置页「v… · abi …」仍显示旧号。
+        // OutputEditor.cpp 编不进任何 C++ 测试目标,只能钉源码形态(行形态锚:注释掉整行即不匹配)。
+        check(
+            /^[ \t]*config\.version = JucePlugin_VersionString;/m.test(oe) &&
+                /^[ \t]*put\(version, "plugin", JucePlugin_VersionString\);/m.test(
+                    oe,
+                ),
+            "[rc-misc b] Output 的 config.version 与快照 version.plugin 都取 JucePlugin_VersionString",
+        );
+        check(
+            !/^[^/\n]*"\d+\.\d+\.\d+"/m.test(oe),
+            "[rc-misc b] OutputEditor.cpp 的代码行里不再有写死的版本号字面量",
+        );
     }
 
     // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
