@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// MonitorBridgeApi —— Monitor 桥名常量表(T45 壳层最小面)。
+// MonitorBridgeApi —— Monitor 桥名常量表(T45 起的壳层面,T46 补齐)。
 //
-// 与 Input/Output 的 *BridgeApi.h 不同,本文件**尚未**进 `docs/SCVB_CONTRACT.md §7 manifest`,
-// 也不在 `scripts/check-bridge-parity.mjs` 的抽取路径里(该脚本只扫 src/input 与 src/output 两个
-// 显式路径)。原因:05 J75 节 C 把 Monitor 的**真 UI 与完整桥面归 T46**;T45 只交插件壳,
-// 桥面按「够跑通一次端到端」定最小集。**T46 立项时把本表正式收进契约 §7 manifest.monitor
-// 并接入 parity 抽取**(见 docs/contract-changes/20260825-monitor-target.md)。
+// 本表已随 [J81] 转正进 `docs/SCVB_CONTRACT.md §7` 的 `manifest.monitor`(正文 §10),
+// `scripts/check-bridge-parity.mjs` 的 [M] 块把它与契约 manifest、`web/shared/bridge.js` 的
+// `BRIDGE_FUNCTIONS.monitor` / `BRIDGE_EVENTS.monitor` 三向比对;本文件的路径就登记在该脚本的
+// `HEADER_PATHS.monitor`。改名字先改契约(§9 变更流程),再同步这三处。
 //
 // 通用四函数(requestInitialState / setUiScale / commitUiScale / setLang)由 WebViewHost 基类注册,
 // 名字真源在 scvb::bridge::Fn,本表只列 Monitor 专属项。

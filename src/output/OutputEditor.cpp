@@ -182,7 +182,7 @@ OutputEditor::OutputEditor(ScvbOutputAudioProcessor& processor)
               scvb::webview::WebViewHost::Config config;
               config.role = "output";
               config.userDataFolderName = "scvb-output-webview";
-              config.version = "0.1.0"; // 项目版本(CMake project VERSION)
+              config.version = JucePlugin_VersionString; // 项目版本(CMake project VERSION),与 Input / Monitor 同形
               config.lang = processor.uiLanguage().toStdString();
               config.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
               config.channelLimit = 15;
@@ -211,7 +211,9 @@ juce::var OutputEditor::buildSnapshot()
     // 持久化、加载时沿用工程里的那一个)。
     put(o, "session_guid", juce::var(processor_.sessionGuid()));
     juce::var version = obj();
-    put(version, "plugin", "0.1.0");
+    // 版本串取 JUCE 由 CMake project(VERSION) 生成的宏,与 Input / Monitor 同形。此前是字面量 "0.1.0",
+    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚与「说明文档」按钮都跟着错)。
+    put(version, "plugin", JucePlugin_VersionString);
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);
     // 系统级全局默认(跨工程,UiDefaultsStore 落盘;硬编码 false 时「不再显示」永不生效 —— T37 A-3)
