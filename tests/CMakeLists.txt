@@ -47,6 +47,7 @@ add_executable(scvb_tests
   core/analysis_coverage_test.cpp
   core/test_segment_diff.cpp
   core/test_analysis_pipeline.cpp
+  core/test_lead_timeline.cpp
   core/test_sl414_min_segment.cpp
   core/test_design_box.cpp
   core/test_state_codec.cpp
@@ -312,6 +313,7 @@ endif()
 if(WIN32)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
+  host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
