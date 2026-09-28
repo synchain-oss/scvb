@@ -1214,11 +1214,14 @@ try {
         const toastText = IN(
             `const n = gb("toast-recaptured-text"); return n ? n.textContent.trim() : null;`,
         );
+        // 「布防态到了页面」看的是**布防行** `wave-recapture-row`,不是行里那枚 badge:
+        // badge 本体从不挂 hidden(显隐在外层行上),拿它当信号恒真 —— 第一版就这么写,
+        // 结果起播抢在布防回推之前,⑧c 的起点差了两帧才被照出来。
         const badgeShown = IN(
-            `const n = gb("wave-recapture-badge"); return !!n && !n.hidden;`,
+            `const n = gb("wave-recapture-row"); return !!n && !n.hidden;`,
         );
         const badgeHidden = IN(
-            `const n = gb("wave-recapture-badge"); return !!n && n.hidden;`,
+            `const n = gb("wave-recapture-row"); return !!n && n.hidden;`,
         );
         const shell = (body) =>
             evaluate(`(() => {
@@ -1271,10 +1274,10 @@ try {
         );
         check(
             await waitFor(badgeShown, 3000),
-            "⑧a 布防态到了页面(Tab3 布防 badge 亮)",
+            "⑧a 布防态到了页面(Tab3 布防行亮)",
         );
         await disarm();
-        check(await waitFor(badgeHidden, 3000), "⑧a 撤防态到了页面(badge 熄)");
+        check(await waitFor(badgeHidden, 3000), "⑧a 撤防态到了页面(布防行熄)");
         await sleep(400);
         check(await evaluate(toastHidden), "⑧a 没播过 ⇒ 撤防后 toast 仍收起");
 
