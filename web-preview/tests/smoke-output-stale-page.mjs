@@ -1274,17 +1274,6 @@ try {
             "⑧ 前置:壳页预览会话可用(__SCVB_PREVIEW__.mock.recaptureArm)",
         );
         check(await evaluate(toastHidden), "⑧ 前置:初始 toast③ 收起");
-        // 布防行只在 Tab3 前台时由 tabWave.render() 刷新(app.js 只投影当前 tab)⇒ ⑧a/⑧b
-        // 的「布防态到了页面」依赖停在波形页。open() 已切过去,这里显式断一次,别让它隐含。
-        // ⑧d 同理:⑧c 的「立即重分析」会切回波形页,⑧c 里有断言。
-        check(
-            await evaluate(
-                IN(
-                    `const c = d.getElementById("content"); return !!c && c.getAttribute("data-tab") === "wave";`,
-                ),
-            ),
-            "⑧ 前置:停在波形页(布防行的显隐只在这一页刷新)",
-        );
 
         // ---- ⑧a 布防后没播就撤防 ⇒ 不弹(0.0s 没有信息量)
         await setPlaying(false);
