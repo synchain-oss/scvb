@@ -171,7 +171,7 @@ export const T = {
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
         "tracks.manualOverwriteConfirm":
-            "将以固定值替换该轨(当前版本)的全部分段结果,可撤销",
+            "将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销",
         "tracks.manualOverwriteConfirm.locked": "(含 {l} 个锁定段)",
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
@@ -777,7 +777,9 @@ export const T = {
         "master.copyConfirmPrimary": "覆盖并复制",
         "master.captureOff": "采集 OFF",
         "master.step2.desc": "将影响 {n} 区段 / {m} 轨;{k} 处手动编辑将保留",
-        "master.step2.desc.noData": "当前范围内无采集数据——调整范围或先采集",
+        // [SL-535] 分析只认此刻连着 Input 的通道:有数据但都没连上时也显示这句,所以补上括号那半句。
+        "master.step2.desc.noData":
+            "当前范围内没有可用的采集数据(没连上 Input 的通道不计入)——调整范围、先采集,或连上 Input",
         "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
         "master.analyzing": "分析中…",
         "master.analyzeDone": "分析完成",
@@ -804,6 +806,9 @@ export const T = {
         "curve.side.out": "向外",
         "curve.side.left": "向左",
         "curve.side.right": "向右",
+        // [rc-misc i] 曲线浮条两组按钮的组名(读屏用 aria-label)
+        "curve.shapeGroup": "形状",
+        "curve.sideGroup": "方向",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "斜率",
         "curve.slope.opt6": "6 dB/oct",
@@ -892,11 +897,14 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
         // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
-        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
         // [SL-94 / J133] 回到契约 §5.1 逐字栏:不指路设置页(v1 那一行已收起,SL-415),
         // 不写内部排期词。v1 出厂态不可达(自动转存关闭,SL-395),文案为开关打开那天留着。
         "toast.sidecarSwitched":
             "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // [J125] toast③(05 §2.0;逗号按本字典既有风格用半角 —— 设计稿是全角,别当 bug 改回;
+        // {s} = 这次重采集的时长,一位小数,app.js 填)
+        "toast.recaptured": "已重采集 {s}s,建议重分析该范围",
+        "toast.recapturedGoto": "立即重分析",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
@@ -1076,8 +1084,11 @@ export const T = {
         // `{ok:false, reason:"busy"}`),两种拒绝在屏上都与「受理了」一模一样 —— 用户看到的
         // 是「点了没反应」。文案给的是**下一步动作**,不是「失败了」:这两件事用户都能自己解。
         // 跨页共用(波形与分段页 + 设置页的重分析确认框),所以不放 `wave.` 前缀。
+        // [SL-535] 分析只认**此刻连着 Input** 的通道:有旧采集数据、但 Input 已不在的通道也落这条
+        // 拒绝(§1.6 既有拒绝态,不另加 reason)。原句「所选范围没有采集数据」在那种情形下是假话,
+        // 所以补上括号那半句,并把「连上 Input」列进下一步动作。
         "analyze.refused":
-            "所选范围没有采集数据,先采集这段,或换一个有数据的范围再重分析",
+            "所选范围没有可用的采集数据(没连上 Input 的通道不计入),先采集这段或连上 Input,或换一个有数据的范围再重分析",
         "analyze.busy": "已有分析在进行,等它跑完再试",
     },
 
@@ -1199,7 +1210,7 @@ export const T = {
             "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
         "tracks.manualOverwriteConfirm":
-            "This replaces all analyzed segments of this track (current version) with a fixed value. Undoable.",
+            "This sets this control to a fixed value on all analyzed segments of this track (current version); the other control keeps its curve. Undoable.",
         "tracks.manualOverwriteConfirm.locked":
             "(includes {l} locked segments)",
         "in.pill.abiMismatch": "VERSION MISMATCH",
@@ -1716,7 +1727,7 @@ export const T = {
         "master.step2.desc":
             "Affects {n} intervals / {m} tracks; {k} manual edits will be kept",
         "master.step2.desc.noData":
-            "No captured data in the current range — adjust the range or capture first",
+            "No usable captured data in the current range (channels without a connected Input are not counted) — adjust the range, capture first, or connect the Input",
         "master.step2.coverage":
             "{p}% of the range is covered; uncovered parts stay as they are",
         "master.analyzing": "Analyzing…",
@@ -1745,6 +1756,8 @@ export const T = {
         "curve.side.out": "Out",
         "curve.side.left": "Left",
         "curve.side.right": "Right",
+        "curve.shapeGroup": "Shape",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Slope",
         "curve.slope.opt6": "6 dB/oct",
@@ -1814,6 +1827,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
         "toast.sidecarSwitched":
             "Capture data exceeded 8 MB and was moved to an external file — anyone you send the project to will need to capture again",
+        "toast.recaptured":
+            "Re-captured {s} s; re-analyzing this range is recommended",
+        "toast.recapturedGoto": "Re-analyze now",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
         "scale.keep": "Save",
         "master.printLock.group": "Can't switch group while writing automation",
@@ -1915,7 +1931,7 @@ export const T = {
         // [SL-396] analyze refusals (see the zh block for the why). Copy states the next
         // action rather than "failed": both are things the user can resolve themselves.
         "analyze.refused":
-            "No captured data in the selected range — capture this part first, or pick a range that has data",
+            "No usable captured data in the selected range (channels without a connected Input are not counted) — capture this part or connect the Input, or pick a range that has data",
         "analyze.busy":
             "An analysis is already running — try again once it finishes",
     },
@@ -2037,7 +2053,7 @@ export const T = {
             "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
         "tracks.manualOverwriteConfirm":
-            "Remplace tous les segments analysés de cette piste (version actuelle) par une valeur fixe. Annulable.",
+            "Fixe cette commande à une valeur constante sur tous les segments analysés de cette piste (version actuelle) ; l'autre commande garde sa courbe. Annulable.",
         "tracks.manualOverwriteConfirm.locked":
             "(dont {l} segments verrouillés)",
         "in.pill.abiMismatch": "VERSION INCOMPATIBLE",
@@ -2569,7 +2585,7 @@ export const T = {
         "master.step2.desc":
             "Affecte {n} intervalles / {m} pistes ; {k} modifications manuelles seront conservées",
         "master.step2.desc.noData":
-            "Aucune donnée capturée dans la plage actuelle — ajustez la plage ou capturez d'abord",
+            "Aucune donnée capturée exploitable dans la plage actuelle (les canaux sans Input connecté ne comptent pas) — ajustez la plage, capturez d'abord ou connectez l'Input",
         "master.step2.coverage":
             "{p}% de la plage est couverte ; les parties non couvertes restent inchangées",
         "master.analyzing": "Analyse en cours…",
@@ -2600,6 +2616,8 @@ export const T = {
         "curve.side.out": "Extérieur",
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
+        "curve.shapeGroup": "Forme",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Pente",
         "curve.slope.opt6": "6 dB/oct",
@@ -2670,6 +2688,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "toast.sidecarSwitched":
             "Les données de capture ont dépassé 8 Mo et ont été déplacées dans un fichier externe — toute personne à qui vous envoyez le projet devra refaire la capture",
+        "toast.recaptured":
+            "{s} s re-capturées ; il est conseillé de ré-analyser cette plage",
+        "toast.recapturedGoto": "Ré-analyser maintenant",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
         "scale.keep": "Enregistrer",
         "master.printLock.group":
@@ -2775,7 +2796,7 @@ export const T = {
         "wave.clearedCoverage": "{s} s de données capturées effacées",
         // [SL-396] refus d'analyze (voir le bloc zh pour le pourquoi).
         "analyze.refused":
-            "Aucune donnée capturée dans la plage choisie — capturez d'abord cette partie, ou choisissez une plage qui en contient",
+            "Aucune donnée capturée exploitable dans la plage choisie (les canaux sans Input connecté ne comptent pas) — capturez cette partie ou connectez l'Input, ou choisissez une plage qui en contient",
         "analyze.busy":
             "Une analyse est déjà en cours — réessayez quand elle sera terminée",
     },

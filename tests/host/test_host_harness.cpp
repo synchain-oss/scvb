@@ -641,7 +641,7 @@ TEST_CASE("HOST 手动写回:改 vol 不动 pan、改 pan 不动 vol,值真实�
         const auto crvs = r.out.crvsSnapshot();
         const auto& segs =
             crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
-        REQUIRE(segs.size() == 1); // setTrackManual 的产物 = 单段全时限常值
+        REQUIRE(segs.size() == 1); // 空表上 setTrackManual 的产物 = 单段全时限常值(非空表见 HOST SL-180)
         return segs.front();
     };
 
@@ -1158,6 +1158,87 @@ TEST_CASE("SL-446(第 5 轮):用户主动 setChannelId() 成功后,存档跟着�
     p.releaseResources();
 }
 
+TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不开、寻址回退旧组——"
+          "存档仍记工程组号,用户主动改组后才跟着走",
+          "[host][input][sl458]")
+{
+    // 场景:实例已在 kTestGroup 上活跃;载入的工程写的是 kProjectGroup,而那一组的 ctrl 段是
+    // abi 损坏的残段 ⇒ setStateInformation() 里 ctrl_.changeGroup() 失败,groupId_ 回退到
+    // kTestGroup(寻址回退是既有设计,本卡不改)。缺陷是存档也读 groupId_,随后一次保存就把
+    // 工程里的组号覆盖成了回退组。
+    // 三个写 savedGroupId_ 的落点各配一格:①载入解码处 ②setGroupId() 同组 no-op ③setGroupId() 成功。
+    constexpr int kProjectGroup = 6; // 本文件里无常驻段的组(同 HOST SL-381 的 kFreeGroup)
+    constexpr int kUserGroup = 5; // ③ 用户改去的组(同 HOST I3 的空组)
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    // 预置 kProjectGroup 的 ctrl 段并把 abi 写坏(同 tests/core 里「换组失败返回 kAbiMismatch」
+    // 那格的构造,换成真 Win32 段)。句柄在本用例结束前一直持有,段不会被内核回收。
+    scvb::SegmentBackendWin32 backend;
+    scvb::SegmentView bad;
+    REQUIRE(backend.createOrOpen(
+                L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup), scvb::SegmentKind::kCtrl),
+                scvb::kCtrlSegmentSize, bad) == scvb::InitResult::kOk);
+    auto* header = static_cast<scvb::CtrlHeader*>(bad.base);
+    REQUIRE(backend.initHeader(bad, &header->magic, &header->abi, &header->generation, scvb::kCtrlBroadcastOffset,
+                               /*initData=*/{}, /*allowOverwrite=*/true) == scvb::InitResult::kOk);
+    header->abi.store(99, std::memory_order_release);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(kTestChannel) == scvb::input::InputClaimState::kActive);
+
+    const auto savedGroup = [&victim]() -> int {
+        juce::MemoryBlock stateBlob;
+        victim.getStateInformation(stateBlob);
+        scvb::state::StateChunks chunks;
+        if (scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                         chunks) != scvb::state::DecodeStatus::Ok)
+            return -1;
+        const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+        scvb::state::InputState loaded;
+        if (cfg == nullptr || !scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded))
+            return -1;
+        return static_cast<int>(loaded.groupId);
+    };
+
+    scvb::state::InputState project;
+    project.channelId = static_cast<std::uint32_t>(kTestChannel);
+    project.groupId = static_cast<std::uint32_t>(kProjectGroup);
+    project.uiScale = 100;
+    project.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(project, payload));
+    scvb::state::StateChunks chunksOut;
+    chunksOut.abi = scvb::state::kCurrentAbi;
+    chunksOut.set(scvb::state::kFourccCfgs, payload);
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunksOut, blob));
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    // 前提:寻址确实回退了(否则下面那条存档断言恒真,测不出东西)。
+    REQUIRE(victim.bridgeTickSnapshot().groupId == kTestGroup);
+
+    // ① 存档记工程组号,不是回退组。
+    CHECK(savedGroup() == kProjectGroup);
+
+    // ② 桥调用 setGroupId(当前回退组):寻址 no-op,但存档要改成这一组。只覆盖 native/桥入口 ——
+    // Input 页面的组胶囊对当前组直接早退、不调桥,用户在界面上走不到这一格。
+    victim.setGroupId(kTestGroup);
+    CHECK(victim.bridgeTickSnapshot().groupId == kTestGroup);
+    CHECK(savedGroup() == kTestGroup);
+
+    // ③ 用户改到别的组且换段成功:寻址与存档都跟着走。
+    victim.setGroupId(kUserGroup);
+    CHECK(victim.bridgeTickSnapshot().groupId == kUserGroup);
+    CHECK(savedGroup() == kUserGroup);
+
+    victim.releaseResources();
+    backend.unmap(bad);
+}
+
 TEST_CASE("SL-446(轮 8 复审【重要】):releaseResources() 之后 configuredChannelId 原样留着——"
           "displayChannelId() 整套设计唯一的支点",
           "[host][input][sl446]")
@@ -1346,6 +1427,197 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
 // 全记成缺口,于是每个静音边界都闪一次「失准」,1s 恢复窗过后自愈。用户看到的正是
 // 「偶发短暂失准后自愈」。真失准(写方套圈)不在此列,仍照计。
 // ---------------------------------------------------------------------------
+namespace
+{
+// [SL-495/SL-462] 造一份「工程里存的是 channel=ch」的 Input state 字节。
+std::vector<std::uint8_t> sl462InputStateBlob(std::uint32_t ch)
+{
+    scvb::state::InputState saved;
+    saved.channelId = ch;
+    saved.groupId = static_cast<std::uint32_t>(kTestGroup);
+    saved.uiScale = 100;
+    saved.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(saved, payload));
+    scvb::state::StateChunks chunksOut;
+    chunksOut.abi = scvb::state::kCurrentAbi;
+    chunksOut.set(scvb::state::kFourccCfgs, payload);
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunksOut, blob));
+    return blob;
+}
+} // namespace
+
+TEST_CASE("HOST SL-495:冲突态的 Input 在占用方释放后自己接管,不用用户重选", "[host][input][sl495]")
+{
+    // 删除式:把 timerCallback 里的 retryConflictClaim(now) 删掉,「释放后接管」那两条必红。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(5) == scvb::input::InputClaimState::kConflict);
+
+    // 占用方还在:重试照跑但抢不到,停在冲突态,配置号不被改写。
+    Rig::pumpMessages(1300);
+    {
+        const auto snap = victim.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kConflict);
+        CHECK(snap.channelId == 0);
+        CHECK(snap.configuredChannelId == 5);
+    }
+
+    // 占用方改号(等价用户删掉原轨 / 改了它的通道)。
+    REQUIRE(occupant.setChannelId(0) == scvb::input::InputClaimState::kUnassigned);
+
+    // 1Hz 节流:最多等 ~2.5s(一个重试周期 + 4Hz 分支的粒度 + 余量)。
+    bool active = false;
+    for (int i = 0; i < 25 && !active; ++i)
+    {
+        Rig::pumpMessages(100);
+        active = victim.bridgeTickSnapshot().claimState == scvb::input::InputClaimState::kActive;
+    }
+    CHECK(active);
+    CHECK(victim.bridgeTickSnapshot().channelId == 5);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-495:未分配的 Input 不参与重试(没有要抢的号)", "[host][input][sl495]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+    ScvbInputAudioProcessor p;
+    p.setGroupId(kTestGroup);
+    p.setPlayHead(&ph);
+    p.prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(1300);
+    const auto snap = p.bridgeTickSnapshot();
+    CHECK(snap.claimState == scvb::input::InputClaimState::kUnassigned);
+    CHECK(snap.channelId == 0);
+    p.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:已绑定实例载入工程撞车、回滚成功 —— 记下一次性冲突信号(号 = 工程里的号)", "[host][input][sl462]")
+{
+    // 删除式:删掉 setStateInformation() 里的 noteLoadConflict(loadResult, ...),
+    // loadConflictChannelId==5 那条必红(回滚成功后 claim 是 active,别处没有第二个出口)。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    victim.prepareToPlay(kSr, kBlock);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0); // 点击路径不记(RPC 返回值承载)
+
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+
+    const auto snap = victim.bridgeTickSnapshot();
+    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive); // 回滚成功,仍在 3 上
+    CHECK(snap.channelId == 3);
+    CHECK(snap.loadConflictChannelId == 5);
+    CHECK(snap.loadConflictGroupId == kTestGroup);
+    // 发出前的「仍然成立」核验在此刻为真(5 被 occupant 新鲜占着,本实例在 3 上)。
+    CHECK(scvb::input::bridge::loadConflictStillHolds(snap.loadConflictChannelId, snap.loadConflictGroupId,
+                                                      snap.groupId, snap.channelId, snap.conn.occupiedMask));
+
+    // 界面确认(ack)后清掉;别的 serial 的确认不清这一次。
+    const auto serial = snap.loadConflictSerial;
+    victim.bridgeAckLoadConflict(serial + 1);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 5);
+    victim.bridgeAckLoadConflict(serial);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0);
+
+    // 再载入一次同样撞车 ⇒ 又记一次;用户随后主动选通道 ⇒ 作废。
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    REQUIRE(victim.bridgeTickSnapshot().loadConflictChannelId == 5);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive);
+    CHECK(victim.bridgeTickSnapshot().loadConflictChannelId == 0);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:首次 prepareToPlay() 前已绑通道又载入工程,起播时撞车回滚 —— 同样记信号", "[host][input][sl462]")
+{
+    // SL-455 那个窗口:prepared_==false 时 setStateInformation() 不 re-claim,撞车发生在随后的
+    // prepareToPlay() 里。删除式:删掉 prepareToPlay() 里的 noteLoadConflict(...),本格必红。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    REQUIRE(victim.setChannelId(3) == scvb::input::InputClaimState::kActive); // 起播前交互式绑定
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size())); // 未 prepared:只改配置
+    victim.prepareToPlay(kSr, kBlock); // 抢 5 撞车 → 回滚回 3
+
+    const auto snap = victim.bridgeTickSnapshot();
+    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive);
+    CHECK(snap.channelId == 3);
+    CHECK(snap.loadConflictChannelId == 5);
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
+TEST_CASE("HOST SL-462:全新实例载入工程时硬冲突 —— 不走一次性信号,claim 停在 conflict", "[host][input][sl462]")
+{
+    // 这一支由首帧基线(initialClaimErrorBaseline)+ claim 边沿补发 channelConflict,
+    // noteLoadConflict 只收「回滚成功」那一种;这里钉住它不越界(否则同一次冲突会弹两次)。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor occupant;
+    occupant.setGroupId(kTestGroup);
+    occupant.setPlayHead(&ph);
+    occupant.prepareToPlay(kSr, kBlock);
+    REQUIRE(occupant.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    ScvbInputAudioProcessor victim;
+    victim.setGroupId(kTestGroup);
+    victim.setPlayHead(&ph);
+    const auto blob = sl462InputStateBlob(5);
+    victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    victim.prepareToPlay(kSr, kBlock);
+
+    const auto snap = victim.bridgeTickSnapshot();
+    CHECK(snap.claimState == scvb::input::InputClaimState::kConflict);
+    CHECK(snap.configuredChannelId == 5);
+    CHECK(snap.loadConflictChannelId == 0);
+    CHECK(scvb::input::bridge::initialClaimErrorBaseline(
+              scvb::input::bridge::claimValue(snap.claimState, snap.conn.maskBit, false))
+              .isEmpty());
+
+    occupant.releaseResources();
+    victim.releaseResources();
+}
+
 TEST_CASE("HOST P1-7:宿主在静音段挂起 Input,短暂停流不报失准", "[host][t37][v5][misalign]")
 {
     Rig r;
@@ -2035,11 +2307,12 @@ TEST_CASE("HOST clearManual 不得清掉 locked 段(契约 §1.6/§5.4)", "[host
         return n;
     };
 
-    // 手动写回 → 单段 user_edited 且 **locked=false**(makeManualConstantSegment 的口径)。
+    // 手动写回 → 每段 user_edited 且 **locked=false**(makeManualDimSegments 的口径;[J131] 起
+    // 分析过的轨不再压成单段,段数 = 分析产出的段数)。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, replacedLocked));
-    REQUIRE(segsOf().size() == 1);
+    REQUIRE_FALSE(segsOf().empty());
     REQUIRE(lockedCount() == 0);
 
     // 用户显式挂锁(§5.4 set_locked:只改 locked,不动 origin)。
@@ -2762,6 +3035,131 @@ TEST_CASE("HOST SL-393:掩码外的轨段表一个字节不动", "[host][sl393][
 }
 
 // ---------------------------------------------------------------------------
+// [SL-535] 没连上 Input 的轨,旧采集数据不进分析(J119 方案 B)。
+//
+// 用户实测:通道 10 的轨改到通道 1 之后,通道 10 已没有 Input,但它的旧采集数据还在
+// Output 的 FrameStore 里;点「分析」时它照样进了计算集,唯一出声的那条轨(通道 2)
+// 于是被当成「两条之一」分到一侧,而不是居中。
+//
+// 判据分四格,各钉一个落点(startAnalysis 的预扫 = 写回集、取样 = 计算集,previewAnalysis,
+// 以及「全都没连上 ⇒ 拒绝」):
+//   ① 计算集:只剩一条已连接轨时它必须居中(「独唱段居中」,AutoAssign 的设计行为)。
+//      拆掉取样那一处的连接判据 ⇒ 另两条的旧数据回到计算集 ⇒ 它回到三轨上下文里的那个值(|pan|>1)。
+//   ② 写回集:受理回执 tracks == 1;全都没连上时(④)照样受理 = 预扫那一处没了。
+//      拆掉预扫那一处 ⇒ tracks == 3、④ 的拒绝变成受理(删除式实测)。
+//      「未连接轨的段表逐字段不动」那条在这一格里**仍绿**:写回那一步对没进计算集的轨本来就
+//      不改写。它钉的是「不清数据」这件事本身,不是预扫这一处落点 —— 别把它读成 ② 的判据。
+//   ③ 干跑:previewAnalysis 的 tracks 与真跑同口径(== 1)。
+//   ④ 全都没连上 ⇒ 干跑 0 轨、真跑按 §1.6 既有拒绝态回 ok=false(不偷用旧数据跑)。
+// 最后把 Input 接回来:不改 enabled、不清数据,它们自动回到参与面(幸存轨重新离开正中)。
+//
+// 为什么用 MonoMultiRig 的三轨、并**挑一条全量分析下不在正中的轨**当幸存者:三轨的槽位是
+// 「左 / 中 / 右」,正好落在中间那条当幸存者时 ① 恒真,测不到任何东西(同 SL-393 那条的挑法)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-535:没连上 Input 的轨,旧采集数据不进分析", "[host][sl535][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // 参照系:三轨都连着时的全量分析。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+
+    int survivor = 0;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        const double p = r.firstPan(c);
+        if (std::isfinite(p) && std::abs(p) > 1.0)
+        {
+            survivor = c;
+            break;
+        }
+    }
+    // 挑不到就红,不跳过:三轨都在正中说明多轨指派本身坏了(HOST P0-1 那条同样会红)。
+    REQUIRE(survivor != 0);
+
+    // 之后不再采集:接下来推块只为让 Input 重新连上,不许顺带改写采集数据。
+    r.out.setCaptureEnabled(false);
+    r.pump(200);
+
+    std::vector<int> gone;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        if (c != survivor)
+        {
+            gone.push_back(c);
+        }
+    }
+    std::vector<std::vector<std::array<double, 5>>> before(static_cast<std::size_t>(MonoMultiRig::kCount));
+    for (int c : gone)
+    {
+        before[static_cast<std::size_t>(c - 1)] = r.segTableOf(c);
+        REQUIRE_FALSE(before[static_cast<std::size_t>(c - 1)].empty()); // 前提:有段可比,否则「没变」毫无意义
+        // 断开 = Input 释放 slot(用户场景:轨改到别的通道 / 删掉插件)。
+        r.ins[static_cast<std::size_t>(c - 1)]->releaseResources();
+    }
+    r.pump(200);
+
+    // 前提:连接态确实是「幸存轨连着、另两条没连」,且没连的那两条**旧采集数据还在**
+    // (本卡的前提就是数据还在;数据没了的话下面几格靠覆盖判据也会绿,测不到连接判据)。
+    {
+        const auto snap = r.out.connSnapshot();
+        REQUIRE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(survivor - 1)]));
+        for (int c : gone)
+        {
+            REQUIRE_FALSE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(c - 1)]));
+            REQUIRE(r.out.coverageOf(c, win.startS, win.endS).coveredS > 0.0);
+        }
+    }
+
+    // ③ 干跑与真跑同口径。
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == 1);
+
+    // ② 写回集 + ① 计算集。
+    const auto accepted = r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false);
+    REQUIRE(accepted.ok);
+    CHECK(accepted.tracks == 1);
+    bool done = false;
+    for (int waited = 0; waited < 20000 && !done; waited += 50)
+    {
+        r.pump(50);
+        done = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+    }
+    REQUIRE(done);
+
+    const double solo = r.firstPan(survivor);
+    REQUIRE(std::isfinite(solo));
+    CHECK(std::abs(solo) < 1.0); // ← 修复前:另两条的旧数据仍在计算集里,这里是三轨上下文的那个值
+    for (int c : gone)
+    {
+        CHECK(r.segTableOf(c) == before[static_cast<std::size_t>(c - 1)]);
+    }
+
+    // ④ 全都没连上:不偷用旧数据跑。
+    r.ins[static_cast<std::size_t>(survivor - 1)]->releaseResources();
+    r.pump(200);
+    REQUIRE_FALSE(
+        scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[static_cast<std::size_t>(survivor - 1)]));
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == 0);
+    CHECK_FALSE(r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false).ok);
+    CHECK_FALSE(r.out.analysisRunning());
+
+    // 接回来:enabled 没动、数据没清,它们自动回到参与面。
+    for (auto& p : r.ins)
+    {
+        p->prepareToPlay(kSr, kBlock);
+    }
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == MonoMultiRig::kCount);
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    CHECK(std::abs(r.firstPan(survivor)) > 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // P0-1 ③(消费链):段表 pan → CRVS → 打印器 → 宿主参数。
 // 用户报的另一半是「自动化零写入」。段表有值而参数不动 = 消费链断在打印这一跳。
 // ---------------------------------------------------------------------------
@@ -3266,7 +3664,7 @@ TEST_CASE("HOST P0-A:covered 列的抽样上界不影响「有没有数据」的
 // ---------------------------------------------------------------------------
 // v5.3 R4:**只有一个「无末端」段的轨**,上桥的 t1S 必须严格大于 t0S。
 //
-// setTrackManual 的产物是「单段全时限常值」(track.segments.assign(1, seg)),于是
+// setTrackManual 在空表上的产物是「单段全时限常值」(makeManualDimSegments),于是
 // 手动/冻结轨这一整类**本轨内一个非哨兵段都没有**。降级值若按本轨算就永远得 0,
 // t1S == t0S,段在波形页上坍缩成零宽:点不中、切不开 —— 而那正是最常被点的那批轨。
 // 降级必须取**工程级**已知末端(全轨非哨兵段最大 t1 → 采集覆盖 → 最小非零宽度)。
@@ -3277,7 +3675,7 @@ TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t3
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
 
-    // 造出「整轨只有一个无末端段」:setTrackManual 会把段表整表换成单段全时限。
+    // 造出「整轨只有一个无末端段」:空表上 setTrackManual 写入单段全时限。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
@@ -3547,6 +3945,120 @@ TEST_CASE("HOST J85:解冻回引擎曲线,输出随时间运动(不残留常值�
 }
 
 // ---------------------------------------------------------------------------
+// [J131] / SL-180:**未冻结**轨拖音量卡箍(手动接管通道)只把 vol 固定为常值,pan 曲线逐段保留。
+//
+// 修复前 `setTrackManual` 把段表整表换成「单段全时限常值、另一维从首段继承」—— 拖一下音量,
+// 整条 pan 曲线被压成首段那个 pan(前段硬左、后段硬右的曲线变成全程硬左)。
+// 镜像(拖 pan 卡箍压平 vol 曲线)走的是同一个函数的另一支,一并钉住。
+//
+// 夹具:空表接管 → 切成两段 → 两段 pan / vol 各不相同(与 HOST J85 解冻用例同一造法)。
+// 删除式:把 `makeManualDimSegments` 非空表那一支改回「压成单段、另一维取首段」⇒
+// ① 的 `size() == 2` 与逐段 pan 两格、② 的听感「后段偏右」、③ 的逐段 vol 两格一起红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-180:未冻结拖音量卡箍只固定 vol,pan 曲线逐段保留(镜像同款)", "[host][t37][manual][SL180]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威:曲线真身驱动 DSP(听感格要它)
+
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // 造一条两维都随时间变化的曲线。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -100.0f, replaced, replacedLocked));
+    scvb::state::SegmentEditArgs split;
+    split.op = scvb::state::SegmentEditOp::Split;
+    split.segIdx = 0;
+    split.tSamples = static_cast<std::int64_t>(5.0 * kSr);
+    REQUIRE(r.out.editSegment(kTestChannel - 1, split) == scvb::state::SegmentEditResult::Ok);
+    for (int i = 0; i < 2; ++i)
+    {
+        scvb::state::SegmentEditArgs sv;
+        sv.op = scvb::state::SegmentEditOp::SetValues;
+        sv.segIdx = i;
+        sv.hasPan = true;
+        sv.pan = (i == 0) ? -100.0f : 100.0f; // 前段硬左、后段硬右
+        sv.hasVol = true;
+        sv.volDb = (i == 0) ? -6.0f : 3.0f;
+        REQUIRE(r.out.editSegment(kTestChannel - 1, sv) == scvb::state::SegmentEditResult::Ok);
+    }
+    const auto before = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(before.size() == 2);
+    REQUIRE(before[0].pan != before[1].pan); // 前置:pan 确实是一条曲线,不是常值(否则下面空绿)
+    REQUIRE(before[0].volDb != before[1].volDb);
+
+    // —— ① 拖音量卡箍:vol 未冻结 ⇒ 手动接管通道 ——
+    setFreezeBits(r.out, kTestChannel, 0);
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -9.0f, replaced, replacedLocked));
+    const auto afterVol = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(afterVol.size() == 2); // ← 修复前 1(整表压成单段)
+    for (std::size_t i = 0; i < afterVol.size(); ++i)
+    {
+        CHECK(afterVol[i].pan == before[i].pan); // ← 修复前两段都是 -100(后段那格红)
+        CHECK(afterVol[i].t0 == before[i].t0);
+        CHECK(afterVol[i].t1 == before[i].t1);
+        CHECK(afterVol[i].volDb == -9.0f); // vol 维 = 常值
+        CHECK(scvb::state::segmentOrigin(afterVol[i].flags) == scvb::state::SegmentOrigin::UserEdited);
+        CHECK_FALSE(scvb::state::segmentLocked(afterVol[i].flags));
+    }
+    CHECK(replaced == 2); // 如实回报被改写的段数(两段都是 set_values 产物 ⇒ 都锁着)
+    CHECK(replacedLocked == 2);
+    CHECK(paramValueOf(r.out, scvb::params::volId(v, kTestChannel)) == Catch::Approx(-9.0f).margin(0.01));
+
+    // 读回链(Tab1 分布图 / Monitor 的 panNow 同一份):vol 读成手动常值,pan 仍按播放头读曲线。
+    {
+        const auto rb = scvb::output::readbackSegsOf(afterVol, /*freezeBits=*/0, /*outputOn=*/true,
+                                                     static_cast<std::int64_t>(8.0 * kSr));
+        REQUIRE(rb.pan != nullptr);
+        REQUIRE(rb.vol != nullptr);
+        CHECK(rb.pan->pan == 100.0f); // 播放头在后段 ⇒ 后段的 pan(不是首段的 -100)
+        CHECK(rb.vol->volDb == -9.0f);
+        CHECK(rb.manual != nullptr); // 行上「手动接管」标仍亮(vol 那一维是手动常值)
+        CHECK(scvb::output::manualDimOf(afterVol, /*isPan=*/false) != nullptr);
+        CHECK(scvb::output::manualDimOf(afterVol, /*isPan=*/true) == nullptr);
+    }
+
+    // —— ② 听感:pan 曲线仍在动(前段偏左、后段偏右)——
+    const auto balanceAt = [&r](double tSec) {
+        r.ph.timeSamples = static_cast<std::int64_t>(tSec * kSr);
+        r.runBlocks(40, 0.5f); // 走过切换斜坡
+        float l = 0.0f;
+        float rr = 0.0f;
+        for (int i = 0; i < 12; ++i)
+        {
+            r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+            const auto m = r.out.meterSnapshot();
+            l = std::max(l, m.busPeak[0]);
+            rr = std::max(rr, m.busPeak[1]);
+        }
+        REQUIRE(l > 0.0f);
+        REQUIRE(rr > 0.0f);
+        return l / rr;
+    };
+    CHECK(balanceAt(2.0) > 1.2f);
+    CHECK(balanceAt(8.0) < 0.83f); // ← 修复前整轨硬左,这里 > 1
+
+    // —— 撤销:一步回到拖之前的两段(段值与 flags 逐字节)——
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), before));
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), afterVol));
+
+    // —— ③ 镜像:拖 pan 卡箍(pan 未冻结)⇒ 只固定 pan,vol 维逐段保留 ——
+    REQUIRE(r.out.undo()); // 回到两维都是曲线的夹具
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 20.0f, replaced, replacedLocked));
+    const auto afterPan = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(afterPan.size() == 2);
+    for (std::size_t i = 0; i < afterPan.size(); ++i)
+    {
+        CHECK(afterPan[i].pan == 20.0f);
+        CHECK(afterPan[i].volDb == before[i].volDb); // ← 修复前两段都是 -6(后段那格红)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [J85] ④(用户现场后半句):解冻之后**再分析**必须能更新该轨曲线。
 // 修复前:冻结中调整烘焙出的是 origin=user_edited 段,普通再分析按 ADR-008 不覆盖它 ——
 // 于是「重新分析也不动」。修复后段表始终是 auto,再分析照常重算。
@@ -3783,20 +4295,19 @@ TEST_CASE("HOST SL-187:setTrackManual 的自写不得被记成 hostEcho", "[host
 // ===========================================================================
 // [SL-188] PR #111 复审【重要】:J85 的「解冻即回引擎分析曲线」在**跨维度**这条路上不成立。
 //
-// 手动接管通道走 `track.segments.assign(1, seg)` —— **整表**换成一段常值,另一维的值只从
+// 改前手动接管通道走 `track.segments.assign(1, seg)` —— **整表**换成一段常值,另一维的值只从
 // 首段继承。于是「分析出 N 段 → 冻 pan 调值 → 拖 vol(未冻结,接管)」之后,pan 那一维的
 // 分析曲线连带被拍平,解冻 pan 读到的仍是常值段,普通再分析按 ADR-008 不覆盖 user 段。
 // 症状与 v5.3 A2 现场逐字相同,只是入口从 pan 换成了 vol。
 //
-// 这是 04 §1.5 方案 A(每轨一张段表、两维同段)的**既有设计**,确认条正文也确实写着
-// 「替换该轨的**全部**分段结果」,J85 ⑤ 又明令手动接管通道逐字不动 —— 所以本用例**不主张
-// 它该被保住**,而是把「当前行为就是会被压平」钉死:哪天有人改了方案 A,这条会红,
-// 提醒他同步改掉 PR #106 描述里登记的那条已知残留(而不是默默把语义换掉)。
+// 本用例原先把「会被压平」钉成现行语义(J85 ⑤ 明令不动,留给用户裁;SL-180)。
+// **[J131](用户 2026-09-28)裁定改**:只固定被拖的那一维,另一维保留原曲线 —— 本用例随之改成
+// 钉「不再压平」(与 `HOST SL-180` 互补:那条从手编两段出发、带听感;本条从**多段 auto 表**出发,
+// 经过「冻 pan → 拖 vol → 解冻」这条真实路径)。
 //
-// 已有的 `HOST J85:冻结中调整只落参数面` 那条跨维断言是从**已经被压平**的单段表出发的,
-// 恰好盖住了这个洞 —— 本用例从**多段 auto 表**出发,补上那一半。
+// 已有的 `HOST J85:冻结中调整只落参数面` 那条跨维断言是从单段表出发的,盖不住多段这一半。
 // ===========================================================================
-TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(方案 A 现行语义)", "[host][t37][v55][SL188]")
+TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 不再压平 pan([J131])", "[host][t37][v55][SL188][SL180]")
 {
     Rig r;
     r.ph.playing = true;
@@ -3847,18 +4358,24 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(�
     // 拖 **vol**(该维未冻结 → 走手动接管通道)。
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -6.0f, replaced, replacedLocked));
 
-    // ★ 钉死现行语义:整表被换成单段常值,**pan 那一维的分析曲线一并没了**。
+    // ★ [J131] 起的语义:只有 vol 那一维被固定,**pan 那一维的分析曲线逐段保留**(段数、边界、每段 pan)。
+    // ⚠ 本夹具来自单声源分析,各段 pan 实际相同(#302 第 2 轮删除式 ND5:「保留边界、另一维压成首段值」
+    // 注入下本例不红)。所以本例守的是段数与边界;「另一维逐段保留」由 `HOST SL-180`(两段 pan 相反)守。
     const auto after = segmentsOfTrack(r.out, kTestChannel);
-    CHECK(after.size() == 1);
-    CHECK(scvb::state::segmentOrigin(after.front().flags) == scvb::state::SegmentOrigin::UserEdited);
-    CHECK(after.front().volDb == -6.0f);
-    CHECK(replaced == static_cast<int>(before.size())); // 如实回报替换掉了多少段
-    // pan 维:继承自**首段**,而不是原来那条随时间变化的曲线。
-    CHECK(after.front().pan == before.front().pan);
+    REQUIRE(after.size() == before.size()); // ← 改前 1(整表换成单段)
+    for (std::size_t i = 0; i < after.size(); ++i)
+    {
+        CHECK(scvb::state::segmentOrigin(after[i].flags) == scvb::state::SegmentOrigin::UserEdited);
+        CHECK(after[i].volDb == -6.0f);
+        CHECK(after[i].pan == before[i].pan); // ← 改前:全部是首段的 pan
+        CHECK(after[i].t0 == before[i].t0);
+        CHECK(after[i].t1 == before[i].t1);
+    }
+    CHECK(replaced == static_cast<int>(before.size())); // 如实回报改写了多少段
 
-    // 于是解冻 pan 之后,曲线上再也取不出时间变化 —— 这正是「入口换成 vol 的同一个环」。
+    // 于是解冻 pan 之后,pan 仍是那条分析曲线(段表没被这次拖 vol 压平)。
     setFreezeBits(r.out, kTestChannel, 0);
-    CHECK(segmentsOfTrack(r.out, kTestChannel).size() == 1);
+    CHECK(segmentsOfTrack(r.out, kTestChannel).size() == before.size());
 
     // 出口仍在:重新识别(含手动段)能把它清掉,段表回到 auto(与 HOST P0-3 同一条链路)。
     runAnalysis(0.0, coveredS, /*clearManual=*/true);
@@ -4275,7 +4792,7 @@ TEST_CASE("HOST SL-217:正常往返仍照常恢复段表且不置诊断位", "[h
     const auto analysed = segmentsOfTrack(r.out, 1);
     REQUIRE_FALSE(analysed.empty());
 
-    // 把段表改掉(手动接管通道 → 单段常值),再灌回那份 blob:必须被换回分析结果。
+    // 把段表改掉(手动接管通道改写每段的 pan),再灌回那份 blob:必须被换回分析结果。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
@@ -4397,6 +4914,189 @@ TEST_CASE("HOST SL-483:段 pan 为 NaN 的 CRVS 整份拒载,段表与曲线原�
     CHECK(sameSegments(segmentsOfTrack(r.out, 1), before));
     CHECK(activeCurveOf(r.out, 1) != nullptr);
     CHECK(r.out.hasCrvsNotRestored());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-524][J122] CRVS 拒载后保存不得用 live 表覆盖原字节。
+//
+// 缺陷:拒载时 live 表是「保留下来的旧表」(新开实例 = 空表),而保存一律从 live 表重编码 ⇒
+// 打开一份段值损坏的工程、什么都不做就保存,用户原来的段表与版本永久丢失。
+// 裁定:拒载后保存原样写回原字节(不重编码),直到用户做了改变段表/版本的操作;之后写新表。
+// 下面几格分别钉:原样写回、改过就写新表、minor 更高同样写回、只带 PRMS 的预设不解除保留、成功载入解除。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 取一份 state 里 CRVS chunk 的原始载荷。
+std::vector<std::uint8_t> crvsPayloadOf(const juce::MemoryBlock& blob)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
+    REQUIRE(crvs != nullptr);
+    return crvs->payload;
+}
+
+// 把 base 里的 CRVS 载荷换成 payload(容器层解开→换→重编,与生产同一套编解码)。
+std::vector<std::uint8_t> blobWithCrvsPayload(const juce::MemoryBlock& base, const std::vector<std::uint8_t>& payload)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    bool found = false;
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCrvs)
+        {
+            c.payload = payload;
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+// 一份会被 [SL-483] 拒收的 CRVS:ch1 两段合法(用户的数据),ch2 一段 pan=NaN。
+std::vector<std::uint8_t> rejectedCrvsPayload(const juce::MemoryBlock& base, int versionActive)
+{
+    scvb::state::CrvsData d;
+    const auto basePayload = crvsPayloadOf(base);
+    REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+    auto& v = d.versions[static_cast<std::size_t>(versionActive - 1)];
+    const auto flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    v.tracks[0].segments = {scvb::state::Segment{0, 480000, 30.0f, -6.0f, flags},
+                            scvb::state::Segment{480000, 960000, -40.0f, -3.0f, flags}};
+    v.tracks[1].segments = {scvb::state::Segment{0, 480000, std::numeric_limits<float>::quiet_NaN(), -6.0f, flags}};
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeCrvs(d, payload));
+    return payload;
+}
+} // namespace
+
+TEST_CASE("HOST SL-524:CRVS 拒载后保存原样写回原字节,改段后写新表", "[host][sl524]")
+{
+    Rig r; // 新开实例:live 段表为空,正是「打开损坏工程」的现场
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto badPayload = rejectedCrvsPayload(base, r.out.versionActive());
+    const auto bad = blobWithCrvsPayload(base, badPayload);
+
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored()); // 前提:确实走了拒载那一支
+    REQUIRE(segmentsOfTrack(r.out, 1).empty()); // 前提:live 表是空的(不空的话下面比不出覆盖)
+
+    // ★ 前半:什么都不做,连存两次,CRVS 都是原字节逐字节相同(不是空表,也不是重编码)。
+    for (int i = 0; i < 2; ++i)
+    {
+        INFO("save #" << (i + 1));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == badPayload);
+    }
+
+    // ★ 后半:用户改了段表(设为手动 = 一条撤销事务)→ 保存写新表。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+    const auto live = segmentsOfTrack(r.out, 1);
+    REQUIRE(live.size() == 1u);
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        const auto p = crvsPayloadOf(saved);
+        CHECK(p != badPayload);
+        scvb::state::CrvsData decoded;
+        REQUIRE(scvb::state::decodeCrvs(p.data(), p.size(), decoded));
+        CHECK(sameSegments(decoded.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments,
+                           live));
+    }
+
+    // 保留态一旦解除就不再恢复:撤销回空表后保存,写的是 live(空表),不是原字节。
+    REQUIRE(r.out.undo());
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) != badPayload);
+    }
+}
+
+TEST_CASE("HOST SL-524:CRVS minor 更高(新版本写的段表)拒载后保存原样写回", "[host][sl524]")
+{
+    // 不能让旧插件抹掉新版曲线(StateCodec.h 挂账第 2 条)。载荷首 2 字节是 u16 小端 minor。
+    Rig r;
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    // 一份合法 CRVS(ch1 一段),之后只改 minor —— 确保拒收只因 minor 更高。
+    std::vector<std::uint8_t> newer;
+    {
+        scvb::state::CrvsData d;
+        const auto basePayload = crvsPayloadOf(base);
+        REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+        d.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments = {scvb::state::Segment{
+            0, 480000, 30.0f, -6.0f, scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false)}};
+        REQUIRE(scvb::state::encodeCrvs(d, newer));
+        scvb::state::CrvsData check;
+        REQUIRE(scvb::state::decodeCrvs(newer.data(), newer.size(), check)); // 前提:只改 minor 之前是合法的
+    }
+    REQUIRE(newer.size() >= 2u);
+    const std::uint16_t minor = static_cast<std::uint16_t>(scvb::state::kCrvsMinorVersion + 1u);
+    newer[0] = static_cast<std::uint8_t>(minor & 0xFFu);
+    newer[1] = static_cast<std::uint8_t>(minor >> 8);
+    const auto blob = blobWithCrvsPayload(base, newer);
+
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored()); // 前提:因 minor 更高被拒
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == newer); // ★ 新版本的字节逐字节带回去
+}
+
+TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设不解除保留;成功载入解除", "[host][sl524]")
+{
+    Rig r;
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const std::vector<std::uint8_t> garbage(16, std::uint8_t{0xEE}); // 解不开的载荷
+    const auto broken = blobWithCrvsPayload(base, garbage);
+
+    r.out.setStateInformation(broken.data(), static_cast<int>(broken.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == garbage);
+    }
+
+    // 灌一份不带 CRVS 的 blob(轨道/参数预设):段表什么都没说 ⇒ 保留态不动。
+    const auto stripped = blobWithoutCrvs(base);
+    r.out.setStateInformation(stripped.data(), static_cast<int>(stripped.size()));
+    Rig::pumpMessages(100);
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == garbage); // ★ 不能指望 loadedChunks_:它此刻已不含 CRVS
+    }
+
+    // 对照:成功载入一份合法 CRVS ⇒ 保留态解除,保存写回的是那份合法表的编码。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE_FALSE(r.out.hasCrvsNotRestored());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == crvsPayloadOf(base));
+    }
 }
 
 // ===========================================================================
@@ -10630,8 +11330,8 @@ TEST_CASE("HOST SL-523:超长块采集时特征 hop 记账跟着时间线走", "
 // hasData 恒假,混音循环整轨跳过 —— 淡出平滑器在空转,没乘在任何样本上。
 //
 // 机台:MonoMultiRig 三条 mono 轨,只有 ch1 喂正弦,ch2/ch3 喂静音。后两条留在 inject 里,
-// 所以关掉 ch1 之后 inject ≠ 0,走的是逐轨混音路径(不是「全关 ⇒ 总线级直通交叉」那一支,
-// 那一支不在本卡范围);而母线输出恰好等于 ch1 这一条的贡献。
+// 所以关掉 ch1 之后 inject ≠ 0,走的是逐轨混音路径(「关掉的是最后一条轨、inject 变 0」那一幕
+// 由下面 SL-521 的用例钉);而母线输出恰好等于 ch1 这一条的贡献。
 // ===========================================================================
 namespace
 {
@@ -10798,26 +11498,36 @@ TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当�
     // 「上一段真混进过」的记账必须在每条早退路径上作废:早退不推进 fade,ch1 的 fade 冻在 1。
     // 若记账跨过了直通段,恢复混音时 ch1 会被当成释放中、从 1 淡出 —— 一条已经关掉的轨
     // 在母线上响 80ms。
+    //
+    // [SL-521] 直通段原先靠「三条全关 ⇒ inject == 0」造;SL-521 起那一幕会先让 ch1 走完淡出
+    // (fade 落到 0)再直通,不再是「fade 冻在 1 的直通段」,这一格就钉不住记账了。改用
+    // 「只给 Output 一个没有时间线的 playhead」造直通段(noTimeline 早退,同样不推进 fade);
+    // Input 仍按原 playhead 推块,inject 不掉。
     MonoMultiRig r;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
 
-    // 三条全关 ⇒ inject == 0 ⇒ 总线直通(不推进逐轨 fade)。
-    for (int ch = 1; ch <= 3; ++ch)
+    FakePlayHead noTime;
+    noTime.playing = true;
+    noTime.haveTime = false;
+    r.out.setPlayHead(&noTime);
+    for (int k = 0; k < 4; ++k)
     {
-        setTrackEnabled(r.out, ch, false);
+        soloBlock(r, 0.5f);
+        // 前提:这一段真走了早退(不推进 fade)。混音路径上 ch1 此时仍启用、电平表读得到它;
+        // 早退一律发全零电平。没有这一句,noTimeline 分支哪天改成照常混音,这一格会静默失去判据。
+        REQUIRE(r.out.meterSnapshot().trackPeak[0] == 0.0f);
     }
+    setTrackEnabled(r.out, 1, false);
     MonoMultiRig::pump(100);
-    for (int k = 0; k < 12; ++k)
+    for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f);
     }
 
-    // 只把两条静音轨开回来 ⇒ inject ≠ 0、重回混音路径;ch1 仍关着,母线必须逐位为 0。
-    setTrackEnabled(r.out, 2, true);
-    setTrackEnabled(r.out, 3, true);
-    MonoMultiRig::pump(100);
+    // 时间线回来 ⇒ 重回混音路径(ch2/ch3 一直在 inject 里);ch1 已关,母线上不许有它。
+    r.out.setPlayHead(&r.ph);
     checkNoResidualRelease(r);
 }
 
@@ -10879,6 +11589,108 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     }
 
     checkNoResidualRelease(r);
+}
+
+// ===========================================================================
+// [SL-521] 播放中关掉**最后一条**轨:inject 变 0,旧实现走「总线直通」早退,busXfade 从混音
+// 交叉回直通时,混音侧传的是 accum —— 上一段混音的样本。交叉要走 80ms(7.5 块),每块都把
+// 关轨前最后一块的样本按递减增益重放一遍:一小段重复/咔嗒。
+//
+// 现在这一幕与 SL-488 的「多轨关一轨」走同一条逐轨淡出路径(ch1 仍被读环、fade 乘在真样本上),
+// 只是总线交叉的目标改为直通;淡出走完后直通段的混音侧给 0。
+//
+// 机台同 SL-488:ch1 正弦 0.5,Output 的宿主输入为 0,所以母线输出 = ch1 的贡献。
+// ===========================================================================
+namespace
+{
+// 两块样本的归一化相关(任一为全零 ⇒ 0)。
+double corrOf(const std::vector<float>& a, const std::vector<float>& b)
+{
+    double xy = 0.0;
+    double xx = 0.0;
+    double yy = 0.0;
+    for (std::size_t i = 0; i < a.size() && i < b.size(); ++i)
+    {
+        xy += static_cast<double>(a[i]) * b[i];
+        xx += static_cast<double>(a[i]) * a[i];
+        yy += static_cast<double>(b[i]) * b[i];
+    }
+    return (xx > 0.0 && yy > 0.0) ? xy / std::sqrt(xx * yy) : 0.0;
+}
+} // namespace
+
+TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,不重放已输出过的样本", "[host][sl488][sl521]")
+{
+    constexpr float kOther = 1.0e-3f; // ch2/ch3 的小信号:只为让电平表能证明它们「被读 / 不再被读」
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(peakOf(settleSolo(r).l) > 0.1f);
+
+    // 前提 1:ch2/ch3 此刻真在混音里(电平表只给读到环的轨报电平)。
+    soloBlock(r, 0.5f, /*bypassed=*/false, kOther);
+    REQUIRE(r.out.meterSnapshot().trackPeak[1] > 0.0f);
+
+    // 先关 ch2/ch3,跑满它们的淡出,让 ch1 成为唯一还在 inject 里的轨。
+    setTrackEnabled(r.out, 2, false);
+    setTrackEnabled(r.out, 3, false);
+    MonoMultiRig::pump(100);
+    SoloBlock last;
+    for (int k = 0; k < 12; ++k)
+    {
+        last = soloBlock(r, 0.5f, /*bypassed=*/false, kOther);
+    }
+    // 前提 2:ch2/ch3 已不再被读(否则关 ch1 后 inject ≠ 0,走的是 SL-488 那一支,本格什么都没证明);
+    // ch1 仍稳定在母线上。
+    REQUIRE(r.out.meterSnapshot().trackPeak[1] == 0.0f);
+    REQUIRE(r.out.meterSnapshot().trackPeak[2] == 0.0f);
+    REQUIRE(r.out.meterSnapshot().trackPeak[0] > 0.0f);
+    REQUIRE(peakOf(last.l) > 0.1f);
+    REQUIRE(corrWithSine(last) > 0.99);
+
+    // 关掉最后一条轨。
+    setTrackEnabled(r.out, 1, false);
+    MonoMultiRig::pump(100);
+    std::vector<SoloBlock> tail;
+    for (int k = 0; k < 12; ++k)
+    {
+        tail.push_back(soloBlock(r, 0.5f, /*bypassed=*/false, kOther));
+    }
+
+    // ① 关轨后的首块:仍在响、块边界连续(与关轨前末样本之差在一个样本步进的量级)。
+    CHECK(peakOf(tail[0].l) > 0.05f);
+    CHECK(std::abs(tail[0].l.front() - last.l.back()) < 0.05f);
+
+    // ② 淡出期间(前 7 块,80ms = 7.5 块)每一块都是「继续往下走的正弦」,不是关轨前最后一块的
+    //    缩放副本。修前每块 = last × 递减增益 ⇒ 与 last 的相关恒为 1;继续走的正弦每块比上一块
+    //    多走 4.693 周,与 last 的相关随块号在 -1..1 之间转(本机台实测最高约 0.86),0.99 分得开两者。
+    for (std::size_t k = 0; k < 7; ++k)
+    {
+        INFO("关轨后第 " << k << " 块");
+        CHECK(corrOf(tail[k].l, last.l) < 0.99);
+    }
+    //    另一侧:前 6 块与本块时刻的正弦同相。第 7 块(k=6)两个增益都接近 0、包络在块内陡降,
+    //    包络本身就把相关压到 0.9 以下(实测约 0.88),所以只钉前 6 块。
+    for (std::size_t k = 0; k < 6; ++k)
+    {
+        INFO("关轨后第 " << k << " 块");
+        CHECK(corrWithSine(tail[k]) > 0.9);
+    }
+
+    // ③ 包络单调不增(逐轨 fade 与总线交叉两个增益都在往下走),且不超过关轨前的电平。
+    CHECK(peakOf(tail[0].l) <= peakOf(last.l) + 1.0e-4f);
+    for (std::size_t k = 0; k + 1 < 8; ++k)
+    {
+        INFO("关轨后第 " << k << " -> " << (k + 1) << " 块");
+        CHECK(peakOf(tail[k + 1].l) <= peakOf(tail[k].l) + 1.0e-4f);
+    }
+
+    // ④ 淡出走完:之后母线 = 宿主输入(这里为 0),逐位为 0;ch1 不再被读环。
+    for (std::size_t k = 8; k < 12; ++k)
+    {
+        CHECK(peakOf(tail[k].l) == 0.0f);
+    }
+    CHECK(r.out.meterSnapshot().trackPeak[0] == 0.0f);
 }
 
 // ===========================================================================

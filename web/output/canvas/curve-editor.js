@@ -385,6 +385,11 @@ export function createCurveEditor(opts) {
     const getT = o.getT || (() => ({}));
     const onLocalChange =
         typeof o.onLocalChange === "function" ? o.onLocalChange : () => {};
+    // [rc-misc g] setPanCurve 的回执回调(外壳据此点亮撤销钮;缺省空操作)。
+    const onPanCurveCommitted =
+        typeof o.onPanCurveCommitted === "function"
+            ? o.onPanCurveCommitted
+            : () => {};
 
     if (!canvas || typeof canvas.getContext !== "function") {
         // [SL-450] 这份空壳也要有 abortEdit / flushPending / diag:app.js 的
@@ -764,7 +769,9 @@ export function createCurveEditor(opts) {
             return;
         }
         try {
-            await bridge.setPanCurve(next);
+            const res = await bridge.setPanCurve(next);
+            // [rc-misc g] 回执交给外壳点亮撤销钮(判据在 tab-master.js 的 historyAfterPanCurve)。
+            onPanCurveCommitted(res);
         } catch (e) {
             console.warn(
                 "SCVB curve-editor:setPanCurve() 调用失败 —— " + e.message,
@@ -1222,7 +1229,13 @@ export function createCurveEditor(opts) {
         const shapeGroup = document.createElement("div");
         shapeGroup.className = "curve-toolbar__group";
         shapeGroup.setAttribute("role", "group");
-        shapeGroup.setAttribute("aria-label", "shape");
+        // [rc-misc i] 组名走词条(此前写死英文 "shape",中/法界面下读屏念英文);
+        // 换语言时在 render() 里随按钮文字一起重刷。
+        shapeGroup.setAttribute("data-curve-group", "shape");
+        shapeGroup.setAttribute(
+            "aria-label",
+            getT()["curve.shapeGroup"] || "shape",
+        );
         for (const s of SHAPES) {
             const b = document.createElement("button");
             b.type = "button";
@@ -1237,7 +1250,11 @@ export function createCurveEditor(opts) {
         const sideGroup = document.createElement("div");
         sideGroup.className = "curve-toolbar__group";
         sideGroup.setAttribute("role", "group");
-        sideGroup.setAttribute("aria-label", "side");
+        sideGroup.setAttribute("data-curve-group", "side");
+        sideGroup.setAttribute(
+            "aria-label",
+            getT()["curve.sideGroup"] || "side",
+        );
         sideGroup.setAttribute("data-curve-side-group", "1");
         for (const s of SIDES) {
             const b = document.createElement("button");
@@ -1528,6 +1545,16 @@ export function createCurveEditor(opts) {
             )) {
                 const s = b.getAttribute("data-curve-side");
                 b.textContent = getT()["curve.side." + s] || s;
+            }
+            // [rc-misc i] 两组的 aria-label 与按钮文字同一时机重刷(切语言即生效)。
+            for (const g of _toolbar.bar.querySelectorAll(
+                "[data-curve-group]",
+            )) {
+                const k = g.getAttribute("data-curve-group");
+                g.setAttribute(
+                    "aria-label",
+                    getT()["curve." + k + "Group"] || k,
+                );
             }
             const ql = _toolbar.bar.querySelector(".curve-toolbar__q-label");
             if (ql) ql.textContent = getT()["curve.qLabel"] || "Q";

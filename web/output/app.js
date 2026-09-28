@@ -39,6 +39,9 @@ import {
     applySegmentsEvent,
     HISTORY_AVAIL_INIT,
     historyAfterCall,
+    connPillModel,
+    historyAfterPanCurve,
+    historyAfterRename,
     historyAfterSegments,
     GROUP_IDS,
     CHANNEL_COUNT,
@@ -61,6 +64,13 @@ import {
     staleTrackCount,
 } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
+import {
+    recapTrackerInit,
+    recapOnState,
+    recapOnPlayhead,
+    mergeRecapDone,
+    fmtRecapSeconds,
+} from "./recapture-toast.js";
 import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
 import { createTabSettings, docsUrl } from "./tab-settings.js";
@@ -188,6 +198,11 @@ const store = {
         // [D1] header 撤销/重做两钮的可用性(契约无 canUndo/canRedo 信号 ⇒ 回执驱动;
         // 判据与两条不变式见 tab-master.js 的 historyAfterCall / historyAfterSegments)
         history: HISTORY_AVAIL_INIT,
+        // [J125] toast③ 的记账(判据与口径见 recapture-toast.js 头注)。`recapTracker` =
+        // 本次布防期间播放头走过的选区时长;`recapDone` = 待显示的那条 toast
+        // (null = 不显)。纯会话态:不入 state chunk、不落盘、不进契约。
+        recapTracker: recapTrackerInit(),
+        recapDone: null,
     },
 };
 
@@ -387,6 +402,22 @@ tabbar.addEventListener("keydown", (e) => {
 
 activateTab("master", { push: false });
 
+// [rc-misc h] 05 §2.0 第 1 行:点击 header 连接 pill 跳 Tab2(轨道页看逐轨连接状态)。
+// pill 在 index.html 上是 role="button" + tabindex="0",键盘 Enter / 空格同效。
+{
+    const connPill = $("header-conn-pill");
+    if (connPill) {
+        const goTracks = () => activateTab("tracks");
+        connPill.addEventListener("click", goTracks);
+        connPill.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                goTracks();
+            }
+        });
+    }
+}
+
 // --------------------------------------- Tab1 ① 三件套开关的 data-on / aria 派生(单一状态源)
 // 状态真源 = .master-flow 上的 data-cap / data-out(05 §1.3);开关的**视觉**真源 =
 // base.css 的 `.sc-toggle[data-on="1"]`。两者之间只允许一条派生边,写在这里:
@@ -471,6 +502,14 @@ const curveEditor = createCurveEditor({
     getT: () => dictNow,
     // T33 起全页统一走 rAF 合帧的 requestRender(),不再逐事件同步整页 render()
     onLocalChange: () => requestRender(),
+    // [rc-misc g] 曲线写入入栈的证据是 setPanCurve 的回执(判据见 historyAfterPanCurve)
+    onPanCurveCommitted: (res) => {
+        store.session.history = historyAfterPanCurve(
+            store.session.history,
+            res,
+        );
+        requestRender();
+    },
 });
 curveEditor.mount();
 
@@ -535,6 +574,46 @@ for (const gb of [
         el.addEventListener("click", () => {
             activateTab("wave");
             tabWave.locateRecapture();
+        });
+    }
+}
+
+// [J125] toast③ 的两枚钮。「立即重分析」= 跳 Tab3 + 走与「重分析选区」同一条 §1.6
+// `analyze(scope)`(05 §2.0「一键跳 §2.3 重分析」);scope 用 toast 记下的范围,不读当前选区。
+// 两枚钮都先把 toast 收掉再干活:重分析回执要等一拍,期间再点一次就是第二次分析。
+// 收掉之前先把焦点交给当前那枚 tab(同 moveFocusOffDismiss 的理由:藏起一个正持焦的
+// 元素,Chromium 会把焦点丢回 <body>,键盘用户得从卡片开头重走一遍 Tab)。
+{
+    const focusOff = (btn) => {
+        if (document.activeElement !== btn) return;
+        const tab = document.querySelector(
+            '[role="tab"][aria-selected="true"]',
+        );
+        if (tab && typeof tab.focus === "function")
+            tab.focus({ preventScroll: true });
+    };
+    const goto = $("toast-recaptured-goto");
+    if (goto) {
+        goto.addEventListener("click", () => {
+            const done = store.session.recapDone;
+            store.session.recapDone = null;
+            requestRender();
+            if (!done) return;
+            activateTab("wave");
+            focusOff(goto);
+            tabWave.reanalyzeRange({
+                tracksMask: done.tracksMask,
+                startS: done.startS,
+                endS: done.endS,
+            });
+        });
+    }
+    const close = $("toast-recaptured-close");
+    if (close) {
+        close.addEventListener("click", () => {
+            focusOff(close);
+            store.session.recapDone = null;
+            requestRender();
         });
     }
 }
@@ -1022,6 +1101,8 @@ function endRename(commit) {
     const raw = verUi.renameInput ? verUi.renameInput.value : "";
     // 契约 §1.10:≤16 由 C++ 截断、空串/纯空白回落默认 "V{v}";返回回显实际落盘名。
     call("setVersionName", v, raw).then((res) => {
+        // [rc-misc g] 改名入栈的证据只有回执(§2.8 不为改名发段表事件),判据见 historyAfterRename。
+        store.session.history = historyAfterRename(store.session.history, res);
         if (res && typeof res.name === "string") {
             const versions = (store.state.versions || []).slice();
             if (versions[v - 1]) {
@@ -1291,6 +1372,21 @@ function trackRecapOutput() {
     }
 }
 
+/**
+ * [J125] toast③:「布防 → 撤防」那一跳逐 §2.1 事件判(理由同上面 B-04:render 是合帧的,
+ * 同一帧里 armed 先落后起就看不见那一跳)。新到的一条与还开着的那条**合并**,不顶掉。
+ */
+function trackRecapDone() {
+    const r = recapOnState(store.session.recapTracker, store.state);
+    store.session.recapTracker = r.tracker;
+    if (r.done) {
+        store.session.recapDone = mergeRecapDone(
+            store.session.recapDone,
+            r.done,
+        );
+    }
+}
+
 /** 整页重渲染**请求**(rAF 合帧;高频路径一律走它,不要直呼 render())。 */
 function requestRender() {
     if (renderQueued) return;
@@ -1381,16 +1477,14 @@ function renderHeader() {
     const count = $("header-conn-count");
     if (count) count.textContent = n + "/" + CHANNEL_COUNT;
     if (pill) {
-        pill.setAttribute("data-tone", n > 0 ? "green" : "gray");
-        pill.setAttribute("data-pulse", n > 0 ? "1" : "0");
+        // [rc-misc h] 模型见 tab-master.js 的 connPillModel(05 §2.0 第 1 行「· 采集中」后缀)。
+        const pm = connPillModel(n, viewStore().state, viewStore().playhead);
+        pill.setAttribute("data-tone", pm.tone);
+        pill.setAttribute("data-pulse", pm.pulse ? "1" : "0");
         const label = pill.querySelector("[data-t]");
-        if (label) {
-            fillKeyed(
-                label,
-                n > 0 ? "state.connected" : "state.notConnected",
-                {},
-            );
-        }
+        if (label) fillKeyed(label, pm.key, {});
+        const capSuffix = $("header-conn-capturing");
+        if (capSuffix) capSuffix.hidden = !pm.capturing;
     }
 
     // 独立「组 {X}」badge(J71③)
@@ -1646,6 +1740,23 @@ function renderBanners() {
     //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
     // toast 本体与词条 `toast.sidecarSwitched` 都留着(`index.html` 里恒挂 `hidden`),
     // 开关真打开时把这一行接回来即可。`sidecarSwitched` 同样仍在 `KNOWN_CODES` 里。
+
+    // [J125] toast③「已重采集 X.Xs,建议重分析该范围」+「立即重分析」(05 §2.0 / §2.3)。
+    // 读 viewStore() 的 session:导览期那是 demo session(没有这一格)⇒ 收起,退出导览再回来。
+    // 只有 ✕ 与「立即重分析」收它(新到的一条并进来,不另起一条)—— 带动作钮的提示不自己消失,
+    // 否则用户还没读完「立即重分析」就没了(05 §2.0「可关闭/自动消失」取前者)。
+    {
+        // 只读观察态(第二个 Output)不显:那边「立即重分析」会被 isWriteBlocked() 挡回,
+        // 钮点了没反应 —— 与本页其余写控件「只读态整块不给」同口径。记账照旧,
+        // 只读位撤掉之后 toast 回来。
+        const done = (vs.session || {}).recapDone || null;
+        show($("toast-recaptured"), !!done && !vs.readOnly);
+        if (done) {
+            fill($("toast-recaptured-text"), "toast.recaptured", {
+                s: fmtRecapSeconds(done.seconds),
+            });
+        }
+    }
 
     // 未知 code:原样显示并入 Tab4 诊断区(ADR-002 / ipc §5,UI 不静默)
     const diag = $("settings-diagnostics-list");
@@ -1926,6 +2037,7 @@ if (bridge) {
         store.state =
             s && s.full ? stripFull(s) : deepMerge(store.state, stripFull(s));
         trackRecapOutput(); // B-04 粘滞位:逐事件做边沿判定(render 是合帧的)
+        trackRecapDone(); // [J125] 同理:撤防那一跳必须逐事件看,合帧会吞掉它
         syncUiFromState();
         tabMaster.refreshPreview();
         requestRender();
@@ -2028,6 +2140,10 @@ if (bridge) {
 
     bridge.on("scvb.conn", (c) => {
         store.conn = c;
+        // [SL-535] 分析的干跑预览只数已连接的轨:连接集合一变,两页的预览数都得重取
+        // (两边各自按「已连接轨号」比对,集合没变就不发请求)。
+        tabMaster.refreshPreview();
+        tabWave.onConn(c);
         requestRender();
     });
 
@@ -2056,6 +2172,13 @@ if (bridge) {
         const prevPlayhead = store.playhead;
         const wasStopped = !!prevPlayhead && prevPlayhead.isPlaying === false;
         store.playhead = p;
+        // [J125] toast③ 的秒数:相邻两帧的播放头位移(上一帧同样必须取覆写前的那个局部量)。
+        store.session.recapTracker = recapOnPlayhead(
+            store.session.recapTracker,
+            store.state,
+            prevPlayhead,
+            p,
+        );
         // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
         // **覆写前**的 `playhead` 一起算 ——
         //   · `playingAt` 先覆写再算 ⇒ `prevPlayingAt` 永远是本帧时刻,「停满去抖窗」恒不成立;
@@ -2156,6 +2279,8 @@ if (bridge) {
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
+        // [SL-535] 有覆盖的轨号集合变了(首次采集)⇒ Tab1 重取 dry-run;集合没变在指纹比对处早退。
+        tabMaster.refreshPreview();
         requestRender();
     });
 
@@ -2271,6 +2396,7 @@ async function bootInner() {
         } = snap;
         store.state = deepMerge(store.state, stripFull(stateFields));
         trackRecapOutput(); // 快照落地也算一拍(布防中打开着输出重开面板)
+        trackRecapDone(); // [J125] 同上:布防中重开面板 ⇒ 从这一拍起计时
         store.conn = snapConn || store.conn;
         store.ready = true;
         syncUiFromState();
