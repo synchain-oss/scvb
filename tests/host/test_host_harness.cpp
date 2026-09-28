@@ -11794,3 +11794,237 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
         }
     }
 }
+
+// ===========================================================================
+// [SL-216 / J136] 主唱居中进分析计算。
+//
+// 用户裁定(J136):主唱居中由「播放期强制覆盖」改为进入分析引擎的槽位/平衡计算,其余声部据此排布。
+// `lead_select` 是宿主可自动化的参数,插件拿不到宿主的自动化曲线,只能在**播放经过时**看到它的值 ——
+// 所以 Output 在走带播放时逐块记下它(LeadRecorder → LeadTimeline),分析按区间取多数值,
+// 选中轨在该区间并入集合 C(与 lead_lock 同一条路径)。纯算法那半在 tests/core/test_lead_timeline.cpp;
+// 这里钉**接线**:播放时真的记了、分析真的取了、记录真的随工程存取、队列真的有人排干。
+// ===========================================================================
+namespace
+{
+void setLeadSelect(ScvbOutputAudioProcessor& out, int v)
+{
+    auto* p = out.getAPVTS().getParameter("lead_select");
+    REQUIRE(p != nullptr);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(v)));
+    p->endChangeGesture();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(60);
+}
+
+int countOffCenter(const std::vector<scvb::state::Segment>& segs)
+{
+    int n = 0;
+    for (const auto& s : segs)
+    {
+        if (std::abs(s.pan) > 1.0f)
+        {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// 从一份完整 blob 里只留下指定的 chunk(按容器层解开→筛→重编,与生产同一套编解码)。
+std::vector<std::uint8_t> blobKeeping(const juce::MemoryBlock& src, const std::vector<std::uint32_t>& keep)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                                       [&](const scvb::state::Chunk& c) {
+                                           return std::find(keep.begin(), keep.end(), c.fourcc) == keep.end();
+                                       }),
+                        chunks.chunks.end());
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+std::vector<std::uint8_t> blobWithout(const juce::MemoryBlock& src, std::uint32_t fourcc)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                                       [&](const scvb::state::Chunk& c) { return c.fourcc == fourcc; }),
+                        chunks.chunks.end());
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+bool sameRuns(const std::vector<scvb::analysis::LeadRun>& a, const std::vector<scvb::analysis::LeadRun>& b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("HOST SL-216:改主唱、播一遍、重新分析 → 新主唱每段都在正中,其余两轨离开正中", "[host][sl216][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // 基线:lead_select = 0 采集并分析。挑**离开正中的段最多**的那条轨当新主唱 ——
+    // 这样下面「它每段都在正中」只能来自本卡的改动,不会是它本来就居中。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+
+    // 换主唱 → 播放头送回采集起点,采集关着把这段再放一遍(只为让 Output 记下新值)→ 重新分析。
+    r.out.setCaptureEnabled(false);
+    MonoMultiRig::pump(100);
+    setLeadSelect(r.out, leadCh);
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+    r.ph.timeSamples = s0;
+    r.runBlocks(static_cast<int>((s1 - s0) / kBlock) + 2, 0.5f);
+
+    // 前提:记录覆盖了分析窗,多数值就是新主唱(播放路径真的记了)。
+    CHECK(scvb::analysis::majorityLead(r.out.leadTimelineSnapshot(), s0, s1) == leadCh);
+
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    const auto leadSegs = segmentsOfTrack(r.out, leadCh);
+    REQUIRE_FALSE(leadSegs.empty());
+    for (const auto& s : leadSegs)
+    {
+        CHECK(s.pan == 0.0f); // ★ 主唱进了分析:段表里就是正中,不靠播放期覆盖
+    }
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        if (ch == leadCh)
+        {
+            continue;
+        }
+        INFO("non-lead track " << ch);
+        CHECK(countOffCenter(segmentsOfTrack(r.out, ch)) > 0); // 其余声部围绕主唱排到两侧
+    }
+}
+
+TEST_CASE("HOST SL-216:lead_select 记录随工程存取;完整工程无 LEAD 即清空,只带 PRMS 的预设不动它",
+          "[host][sl216][state]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 2);
+    r.runBlocks(40);
+    setLeadSelect(r.out, 5);
+    r.runBlocks(40);
+    const auto before = r.out.leadTimelineSnapshot();
+    REQUIRE(before.size() == 2);
+    CHECK(before[0].lead == 2);
+    CHECK(before[1].lead == 5);
+
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    {
+        scvb::state::StateChunks chunks;
+        REQUIRE(
+            scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+        REQUIRE(chunks.find(scvb::state::kFourccLead) != nullptr); // 写侧:存档里真有这一块
+    }
+
+    // 只带 PRMS 的预设:记录不动。
+    const auto presetOnly = blobKeeping(full, {scvb::state::kFourccPrms});
+    r.out.setStateInformation(presetOnly.data(), static_cast<int>(presetOnly.size()));
+    Rig::pumpMessages(60);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
+
+    // 完整工程但没有 LEAD(旧工程 / 从没播过):记录清空,不能把上一份工程的主唱带进来。
+    const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+    r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+    Rig::pumpMessages(60);
+    CHECK(r.out.leadTimelineSnapshot().empty());
+
+    // 读侧:原样灌回 → 记录逐字段回来。
+    r.out.setStateInformation(full.getData(), static_cast<int>(full.getSize()));
+    Rig::pumpMessages(60);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
+}
+
+TEST_CASE("HOST SL-216:更高 minor 的 LEAD 块原样回写,不被内存里的记录覆盖", "[host][sl216][state]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 3);
+    r.runBlocks(20);
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    std::vector<std::uint8_t> newer;
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccLead)
+        {
+            c.payload[0] = static_cast<std::uint8_t>(scvb::analysis::kLeadChunkMinor + 1);
+            newer = c.payload;
+        }
+    }
+    REQUIRE_FALSE(newer.empty());
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(60);
+    CHECK(r.out.leadTimelineSnapshot().empty()); // 不认识 → 分析按「没有记录」
+
+    // 再播一段(内存里有了新记录),保存:LEAD 仍是那份更高 minor 的原始字节。
+    r.runBlocks(20);
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    scvb::state::StateChunks back;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(saved.getData()), saved.getSize(), back).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const auto* lead = back.find(scvb::state::kFourccLead);
+    REQUIRE(lead != nullptr);
+    CHECK(lead->payload == newer);
+}
+
+TEST_CASE("HOST SL-216:长时间播放不分析不存盘,记录队列由定时器排干,不丢块", "[host][sl216]")
+{
+    // 队列容量 4096 块;这里连放 4400 块,中间只靠 25Hz 定时器排干(每 256 块泵一次消息循环)。
+    // 定时器那一句不在,多出来的 304 块会被丢掉,记录的右端停在 4096 块处。
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 4);
+    const std::int64_t start = r.ph.timeSamples;
+    constexpr int kBlocks = static_cast<int>(scvb::analysis::LeadRecorder::kCapacity) + 304;
+    r.runBlocks(kBlocks, 0.25f, /*pumpEveryN=*/256, /*pumpMs=*/60);
+    const auto runs = r.out.leadTimelineSnapshot();
+    REQUIRE(runs.size() == 1);
+    CHECK(runs[0].lead == 4);
+    CHECK(runs[0].t0 == start);
+    CHECK(runs[0].t1 == start + static_cast<std::int64_t>(kBlocks) * kBlock);
+}
