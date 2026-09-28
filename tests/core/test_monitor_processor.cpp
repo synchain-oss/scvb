@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "MonitorProcessor.h"
+#include "UiDefaultsStore.h"
 
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
@@ -345,6 +346,73 @@ TEST_CASE("Monitor:state 往返(组/缩放/语言;不可信字节拒载)", "[mon
     REQUIRE(c.groupId() == 1);
     c.setStateInformation(nullptr, 0);
     REQUIRE(c.groupId() == 1);
+}
+
+// ---------------------------------------------------------------------------
+// [rc-misc c] 新实例读系统级全局默认(语言 / Monitor 缩放),工程 state 仍优先。
+//
+// 缺陷:Monitor 构造时语言写死 "zh"、缩放写死 100,不读 UiDefaultsStore —— 用户在 Output 里
+// 选了 EN/FR,每次新插 Monitor 都弹回中文;Monitor 自己「保持」过的缩放也不跨实例生效。
+// 写全局默认的那一半在 MonitorEditor(编不进测试目标),由 smoke-monitor.mjs 的源码钉子守。
+// ---------------------------------------------------------------------------
+TEST_CASE("Monitor:新实例读语言/缩放的系统级全局默认,工程 state 优先", "[monitor][uidefaults][rcmisc]")
+{
+    namespace ud = scvb::uidefaults;
+    struct TempStore
+    {
+        juce::File dir =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("scvb-mon-uidefaults-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        TempStore()
+        {
+            dir.createDirectory();
+            ud::setStorageDirForTesting(dir);
+        }
+        ~TempStore()
+        {
+            ud::setStorageDirForTesting({});
+            dir.deleteRecursively();
+        }
+    } store;
+
+    SECTION("从没设过 ⇒ 出厂 zh / 100")
+    {
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiLanguage() == "zh");
+        CHECK(p.uiScalePercent() == 100);
+    }
+
+    SECTION("全局默认 en / Monitor 150 ⇒ 新实例沿用")
+    {
+        ud::setLangGlobal("en");
+        ud::setUiScalePercentMonitor(150);
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiLanguage() == "en");
+        CHECK(p.uiScalePercent() == 150);
+    }
+
+    SECTION("缩放按角色分键:Output 的缩放默认不串到 Monitor")
+    {
+        ud::setUiScalePercent(200); // Output 那一份
+        ScvbMonitorAudioProcessor p;
+        CHECK(p.uiScalePercent() == 100);
+    }
+
+    SECTION("工程 state 压过全局默认")
+    {
+        ScvbMonitorAudioProcessor a; // 干净存储下存一份 zh/100 以外的值
+        a.setUiLanguage("fr");
+        a.setUiScalePercent(75);
+        juce::MemoryBlock blob;
+        a.getStateInformation(blob);
+
+        ud::setLangGlobal("en");
+        ud::setUiScalePercentMonitor(150);
+        ScvbMonitorAudioProcessor b;
+        b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(b.uiLanguage() == "fr");
+        CHECK(b.uiScalePercent() == 75);
+    }
 }
 
 // ---------------------------------------------------------------------------
