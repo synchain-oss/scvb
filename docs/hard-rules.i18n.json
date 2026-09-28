@@ -11,14 +11,14 @@
   ],
   "frReview": {
     "status": "reviewed",
-    "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127)",
+    "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127;J153 改动的标题句按同一方式复核)",
     "date": "2026-09-28",
-    "note": "以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
+    "note": "【J153 轮】用户裁定 J153 把 zh 标题里的「错音」改成「声像位置错误」(用户原话:「就是声像位置错误。中文错音确实不严谨,改了吧」),title.zhSha256 随之更新。按 J127 的同一方式(以 zh 为准的 AI 三语交叉核对,用户授权)复核了改动的这一句:en 的 wrong panning 与 fr 的 panoramique erroné 说的本来就是「声像位置错误」,极性与三项并列(静音 / 声像位置错误 / 分析失效)都对得上,译文一字未改;rule1..9 的 zh 未动、zhSha256 未变,不在本轮复核面内。【J127 轮】以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
     "fr": "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
-    "zhSha256": "0fa6700a86364afa724e4fe1c4d7c7de33a38e958e7d4f8c0ff43d87847a3474"
+    "zhSha256": "d1241b70cba4791a3edfa9dcb4726bc435afc2f8b4fffd4f055238439bb9d59c"
   },
   "rules": [
     {

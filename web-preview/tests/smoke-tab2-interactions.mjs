@@ -1267,6 +1267,39 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
             }
         }
     }
+    // [J153 12.1] 表尾图例「声像」段的默认档按代码实况写:未显式设置一律参与([J83];真源 =
+    // OutputProcessor.h 的 `participatesInAutoPan()`),stereo 轨不例外;旧括注「stereo 轨默认关」
+    // 是 [J60] 口径。先按 legendSegments 切段、只看第二段 —— 「音量」段本来就写「默认开」
+    // (en/fr 是 on by default / activé par défaut),在整串里只找这几个词会被音量段满足。
+    // 正反各钉一次(理由同 smoke-tour ⑤ 的 J153 那组)。
+    // ⚠ fr 正向模式带左括号:`activé par défaut` 是旧句 `désactivé par défaut` 的子串。
+    const LEGEND_PAN = {
+        zh: ["声像", /默认关/, /\(默认开,含 stereo 轨;关掉后仍参与音量平衡\)/],
+        en: [
+            "Pan",
+            /off by default/i,
+            /\(on by default, stereo included; still level-balanced when off\)/,
+        ],
+        fr: [
+            "Pan",
+            /désactivé par défaut/,
+            /\(activé par défaut, stéréo compris ; équilibrage conservé une fois désactivé\)/,
+        ],
+    };
+    for (const [lang, [term, stale, fresh]] of Object.entries(LEGEND_PAN)) {
+        const segs = TT.legendSegments(T[lang]["tracks.colLegend"]);
+        eq(segs.length, 3, `${lang} tracks.colLegend 仍切成三段`);
+        const seg = segs[1] || { term: "", rest: "" };
+        eq(seg.term, term, `${lang} tracks.colLegend 第二段是「${term}」段`);
+        check(
+            !stale.test(seg.rest),
+            `${lang} tracks.colLegend 声像段不再写 stereo 默认关(J153 12.1 / J83)`,
+        );
+        check(
+            fresh.test(seg.rest),
+            `${lang} tracks.colLegend 声像段写明默认开、含 stereo(J153 12.1)`,
+        );
+    }
     // Wave 1 的静态填数路径必须已删净(留的是「已删除」那句说明,不是数据)
     const s = src("web/output/tab-tracks.js");
     check(
