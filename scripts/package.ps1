@@ -194,8 +194,10 @@ if ($missingLicenseTexts.Count -gt 0) {
 # 声明文件路径 —— `third_party/notices/<文件>` 与 `LICENSES/<文件>`,以 / 结尾的目录引用不算 —— 都必须是
 # 本次要打进 zip 的文件。NOTICES 进 zip 后,这些路径就是用户手里唯一的指引,指向包里没有的文件等于没给。
 # 打包后 ⑥ 再对 zip 本身判一次。演练 tag 也不放行:缺的不是全文,是 NOTICES 自己许诺的原文。
+# 两道核对都**区分大小写**:路径要在解压目录里原样可查,不能只在不分大小写的文件系统上才对得上。
+# 路径字符里含 `/`:third_party/notices/ 是递归打包的,子目录里的文件也要能被点名、被核对。
 $citedNoticePaths = New-Object System.Collections.Generic.List[string]
-foreach ($m in [regex]::Matches(($notices -join "`n"), '(?<![\w./-])((?:third_party/notices|LICENSES)/[A-Za-z0-9._+-]+)')) {
+foreach ($m in [regex]::Matches(($notices -join "`n"), '(?<![\w./-])((?:third_party/notices|LICENSES)/[A-Za-z0-9._+/-]+)')) {
   $p = $m.Groups[1].Value.TrimEnd('.')   # 句末句点不属于路径
   if ($p.EndsWith('/')) { continue }      # 「目录/...」这类省略写法剥完句点只剩目录,不是文件引用
   if (-not $citedNoticePaths.Contains($p)) { $citedNoticePaths.Add($p) }
@@ -203,14 +205,15 @@ foreach ($m in [regex]::Matches(($notices -join "`n"), '(?<![\w./-])((?:third_pa
 # 一个都读不出来说明写法变了(比如改成了别的路径前缀),不当成「没有引用」静默放行。
 if ($citedNoticePaths.Count -eq 0) { Fail 'THIRD-PARTY-NOTICES.md 里没读到任何 third_party/notices/<文件> 或 LICENSES/<文件> 形态的路径(写法变了?)' }
 foreach ($p in $citedNoticePaths) {
-  $packed = $noticeFiles.ContainsKey($p)
-  if (-not $packed -and $p -match '^LICENSES/([^/]+)$') {
+  # @{} 的 ContainsKey 与 -eq 都不分大小写,这里一律用 -ccontains / -ceq。
+  $packed = ([string[]]@($noticeFiles.Keys)) -ccontains $p
+  if (-not $packed -and $p -cmatch '^LICENSES/([^/]+)$') {
     $name = $Matches[1]
-    $packed = [bool]($licenseFiles | Where-Object { $_.Name -eq $name })
+    $packed = [bool]($licenseFiles | Where-Object { $_.Name -ceq $name })
   }
   if ($packed) { continue }
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $p) -PathType Leaf)) { Fail "THIRD-PARTY-NOTICES.md 点名了 $p,仓库里没有这个文件" }
-  Fail "THIRD-PARTY-NOTICES.md 点名了 $p,它不在打包清单里(只打 LICENSES/ 顶层文件与 third_party/notices/ 全部文件)"
+  Fail "THIRD-PARTY-NOTICES.md 点名了 $p,它不在打包清单里(只打 LICENSES/ 顶层文件与 third_party/notices/ 全部文件;大小写须与实际文件名一致)"
 }
 
 # ── ④ INSTALL.txt ─────────────────────────────────────────────────────────────
@@ -417,8 +420,11 @@ try {
     }
     # NOTICES 点名的每个声明文件路径,在用户实际拿到的 zip 里逐个核对(打包前核的是仓库侧)。
     # 排在下面的必需条目清单之前:漏打 third_party/notices/ 时先报的是「哪条引用落空」。
+    # 按条目原名区分大小写比对($inZip 是不分大小写的 @{},不能拿它的 ContainsKey)。
+    $zipNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($e in $zr.Entries) { [void]$zipNames.Add($e.FullName) }
     foreach ($p in $citedNoticePaths) {
-      if (-not $inZip.ContainsKey($p)) { Fail "THIRD-PARTY-NOTICES.md 点名的 $p 不在 zip 里(用户包里这条指引会落空)" }
+      if (-not $zipNames.Contains($p)) { Fail "THIRD-PARTY-NOTICES.md 点名的 $p 不在 zip 里(用户包里这条指引会落空;大小写须一致)" }
     }
     $required = @('LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
     foreach ($f in $licenseFiles) { $required += ('LICENSES/' + $f.Name) }
