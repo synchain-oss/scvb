@@ -4088,6 +4088,8 @@ TEST_CASE("HOST SL-180:未冻结拖音量卡箍只固定 vol,pan 曲线逐段保
         CHECK(afterVol[i].volDb == -9.0f); // vol 维 = 常值
         CHECK(scvb::state::segmentOrigin(afterVol[i].flags) == scvb::state::SegmentOrigin::UserEdited);
         CHECK_FALSE(scvb::state::segmentLocked(afterVol[i].flags));
+        // [SL-548 / J162] 只置被拖那一维的手动位(夹具两段来自 set_values,本来没有位)。
+        CHECK((afterVol[i].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualVolBit);
     }
     CHECK(replaced == 2); // 如实回报被改写的段数(两段都是 set_values 产物 ⇒ 都锁着)
     CHECK(replacedLocked == 2);
@@ -4141,6 +4143,7 @@ TEST_CASE("HOST SL-180:未冻结拖音量卡箍只固定 vol,pan 曲线逐段保
     {
         CHECK(afterPan[i].pan == 20.0f);
         CHECK(afterPan[i].volDb == before[i].volDb); // ← 修复前两段都是 -6(后段那格红)
+        CHECK((afterPan[i].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit);
     }
 }
 
@@ -4458,6 +4461,10 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 不再压平 pan([J131
         CHECK(after[i].t1 == before[i].t1);
     }
     CHECK(replaced == static_cast<int>(before.size())); // 如实回报改写了多少段
+    // [SL-548 / J162] 本夹具各段 pan 相同(见上 ⚠)—— 正是「按值推断」会把 pan 一并判成手动常值的
+    // 形状(#302 已知近似)。显式标记下只有被拖的 vol 那一维算手动;确定性的判别格在 HOST SL-548。
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/false) != nullptr);
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/true) == nullptr);
 
     // 于是解冻 pan 之后,pan 仍是那条分析曲线(段表没被这次拖 vol 压平)。
     setFreezeBits(r.out, kTestChannel, 0);
@@ -4466,6 +4473,15 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 不再压平 pan([J131
     // 出口仍在:重新识别(含手动段)能把它清掉,段表回到 auto(与 HOST P0-3 同一条链路)。
     runAnalysis(0.0, coveredS, /*clearManual=*/true);
     CHECK(allAutoSegments(r.out, kTestChannel));
+    // [SL-548 / J162] 重分析产出的段不带手动位 ⇒ 「手动接管」标熄灭(不是只把 origin 洗回 auto)。
+    {
+        const std::vector<scvb::state::Segment> cleared = segmentsOfTrack(r.out, kTestChannel);
+        for (const auto& s : cleared)
+        {
+            CHECK((s.flags & scvb::state::kSegmentManualMask) == 0u);
+        }
+        CHECK(scvb::output::manualConstantOf(cleared) == nullptr);
+    }
 }
 
 // ===========================================================================
@@ -10064,6 +10080,127 @@ TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/�
     REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
     CHECK(viz->panNow[idx] == scvb::vizPackPan(-40.0)); // ← outputEnabled 没接线时红(仍是 -60)
     CHECK(viz->volDb[idx] == scvb::vizPackFixed(4.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-548] / J162 接线格:「哪一维是手动」改成段上的显式手动位(flags bit3 = pan / bit4 = vol)之后,
+// 走一遍真 `setTrackManual` → CRVS → `publishVizFrame` → viz 段(Monitor 的 panNow / volDb)整条链。
+//
+// 夹具是两段 auto、**pan 全等**(都是 0)—— 单声源分析的典型形状(HOST SL-188 的分析夹具各段 pan
+// 就相同,#302 删除式 ND5 实测)。改前按值推断:拖了 vol 之后 pan 也被判成手动常值,输出 OFF 时
+// panNow 停在段值 0、不跟宿主参数面(#302「已知近似」)。
+//
+// 钉的是「位在生产路径上真的被置 / 被保留 / 被清 / 被存回」,每一步都拿 viz 段读数判:
+//   ① 拖 vol ⇒ 每段只带 vol 位;② 输出 OFF ⇒ panNow 跟参数面、volDb 仍是手动常值(参数面另给一个数);
+//   ③ set_locked ⇒ 位保留、vol 仍是手动常值;④ 存盘重开 ⇒ 位原样;⑤ set_values(**同值**)⇒ 位清、
+//   vol 回落参数面(同值是为了让「按值推断」在这一步分不出来,只有清位能让它变);⑥ 撤销 ⇒ 位回来;
+//   ⑦ 旧工程(单段 user_edited、无位)⇒ 两维仍按手动常值读(兼容判据)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-548:手动维显式标记走完接管 → CRVS → viz 读回整条链", "[host][t37][manual][SL548]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true);
+
+    const std::vector<scvb::state::Segment> segs = {sl363Seg(0.0, 10.0, 0.0f, -3.0f), sl363Seg(20.0, 30.0, 0.0f, 6.0f)};
+    sl363LoadSegments(r.out, kTestChannel, segs);
+    REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 2);
+
+    r.ph.playing = false;
+    r.ph.timeSamples = sl363Samples(25.0);
+    r.runBlocks(24, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    REQUIRE(r.waitUntilInjected());
+
+    const int v = r.out.versionActive();
+    const std::size_t idx = static_cast<std::size_t>(kTestChannel - 1);
+    auto viz = std::make_unique<scvb::VizSnapshot>();
+    const auto readViz = [&] {
+        r.runBlocks(12, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+        REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
+    };
+    const auto packVol = [](double db) { return scvb::vizPackFixed(db, scvb::kVizVolDbMin, scvb::kVizVolDbMax); };
+    const auto bitsOf = [&r] {
+        std::vector<std::uint32_t> out;
+        for (const auto& s : segmentsOfTrack(r.out, kTestChannel))
+        {
+            out.push_back(s.flags & scvb::state::kSegmentManualMask);
+        }
+        return out;
+    };
+    const std::vector<std::uint32_t> volOnly = {scvb::state::kSegmentManualVolBit, scvb::state::kSegmentManualVolBit};
+
+    // ① 拖 vol 卡箍(未冻结 ⇒ 手动接管通道):每段只带 vol 位。
+    setFreezeBits(r.out, kTestChannel, 0);
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -9.0f, replaced, replacedLocked));
+    CHECK(bitsOf() == volOnly);
+    {
+        const std::vector<scvb::state::Segment> live = segmentsOfTrack(r.out, kTestChannel);
+        CHECK(scvb::output::manualDimOf(live, /*isPan=*/false) != nullptr);
+        CHECK(scvb::output::manualDimOf(live, /*isPan=*/true) == nullptr); // ← 按值推断时命中(两段 pan 都是 0)
+    }
+
+    // ② 输出 OFF(跟随宿主)+ 宿主把 pan 拉到 -40、vol 参数面另写 +4。
+    r.out.setOutputEnabled(false);
+    sl363SetParam(r.out, scvb::params::panId(v, kTestChannel), -40.0f);
+    sl363SetParam(r.out, scvb::params::volId(v, kTestChannel), 4.0f);
+    readViz();
+    CHECK(viz->panNow[idx] == scvb::vizPackPan(-40.0)); // ← 按值推断时是段值 0(#302 已知近似)
+    CHECK(viz->volDb[idx] == packVol(-9.0)); // vol 是手动常值 ⇒ 不看输出档,不读参数面的 +4
+
+    // ③ set_locked:锁不改段值,位保留 ⇒ vol 仍是手动常值。
+    scvb::state::SegmentEditArgs lock;
+    lock.op = scvb::state::SegmentEditOp::SetLocked;
+    lock.segIdx = 0;
+    lock.locked = true;
+    REQUIRE(r.out.editSegment(kTestChannel - 1, lock) == scvb::state::SegmentEditResult::Ok);
+    CHECK(bitsOf() == volOnly); // ← set_locked 整字重建(只拼 origin + locked)时首段丢位
+    readViz();
+    CHECK(viz->volDb[idx] == packVol(-9.0)); // ← 同上时回落参数面 +4
+
+    // ④ 存盘重开:CRVS 原样读写 flags 这个 u32,位跟着工程走。
+    {
+        juce::MemoryBlock blob;
+        r.out.getStateInformation(blob);
+        r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
+    }
+    CHECK(bitsOf() == volOnly);
+    readViz();
+    CHECK(viz->volDb[idx] == packVol(-9.0));
+
+    // ⑤ set_values 改后段的 vol —— **写同一个值 -9**:按值推断的判据在这一步分不出任何变化,
+    // 只有「set_values 清掉被编辑段的位」能让 vol 退出手动常值 ⇒ 输出 OFF 回落参数面。
+    scvb::state::SegmentEditArgs sv;
+    sv.op = scvb::state::SegmentEditOp::SetValues;
+    sv.segIdx = 1;
+    sv.hasVol = true;
+    sv.volDb = -9.0f;
+    REQUIRE(r.out.editSegment(kTestChannel - 1, sv) == scvb::state::SegmentEditResult::Ok);
+    CHECK(bitsOf() == std::vector<std::uint32_t>{scvb::state::kSegmentManualVolBit, 0u}); // 只清被编辑段
+    // 再写一次 +4(② 写过、随 ④ 存盘重开;这里重写一遍,不让这一格依赖 PRMS 往返)。
+    sl363SetParam(r.out, scvb::params::volId(v, kTestChannel), 4.0f);
+    readViz();
+    CHECK(viz->volDb[idx] == packVol(4.0)); // ← set_values 不清位时仍是 -9
+
+    // ⑥ 撤销:段表整份拷回,位跟着回来(撤销 / 重做 / 复制版本都是整段拷贝)。
+    REQUIRE(r.out.undo());
+    CHECK(bitsOf() == volOnly);
+
+    // ⑦ 旧工程:单段 user_edited、**没有位**(旧构建在空表上接管的产物)⇒ 兼容判据,两维都按手动常值读。
+    {
+        scvb::state::Segment legacy = sl363Seg(0.0, 30.0, -70.0f, -12.0f);
+        legacy.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+        sl363LoadSegments(r.out, kTestChannel, {legacy});
+        REQUIRE(bitsOf() == std::vector<std::uint32_t>{0u}); // 前置:确实没有位
+        sl363SetParam(r.out, scvb::params::panId(v, kTestChannel), -40.0f);
+        sl363SetParam(r.out, scvb::params::volId(v, kTestChannel), 4.0f);
+        readViz();
+        CHECK(viz->panNow[idx] == scvb::vizPackPan(-70.0)); // ← 删掉兼容判据时回落参数面 -40
+        CHECK(viz->volDb[idx] == packVol(-12.0));
+    }
 }
 
 // ---------------------------------------------------------------------------

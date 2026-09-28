@@ -223,15 +223,23 @@ inline float clampManualValue(bool isPan, float value)
 //   · existing 为空(从未编辑/分析过)→ 没有曲线可保留,照旧落**覆盖全时间线的单段常值**,
 //     另一维取默认(pan 居中 / vol 0dB)。
 //
+// [SL-548 / J162] **手动位**(flags bit3 = pan / bit4 = vol,`StateCodec.h`):每段给**被拖的那一维**
+// 置位,读回链据此判「哪一维是手动常值」(`DistReadback.h` `manualDimOf`),不再从「值全等」推断。
+//   · 非空表 → 另一维的位**逐段原样保留**(先拖 vol 再拖 pan ⇒ 两位都在;另一维从没被接管过 ⇒
+//     它的位本来就没有,也不会被这次补上);
+//   · 空表 → 只有被拖那一维的位:另一维是默认值,不是用户固定的值,读回照「输出 ON 读段 / OFF 读
+//     参数面」走 —— 与声音同路(OFF 下 DSP 读的就是参数面)。
+//
 // ⚠ 段值保留 ≠ 过渡斜坡逐样本不变:`CurveEvaluator` 的段间 ramp 宽度按两维较大的那一维反推
 // (02 §8.2 `max(tPan, tGain)`),被拖维度变成常值后,原先由它主导的那几条边界上另一维的 ramp
 // 会变窄。段内稳态值不变。
-// 纯函数,可离线断言(tests/core/test_segment_edit_service.cpp SERVICE-5..8)。
+// 纯函数,可离线断言(tests/core/test_segment_edit_service.cpp SERVICE-5..8、SERVICE-13)。
 inline std::vector<scvb::state::Segment> makeManualDimSegments(const std::vector<scvb::state::Segment>& existing,
                                                                bool isPan, float value)
 {
     const float applied = clampManualValue(isPan, value);
     const std::uint32_t flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    const std::uint32_t dimBit = scvb::state::segmentManualBit(isPan);
 
     if (existing.empty())
     {
@@ -240,7 +248,7 @@ inline std::vector<scvb::state::Segment> makeManualDimSegments(const std::vector
         seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
         seg.pan = isPan ? applied : 0.0f;
         seg.volDb = isPan ? 0.0f : applied;
-        seg.flags = flags;
+        seg.flags = flags | dimBit;
         return {seg};
     }
 
@@ -251,7 +259,7 @@ inline std::vector<scvb::state::Segment> makeManualDimSegments(const std::vector
             seg.pan = applied;
         else
             seg.volDb = applied;
-        seg.flags = flags;
+        seg.flags = flags | (seg.flags & scvb::state::kSegmentManualMask) | dimBit;
     }
     return out;
 }

@@ -52,6 +52,8 @@ struct SegmentEditArgs
 // 失败返回 BadArg/NotAdjacent,segments 保持原样(强异常安全:先全量校验再写)。
 // 后置:move_boundary/split/set_values 命中段 origin=UserEdited 且 locked=true;merge 结果段
 // origin=UserEdited 且 locked=true(合并属边界编辑);set_locked 仅改 locked 不动 origin。
+// [SL-548 / J162] 手动位(bit3/bit4):set_locked 保留;其余四个 op 清掉被编辑段(move_boundary 是
+// segIdx 那一段,不含随之收缩的邻段;split 是两个子段;merge 是合并结果)的这两位。
 SegmentEditResult editTrackSegments(std::vector<Segment>& segments, const SegmentEditArgs& args);
 
 } // namespace scvb::state

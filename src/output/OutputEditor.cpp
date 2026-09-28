@@ -1060,6 +1060,12 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             put(seg, "volDb", static_cast<double>(s.volDb));
             put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));
             put(seg, "locked", scvb::state::segmentLocked(s.flags));
+            // [SL-548 / J162] §2.8 可选字段:这一段的手动位原样上桥(bit3 / bit4,`StateCodec.h`)。
+            // 上桥的是**逐段的位**,不是「这一维是不是手动常值」的结论 —— 结论(含旧工程兼容那条)由
+            // `web/shared/readback.js` 的 `manualDimOf` 在 JS 侧按同一判据算,与 native `DistReadback.h`
+            // 逐字同形。两个都恒发(false 也发);JS 把缺席当 false(mock 生成器的段就不带)。
+            put(seg, "manualPan", (s.flags & scvb::state::kSegmentManualPanBit) != 0u);
+            put(seg, "manualVol", (s.flags & scvb::state::kSegmentManualVolBit) != 0u);
             // [SL-252 / SL-257] 此前这里是写死的 `0.0` —— §2.8 字段在、UI 消费点在、就是没有值
             // (与 SL-177 修过的 `stale` 同族)。根因是 `applyAnalysisSegments` 把
             // `AnalysisSegment` 抄进 `state::Segment` 时丢掉了它,而 `state::Segment` 没有响度

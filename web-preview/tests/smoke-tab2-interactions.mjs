@@ -1360,6 +1360,80 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         "§2.8 回推 reason=analyze",
     );
 
+    // [SL-548] / J162:mock 与真桥同款维护段上的手动标记(§2.8 `manualPan` / `manualVol`;真桥是
+    // flags bit3 / bit4)。轨 4 未冻结:拖 vol ⇒ 每段只带 `manualVol`;`set_locked` 保留;
+    // `set_values` 只清被编辑段 —— 而且写的是**同一个值**,按值推断在这一步分不出变化,只有清标记
+    // 能让 vol 退出手动常值。
+    {
+        const CH = 4;
+        const lastOf = () => {
+            const f = [...seen.segments]
+                .reverse()
+                .find((x) => TT.segmentsOfCh(x, CH));
+            return f ? TT.segmentsOfCh(f, CH) : null;
+        };
+        seen.segments.length = 0;
+        const r1 = await bridge.setTrackManual(CH, "vol", -7);
+        check(
+            !!r1 && r1.ok === true && r1.replacedSegments >= 2,
+            `[SL-548] 前置:轨 4 走手动接管通道且段表多段;实得 ${JSON.stringify(r1)}`,
+        );
+        await sleep(30);
+        let segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments.every(
+                    (x) => x.manualVol === true && x.manualPan !== true,
+                ),
+            "[SL-548] 拖 vol ⇒ 每段只带 manualVol 标记",
+        );
+        eq(
+            [TT.manualDimOf(segs, "vol") !== null, TT.manualDimOf(segs, "pan")],
+            [true, null],
+            "[SL-548] vol 算手动常值、pan 不算",
+        );
+        seen.segments.length = 0;
+        eq(
+            await bridge.editSegment(CH, "set_locked", {
+                segIdx: 0,
+                locked: true,
+            }),
+            { ok: true },
+            "[SL-548] set_locked 受理",
+        );
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[0].locked === true &&
+                segs.segments[0].manualVol === true &&
+                TT.manualDimOf(segs, "vol") !== null,
+            "[SL-548] set_locked 保留手动标记,vol 仍算手动常值",
+        );
+        seen.segments.length = 0;
+        eq(
+            await bridge.editSegment(CH, "set_values", {
+                segIdx: 1,
+                volDb: -7,
+            }),
+            { ok: true },
+            "[SL-548] set_values 受理",
+        );
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[1].manualVol !== true &&
+                segs.segments[0].manualVol === true,
+            "[SL-548] set_values 只清被编辑段的标记",
+        );
+        eq(
+            TT.manualDimOf(segs, "vol"),
+            null,
+            "[SL-548] 有一段被 set_values 过(同值)⇒ vol 不再算手动常值",
+        );
+    }
+
     session.stop();
 }
 
