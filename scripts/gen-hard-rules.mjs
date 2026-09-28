@@ -15,8 +15,9 @@
 // 译文的家:docs/hard-rules.i18n.json。en/fr 无法由 zh 机器推导,但也不能散落在
 // 六个落地面上各写一份 —— 它们集中住在这一个文件里,并且每条带 zhSha256。zh 改了
 // 而译文没跟上时,--check / --write 都会指名道姓地报「译文已过期」,而不是默默把
-// 一条旧英文发到用户手册。fr 红字必须经人工审校后方可发布(05 §5:机翻安全警告
-// 发到公开产品是明确禁止项),审校状态记在 JSON 的 frReview 字段。
+// 一条旧英文发到用户手册。fr 红字必须经审校后方可发布(05 §5:未经审校的机翻安全警告
+// 发到公开产品是明确禁止项;审校可以是人工,也可以是经用户授权的 AI 三语交叉核对,见 J127),
+// 审校状态记在 JSON 的 frReview 字段。
 //
 // 用法:
 //   node scripts/gen-hard-rules.mjs            # = --write,重写 6 处落地面
@@ -263,14 +264,14 @@ function loadTranslations(source) {
                 " 没跟上:\n" +
                 stale.join("\n") +
                 "\n  处置:更新对应的 en/fr 译文,把 zhSha256 改成上面的「实际」值," +
-                "并把 fr 重新交人工审校(frReview 字段)。",
+                "并把 fr 重新交审校(frReview 字段改回 pending)。",
         );
     }
     if (json.frReview && json.frReview.status !== "reviewed") {
         console.warn(
-            "gen-hard-rules: [警告] fr 红字尚未人工审校(frReview.status=" +
+            "gen-hard-rules: [警告] fr 红字尚未审校(frReview.status=" +
                 json.frReview.status +
-                ")—— 发布前必须完成(05 §5 / 12 §1.2,审校人归属 U17)。",
+                ")—— 发布前必须完成(05 §5 / 12 §1.2;人工审校,或经用户授权的 AI 三语交叉核对,见 J127)。",
         );
     }
     return { title: json.title, byN };
