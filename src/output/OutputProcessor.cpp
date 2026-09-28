@@ -1554,6 +1554,12 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
         crvsPreserved_ = false; // 解除后不再恢复
         preservedCrvsChunk_.clear();
         crvsAtRejectEncoded_.clear();
+        // [SL-218 #307 复审] 横幅⑪ 那句「原数据会原样保留」从这一刻起不再成立 ⇒ 撤下。与保留态同一时机:
+        // 容器编码成功、新表确实写出去之后(编码失败什么都没写出,原数据仍在,横幅照旧成立)。
+        // 只在 CRVS 位是「rejected」时清:那正是保留态对应的那一支。CRVS 位是「missing」
+        // (之后又载了一份只带 PRMS 的预设)时,那条横幅说的是那份预设,不归这里管。
+        if ((stateNotRestoredMask_.load(std::memory_order_acquire) & scvb::output::kNotRestoredCrvsRejected) != 0)
+            stateNotRestoredMask_.store(0, std::memory_order_release);
     }
     destData.append(blob.data(), blob.size());
 }
@@ -1822,6 +1828,20 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
     installFeat(refSection, /*sidecar=*/true, static_cast<std::int64_t>(gz.size()));
 }
 
+// [SL-524][J122] 进入「CRVS 原样留底」态:记下没被采用的原始字节 + 此刻 live 表的编码(保存时拿它判
+// 「用户改过没有」,判据与理由见 crvsPreserved_ 的声明处)。调用方持 lifecycleMutex_。
+// 两个调用点:CRVS 在但 decodeCrvs 不收(排在版本名兜底之后,否则兜底本身会被当成「用户改过」);
+// [SL-219] CFGS 缺失 / 解不开、在读 CRVS 之前就早退(那两支不做版本名兜底)。
+void ScvbOutputAudioProcessor::holdRejectedCrvs(std::vector<std::uint8_t> raw)
+{
+    crvsPreserved_ = true;
+    preservedCrvsChunk_ = std::move(raw);
+    crvsAtRejectEncoded_.clear();
+    // 编码失败 = 留空。encodeCrvs 是确定性的:同一张表此刻编不出、之后也编不出(保存时走
+    // `!crvsEncoded` 那一支,照样写原字节);之后能编出来,说明表已经变了,判「改过」正是本意。
+    (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_);
+}
+
 void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks& chunks)
 {
     // 调用前提:**只在加载一份完整工程时调**(正常路径 = 函数最后一步;CFGS 损坏路径 = 那处
@@ -2037,6 +2057,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         stateAbiMismatch_ = true;
         stateAbiSeen_ = scvb::state::parseHeader(bytes, size, hdr) ? hdr.abi : 0u;
         preservedStateBlob_.assign(bytes, bytes + size);
+        // [SL-218 #307 复审] 上一份工程留下的横幅⑪ 撤掉:此后保存写回的是这份更高 abi 的原始 blob,
+        // 上一份工程的 CRVS 留底不会再写出去,⑪ 说的已不是当前工程(这一支由横幅④ 提示)。
+        // 容器损坏那一支不清:什么都没载入,上一份工程仍是当前工程,保存照旧写它的留底。
+        stateNotRestoredMask_.store(0, std::memory_order_release);
         DBG("SCVB Output: state abi " << stateAbiSeen_ << " > current " << scvb::state::kCurrentAbi
                                       << "; refusing load (upgrade required)");
         return;
@@ -2110,15 +2134,35 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         }
     }
 
+    // [SL-219②][SL-218] CFGS 缺失 / 解不开的两处早退**在读 CRVS 之前**:段表同样没恢复,诊断位
+    // 必须在这里也置上 —— 此前只在下面 CRVS 那一段赋值,而最常见的触发(轨道 / 参数预设只带
+    // PRMS,没有 CFGS)走的正是这里,诊断位停在上一次载入的值上。
+    // blob 里若带着 CRVS,它在这两支里**没被采用**:按 [SL-524][J122] 同一条口径原样留底
+    // (不留的话保存时拿 live 表覆盖它,横幅那句「原数据会原样保留」就是假话)。不带 CRVS 的
+    // (预设)不动保留态,与 [SL-217]「缺 chunk 不等于删除」同口径。
+    const auto markEarlyReturn = [this, &chunks](std::uint8_t cfgsBit) {
+        const scvb::state::Chunk* skipped = chunks.find(scvb::state::kFourccCrvs);
+        if (skipped != nullptr)
+        {
+            holdRejectedCrvs(skipped->payload);
+        }
+        stateNotRestoredMask_.store(
+            static_cast<std::uint8_t>(cfgsBit | (skipped != nullptr ? scvb::output::kNotRestoredCrvsRejected
+                                                                    : scvb::output::kNotRestoredCrvsMissing)),
+            std::memory_order_release);
+    };
+
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
     if (cfg == nullptr)
     {
+        markEarlyReturn(scvb::output::kNotRestoredCfgsMissing);
         return;
     }
     scvb::state::OutputState s;
     scvb::state::OutputDecodeReport report;
     if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s, &report))
     {
+        markEarlyReturn(scvb::output::kNotRestoredCfgsRejected);
         // [SL-226] 配置节损坏 ≠ 部分 blob。这是一份**完整工程**,只是 CFGS 坏了 —— 特征仍必须
         // 按本工程的 FEAT 处理,不能让上一个工程的波形留在 FrameStore 里冒充本工程的:
         // loadedChunks_ 上面已经换成本工程的了,不处理的话**下次保存会把上一个工程的特征
@@ -2312,8 +2356,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             rejectedCrvs = crvs->payload;
         }
     }
-    // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。
-    crvsNotRestored_ = !crvsLoaded;
+    // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。走到这里 CFGS 已解码成功,所以
+    // 位图只剩 CRVS 那一位(或 0);两处 CFGS 早退在上面 markEarlyReturn 里置。
+    stateNotRestoredMask_.store(crvsLoaded         ? std::uint8_t{0}
+                                : crvsChunkPresent ? scvb::output::kNotRestoredCrvsRejected
+                                                   : scvb::output::kNotRestoredCrvsMissing,
+                                std::memory_order_release);
     if (!crvsLoaded)
     {
         DBG("SCVB Output: [SL-217] 本次 state 未恢复段真身("
@@ -2338,12 +2386,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     }
     else if (crvsChunkPresent)
     {
-        crvsPreserved_ = true;
-        preservedCrvsChunk_ = std::move(rejectedCrvs);
-        crvsAtRejectEncoded_.clear();
-        // 编码失败 = 留空。encodeCrvs 是确定性的:同一张表此刻编不出、之后也编不出(保存时走
-        // `!crvsEncoded` 那一支,照样写原字节);之后能编出来,说明表已经变了,判「改过」正是本意。
-        (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_);
+        holdRejectedCrvs(std::move(rejectedCrvs));
     }
     crvsRevision_.fetch_add(1, std::memory_order_release);
 
