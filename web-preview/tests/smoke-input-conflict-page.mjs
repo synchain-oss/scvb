@@ -544,6 +544,24 @@ try {
         1,
         "③ 点击撞车只抖一次卡(RPC 返回值与 channelConflict 事件去重)",
     );
+    // 去重只配对「一次 RPC + 一次事件」,不能吞掉用户的第二次点击:等上一次抖动动画放完
+    // (--dur-shake .45s)后再点同一张卡,计数必须到 2。删除式(未提交,人工核过):把配对条件里
+    // `last.src !== src` 与 `!last.paired` 去掉(退回按时间窗滑动去重)⇒ 本条读到 1。
+    await sleep(600);
+    check(
+        await evaluate(
+            IN(
+                `const c = card(3); if (!c) return false; c.click(); return true;`,
+            ),
+        ),
+        "③ 再点一次通道卡 3",
+    );
+    await sleep(400);
+    eq(
+        await evaluate(IN(`return window.__sl19ShakeCount;`)),
+        2,
+        "③ 连点同一张被占的卡,第二下照常抖(去重不跨点击)",
+    );
     assertClean("③ 通道冲突反馈");
 
     // =========================================================================

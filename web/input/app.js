@@ -65,7 +65,7 @@ const store = {
         pendingRelease: false, // 释放确认条展开
         priorityLocal: null, // 优先级本地乐观值(等 scvb.config 回执让位)
         toastTimer: 0,
-        lastConflictFx: null, // [SL-462] 最近一次冲突抖卡 {ch,g,t},去重用
+        lastConflictFx: null, // [SL-462] 最近一次冲突抖卡 {ch,g,t,src,paired},去重用
     },
     // 本会话一次性判定([J80]:不入 state chunk、零桥、零契约)。
     // guideClosed 是首启链的**会话级**闸门:保证本次会话里语言卡与 mini tour 不重弹,
@@ -166,25 +166,33 @@ function shake(node) {
     );
 }
 
-/** 一次性 toast(占用冲突反馈 ch.occupied;自动消失)。 */
 /**
  * [SL-462 复审] 同一次冲突的抖卡去重。点击撞车时反馈有两条来路:setChannelId 的返回值
- * ({conflict:true})与随后一拍的 scvb.error{channelConflict}(先后顺序不定,mock 里事件在前)。
- * 同号同组、1.5s 内的第二次只刷新 toast,不再抖一次卡。返回 true = 这次该抖。
+ * (src="rpc")与随后一拍的 scvb.error{channelConflict}(src="event"),先后顺序不定(mock 里
+ * 事件在前)。**一对一配对**:另一来路、同号同组、1.5s 内、且尚未配对的那一次才跳过抖卡
+ * (toast 照常刷新);同一来路不去重 —— 用户连点同一张被占的卡,每一下都照常抖。
+ * 返回 true = 这次该抖。
  */
 const CONFLICT_FX_DEDUPE_MS = 1500;
-function claimConflictShakeDue(ch, g) {
+function claimConflictShakeDue(ch, g, src) {
     const now = Date.now();
     const last = store.local.lastConflictFx;
-    store.local.lastConflictFx = { ch, g, t: now };
-    return !(
+    if (
         last &&
+        !last.paired &&
+        last.src !== src &&
         last.ch === ch &&
         last.g === g &&
         now - last.t < CONFLICT_FX_DEDUPE_MS
-    );
+    ) {
+        last.paired = true;
+        return false;
+    }
+    store.local.lastConflictFx = { ch, g, t: now, src, paired: false };
+    return true;
 }
 
+/** 一次性 toast(占用冲突反馈 ch.occupied;自动消失)。 */
 function showOccupiedToast(channel, group) {
     const toast = $("input.toast.occupied");
     const text = $("input.toast.occupied.text");
@@ -419,7 +427,7 @@ async function claimChannel(ch) {
     const res = await call("setChannelId", ch);
     if (res && res.conflict === true) {
         const g = store.state.group_id || 1;
-        if (claimConflictShakeDue(ch, g)) shake(channelCardEl(ch));
+        if (claimConflictShakeDue(ch, g, "rpc")) shake(channelCardEl(ch));
         showOccupiedToast(ch, g);
     }
     render();
@@ -1034,7 +1042,7 @@ if (bridge) {
                 (e.detail && Number(e.detail.groupId)) ||
                 store.state.group_id ||
                 1;
-            if (ch >= 1 && claimConflictShakeDue(ch, g))
+            if (ch >= 1 && claimConflictShakeDue(ch, g, "event"))
                 shake(channelCardEl(ch));
             showOccupiedToast(ch, g);
         }
