@@ -3140,7 +3140,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         "P2-9 disabled 只表示写权限缺失",
     );
     check(
-        /"data-analyze-nodata",\s*\n?\s*analyzeNoData\(p, totals\.n\) \? "1" : "0",/.test(
+        /"data-analyze-nodata",\s*\n?\s*analyzeNoData\(p, totals\.n, previewTracks\) \? "1" : "0",/.test(
             master,
         ),
         "P2-9 无数据改由独立属性承载(空态原因句照旧出)",
@@ -3537,6 +3537,33 @@ log(
         VC.VIZ_GLOBAL_WIDTH_FALLBACK,
         TM.PARAM_DEFAULTS.width,
         "Monitor 拿不到值的回落 == Output 参数缺省 —— 两页在「都没有值」时也画同一张图",
+    );
+}
+// =============================================================================
+// [rc-misc c] Monitor 的 setLang / commitUiScale 写系统级全局默认(与 Output/Input 同口径)。
+// MonitorEditor.cpp 编不进任何测试目标(要真 WebView2),读默认那一半由 scvb_monitor_tests 的
+// 「新实例读语言/缩放的系统级全局默认」用例钉;这里钉写的那一半(行形态锚,注释掉即不匹配)。
+// =============================================================================
+{
+    const me = src("src/monitor/MonitorEditor.cpp");
+    const bodyOf = (name) => {
+        const start = me.indexOf(`void MonitorEditor::${name}(`);
+        if (start < 0) return "";
+        const rest = me.slice(start);
+        const end = rest.indexOf("\nvoid MonitorEditor::", 1);
+        return end < 0 ? rest : rest.slice(0, end);
+    };
+    const lang = bodyOf("handleSetLang");
+    check(
+        /^[ \t]*scvb::uidefaults::setLangGlobal\(lang\(\)\);/m.test(lang) &&
+            /^[ \t]*scvb::uidefaults::setLangChosenGlobal\(true\);/m.test(lang),
+        "[rc-misc c] MonitorEditor::handleSetLang 写语言全局默认(与 Output/Input 同一份)",
+    );
+    check(
+        /^[ \t]*scvb::uidefaults::setUiScalePercentMonitor\(percent\);/m.test(
+            bodyOf("persistUiScaleAsDefault"),
+        ),
+        "[rc-misc c] MonitorEditor::persistUiScaleAsDefault 写 Monitor 缩放全局默认(按角色分键)",
     );
 }
 // =============================================================================

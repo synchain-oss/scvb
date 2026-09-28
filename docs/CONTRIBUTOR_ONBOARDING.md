@@ -1,6 +1,6 @@
 # CONTRIBUTOR_ONBOARDING —— 新贡献者上手
 
-> **目标**:一个从没碰过 JUCE 的 C++ 开发者,照本文从零操作,**30 分钟内**(不含下载时间)构建出两个 `.vst3` 并跑通单测。
+> **目标**:一个从没碰过 JUCE 的 C++ 开发者,照本文从零操作,**30 分钟内**(不含下载时间)构建出三个 `.vst3` 并跑通单测。
 > 读完本文再看 [CONTRIBUTING.md](../CONTRIBUTING.md)(协作规则)与 [CLAUDE.md](../CLAUDE.md)(常驻法条,§6 是工具链清单的单一真源)。
 
 SCVB 目前只支持 **Windows 10/11 x64**。macOS / Linux 不在 v1 范围内 —— UI 依赖 WebView2,IPC 依赖 Windows 命名共享内存段。
@@ -54,13 +54,13 @@ pwsh scripts/build.ps1 -Target Output -Config Debug -SkipTests
 ```
 
 `build.ps1` 会先做依赖预检(cmake / MSVC / JUCE tag),缺什么直接告诉你缺什么,不会让你对着一屏 CMake 报错猜。
-产物在 `build/` 下,两个 bundle:`SCVBInput.vst3` 与 `SCVBOutput.vst3`(都是**目录**,不是单文件)。
+产物在 `build/` 下,三个 bundle:`SCVB Input.vst3`、`SCVB Output.vst3` 与 `SCVB Monitor.vst3`(都是**目录**,不是单文件;路径形如 `build/src/input/SCVBInput_artefacts/Release/VST3/SCVB Input.vst3`)。
 
 ## 4. 装到 DAW 里
 
-`-Install` 会把两个 bundle 复制到 `C:\Program Files\Common Files\VST3\`(需要管理员权限)。手动装也行,直接整目录复制过去即可。
+`-Install` 会把三个 bundle 复制到 `C:\Program Files\Common Files\VST3\`(需要管理员权限)。手动装也行,直接整目录复制过去即可。
 
-装完在 DAW 里重新扫描插件。**装的时候两个都要装**,且**两端请保持同一发布版本**;共享内存契约(`abi`)不匹配会**拒绝连接并提示升级**(这是设计,不是 bug —— 见 `src/core/ipc/Registry.cpp` 的 `kAbiMismatch`)。
+装完在 DAW 里重新扫描插件。**Input 与 Output 两个都要装**(Monitor 可选),且**所有 SCVB 插件请保持同一发布版本**;共享内存契约(`abi`)不匹配会**拒绝连接并提示升级**(这是设计,不是 bug —— 见 `src/core/ipc/Registry.cpp` 的 `kAbiMismatch`)。
 
 用法上的硬约束(路由、插槽位置、宿主 pan 居中等)见用户手册 `docs/USER_GUIDE.md` 的九条硬约束。**开发时也请照着摆** —— 大部分「插件没反应」的自查最后都落在这九条上。
 
@@ -84,13 +84,14 @@ pwsh web-preview/serve.ps1 -Open      # 固定端口 8823,起服并打开导航�
 | `src/core/` | `scvb_core` 静态库:DSP、分析、IPC、state。**不链接 JUCE 插件层,能离线单测** |
 | `src/input/` | SCVB Input 插件(装人声轨);`InputBridgeApi.h` 是它的桥常量表 |
 | `src/output/` | SCVB Output 插件(装人声总线);`OutputBridgeApi.h` 同上 |
-| `src/plugin-common/` | 两插件共用的 WebView2 装配层(INTERFACE 库,源编入各插件) |
+| `src/monitor/` | SCVB Monitor 插件(可选,只读旁观窗口);`MonitorBridgeApi.h` 同上 |
+| `src/plugin-common/` | 三个插件共用的 WebView2 装配层(INTERFACE 库,源编入各插件) |
 | `web/` | 插件 UI 的**唯一真源**;`web/shared/i18n.js` 是三语文案唯一真源 |
 | `web-preview/` | 浏览器预览壳 + mock 桥后端(见 §5) |
 | `tests/` | Catch2 单测 + L1 IPC 契约测试 + `tests/tools/` 的验证工具 |
 | `docs/` | 契约与手册;`docs/constitution/` 是宪法原文的**只读副本** |
 
-**先看哪三个文件**:`docs/ARCHITECTURE.md`(全局)、`docs/SCVB_CONTRACT.md`(JS↔C++ 桥契约,冻结)、`docs/IPC_CONTRACT.md`(两插件之间的共享内存布局,冻结)。
+**先看哪三个文件**:`docs/ARCHITECTURE.md`(全局)、`docs/SCVB_CONTRACT.md`(JS↔C++ 桥契约,冻结)、`docs/IPC_CONTRACT.md`(插件之间的共享内存布局,冻结)。
 
 ## 7. 我该从哪个 issue 开始
 

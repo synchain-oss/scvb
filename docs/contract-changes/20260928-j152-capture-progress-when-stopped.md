@@ -72,7 +72,7 @@ follow 态、从未采集、播放头在 0 时窗口为空。周期帧在这时�
 - `tests/core/test_segment_edit_service.cpp`:`captureProgressWindow` 的四个分支(纯函数)。
 - `web-preview/tests/smoke-tab2-interactions.mjs` [J152] 源码钉子:editor 的五个落点(首帧置闩锁、闩锁传进来、
   不可见先返回、要过帧才清闩锁、clearCoverage 受理后作废基线 + 置闩锁)。
-- `web-preview/tests/smoke-output-stale-page.mjs` ⑧(页面级,真浏览器):`captured-unanalyzed` 场景停着装载 ⇒
+- `web-preview/tests/smoke-output-stale-page.mjs` 末尾的 [J152] 一节(页面级,真浏览器):`captured-unanalyzed` 场景停着装载 ⇒
   Tab1 覆盖率行有数、原因句收起;停着清光覆盖 ⇒ 原因句回来、覆盖率行收起。
 - `web-preview/tests/smoke-tab1-interactions.mjs`:`coveragePercent` 在全量帧下不被 0% 轨稀释。
 - 删除式记录见 PR 描述。
