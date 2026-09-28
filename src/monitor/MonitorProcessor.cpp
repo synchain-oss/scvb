@@ -8,6 +8,7 @@
 #include "MonitorEditor.h"
 #endif
 
+#include "UiDefaultsStore.h" // [rc-misc c] 语言/缩放的系统级全局默认(与 Output/Input 共用一份存储)
 #include "ipc/GroupProbe.h"
 #include "state/InputStateCodec.h"
 
@@ -41,6 +42,14 @@ ScvbMonitorAudioProcessor::ScvbMonitorAudioProcessor()
     setLatencySamples(0); // 纯直通:不报任何 latency
     // 参数面:一个都不建。Output 的 123 冻结参数与本插件无关(J75:Monitor 0 自动化参数)。
     jassert(getParameters().isEmpty());
+
+    // [rc-misc c] 系统级全局默认(与 Output/Input 同口径「工程 > 全局默认」:带 state 的工程会在
+    // setStateInformation 里覆盖回去)。此前 Monitor 不读它,新实例恒中文、恒 100%。
+    // 两个 setter 自带归一化/夹取,落盘值不可信也不会越界。
+    if (const juce::String defaultLang = scvb::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+        setUiLanguage(defaultLang);
+    if (const int defaultScale = scvb::uidefaults::uiScalePercentMonitor(); defaultScale > 0)
+        setUiScalePercent(defaultScale);
 }
 
 ScvbMonitorAudioProcessor::~ScvbMonitorAudioProcessor()
@@ -274,8 +283,8 @@ void ScvbMonitorAudioProcessor::setUiLanguage(const juce::String& lang)
 {
     // 自己归一化,不假设调用方做过(§1.30:未知 code 回退 zh)。桥入口已经 normalize 过一次,
     // 但 setStateInformation 那条路的字节来自工程文件 —— 不可信。
-    // 这里不调 scvb::bridge::normalizeLang:那会把 plugin-common 拖进离线单测目标
-    // (scvb_monitor_tests 刻意只编 MonitorProcessor.cpp),口径三行写死更省。
+    // 这里不调 scvb::bridge::normalizeLang:那会把 BridgeBase.cpp 拖进离线单测目标
+    // (scvb_monitor_tests 只编 MonitorProcessor.cpp 与 UiDefaultsStore.cpp),口径三行写死更省。
     uiLanguage_ = (lang == "en" || lang == "fr") ? lang : juce::String("zh");
 }
 
