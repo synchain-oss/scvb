@@ -54,12 +54,14 @@ add_executable(scvb_tests
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp
   core/test_features_snapshot.cpp
+  core/test_wave_valleys.cpp
   core/test_segment_edit.cpp
   core/test_audio_ring.cpp
   core/test_output_stage.cpp
   core/test_input_state.cpp
   core/test_input_session.cpp
   core/test_input_bridge_ipc.cpp
+  core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
   core/test_output_session.cpp
@@ -283,6 +285,8 @@ target_include_directories(scvb_input_bridge_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/src/plugin-common
   ${CMAKE_SOURCE_DIR}/src/core
 )
+# [SL-463] 源码级判据读 src/input/InputEditor.cpp 的文本(InputEditor 本身不编入,理由见上)。
+target_compile_definitions(scvb_input_bridge_tests PRIVATE SCVB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 if(MSVC)
   target_compile_options(scvb_input_bridge_tests PRIVATE /W4 /utf-8 /EHsc)
@@ -314,6 +318,7 @@ endif()
 if(WIN32)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
+  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp

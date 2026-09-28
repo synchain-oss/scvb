@@ -24,6 +24,7 @@
 #include "output/StateRestoreDiag.h" // [SL-218] 未恢复节位图(JUCE-free)
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
+#include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
@@ -95,7 +96,8 @@ struct OutputRuntimeState
     // [SL-472] 除 `sourceChannels` 外七项**随工程保存**(CFGS 第五档,abi 5→6):`getStateInformation`
     // 写、`setStateInformation` 恢复,值域由 codec 校验。**下面的初值同时是旧工程(abi≤5)与坏值的回落值**
     // —— `OutputStateCodec.h` 的 `OutputChannelState` 逐项抄了这一组;改这里的初值要连着那边一起改
-    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。
+    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。[J150] `autoLabel` **不在这一组**:它不进 CFGS,
+    // 随 PRMS 走(见该字段的注释)。
     struct Channel
     {
         bool enabled = true;
@@ -107,6 +109,13 @@ struct OutputRuntimeState
         bool leadLock = false;
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
+        // [J150] 最近一次**自动**填进 label 的 DAW 轨道名(空 = 没有)。「label 是不是用户亲手起的」
+        // 不另存标志位,而是由这两者**推导**(见 labelFollowsTrackName):label 为空、或仍等于上次自动填的
+        // 名字 ⇒ 跟随轨道名;否则 ⇒ 用户命名,不再被轨道名覆盖。于是桥面 setChannelConfig、撤销、载入
+        // 改 label 时都不用同步任何标志 —— 改成别的名字自然成了用户命名,清空自然回到自动。
+        // 不进 CFGS:随工程存在 PRMS 根节点属性 `channels_auto_label`(见 OutputUiState.h)。
+        juce::String autoLabel;
+        bool labelFollowsTrackName() const { return label.isEmpty() || label == autoLabel; }
 
         // 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
         //
@@ -135,8 +144,13 @@ struct OutputRuntimeState
     std::array<Channel, scvb::engine::kNumTracks> channels;
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)
-    juce::String activeTab = "master";
-    // 首启已读位是本结构里**唯一跨线程**的两个字段:自 T37 起它们随 PRMS 持久化,
+    //
+    // [J148] active_tab 自本版起随 PRMS 持久化(§1.31「重开面板恢复上次 tab」),于是它与下面
+    // 几位一样跨线程:宿主线程的 get/setStateInformation 读写、消息线程的 setActiveTab 桥入口写、
+    // 25Hz 的 buildStateSubtree 读。故存**序号**进 atomic(juce::String 装不进 atomic),名字 ⇄ 序号
+    // 的换算只在 OutputUiState.h 一处。单字段、无跨字段不变式,写方不需要持 lifecycleMutex_。
+    std::atomic<scvb::output::OutputActiveTab> activeTab{scvb::output::OutputActiveTab::kMaster};
+    // 首启已读位同样跨线程:自 T37 起它们随 PRMS 持久化,
     // 于是宿主线程的 setStateInformation 会写、消息线程 25Hz 的 buildStateSubtree 会读。
     // 用 atomic 而不是让读方去抢 lifecycleMutex_ —— 25Hz 的 emit 路径不该为两个 bool
     // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。
@@ -256,6 +270,14 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
+    // [J150] 宿主标识(闭集 "reaper" / "live" / "cubase" / "other",取值口径见 HostId.h)。
+    // 桥面 §1.1 快照的 `host` 取这里;构造期判定一次,实例寿命内不变。
+    const char* hostId() const { return hostId_; }
+    // [J150] **仅供测试**:让**之后构造**的实例按指定宿主类型判定;传 std::nullopt 恢复按真实宿主判定。
+    // 为什么需要它:harness 进程本身不是任何 DAW,不注入就只测得到 "other" 那一支 ——
+    // 把构造函数里那一行判定换成常量 "other",用例照样全绿。生产代码不得调用。
+    // 与 setSidecarBaseDirForTesting 同款(进程级静态、单测线程写)。
+    static void setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type);
     // [SL-233] **仅供测试**:把 sidecar 落盘根目录改到临时目录,避免单测写真实用户会话目录
     // (崩溃即残留、并行 worktree 互相串扰)。传空 path 恢复默认位置。生产代码不得调用。
     // 与 uidefaults::setStorageDirForTesting 同款(那处的理由逐条适用)。
@@ -419,6 +441,39 @@ public:
     };
     CoverageInfo coverageOf(int channel, double startS, double endS);
 
+    // [M] §2.7 `scvb.captureProgress` 的一帧(这一帧该带哪些轨、各带什么)。
+    //
+    // 放在 processor 而不是 editor:editor 编不进任何 C++ 测试目标(要真 WebView2),
+    // 放这里 host harness 才能拿真采集、真存盘重开的数据直接断言帧内容([J152])。
+    // editor 只管「什么时候要一帧」(周期 / 两个例外)与序列化。
+    //
+    // 增量基线归调用方持有(editor 一份;测试自己一份),本函数按本帧结果推进它。
+    struct CaptureProgressBaseline
+    {
+        std::array<std::vector<scvb::analysis::HopRange>, 15> ranges{}; // 上一帧已报过的覆盖区间
+        std::array<float, 15> pct{}; // 上一帧已报过的覆盖率
+        // clearCoverage 之后作废:否则下一帧的差集会把已被清掉的区间当成仍在,覆盖条撤不下去。
+        // pct 落哨兵 −1:与任何真实百分比都不等。
+        void reset()
+        {
+            for (auto& r : ranges)
+                r.clear();
+            pct.fill(-1.0f);
+        }
+    };
+    struct CaptureProgressTrack
+    {
+        int ch = 0; // 1..15
+        std::vector<scvb::analysis::HopRange> added; // 相对基线新增的区间(hop 域)
+        float pct = 0.0f; // 0..100
+    };
+    // forceFull=false:周期帧 —— **只在播放中**出帧,且只带本帧有变化的轨(§2.7)。
+    // forceFull=true :[J152] 两个例外帧(mBridgeReady 后首帧 / clearCoverage 受理后)——
+    //   **不看走带**,15 轨全带;分母窗口为空(follow 档、从未采集、播放头在 0)时各轨 0% 照发,
+    //   否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    // 返回空 = 这一拍不发。分母窗口见 `AnalyzeScopeMath.h` 的 `captureProgressWindow`。
+    std::vector<CaptureProgressTrack> captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull);
+
     // [SL-252 / SL-257] 某段的**上报响度** L_seg(§2.8 `loudnessLufs`),emit 时按 FEAT 重算。
     // 此前上桥恒为 `0.0`:`applyAnalysisSegments` 把 `AnalysisSegment` 抄进 `state::Segment`
     // 时丢掉了它,而 `state::Segment` 没有响度字段(宪法 params-v0 定死持久化段字段),
@@ -452,8 +507,17 @@ public:
         std::vector<double> maxDb;
         std::vector<int> vad;
         std::vector<int> covered;
+        // [J145] §1.27 `valleys[]`:[startS,endS) 内的吸附谷时刻(秒,升序,至多 cols 个)。
+        // 算法与口径见 `analysis/WaveValleys.h`;门槛取当前 `runtime_.segmentationSensitivity`
+        // (与 S1 谷切分候选同一条 minDepth)。未覆盖 / 已覆盖跨度超上限 ⇒ 空。
+        std::vector<double> valleys;
     };
     WaveformTile waveformOf(int channel, double startS, double endS, int cols);
+    // [J145] 瓦片 → §1.27 回包 `{minDb,maxDb,vad,covered,stale,passId,valleys}`(字段序与契约一致)。
+    // 放在 processor 而不是 OutputEditor:编辑器依赖 WebView2、不在 host 套件的 TU 清单里,
+    // 拼装留在那边的话「谷点有没有真的进回包」离线永远测不到 —— 而此前坏的恰恰是这一跳。
+    // stale / passId 这一版恒 0(见实现处注释)。纯函数,不取锁。
+    static juce::var waveformResponse(const WaveformTile& tile);
 
     // [M] 已采集内容的时间线右端(秒)= 全轨 coverage 的最大终点;无采集数据回 0。
     // follow 档下「分析全部」的终点取它,而不是当前播放头 —— 见 parseAnalyzeScope 的头注。
@@ -595,7 +659,19 @@ public:
     scvb::state::SegmentEditResult editSegment(int track, const scvb::state::SegmentEditArgs& args);
     // 成功返回 true;replacedSegments/replacedLocked = 替换前的段数 / 锁定段数(供确认条计数)。
     bool setTrackManual(int ch, bool isPan, float value, int& replacedSegments, int& replacedLocked);
+    // 松手提交(§1.17):一次调用 = 一条撤销步。[J157] 顺带撤掉拖动预览(提交的点表与最后一份
+    // 预览相同时 authority 沿用那张表,音频不开淡入窗口;不同就烘新表、照常淡入)。
     void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // [J157 / SL-447] 拖动预览(契约 §1.37 `previewPanCurve`;消息线程)。**不是** CRVS 事务:
+    // 不写 crvsData_、不进撤销栈、不落盘、不回推 scvb.state。受理但这一拍没发出去(限速 / 回收闸,
+    // 见 OutputAuthority::pumpPanCurvePreview)⇒ 起一个 kPanPreviewRetryMs 的重试定时器,
+    // 直到发出去或被撤掉 —— 手指停在半路就不会再有新请求,不重试的话最后那一下永远听不到。
+    scvb::output::OutputAuthority::PanCurvePreviewRequest
+    previewPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // 撤掉拖动预览,音频回到已提交那张(§1.37 的 `points = null`;编辑器关掉时也调)。
+    void cancelPanCurvePreview();
+    // 单测 / 诊断:还有没有待发的预览(重试定时器在不在转,看的就是它)。
+    bool panCurvePreviewPending();
     // 设置过渡 ramp(ms):值变化才重建全部曲线并重新发布(transitionRampSec 烘焙进 CurveEvaluator)。
     // 返回 true = 值已变化并重建(PR#55 第5轮缺陷2)。
     bool setTransitionRamp(float ms);
@@ -716,6 +792,12 @@ private:
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
 
+    // [M] [J150] Input 经 ctrl 段轨道名区带来的 DAW 轨道名 → 「用户没改过名」的通道的 label。
+    // 只在本实例 kActive 时做(只读观察实例不改配置,与 publishConfigBroadcast 同口径);
+    // 已连接、归属对得上、名字非空才采信(三道门在 OutputSession::readOwnedTrackName)。
+    // 有变化返回 true(调用方 bump config_seq,广播区 / UI / 存档一起跟上)。
+    bool applyTrackNames(scvb::u64 nowMs);
+
     // [M] 非阻塞回收退休的分析作业(每拍一次;线程还在跑就留到下一拍)。
     void reapRetiredJobs();
     // [M] **阻塞**回收:只在析构调用 —— 见析构里的行注(R5 的不变式全靠它)。
@@ -804,6 +886,11 @@ private:
     // 的 kVizPollHz 注释),不能在写方这边再犯一次。60Hz 驱动 33ms 闸门 = 稳定每两拍一帧 = 30.0Hz。
     // 未到闸门的那一拍在 `publishVizFrame` 的 `due()` 处早退:不采输入、不构造任何东西。
     std::unique_ptr<juce::TimedCallback> vizTimer_;
+    // [J157] 拖动预览的重试定时器:**只在有待发预览时转**,发出去 / 被撤掉即自停。
+    // 10 ms 而不是 50 ms:限速闸门本身是 50 ms,重试若也按 50 ms 走就会与闸门同频不同相
+    // (上面 vizTimer_ 那条注释讲的同一个坑),某拍差 1 ms 没够着就要多等一整拍。
+    std::unique_ptr<juce::TimedCallback> panPreviewTimer_;
+    static constexpr int kPanPreviewRetryMs = 10;
 
     // 取值仲裁 + 平滑(T16/DspArbiter + T18 版本层)。
     scvb::output::OutputAuthority authority_;
@@ -838,6 +925,8 @@ private:
     // 存取口径与相邻的 uiLanguage_ / masterChartMode_ 逐字相同(同样由 setStateInformation 写、
     // 桥面按值读),不另立一套同步纪律。
     juce::String sessionGuid_;
+    // [J150] 宿主标识:构造期写一次、之后只读;指向 HostId.h 里的字符串字面量(静态寿命)。
+    const char* hostId_ = "other";
 
     // T29:桥面运行时 state + CRVS 段真身(消息线程独占)。
     OutputRuntimeState runtime_;

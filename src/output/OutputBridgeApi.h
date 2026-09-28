@@ -10,8 +10,8 @@
 namespace scvb::outputbridge
 {
 
-// JS -> C++ 原生函数名(契约 §1,共 36 个;requestInitialState/setLang/setUiScale/commitUiScale
-// 四个通用函数由 WebViewHost 装配,其余 32 个由 OutputEditor 注册)。
+// JS -> C++ 原生函数名(契约 §1,共 37 个;requestInitialState/setLang/setUiScale/commitUiScale
+// 四个通用函数由 WebViewHost 装配,其余 33 个由 OutputEditor 注册)。
 namespace Fn
 {
 inline constexpr const char* RequestInitialState = "requestInitialState";
@@ -31,6 +31,7 @@ inline constexpr const char* EndParamGesture = "endParamGesture";
 inline constexpr const char* SetChannelConfig = "setChannelConfig";
 inline constexpr const char* SetTrackManual = "setTrackManual";
 inline constexpr const char* SetPanCurve = "setPanCurve";
+inline constexpr const char* PreviewPanCurve = "previewPanCurve"; // [J157] §1.37 拖动预览
 inline constexpr const char* SetVadParams = "setVadParams";
 inline constexpr const char* SetSegmentation = "setSegmentation";
 inline constexpr const char* SetTransitionRamp = "setTransitionRamp";

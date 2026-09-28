@@ -45,6 +45,7 @@
 #include "UiDefaultsStore.h" // [SL-208] 缩放档位全局默认
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
+#include "ipc/CtrlPlane.h" // [SL-463] CtrlHeader / kCtrlSegmentSize(坏 ctrl 段夹具)
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
 #include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
@@ -57,6 +58,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional> // [J148] withPrmsRoot 的编辑回调
 #include <limits>
 #include <set> // [SL-231] GestureSpy 的配对校验
 
@@ -105,7 +107,12 @@ public:
         {
             p.setBpm(bpm);
         }
-        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0));
+        // [J147] 拍号默认**不给**:既有用例的快照一个字段都不变,只有 J147 那几格显式打开。
+        if (haveTimeSig)
+        {
+            p.setTimeSignature(TimeSignature{timeSigNum, timeSigDen});
+        }
+        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0) + ppqOffset);
         if (haveLoop)
         {
             LoopPoints lp;
@@ -125,6 +132,10 @@ public:
     double bpm = 120.0;
     double loopStartPpq = 0.0;
     double loopEndPpq = 0.0;
+    bool haveTimeSig = false; // [J147] 见 getPosition
+    int timeSigNum = 4;
+    int timeSigDen = 4;
+    double ppqOffset = 0.0; // [J147] 让 ppq 与「秒×bpm/60」错开,证明发出去的是宿主的 ppq 而不是自己算的
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
@@ -321,6 +332,141 @@ TEST_CASE("HOST L-5:宿主循环区经 playhead 快照可见并可换算成秒",
     r.ph.looping = false;
     r.runBlocks(4);
     CHECK((r.out.playheadSnapshot().flags & scvb::engine::kPlayheadCycleValid) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [J147] Tab1 手动范围按小节显示:宿主 AudioPlayHead 的 bpm / 拍号 / 拍位置 →
+// processBlock 发布进 playhead 快照 → hostTempoOf 取成 `scvb.playhead` 的四个可选字段
+// (契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。OutputEditor::emitPlayhead 只是把
+// hostTempoOf 的结果逐项 put 出去(不在任何测试目标里;字段名与契约的对拍归
+// check-bridge-parity 的载荷对拍一节)。
+// 断言一律用 CHECK:同一格里几条互相独立,REQUIRE 一红会把后面「仍绿」的那几条一起藏掉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.playhead 的速度字段", "[host][j147]")
+{
+    Rig r;
+    // 停在 8 s 处(停带时宿主照样给速度与位置 —— J147「停带时用最后一次读到的值」的来源)。
+    r.ph.playing = false;
+    r.ph.timeSamples = static_cast<std::int64_t>(8.0 * kSr);
+    r.ph.bpm = 120.0;
+    r.ph.haveTimeSig = true;
+    r.ph.timeSigNum = 3;
+    r.ph.timeSigDen = 4;
+    // ppq 故意不等于「秒 × bpm / 60」:发出去的必须是宿主给的拍位置,不是插件自己推的。
+    r.ph.ppqOffset = 0.5;
+
+    SECTION("① bpm + 拍号 + 拍位置齐全 ⇒ 四个字段都在,且 ppq 与 timeS 出自同一块")
+    {
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u);
+        CHECK(pod.timeSigNum == 3);
+        CHECK(pod.timeSigDen == 4);
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK(t.bpm == 120.0);
+        CHECK(t.timeSigNum == 3);
+        CHECK(t.timeSigDen == 4);
+        CHECK(t.ppqValid);
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr));
+        CHECK(t.ppq == Catch::Approx(16.5)); // 8 s × 2 拍/s + 0.5
+    }
+
+    SECTION("② 宿主只给 bpm、不给拍号 ⇒ 四个字段都不发(页面按秒显示)")
+    {
+        r.ph.haveTimeSig = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) == 0u);
+        CHECK((pod.flags & scvb::engine::kPlayheadTempoValid) != 0u); // 对照:bpm 本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
+    }
+
+    SECTION("③ 宿主只给拍号、不给 bpm ⇒ 四个字段都不发")
+    {
+        r.ph.haveBpm = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u); // 对照:拍号本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
+    }
+
+    SECTION("④ 宿主不给时间线 ⇒ bpm/拍号照发,ppq 不发(timeS 此时是填的 0,不能当锚点)")
+    {
+        r.ph.haveTime = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples < 0);
+        CHECK((pod.flags & scvb::engine::kPlayheadMusicValid) != 0u); // 对照:ppq 本身是到了的
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+    }
+
+    SECTION("⑤ 插件停用后 ⇒ bpm/拍号照发,ppq 不发(timeS 此时按采样率 0 换成了 0.0)")
+    {
+        // [PR #325 复审] releaseResources 补发一帧「只清 playing 位」的快照([SL-527]),
+        // ppq 仍是停用前的真实位置,而处理器采样率已回 0 ⇒ emitPlayhead 算出的 timeS = 0.0。
+        r.runBlocks(2);
+        r.out.releaseResources();
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr)); // 对照:位置还在
+        CHECK(pod.sampleRate == kSr); // 对照:快照里记着发布时的采样率
+        CHECK(r.out.sampleRate() == 0.0); // 对照:处理器这边已经回 0
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+        r.out.prepareToPlay(kSr, kBlock); // 还给 Rig 的析构一个已 prepare 的处理器
+    }
+}
+
+TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「宿主没给」处理", "[host][j147]")
+{
+    scvb::engine::PlayheadPod ok;
+    ok.flags =
+        scvb::engine::kPlayheadTempoValid | scvb::engine::kPlayheadTimeSigValid | scvb::engine::kPlayheadMusicValid;
+    ok.bpm = 97.5;
+    ok.timeSigNum = 6;
+    ok.timeSigDen = 8;
+    ok.timeSamples = 0;
+    ok.ppq = 0.0;
+    REQUIRE(scvb::engine::hostTempoOf(ok, ok.sampleRate).valid); // 对照格:下面每一格只改一个字段
+
+    auto withBpm = [&](double v) {
+        auto p = ok;
+        p.bpm = v;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
+    };
+    CHECK_FALSE(withBpm(0.0));
+    CHECK_FALSE(withBpm(-120.0));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::infinity()));
+    CHECK_FALSE(withBpm(scvb::engine::kHostTempoMaxBpm + 1.0));
+    CHECK(withBpm(scvb::engine::kHostTempoMaxBpm));
+
+    auto withSig = [&](int n, int d) {
+        auto p = ok;
+        p.timeSigNum = n;
+        p.timeSigDen = d;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
+    };
+    CHECK_FALSE(withSig(0, 4));
+    CHECK_FALSE(withSig(4, 0));
+    CHECK_FALSE(withSig(-3, 4));
+    CHECK_FALSE(withSig(scvb::engine::kHostTimeSigMax + 1, 4));
+    CHECK_FALSE(withSig(4, scvb::engine::kHostTimeSigMax + 1));
+    CHECK(withSig(scvb::engine::kHostTimeSigMax, scvb::engine::kHostTimeSigMax));
+
+    auto nanPpq = ok;
+    nanPpq.ppq = std::numeric_limits<double>::quiet_NaN();
+    CHECK(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).valid); // bpm/拍号照发
+    CHECK_FALSE(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).ppqValid); // ppq 不发
+
+    // 换算 timeS 用的采样率与快照发布时的对不上 ⇒ ppq 不发(bpm/拍号照发)
+    CHECK(scvb::engine::hostTempoOf(ok, ok.sampleRate).ppqValid); // 对照
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, 0.0).ppqValid);
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, ok.sampleRate / 2.0).ppqValid);
+    CHECK(scvb::engine::hostTempoOf(ok, 0.0).valid);
 }
 
 // ---------------------------------------------------------------------------
@@ -3166,6 +3312,108 @@ TEST_CASE("HOST P0-4:已采集区间的波形瓦片带真实包络", "[host][t37
 }
 
 // ---------------------------------------------------------------------------
+// [J145] requestWaveform 的 `valleys[]`(边界拖拽吸附的数据面)。
+// 此前 OutputEditor 回的是一个**从不填**的空数组,tab-wave 的 snapBoundary 读的就是它 ⇒
+// tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,web 冒烟一直绿)。
+// 这里走整条链:Input 真采一段「响 · 静 · 响」→ IPC → Output FrameStore → waveformOf 的瓦片。
+// 再往下一跳:瓦片 → §1.27 回包(`waveformResponse`,OutputEditor::handleRequestWaveform 原样 resolve 它)。
+// 编辑器那一行 `c(waveformResponse(waveformOf(...)))` 本身要真 WebView2,不在本套件 TU 清单里;
+// 页面拿到回包之后「拖动吸附 / Alt 关吸附」那一半走 mock:smoke-valley-snap-page.mjs。
+// 判据:窗里**恰有一个**谷点、落在静音段内、离静音段中心不超过 kTolS;回包里的 valleys 与之逐个相同。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:采一段响-静-响,瓦片的 valleys 恰有一个谷点落在静音段中心", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    const std::int64_t quietT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.0f); // 30 × 512 / 48k = 320 ms 数字静音
+    const std::int64_t quietT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(quietT0) / kSr;
+    const double q1 = static_cast<double>(quietT1) / kSr;
+    const double mid = 0.5 * (q0 + q1);
+    // 前置:窗两侧都真被采到了(否则「没谷」与「没数据」分不开)。
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    const auto tile = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("quiet=[" << q0 << "," << q1 << ") mid=" << mid << " valleys=" << tile.valleys.size()
+                   << " first=" << (tile.valleys.empty() ? -1.0 : tile.valleys.front()));
+    REQUIRE(tile.valleys.size() == 1); // ← 修复前恒 0
+    CHECK(tile.valleys[0] > q0);
+    CHECK(tile.valleys[0] < q1);
+    // 容差 kTolS 的来历:静音一开始,K 加权滤波器的余振还要衰减一段才落到量化地板 −120 dB,
+    // 谷底平坦区因此整体偏后(谷点 = 平坦区中心)。实测(本机 Release)谷点比静音段中心**晚 27 ms**
+    // (静音段 [1.088, 1.408) s、中心 1.248、谷点 1.275)。60 ms 约为静音段中间三分之一的半宽:
+    // 盖得住余振,又能把「谷点落在静音段边缘(±160 ms)/ 落到响段里」判红。
+    constexpr double kTolS = 0.06;
+    CHECK(std::abs(tile.valleys[0] - mid) <= kTolS);
+
+    // 回包:七个字段都在,六列与 cols 等长,valleys 与瓦片逐个相同(修复前回包里恒是空数组)。
+    const juce::var resp = ScvbOutputAudioProcessor::waveformResponse(tile);
+    for (const char* key : {"minDb", "maxDb", "vad", "covered", "stale", "passId"})
+    {
+        INFO("key=" << key);
+        REQUIRE(resp[key].isArray());
+        CHECK(resp[key].size() == 256);
+    }
+    REQUIRE(resp["valleys"].isArray());
+    REQUIRE(resp["valleys"].size() == static_cast<int>(tile.valleys.size()));
+    for (int i = 0; i < resp["valleys"].size(); ++i)
+    {
+        CHECK(static_cast<double>(resp["valleys"][i]) == tile.valleys[static_cast<std::size_t>(i)]);
+    }
+
+    // 对照:只看响段(静音段整个在窗外)⇒ 没有谷 —— 证明上面那个谷来自静音段,而不是窗边。
+    const auto loudOnly = r.out.waveformOf(kTestChannel, q1 + 0.1, q1 + 0.8, 256);
+    CHECK(loudOnly.valleys.empty());
+}
+
+// ---------------------------------------------------------------------------
+// [J145] 吸附谷的门槛跟着**分段灵敏度**走(与 S1 候选谷同一条 minDepth = 6·2^((50−s)/50))。
+// waveformOf 里 `sp.sensitivity = runtime_.segmentationSensitivity` 那一行是接线;默认档 50 下
+// 删掉它也照样是 50 —— 所以这里造一个**只有高灵敏度才认**的浅谷:0.5 → 0.3 → 0.5 的正弦,
+// 落差 20·log10(0.3/0.5) = −4.44 dB,夹在 minDepth(50)=6 与 minDepth(100)=3 之间。
+// (440 Hz × 10 ms hop = 4.4 周,5 个 hop 恰 22 周 ⇒ 逐 hop 能量以 5 hop 为周期,5 hop 平滑后是平的,
+//  平台上不会冒出别的极小。)
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:吸附谷门槛随分段灵敏度 —— 4.4 dB 的浅谷只在高灵敏度下出现", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f);
+    const std::int64_t dipT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.3f);
+    const std::int64_t dipT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(dipT0) / kSr;
+    const double q1 = static_cast<double>(dipT1) / kSr;
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    r.out.runtime().segmentationSensitivity = 50.0f; // minDepth 6 dB
+    const auto atDefault = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    CHECK(atDefault.valleys.empty());
+
+    r.out.runtime().segmentationSensitivity = 100.0f; // minDepth 3 dB
+    const auto atMax = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("dip=[" << q0 << "," << q1 << ") valleys=" << atMax.valleys.size()
+                 << " first=" << (atMax.valleys.empty() ? -1.0 : atMax.valleys.front()));
+    REQUIRE(atMax.valleys.size() == 1);
+    CHECK(atMax.valleys[0] > q0);
+    CHECK(atMax.valleys[0] < q1);
+}
+
+// ---------------------------------------------------------------------------
 // P0-5:prepareToPlay **之后**才灌工程 chunk 时,viz 段必须跟着换组。
 // 宿主(Cubase)的真实次序就是「先激活组件、再推工程/预设 chunk」;离线测试恒是
 // 「先 setState 再 prepare」,于是这条路径从没被走到 —— Output 把 viz 段发布在旧组、
@@ -3261,6 +3509,110 @@ TEST_CASE("HOST UICF:CFGS 缺失/损坏时 master_chart_mode 仍按 UICF 生效(
         out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
         CHECK(out.masterChartMode() == "trajectory");
     }
+}
+
+// ---------------------------------------------------------------------------
+// [J148] ui.active_tab 随工程保存:契约 §1.31「写 state ui.active_tab(重开面板恢复上次 tab)」。
+// 此前它只活在运行期 —— 同一会话里关窗再开能回到原 tab,**存盘重开工程**一律回 Tab1。
+// 这里走真 Processor 的 get/setStateInformation(宿主存/开工程就是这两个口);编码本身
+// (名字表、非法值)由 scvb_params_tests 的 J148 那一格钉。
+// 各段读数彼此独立,一律 CHECK(REQUIRE 一红就掐断整格,「另一条仍绿」与「没跑」同形)。
+// ---------------------------------------------------------------------------
+namespace
+{
+using scvb::output::OutputActiveTab;
+
+OutputActiveTab tabOf(ScvbOutputAudioProcessor& p)
+{
+    return p.runtime().activeTab.load(std::memory_order_relaxed);
+}
+
+// 把一份完整工程的 PRMS 根节点属性面改一下再原样封回(其余 chunk 一字不动)。
+// 用来造「本版之前存的工程」(删掉属性)与「手改过的工程」(塞非法值)——
+// 新构建自己存出来的工程恒带合法属性,这两种形状只能这样造。
+std::vector<std::uint8_t> withPrmsRoot(const juce::MemoryBlock& full, const std::function<void(juce::ValueTree&)>& edit)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks) ==
+            scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms);
+    REQUIRE(prms != nullptr);
+    std::unique_ptr<juce::XmlElement> xml(
+        juce::AudioProcessor::getXmlFromBinary(prms->payload.data(), static_cast<int>(prms->payload.size())));
+    REQUIRE(xml != nullptr);
+    juce::ValueTree root = juce::ValueTree::fromXml(*xml);
+    edit(root);
+    std::unique_ptr<juce::XmlElement> outXml(root.createXml());
+    REQUIRE(outXml != nullptr);
+    juce::MemoryBlock mb;
+    juce::AudioProcessor::copyXmlToBinary(*outXml, mb);
+    const auto* bytes = static_cast<const std::uint8_t*>(mb.getData());
+    chunks.set(scvb::state::kFourccPrms, std::vector<std::uint8_t>(bytes, bytes + mb.getSize()));
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+    return blob;
+}
+
+juce::String prmsActiveTabOf(const juce::MemoryBlock& full)
+{
+    juce::String seen = "<none>";
+    (void)withPrmsRoot(full, [&seen](juce::ValueTree& root) {
+        seen = root.getProperty(scvb::output::kUiActiveTabProp, juce::String("<none>")).toString();
+    });
+    return seen;
+}
+} // namespace
+
+TEST_CASE("HOST J148:ui.active_tab 随工程往返,老工程/非法值回落 Tab1 且不残留上一个工程的 tab", "[host][j148]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    // ① 新实例默认 Tab1(新建工程打开面板就在总览页)。
+    ScvbOutputAudioProcessor a;
+    CHECK(tabOf(a) == OutputActiveTab::kMaster);
+
+    // ② 往返:切到 Tab3(= 桥入口 setActiveTab 做的那件事)→ 宿主存工程 → 另一个实例开这份工程。
+    //    四个值里挑一个非默认的,读回若是 master 就分不清「恢复了」还是「根本没存」。
+    a.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    juce::MemoryBlock saved;
+    a.getStateInformation(saved);
+    CHECK(prmsActiveTabOf(saved) == "wave"); // 工程文件里写的是 §1.31 字面量(落在 PRMS 根节点)
+
+    ScvbOutputAudioProcessor b;
+    REQUIRE(tabOf(b) == OutputActiveTab::kMaster); // 前置:b 起点不是 wave,下面的读数才有分辨力
+    b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+    CHECK(tabOf(b) == OutputActiveTab::kWave);
+
+    // ③ 其余三个值同样往返(同一个实例连续载入,每次都与上一次不同)。
+    for (const OutputActiveTab t : {OutputActiveTab::kSettings, OutputActiveTab::kTracks, OutputActiveTab::kMaster})
+    {
+        a.runtime().activeTab.store(t, std::memory_order_relaxed);
+        juce::MemoryBlock blob;
+        a.getStateInformation(blob);
+        b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(tabOf(b) == t);
+    }
+
+    // ④ 本版之前存的工程(PRMS 没有这个属性):停在 Tab3 的实例载入它 ⇒ 回 Tab1,
+    //    **不许**停在上一个工程的 Tab3 —— 否则下次保存就把别的工程的 tab 写进这一份(#96 同族)。
+    b.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> oldProject = withPrmsRoot(
+        saved, [](juce::ValueTree& root) { root.removeProperty(scvb::output::kUiActiveTabProp, nullptr); });
+    b.setStateInformation(oldProject.data(), static_cast<int>(oldProject.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑤ 手改过 / 来自未来版本的值(四值之外)⇒ 同样回 Tab1,不报错。
+    b.runtime().activeTab.store(OutputActiveTab::kSettings, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> tampered = withPrmsRoot(saved, [](juce::ValueTree& root) {
+        root.setProperty(scvb::output::kUiActiveTabProp, juce::String("suggest"), nullptr);
+    });
+    b.setStateInformation(tampered.data(), static_cast<int>(tampered.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑥ 载入之后再存:存下来的是**这份工程自己的** tab(⑤ 之后是 master),不是加载前的 settings。
+    juce::MemoryBlock resaved;
+    b.getStateInformation(resaved);
+    CHECK(prmsActiveTabOf(resaved) == "master");
 }
 
 // ---------------------------------------------------------------------------
@@ -5523,6 +5875,186 @@ TEST_CASE("HOST SL-481:兄弟 Input 接手同一通道后,原实例析构不得�
     Rig::pumpMessages(50);
 }
 
+// ---------------------------------------------------------------------------
+// [SL-463 / J156] Input setChannelId / setGroupId 的**非冲突**失败要报成失败(契约 §3.2/§3.3 返回并集)。
+// 真 Processor + 真命名段:用一个「magic 已发布、abi 不符」的同名段(= 另一版本的 SCVB 建的段)
+// 把失败造出来,每格钉两件事 ——
+//   ① Processor 的返回值是**这次请求本身**的结果,不是会话此刻的 state();
+//   ② 这个结果经 claimRequestResponse() 映射成 {ok:false, reason}(桥面回执)。InputEditor 把
+//      返回值交给它的那一行,由 tests/webview/test_input_bridge.cpp 的源码级判据钉。
+// 组号用 4/5(测试专用组,见文件头「组号纪律」;不碰 g1/g2 与保留组 8)。坏段在用例结束前把 abi
+// 改回并解映射,不给同进程后面的用例留坏段。
+// ---------------------------------------------------------------------------
+namespace
+{
+template<typename Header>
+struct Sl463PoisonedSegment
+{
+    scvb::SegmentBackendWin32& backend;
+    scvb::SegmentView view;
+    Header* header = nullptr;
+
+    Sl463PoisonedSegment(scvb::SegmentBackendWin32& b, const std::wstring& fullName, std::size_t size,
+                         std::size_t dataOffset)
+        : backend(b)
+    {
+        REQUIRE(backend.createOrOpen(fullName, size, view) == scvb::InitResult::kOk);
+        header = static_cast<Header*>(view.base);
+        if (view.created)
+        {
+            REQUIRE(backend.initHeader(view, &header->magic, &header->abi, nullptr, dataOffset) ==
+                    scvb::InitResult::kOk);
+        }
+        // 已存在(上一格留下、还没随句柄归零销毁)也照样能用:只要 magic 已发布,改 abi 就是坏段。
+        REQUIRE(header->magic.load(std::memory_order_acquire) == scvb::kScvbMagic);
+        header->abi.store(scvb::kScvbAbi + 1, std::memory_order_release);
+    }
+    ~Sl463PoisonedSegment()
+    {
+        header->abi.store(scvb::kScvbAbi, std::memory_order_release);
+        backend.unmap(view);
+    }
+    Sl463PoisonedSegment(const Sl463PoisonedSegment&) = delete;
+    Sl463PoisonedSegment& operator=(const Sl463PoisonedSegment&) = delete;
+};
+
+constexpr std::size_t kSl463AudioSegmentSize =
+    sizeof(scvb::AudioRingHeader) + static_cast<std::size_t>(scvb::kDefaultRingFrames) * 2 * sizeof(float);
+
+void checkClaimFailedResponse(scvb::input::InputClaimState result, const char* reason)
+{
+    const juce::var resp = scvb::input::bridge::claimRequestResponse(result);
+    auto* o = resp.getDynamicObject();
+    REQUIRE(o != nullptr);
+    CHECK(o->hasProperty("ok"));
+    CHECK(static_cast<bool>(o->getProperty("ok")) == false);
+    CHECK(o->getProperty("reason").toString() == juce::String(reason));
+}
+} // namespace
+
+TEST_CASE("HOST SL-463:首次选通道时 registry abi 不符 → 请求结果 abiMismatch,回执不再是成功", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    scvb::Registry probe(backend, kGroup);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    probe.header()->abi.store(scvb::kScvbAbi + 1, std::memory_order_release); // 本组 registry 由另一 abi 的 SCVB 建
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+
+        const auto result = in.setChannelId(kCh);
+        CHECK(result == scvb::input::InputClaimState::kAbiMismatch);
+        checkClaimFailedResponse(result, "abiMismatch");
+
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kAbiMismatch);
+        CHECK(snap.channelId == 0); // 一个 slot 也没持住
+
+        in.releaseResources();
+    }
+    probe.header()->abi.store(scvb::kScvbAbi, std::memory_order_release);
+}
+
+TEST_CASE("HOST SL-463:换通道时目标 audio 段打不开 → 会话回滚到原通道,回执仍是 unavailable", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kGroup = 4;
+    constexpr int kFrom = 5;
+    constexpr int kTo = 6;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kGroup, kTo),
+                                                         kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kFrom) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setChannelId(kTo);
+        CHECK(result == scvb::input::InputClaimState::kUnavailable);
+        checkClaimFailedResponse(result, "unavailable");
+
+        // 补偿式回滚成功:会话回到原通道、仍活跃。正因如此回执认返回值不认 state() ——
+        // 此刻 state() 是 kActive,按它回执就又是 {ok:true},用户点了卡却什么都没发生。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kActive);
+        CHECK(snap.channelId == kFrom);
+        CHECK(snap.configuredChannelId == kFrom);
+
+        in.releaseResources();
+    }
+}
+
+TEST_CASE("HOST SL-463:改组时新组 ctrl 段 abi 不符 → 组号不变,请求结果 abiMismatch(此前回成功)", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kFromGroup = 5;
+    constexpr int kToGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::CtrlHeader> poisoned(backend, scvb::segmentCtrlName(kToGroup), scvb::kCtrlSegmentSize,
+                                                    scvb::kCtrlBroadcastOffset);
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kFromGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kFromGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kCh) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setGroupId(kToGroup);
+        CHECK(result == scvb::input::InputClaimState::kAbiMismatch);
+        checkClaimFailedResponse(result, "abiMismatch");
+
+        // 这一支改组**没有生效**:组号、会话都留在旧组。此前回的是 session_.state()(= kActive)⇒ {ok:true}。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.groupId == kFromGroup);
+        CHECK(snap.claimState == scvb::input::InputClaimState::kActive);
+        CHECK(snap.channelId == kCh);
+
+        in.releaseResources();
+    }
+}
+
+TEST_CASE("HOST SL-463:改组后新组 audio 段打不开 → 组号已换,请求结果 unavailable", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kFromGroup = 5;
+    constexpr int kToGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kToGroup, kCh),
+                                                         kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kFromGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kFromGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kCh) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setGroupId(kToGroup);
+        CHECK(result == scvb::input::InputClaimState::kUnavailable);
+        checkClaimFailedResponse(result, "unavailable");
+
+        // 与上一格相反:ctrl 段换过去了,组号**已经**是新组;失败发生在新组里的 claim(建段)。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.groupId == kToGroup);
+        CHECK(snap.claimState == scvb::input::InputClaimState::kUnavailable);
+        CHECK(snap.channelId == 0);
+
+        in.releaseResources();
+    }
+}
+
 TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例", "[host][v56][SL210]")
 {
     Rig r; // r.out = 第一个 Output(主实例)
@@ -5721,6 +6253,67 @@ TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][
     //    而不是修复前那句凭空的「已保存为外部文件」)。
     REQUIRE(a.featureBytes() == 0);
     REQUIRE_FALSE(a.featuresInSidecar());
+}
+
+// ---------------------------------------------------------------------------
+// [J150] 宿主标识:桥面 §1.1 快照的 `host` 取 processor 的 hostId()(03 §4.2 REAPER / §4.4 Live
+// 的宿主专属提示据此只在对应宿主上出)。OutputEditor::buildSnapshot 里那一行 put 不在本目标里
+// (那个 TU 拖 WebView2),由 web-preview/tests/smoke-host-hints.mjs 的源码钉子锁。
+//
+// 本用例钉的是**构造期判定 → hostId()** 这一段,逐支注入(REAPER / Live 两种枚举 /
+// Cubase 两种枚举 / Nuendo / Studio One / pluginval / 未知宿主),每一支都是「先注入、再构造」。
+// ⚠ 钉不住的那一半照实说:**真实判定**(`juce::PluginHostType().type`,按本进程可执行文件名)
+//   在这里只测得到 "other" —— harness 自己不是任何 DAW。把那半句换成常量 UnknownHost,
+//   ① 照样绿;它靠的是 JUCE 自己的识别表,不是本仓代码。
+// 用 CHECK 不用 REQUIRE:一支红了要看得到其余各支仍绿还是一起红(REQUIRE 会掐断后面的支)。
+// 出口一律复位注入,免得一支红了把注入漏给后面的用例。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J150:宿主标识在构造期判定并经 hostId() 发布(§1.1 快照 host)", "[host][J150]")
+{
+    struct ResetHostOverride
+    {
+        ~ResetHostOverride() { ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt); }
+    } resetHostOverride;
+
+    // ① 不注入:走真实判定;本进程不是 DAW ⇒ "other"。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    {
+        ScvbOutputAudioProcessor real;
+        CHECK(std::string(real.hostId()) == "other");
+    }
+
+    // ② 逐支注入。
+    struct HostCase
+    {
+        juce::PluginHostType::HostType type;
+        const char* want;
+    };
+    const HostCase cases[] = {
+        {juce::PluginHostType::Reaper, "reaper"},
+        {juce::PluginHostType::AbletonLiveGeneric, "live"}, // Live 12 走这一支(文件名不带 6..11)
+        {juce::PluginHostType::AbletonLive11, "live"},
+        {juce::PluginHostType::SteinbergCubaseGeneric, "cubase"}, // Cubase 12+ 走这一支
+        {juce::PluginHostType::SteinbergCubase10_5, "cubase"},
+        {juce::PluginHostType::SteinbergNuendoGeneric, "other"}, // 本卡不给 Nuendo 出提示
+        {juce::PluginHostType::StudioOne, "other"},
+        {juce::PluginHostType::pluginval, "other"},
+        {juce::PluginHostType::UnknownHost, "other"},
+    };
+    for (const auto& c : cases)
+    {
+        ScvbOutputAudioProcessor::setHostTypeForTesting(c.type);
+        ScvbOutputAudioProcessor p;
+        INFO("PluginHostType::HostType = " << static_cast<int>(c.type) << " -> want " << c.want);
+        CHECK(std::string(p.hostId()) == c.want);
+    }
+
+    // ③ 注入只影响**之后构造**的实例:复位后新构造的回到真实判定。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(juce::PluginHostType::Reaper);
+    ScvbOutputAudioProcessor before;
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    ScvbOutputAudioProcessor after;
+    CHECK(std::string(before.hostId()) == "reaper");
+    CHECK(std::string(after.hostId()) == "other");
 }
 
 // ---------------------------------------------------------------------------
@@ -6307,6 +6900,148 @@ TEST_CASE("HOST SL-226:反向 —— 未采集的工程往返后仍无波形", "
     {
         CHECK(c == 0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// [J152] 停着也推覆盖率的两个例外(契约 §0.4 / §2.7):mBridgeReady 后首帧、clearCoverage 受理后,
+// 各补发一次全量 `scvb.captureProgress`,不看走带。
+//
+// 用户面症状:重开一个「采过、还没分析」的工程,停着打开 Output,Tab1 一直是「当前范围内无采集
+// 数据」—— 覆盖率只在播放中推,段表又是空的,分析行「覆盖 ∪ 段表」的判空两边都空;停着清除覆盖,
+// 数字也不动。
+//
+// OutputEditor 编不进任何 C++ 测试目标(要真 WebView2);帧内容在 processor 的
+// `captureProgressFrame` 里。本用例走「真采集 → 真存盘 → 新实例重开 → 停带」,按 editor 的
+// 调用序列逐拍断言帧内容:周期帧 forceFull=false,首帧 / 清除后 forceFull=true。
+// editor 那几跳(首帧置闩锁、清除置闩锁、闩锁传进来、出过帧才清、不可见不算)由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的 [J152] 源码钉子钉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J152:停着重开已采未析的工程 —— 就绪首帧补一次全量覆盖率,清除受理后再补一次", "[host][J152]")
+{
+    juce::MemoryBlock blob;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.capturedExtentSeconds() > 0.0); // 前置:确实采到了东西
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 关工程
+
+    // 新实例 = 重开工程。走带停着、播放头在 0(FakePlayHead 的初值),先推几块让 playhead 快照落地。
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(120);
+
+    const double extent = r2.out.capturedExtentSeconds();
+    REQUIRE(extent > 0.0); // 前置:覆盖随工程回来了
+    const auto pod = r2.out.playheadSnapshot();
+    REQUIRE((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0); // 前置:停着
+    REQUIRE(pod.timeSamples == 0); // 前置:播放头在 0 —— 只取播放头的话分母窗口为空
+    REQUIRE(r2.out.runtime().rangeMode == 0); // 前置:follow 档(默认)
+
+    constexpr std::size_t kMine = static_cast<std::size_t>(kTestChannel - 1);
+    constexpr std::size_t kOther = 0; // ch1:本工程从没采过
+    static_assert(kOther != kMine, "对照轨必须是另一条");
+
+    // 与 editor 的初值同形(pct 全 0,不是 reset() 的 −1 哨兵)。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline base;
+
+    // ① 周期帧:停着不发(§2.7 周期档口径不变)。
+    CHECK(r2.out.captureProgressFrame(base, /*forceFull=*/false).empty());
+
+    // ② 就绪首帧(例外①):不看走带,15 轨全带,按 ch 升序。
+    const auto first = r2.out.captureProgressFrame(base, /*forceFull=*/true);
+    REQUIRE(first.size() == 15u);
+    for (std::size_t i = 0; i < first.size(); ++i)
+    {
+        CHECK(first[i].ch == static_cast<int>(i) + 1);
+    }
+    // 分母 = [0, max(播放头 0, 已采集末端))。
+    const float firstPct = first[kMine].pct;
+    CHECK(firstPct > 0.0f); // ← 修复前:停着一帧都不出,Tab1 拿不到这个数
+    CHECK(firstPct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK_FALSE(first[kMine].added.empty()); // 首帧基线为空 ⇒ 增量 = 窗口内全部覆盖
+    // 没采过的轨照样在帧里(「全量」),报 0 —— 不是缺席。
+    CHECK(first[kOther].pct == 0.0f);
+    CHECK(first[kOther].added.empty());
+
+    // ③ 只补一次:下一拍回到周期档,停着不发。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ④ 播放头停在已采集末端之后:分母跟到播放头(max 的另一半)。
+    const double farS = extent * 2.0;
+    r2.ph.timeSamples = static_cast<std::int64_t>(farS * kSr);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    {
+        const auto far2 = r2.out.captureProgressFrame(base, true);
+        REQUIRE(far2.size() == 15u);
+        const double phS = static_cast<double>(r2.out.playheadSnapshot().timeSamples) / kSr;
+        CHECK(far2[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, phS).pct));
+        CHECK(far2[kMine].pct < firstPct); // 分母变大了
+    }
+    r2.ph.timeSamples = 0;
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    base = ScvbOutputAudioProcessor::CaptureProgressBaseline{};
+    REQUIRE_FALSE(r2.out.captureProgressFrame(base, true).empty()); // 复位到「首帧已报」的基线
+    REQUIRE(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑤ clearCoverage 受理(例外②):清掉本轨覆盖的前半 —— editor 作废基线 + 补一次全量。
+    const auto covBefore = r2.out.coverageOf(kTestChannel, 0.0, extent);
+    REQUIRE_FALSE(covBefore.ranges.empty());
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    const double coveredFromS = static_cast<double>(covBefore.ranges.front().begin) * hopS;
+    const double midS = (coveredFromS + extent) * 0.5;
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, midS) > 0.0);
+    base.reset();
+    const auto afterClear = r2.out.captureProgressFrame(base, true);
+    REQUIRE(afterClear.size() == 15u);
+    // 已采集末端没动(清的是前半),分母仍是 [0, extent);数字跟着清除往下走。
+    CHECK(afterClear[kMine].pct < firstPct); // ← 修复前:停着清完数字不动
+    CHECK(afterClear[kMine].pct > 0.0f);
+    CHECK(afterClear[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK(afterClear[kOther].pct == 0.0f);
+
+    // ⑥ 又只补一次。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑥b 清掉本轨覆盖的**尾部**:已采集末端跟着缩短,停着的分母 = [0, 新末端) —— 与 §1.6 follow 档
+    //     「分析全部」的范围是同一个量,数字答的是「分析会作用的那段里有多少已采」。所以只剩一段、
+    //     清掉它后半的工程可能仍显示 100%(#322 第 1 轮复审【建议】2 举的例子),这是有意的口径。
+    //     钉在这里,免得被当成回归去「修」成别的分母。
+    {
+        const double tailFromS = (midS + extent) * 0.5;
+        REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), tailFromS, extent + 1.0) > 0.0);
+        const double newExtent = r2.out.capturedExtentSeconds();
+        REQUIRE(newExtent > 0.0);
+        REQUIRE(newExtent < extent);
+        base.reset();
+        const auto tail = r2.out.captureProgressFrame(base, true);
+        REQUIRE(tail.size() == 15u);
+        CHECK(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, newExtent).pct));
+        // 对照:分母若停在旧末端,会是另一个数 —— 这一格分得出两种口径。
+        CHECK_FALSE(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    }
+
+    // ⑦ 清光全部覆盖:已采集末端归 0、播放头在 0 ⇒ 分母窗口为空。例外帧**照发**,各轨报 0 ——
+    //    否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, extent + 1.0) > 0.0);
+    REQUIRE(r2.out.capturedExtentSeconds() == 0.0);
+    base.reset();
+    const auto emptied = r2.out.captureProgressFrame(base, true);
+    REQUIRE(emptied.size() == 15u);
+    CHECK(emptied[kMine].pct == 0.0f);
+    CHECK(emptied[kMine].added.empty());
+    // 周期帧在空窗口下不发(既有口径)。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
 }
 
 // [SL-226] 反向②:特征被清空后再保存,必须把 FEAT 一并删掉 —— 留着上一版会让重开时
@@ -13034,6 +13769,178 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
             CHECK(c.pairId == ctorDefault.pairId);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// [J157 / SL-447] pan 曲线拖动实时预览(契约 §1.37 `previewPanCurve`)—— 真 Processor、真混音路径、
+// 真消息循环(重试定时器是 juce::TimedCallback,只有泵消息它才转)。
+// 断的是**听到的**(outBuf 峰值,不经电平表:电平表取块起点的仲裁目标,看不见 G 的淡入)与
+// **记下的**(撤销栈 / 段真身 / 打印器与 viz 读的曲线对象)。
+// ---------------------------------------------------------------------------
+namespace
+{
+
+float outPeak(const Rig& r)
+{
+    return std::max(r.outBuf.getMagnitude(0, 0, kBlock), r.outBuf.getMagnitude(1, 0, kBlock));
+}
+
+// 宽 bell(Q=0.5 ⇒ 半宽 200°):立体声轨的左右两个子声像各查各的 G,窄了的话两侧查到的就不是 A。
+std::vector<scvb::PanCurvePoint> wideBell(float db)
+{
+    scvb::PanCurvePoint p;
+    p.angle = 0.0f;
+    p.gainDb = db;
+    p.shape = scvb::PanCurveShape::bell;
+    p.q = 0.5f;
+    p.side = scvb::PanCurveSide::out;
+    return {p};
+}
+
+bool samePanPoints(const std::vector<scvb::PanCurvePoint>& a, const std::vector<scvb::PanCurvePoint>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i].angle != b[i].angle || a[i].gainDb != b[i].gainDb || a[i].shape != b[i].shape || a[i].q != b[i].q ||
+            a[i].side != b[i].side)
+            return false;
+    }
+    return true;
+}
+
+// 一块一块地跑(不泵消息:只量「音频线程拿到新快照之后几块听得到」),直到 pred(峰值) 成立;
+// 返回用了几块,budget 块内没成立返回 -1。
+template<typename Pred>
+int blocksUntil(Rig& r, int budget, Pred pred)
+{
+    for (int b = 1; b <= budget; ++b)
+    {
+        r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+        if (pred(outPeak(r)))
+            return b;
+    }
+    return -1;
+}
+
+// 边跑音频边泵消息(重试定时器要靠它转),直到 done() 成立;预算 maxRounds × (1 块 + 10 ms)。
+template<typename Done>
+bool pumpUntil(Rig& r, int maxRounds, Done done)
+{
+    for (int i = 0; i < maxRounds; ++i)
+    {
+        r.runBlocks(1, 0.5f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+        if (done())
+            return true;
+    }
+    return false;
+}
+
+// 起一台在 FOLLOW 档出声的 Rig(pan 取 host 参数,默认居中),回报 G≡0 时的输出峰值。
+float settleFollowBase(Rig& r)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.waitUntilAudioFlowing());
+    r.out.setOutputEnabled(false);
+    r.runBlocks(40, 0.5f);
+    r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+    return outPeak(r);
+}
+
+} // namespace
+
+TEST_CASE("HOST J157:拖动 pan 曲线 —— 音频在限速窗内跟随预览,预览不进撤销栈不写段真身,一次手势恰好一步",
+          "[host][j157][pancurve]")
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Rig r;
+    const float base = settleFollowBase(r);
+    REQUIRE(base > 0.05f);
+    const int v = r.out.versionActive();
+    // 先给本轨一条常值段(pan 0 = 居中,听感不变):打印器与 viz 读的是各轨曲线对象,从没分析过的轨
+    // 那里是 nullptr —— 拿 nullptr 比「预览前后没换」恒等,那一格就空了。这一下本身入栈一步,
+    // 所以下面「恰好一步」按**增量**数,不按「栈空」数。
+    {
+        int replacedSegments = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 0.0f, replacedSegments, replacedLocked));
+    }
+    r.runBlocks(8, 0.5f);
+    const auto curvesBefore = r.out.authority().activeCurves();
+    REQUIRE(curvesBefore[static_cast<std::size_t>(kTestChannel - 1)] != nullptr);
+    const int stepsBefore = r.out.authority().undoManager().getUndoDescriptions().size();
+    const auto panCurveBefore = r.out.crvsSnapshot().versions[static_cast<std::size_t>(v - 1)].panCurve;
+
+    // ① 第一份预览:闸门开着 ⇒ 就地发出(不等定时器);30 ms 淡入 = 1440 样本 < 3 块,再给 1 块余量。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    CHECK_FALSE(r.out.panCurvePreviewPending());
+    CHECK(blocksUntil(r, 4, [&](float p) { return p < base * 0.5f; }) > 0);
+
+    // ② 紧接着第二份:限速(50 ms)与回收闸拦住 ⇒ 待发。此后**不再有任何新请求**(手指停在半路),
+    //    只靠重试定时器把它发出去 —— 删掉重试,这一格永远等不到。预算 2 s 给慢机;正常约 60 ms。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(0.0f)) == Req::accepted);
+    CHECK(r.out.panCurvePreviewPending());
+    CHECK(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) > base * 0.9f; }));
+
+    // ③ 预览期间:撤销栈零新增、段真身的 pan_curve 一个字节没动、打印器与 viz 读的曲线对象没换
+    //    (预览不走 rebuildAllCurves,打印区间缓存与 viz 车道都不会因它刷新)。
+    CHECK(r.out.authority().undoManager().getUndoDescriptions().size() == stepsBefore);
+    CHECK(samePanPoints(r.out.crvsSnapshot().versions[static_cast<std::size_t>(v - 1)].panCurve, panCurveBefore));
+    CHECK(r.out.authority().activeCurves() == curvesBefore);
+
+    // ④ 拖回 -12 dB 再松手、提交同一组点 ⇒ 沿用预览那张表(不重烘、音频不开淡入窗口)。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) < base * 0.5f; }));
+    r.runBlocks(4, 0.5f, /*pumpEveryN=*/0); // 2048 样本 > 1440:让这份预览自己的淡入窗口先走完
+    REQUIRE(r.out.authority().arbiter().panCurveXfadeRemaining() == 0);
+    const auto previewLut = r.out.authority().panCurvePreviewLut();
+    REQUIRE(previewLut != nullptr);
+    r.out.setPanCurve(v, wideBell(-12.0f));
+    CHECK(r.out.authority().activePanCurveLut() == previewLut);
+    CHECK_FALSE(r.out.authority().panCurvePreviewLive());
+    r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+    CHECK(r.out.authority().arbiter().panCurveXfadeRemaining() == 0);
+    CHECK(outPeak(r) < base * 0.5f);
+
+    // ⑤ 一次手势(三份预览 + 一次松手)恰好一条撤销步,就是这次松手;撤掉它就回到 G≡0。
+    const auto steps = r.out.authority().undoManager().getUndoDescriptions();
+    CHECK(steps.size() == stepsBefore + 1);
+    CHECK(steps[0] == "Set pan curve"); // JUCE:下标 0 = 最近一步
+    REQUIRE(r.out.undo());
+    CHECK(r.out.authority().undoManager().getUndoDescriptions().size() == stepsBefore);
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+}
+
+TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 音频都回到已提交曲线", "[host][j157][pancurve]")
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Rig r;
+    const float base = settleFollowBase(r);
+    REQUIRE(base > 0.05f);
+    const int v = r.out.versionActive();
+
+    // ① 撤回(桥面 previewPanCurve(v, null);编辑器关窗也走这一条)⇒ 回到已提交曲线(这里是 G≡0)。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(blocksUntil(r, 4, [&](float p) { return p < base * 0.5f; }) > 0);
+    r.out.cancelPanCurvePreview();
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+    CHECK_FALSE(r.out.authority().undoManager().canUndo());
+
+    // ② 旧版本号(UI 在「切版本已发出、回声未到」窗口里捕获的)⇒ staleVersion,音频不动。
+    const int other = (v == 1) ? 2 : 1;
+    CHECK(r.out.previewPanCurve(other, wideBell(-12.0f)) == Req::staleVersion);
+    CHECK_FALSE(r.out.panCurvePreviewPending());
+    CHECK(blocksUntil(r, 6, [&](float p) { return p < base * 0.5f; }) < 0);
+
+    // ③ 拖出去又拖回原处松手:提交的点表与已提交的一字不差(authority 那边走 no-op、不碰预览),
+    //    processor 的松手路径必须自己撤预览 —— 否则最后那份预览会一直留在音频里。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) < base * 0.5f; }));
+    r.out.setPanCurve(v, {}); // 已提交的就是空表(从没画过)
+    CHECK_FALSE(r.out.authority().panCurvePreviewLive());
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
 }
 
 // ===========================================================================

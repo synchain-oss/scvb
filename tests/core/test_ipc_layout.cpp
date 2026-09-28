@@ -111,6 +111,8 @@ std::size_t structSize(const std::string& s)
         return sizeof(scvb::CtrlChannelConfig);
     if (s == "CtrlBroadcast")
         return sizeof(scvb::CtrlBroadcast);
+    if (s == "CtrlTrackName")
+        return sizeof(scvb::CtrlTrackName);
     if (s == "VizHeader")
         return sizeof(scvb::VizHeader);
     if (s == "VizFrame")
@@ -154,6 +156,8 @@ std::size_t structAlign(const std::string& s)
         return alignof(scvb::CtrlChannelConfig);
     if (s == "CtrlBroadcast")
         return alignof(scvb::CtrlBroadcast);
+    if (s == "CtrlTrackName")
+        return alignof(scvb::CtrlTrackName);
     if (s == "VizHeader")
         return alignof(scvb::VizHeader);
     if (s == "VizFrame")
@@ -363,6 +367,20 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::CtrlBroadcast, _tail);
         return kNotFound;
     }
+    if (s == "CtrlTrackName")
+    {
+        if (f == "seq")
+            return offsetof(scvb::CtrlTrackName, seq);
+        if (f == "_pad")
+            return offsetof(scvb::CtrlTrackName, _pad);
+        if (f == "owner_heartbeat_ms")
+            return offsetof(scvb::CtrlTrackName, owner_heartbeat_ms);
+        if (f == "utf8")
+            return offsetof(scvb::CtrlTrackName, utf8);
+        if (f == "_tail")
+            return offsetof(scvb::CtrlTrackName, _tail);
+        return kNotFound;
+    }
     if (s == "VizHeader")
     {
         if (f == "magic")
@@ -465,9 +483,11 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
     return kNotFound;
 }
 
-// [T44] viz 段内区块偏移(golden 的 "offset <key> <n>" 行)。
+// [T44] viz 段内区块偏移(golden 的 "offset <key> <n>" 行)。[J150] ctrl 段的轨道名区同用这一种行。
 std::size_t vizOffset(const std::string& key)
 {
+    if (key == "ctrl_track_names")
+        return scvb::kCtrlTrackNamesOffset;
     if (key == "viz_header")
         return scvb::kVizHeaderOffset;
     if (key == "viz_frame")

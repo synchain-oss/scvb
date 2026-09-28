@@ -10,7 +10,9 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <vector>
 
 #include "BridgeArgs.h"
 #include "OutputParams.h"
@@ -762,6 +764,116 @@ TEST_CASE("noTimelineRejectsCaptureSwitch:无时间线只拒打开,关照常受�
     // 判序 observer → noTimeline(仅 on=true)→ badArg:参数不是严格布尔时不落这一支,交给 badArg。
     CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var()));
     CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var("true")));
+}
+
+// ---------------------------------------------------------------------------
+// [J157] pan 曲线点表的桥面解析(setPanCurve §1.17 / previewPanCurve §1.37 共用)。
+// 这段此前写在 `OutputEditor::handleSetPanCurve` 里,没有任何测试目标编得到;抽出来之后逐条钉住
+// 抽出前的口径(见 BridgeArgs.h 那段注释)。
+// ---------------------------------------------------------------------------
+namespace
+{
+juce::var panJson(const char* json)
+{
+    return juce::JSON::parse(juce::String::fromUTF8(json));
+}
+} // namespace
+
+TEST_CASE("parsePanCurvePointsArg:setPanCurve / previewPanCurve 共用的点表解析与坏点守卫", "[output][bridge][j157]")
+{
+    using scvb::output::parsePanCurvePointsArg;
+    std::vector<scvb::PanCurvePoint> pts;
+
+    // 合法:空数组 = 显式清空(不是缺参)。
+    CHECK(parsePanCurvePointsArg(panJson("[]"), pts));
+    CHECK(pts.empty());
+    // 三种形状 + side 三值;side 缺省 out、q 缺省 1.5、angle/gain_db 缺省 0。
+    REQUIRE(parsePanCurvePointsArg(panJson(R"([{"angle":-40,"gain_db":-6,"shape":"bell","q":2},
+                    {"angle":30,"gain_db":-3,"shape":"shelf","q":1,"side":"right"},
+                    {"angle":-70,"gain_db":-9,"shape":"cut","q":24,"side":"left"},
+                    {"shape":"bell"}])"),
+                                   pts));
+    REQUIRE(pts.size() == 4);
+    CHECK(pts[0].shape == scvb::PanCurveShape::bell);
+    CHECK(pts[0].side == scvb::PanCurveSide::out);
+    CHECK(pts[0].angle == -40.0f);
+    CHECK(pts[0].gainDb == -6.0f);
+    CHECK(pts[1].shape == scvb::PanCurveShape::shelf);
+    CHECK(pts[1].side == scvb::PanCurveSide::right);
+    CHECK(pts[2].shape == scvb::PanCurveShape::cut);
+    CHECK(pts[2].side == scvb::PanCurveSide::left);
+    CHECK(pts[2].q == 24.0f);
+    CHECK(pts[3].angle == 0.0f);
+    CHECK(pts[3].gainDb == 0.0f);
+    CHECK(pts[3].q == 1.5f);
+
+    // 非法:非数组 / 缺参 / 超过 16 点 / 元素非对象 / shape 缺或非法 / side 非法 / angle 越界 / q ≤ 0。
+    CHECK_FALSE(parsePanCurvePointsArg(juce::var(), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"({"angle":0,"shape":"bell"})"), pts));
+    {
+        juce::String seventeen = "[";
+        for (int i = 0; i < 17; ++i)
+            seventeen << (i ? "," : "") << R"({"angle":0,"shape":"bell"})";
+        seventeen << "]";
+        CHECK_FALSE(parsePanCurvePointsArg(juce::JSON::parse(seventeen), pts));
+        juce::String sixteen = "[";
+        for (int i = 0; i < 16; ++i)
+            sixteen << (i ? "," : "") << R"({"angle":0,"shape":"bell"})";
+        sixteen << "]";
+        CHECK(parsePanCurvePointsArg(juce::JSON::parse(sixteen), pts)); // 16 是上限本身,合法
+    }
+    CHECK_FALSE(parsePanCurvePointsArg(panJson("[1]"), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"([{"angle":0}])"), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"([{"angle":0,"shape":"notch"}])"), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"([{"angle":0,"shape":"bell","side":"up"}])"), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"([{"angle":101,"shape":"bell"}])"), pts));
+    CHECK_FALSE(parsePanCurvePointsArg(panJson(R"([{"angle":0,"shape":"bell","q":0}])"), pts));
+
+    // 非有限值:JSON 写不出 NaN,手造一个对象。**这一格是整段守卫存在的理由**(曲线进实时链,
+    // 漏过去的就是母线上的 NaN)。
+    auto* o = new juce::DynamicObject();
+    o->setProperty("angle", 0.0);
+    o->setProperty("gain_db", std::numeric_limits<double>::quiet_NaN());
+    o->setProperty("shape", "bell");
+    juce::Array<juce::var> one;
+    one.add(juce::var(o));
+    CHECK_FALSE(parsePanCurvePointsArg(juce::var(one), pts));
+    CHECK(pts.empty()); // 失败时不留半截点表
+}
+
+TEST_CASE("parsePanCurvePreviewArgs:previewPanCurve(v, points | null) 的三种形态", "[output][bridge][j157]")
+{
+    using scvb::output::PanCurvePreviewArgKind;
+    using scvb::output::parsePanCurvePreviewArgs;
+    const auto args = [](const char* json) {
+        const juce::var v = panJson(json);
+        return parsePanCurvePreviewArgs(*v.getArray());
+    };
+
+    auto r = args(R"([1, [{"angle":0,"gain_db":-6,"shape":"bell"}]])");
+    CHECK(r.kind == PanCurvePreviewArgKind::points);
+    CHECK(r.version == 1);
+    CHECK(r.points.size() == 1);
+
+    r = args("[2, []]"); // 空点表 = 预览「一个点都没有」(G≡0),不是撤回
+    CHECK(r.kind == PanCurvePreviewArgKind::points);
+    CHECK(r.version == 2);
+
+    r = args("[1, null]"); // null = 撤回预览
+    CHECK(r.kind == PanCurvePreviewArgKind::clear);
+    CHECK(r.version == 1);
+
+    // 版本号:缺 / 越界 / 非整数 / 字符串 ⇒ bad(clear 也一样要求合法 v)。
+    CHECK(args("[]").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args("[1]").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args("[0, []]").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args("[3, []]").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args("[1.5, []]").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args(R"(["1", []])").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args("[0, null]").kind == PanCurvePreviewArgKind::bad);
+    // 点表:非数组非 null / 坏点 ⇒ bad(同 setPanCurve 那一份解析)。
+    CHECK(args(R"([1, "x"])").kind == PanCurvePreviewArgKind::bad);
+    CHECK(args(R"([1, [{"angle":0,"shape":"notch"}]])").kind == PanCurvePreviewArgKind::bad);
 }
 
 // ---------------------------------------------------------------------------

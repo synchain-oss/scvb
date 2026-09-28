@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "input/InputSession.h"
@@ -56,8 +57,15 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
+    // [J150] 宿主告知本轨的轨道属性(JUCE:只在消息线程调)。只取 name:记下来,由 25Hz timer 写进
+    // 本组 ctrl 段轨道名区,Output 据此给「用户没改过名」的通道自动填 label(04 §7 步 2)。
+    // name 缺席(宿主没给)时保留上一次的值;宿主明确给空串时记成空串(= 没有轨道名)。
+    void updateTrackProperties(const TrackProperties& properties) override;
+
     // [M] UI/桥入口(T25 冻结契约):设置 channel/group,触发 claim 迁移(01 §4.1)。
-    // 返回迁移后的 claim 态(T30 桥据此回 {ok}/{conflict:true} 并经 scvb.state 回推 claim)。
+    // 返回**这次请求本身**的结果,不一定等于会话此刻的 state():补偿式回滚成功时会话回到旧通道、仍是
+    // kActive;改组时 ctrl 段打不开则会话原样留在旧组 —— 两种都是请求失败。桥面回执据此映射(InputBridgeLogic.h
+    // claimRequestResponse, §3.2/§3.3,[J156]);会话当下的 claim 态另经 scvb.state 回推。
     scvb::input::InputClaimState setChannelId(int channelId);
     scvb::input::InputClaimState setGroupId(int groupId);
 
@@ -152,6 +160,11 @@ private:
     // 每拍排水上限:稳态 1 条/秒/轨,25Hz 下留足余量(宿主卡顿后一次补投也够)。
     static constexpr std::uint32_t kFpDrainMax = 16;
 
+    // [J150] [M] 25Hz:把 trackNameUtf8_ 写进本组 ctrl 段轨道名区里**实际持有**的那一条,附上本 slot
+    // 此刻的心跳值作归属判据(见 CtrlPlane.h 的 CtrlTrackName)。调用方已持 lifecycleMutex_ 且已
+    // ensureCtrlOpen()。只有实际持有 slot 时才写 —— 与 drainFpReports 同一条单写纪律。
+    void publishTrackName();
+
     // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。取 src 各声道的 [offset, offset + n),
     // n ≤ capInterleaved_ 的每声道定长(preparedMaxBlock_)。[SL-523] offset = 分段写环的段首。
     static void captureFrames(const float* const* src, int srcCh, int offset, float* dst, int n);
@@ -213,6 +226,10 @@ private:
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
     bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态(持久化待 SL-238)
+    // [J150] 宿主给的 DAW 轨道名(UTF-8;空 = 宿主没给)。**不进 state**:轨道名的真源在宿主工程里,
+    // 由宿主经 updateTrackProperties 告知(何时调、调不调由宿主决定);自存一份只会与宿主不同步。
+    // 消息线程读写,持 lifecycleMutex_。
+    std::string trackNameUtf8_;
 
     bool prepared_ = false;
 

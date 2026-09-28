@@ -178,6 +178,15 @@ public:
     // 返回 true 后该值被清空(取走即消费,不重复应用)。命令在 tick() 的 consumeCommands 里入队。
     bool takeRemotePriority(u32 channel, u32& valueOut);
 
+    // [M] [J150] 读某轨 Input 经 ctrl 段轨道名区带来的 DAW 轨道名(UTF-8,非空)。三道门全过才返回 true:
+    //   ① 该轨此刻「已连接」—— 与 UI 连接灯同一判据 `isConnectedForDisplay(channelConn(...))`;
+    //      掉线的轨不采信任何名字(调用方因此「保留最后一次的名字」,见 IPC_CONTRACT §4 轨道名区);
+    //   ② 条目归属:条目里的 owner_heartbeat_ms == 该 slot 此刻的 heartbeat_ms —— 离开的 Input 留下的
+    //      旧条目在新主人第一次写心跳后即失配;
+    //   ③ 条目可读(写过、没撕裂、严格 UTF-8)且非空(空串 = 宿主没给轨道名)。
+    // 任何一道不过 → false,调用方本拍什么都不做。
+    bool readOwnedTrackName(u32 channel, u64 nowMs, std::string& out) const;
+
     // ---- 特征拉取(04 §3.3;采集覆盖的数据面)----------------------------------------
     // Input 每块把特征写进本组 feat 段,Output [M] 25Hz 增量拉进 FrameStore —— 这条读侧此前
     // 完全没接线(FeatPuller/FrameStore 只在 tests/ 里出现),于是 Output 永远拿不到覆盖数据,

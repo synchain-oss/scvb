@@ -31,7 +31,7 @@ Input 插在人声轨插件链**最后一格**(J45),捕获后向下游输出静�
 
 1. **音频链**:Input 捕获 → 音频环段 → Output 按 [t0,t1) 读 → gain/pan → 求和 → 替换总线输入(ADR-002)。
 2. **特征链**:Input 每 10ms hop 算 K-weighted mean-square + peak → 特征段 → Output 分析时快照入 state(ADR-007;VAD 后验由 Output 离线从 kw_ms 计算,ADR-008)。
-3. **控制链**:Output state(唯一真源)→ ctrl 广播区 → Input UI 显示;Input 改动 → 命令环 → Output 消息线程落 state(ADR-004)。
+3. **控制链**:Output state(唯一真源)→ ctrl 广播区 → Input UI 显示;Input 改动 → 命令环 → Output 消息线程落 state(ADR-004)。[J150] 另有一条只读提示:Input 从宿主拿到的 DAW 轨道名 → ctrl 段轨道名区 → Output 给用户没亲手改过名的通道填 `label`(填不填由 Output 决定,真源仍是 Output state;IPC_CONTRACT §4)。
 4. **自动化链**:引擎曲线 →(25Hz Timer,gesture 三段式)→ 123 个参数 → DAW write 录制(ADR-005/006)。
 
 ## 4. 为什么是「总线集中处理」而不是「就地处理」

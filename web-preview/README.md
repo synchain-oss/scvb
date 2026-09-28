@@ -66,6 +66,7 @@ node web-preview/tests/smoke-ready-race.mjs
 | `fixture` | `empty` \| `fifteen-tracks` \| `misaligned` \| `channel-conflict` \| `second-output` \| `stereo-mixed` | 六个 fixture,见下表 |
 | `scenario` | 05 §2.5(Output 16 个)/ §3(Input 7 个)的场景名 | 兼容口径;已实现的映射到 fixture,**未实现的回落 `fifteen-tracks` + console.warn「场景 {x} 待 T31–T36 接线」,不假装支持** |
 | `loop` | `none` | 宿主**不提供**循环区:`setRange("daw_loop")` 回 `{ok:false, reason:"noLoop"}`。只对 Output 有意义 |
+| `tempo` | `none` \| `var` \| `<bpm>/<分子>/<分母>`(如 `90/3/4`) | [J147] 宿主报的速度与拍号(`scvb.playhead` 的 `bpm`/`timeSigNum`/`timeSigDen`/`ppq`)。缺省 = 120 BPM、4/4 恒速;`none` = 宿主不报(Tab1 手动范围按秒显示);`var` = 变速工程(30 s 之前 120 BPM、之后 100 BPM)。运行中改用预览专用的 `ctl.setHostTempo({bpm,num,den,pre?} \| null)`(停着时换表 = 用户在宿主里改了速度表)。只对 Output 有意义 |
 
 工具条上的 `fixture`/`scenario`/`loop` 三格走白名单显示,表外取值一律显示 `unknown` ——
 既挡掉 query 注入面,也把「参数拼错了」变成肉眼可见的信号。

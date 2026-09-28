@@ -98,13 +98,8 @@ public:
     // `createSegments()` 里 `allowOverwrite=true` ⇒ `write_head_samples` 清零、`epoch.fetch_add(1)`
     // ——下游(01 §4.1)据 epoch 变化判定"这是一份新数据、旧代数据作废",回滚成功那一刻会有一次
     // 可观测的 epoch 跳变,不是"什么都没发生过"。复审 4057661696。
-    // ⚠ [SL-463 已知留白] 返回值里的**非冲突失败**(`kAbiMismatch` / `kUnavailable`)到了桥面
-    // 会被回成 `{ok:true}`:契约 §3.2/§3.3 的返回并集只有 `{ok:true}` | `{conflict:true}`,
-    // 失败原因只经 `scvb.state.claim` 回推。`kAbiMismatch` 在界面上有红 pill + 横幅;
-    // `kUnavailable`(段打不开 / 映射失败 / `claimInput` 非冲突失败 / `createSegments` 失败)
-    // 对应 `claim="idle"` + `channel_id=0`,界面只是灰 pill「未选择通道」,**没有专门提示**。
-    // 两者在点击路径上都可达(abi 不符的对端建了 registry;段创建失败)。要给第三种回执得改
-    // 冻结契约的返回并集,未获批,故只在这里与 InputEditor::handleSetChannelId() 写明。
+    // 返回值到桥面回执的映射(冲突 / abi 不符 / 段不可用各有失败形状,契约 §3.2/§3.3,[SL-463] J156)
+    // 见 src/input/InputBridgeLogic.h 的 claimRequestResponse()。
     InputClaimState prepare(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
 
     // [M] 4Hz 心跳(kActive 才写)。
@@ -159,6 +154,9 @@ public:
     u32 remoteAbi() const noexcept { return registry_.remoteAbi(); } // abi 不符时探测到的对端 abi
     u32 configSeq() const { return registry_.configSeq(); } // 本组 OutputSlot.config_seq(§4.3 变化检测)
     InputConnSnapshot connSnapshot(u64 nowMs) const; // §4.2 的 IPC 四字段 + occupiedMask
+    // [J150] 本实例**实际持有**的那个 slot 此刻的 InputSlot.heartbeat_ms(ctrl 段轨道名区的归属判据,
+    // 见 CtrlPlane.h 的 CtrlTrackName)。未持有 slot / registry 未映射 → 0。
+    u64 ownSlotHeartbeatMs() const;
     std::uint8_t groupsOnline(u64 nowMs) const; // 本组位(OutputSlot 心跳)+ 跨组只读探测(01 §4.5/J70)
 
 private:

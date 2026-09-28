@@ -13,6 +13,84 @@ std::wstring ctrlFullName(u32 group)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kCtrl);
 }
+
+// [J150] 严格 UTF-8 判定:拒过长编码 / UTF-16 代理区(U+D800..U+DFFF)/ > U+10FFFF / 截断的续字节。
+// 与 OutputStateCodec.cpp 里 label 的解码校验同一口径 —— 那边是工程文件字节,这里是对端进程写的
+// 字节,两处都是不可信输入;Output 会把读到的轨道名落进 label、随工程保存、推给 web,半个码点
+// 在任何一站都会变成乱码或被存档解码判成坏值。
+bool isStrictUtf8(const unsigned char* s, std::size_t n)
+{
+    std::size_t i = 0;
+    while (i < n)
+    {
+        const unsigned char b0 = s[i];
+        if (b0 < 0x80u)
+        {
+            ++i;
+            continue;
+        }
+        std::size_t len = 0;
+        u32 cp = 0;
+        u32 minCp = 0;
+        if ((b0 & 0xE0u) == 0xC0u)
+        {
+            len = 2;
+            cp = b0 & 0x1Fu;
+            minCp = 0x80u;
+        }
+        else if ((b0 & 0xF0u) == 0xE0u)
+        {
+            len = 3;
+            cp = b0 & 0x0Fu;
+            minCp = 0x800u;
+        }
+        else if ((b0 & 0xF8u) == 0xF0u)
+        {
+            len = 4;
+            cp = b0 & 0x07u;
+            minCp = 0x10000u;
+        }
+        else
+        {
+            return false; // 孤立续字节或 0xF8.. 前缀
+        }
+        if (i + len > n)
+        {
+            return false;
+        }
+        for (std::size_t k = 1; k < len; ++k)
+        {
+            const unsigned char b = s[i + k];
+            if ((b & 0xC0u) != 0x80u)
+            {
+                return false;
+            }
+            cp = (cp << 6) | (b & 0x3Fu);
+        }
+        if (cp < minCp || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu))
+        {
+            return false;
+        }
+        i += len;
+    }
+    return true;
+}
+
+// [J150] 取 s 的 ≤ maxBytes 字节前缀,且不切出半个码点:落点若是续字节(10xxxxxx)就回退到该序列
+// 的头字节之前(与 OutputProcessor::publishConfigBroadcast 截 label 的写法同款)。
+std::size_t utf8PrefixBytes(const std::string& s, std::size_t maxBytes)
+{
+    if (s.size() <= maxBytes)
+    {
+        return s.size();
+    }
+    std::size_t len = maxBytes;
+    while (len > 0 && (static_cast<unsigned char>(s[len]) & 0xC0u) == 0x80u)
+    {
+        --len;
+    }
+    return len;
+}
 } // namespace
 
 // 停摆看门狗阈值(01 §4.2 / §4.3-b)。
@@ -203,6 +281,73 @@ bool CtrlPlane::readBroadcast(CtrlBroadcastSnapshot& out) const
     // 载荷读取不得越过第二次 seq 读(seqlock 读边界)。
     std::atomic_thread_fence(std::memory_order_acquire);
     return b->seq.load(std::memory_order_relaxed) == before;
+}
+
+CtrlTrackName* CtrlPlane::trackNameAt(u32 channel) const
+{
+    if (base_ == nullptr || channel < 1 || channel > kMaxChannels)
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<CtrlTrackName*>(base_ + kCtrlTrackNamesOffset + (channel - 1) * sizeof(CtrlTrackName));
+}
+
+void CtrlPlane::writeTrackName(u32 channel, u64 ownerHeartbeatMs, const std::string& utf8)
+{
+    CtrlTrackName* e = trackNameAt(channel);
+    if (e == nullptr)
+    {
+        return; // 段未打开 / channel 非法:静默不写
+    }
+    const std::size_t len = utf8PrefixBytes(utf8, kCtrlTrackNameBytes - 1);
+
+    // seqlock 写侧,奇偶协议同 writeBroadcast(奇数进临界区 + release fence 挡住载荷上浮)。
+    // 每条单写,所以用 load + store 而不是 fetch_add,顺带把**奇数残值**扶正:上一任写方若死在
+    // 临界区里(seq 停在奇数),fetch_add 会把本次写入翻成「偶数 = 稳定」、载荷却正在写 ——
+    // `| 1u` 让本次无论从奇从偶出发,临界区内都是奇数、写完都是偶数。
+    // u32 回绕到 0(= 从未写过)要 2^31 次写入,本条每拍一次 ≈ 2.7 年不停机,落到 0 的那一拍
+    // 读方判「没有轨道名」、保持现状,下一拍即恢复。
+    const u32 s = e->seq.load(std::memory_order_relaxed) | 1u;
+    e->seq.store(s, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+
+    e->owner_heartbeat_ms = ownerHeartbeatMs;
+    std::memcpy(e->utf8, utf8.data(), len);
+    std::memset(e->utf8 + len, 0, kCtrlTrackNameBytes - len); // 槽内补 0:NUL 结尾 + 不留上一次的尾巴
+
+    e->seq.store(s + 1u, std::memory_order_release);
+}
+
+bool CtrlPlane::readTrackName(u32 channel, u64& ownerHeartbeatMs, std::string& name) const
+{
+    const CtrlTrackName* e = trackNameAt(channel);
+    if (e == nullptr)
+    {
+        return false;
+    }
+    const u32 before = e->seq.load(std::memory_order_acquire);
+    if (before == 0u || (before & 1u) != 0u)
+    {
+        return false; // 从未写过 / 写方正在写
+    }
+    const u64 owner = e->owner_heartbeat_ms;
+    char buf[kCtrlTrackNameBytes];
+    std::memcpy(buf, e->utf8, kCtrlTrackNameBytes);
+    // 载荷读取不得越过第二次 seq 读(seqlock 读边界)。
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (e->seq.load(std::memory_order_relaxed) != before)
+    {
+        return false; // 撕裂:本拍放弃,调用方下一拍再读(不自旋)
+    }
+    buf[kCtrlTrackNameBytes - 1] = '\0'; // 对端可能是旧版本 / 被截断的字节,读方自保
+    const std::size_t len = std::strlen(buf);
+    if (!isStrictUtf8(reinterpret_cast<const unsigned char*>(buf), len))
+    {
+        return false;
+    }
+    ownerHeartbeatMs = owner;
+    name.assign(buf, len);
+    return true;
 }
 
 void CtrlPlane::refreshGlobalInfo(const OutputGlobalInfoSnapshot& s)
