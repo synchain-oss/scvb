@@ -18,12 +18,16 @@
 //     一次性提示」,内容是 REAPER 首选项里那条宿主端解法。闩锁本会话内不清 ⇒ ✕ 一次,
 //     本会话不再出现(「一次性」)。**不随打印结束收起**:它讲的是「写完没录到自动化怎么办」,
 //     用户最需要它的那一刻恰好在打印之后。
-//   · `liveReEnable` —— Live ∧ 打印已结束(PRINT → 非 PRINT 的边沿置位,下一次进 PRINT 清位)
-//     ∧ **走带停了或输出关了**。03 §4.4 对策①「打印结束时 UI 提示点 Re-Enable Automation」。
-//     后一半是 #324 复审采纳的:循环区跨出写入范围时,每一圈出范围都是一次 PRINT → ARMED,
-//     而下一圈回到范围里又会接着写 —— 这时说「写入已结束、去点 Re-Enable」既不对、点了也
-//     留不住(下一圈又会把按钮点亮),横幅还会随每一圈忽隐忽现。所以只在「这一段写入真的
-//     告一段落」(停走 / 关输出)时出。✕ 之后到下一次打印结束才再出。
+//   · `liveReEnable` —— Live ∧ 打印已结束(PRINT → 非 PRINT 的边沿置位,下一次进 PRINT 清位)。
+//     03 §4.4 对策①「打印结束时 UI 提示点 Re-Enable Automation」。✕ 之后到下一次打印结束才再出。
+//     另有一道**只管显示、不碰「关过」记录**的压制 `liveReEnableHold` = 输出 ON ∧ 还在播:
+//     循环区跨出写入范围时,每一圈出范围都是一次 PRINT → ARMED,而下一圈回到范围里又会接着写 ——
+//     这时说「写入已结束、去点 Re-Enable」既不对、点了也留不住,横幅还会随每一圈忽隐忽现
+//     (#324 复审第 1 轮)。所以这段时间先压着不显,停走 / 关输出再显。
+//     ⚠ 这道压制**不能**并进 `liveReEnable` 本身(#324 复审第 2 轮揪出的回归):那个值是交给
+//     showDismissible 的 `on`,`on` 一假就删掉「关过」的记录 —— 用户 ✕ 掉之后,在写入范围外
+//     按播放试听一下再停走,横幅就会在没有任何新一次写入结束的情况下冒回来。`on` 只许在
+//     「进 PRINT」时变假(那一刻 `hintPrintEnded` 本来就清位)。
 //
 // 「本会话」= 这一个页面实例的寿命(关掉插件窗口再打开 = 新会话),与 `dismissedBanners`
 // 同一份口径:不入 state chunk、不落盘、不进契约。
@@ -53,10 +57,8 @@ export function snapshotHost(snapshot) {
  *
  * 就地写 `session` 的三格:
  *   · `hintEverPrinted`   本会话进过 PRINT(只置不清);
- *   · `hintPrintEnded`    上一次 PRINT 已结束、下一次还没开始(进 PRINT 清位。⚠ 清位这一句在
- *                         **页面上不可分辨**:PRINT 必然「输出 ON ∧ 在播」,而 hostHintFlags 的
- *                         ⑭ 在这时本来就不出 —— 它保的是这一格的记账语义,由 smoke-host-hints
- *                         的逐拍真值表钉住,不是由页面级那一套);
+ *   · `hintPrintEnded`    上一次 PRINT 已结束、下一次还没开始(进 PRINT 清位 —— 这一下同时是
+ *                         ⑭「关过」记录被删的唯一时机,见头注);
  *   · `hintWasPrinting`   上一拍是不是 PRINT(边沿记忆)。
  *
  * @param {object} session   store.session
@@ -79,7 +81,9 @@ export function trackPrintEdges(session, printing) {
  * @param {object} state     store.state(§2.1 深合并结果)
  * @param {object} session   store.session(trackPrintEdges 写过的那一份)
  * @param {object} playhead  store.playhead(§2.6;缺席 = 不在播)
- * @returns {{reaperKeepOpen:boolean, reaperPrintNote:boolean, liveReEnable:boolean}}
+ * @returns {{reaperKeepOpen:boolean, reaperPrintNote:boolean, liveReEnable:boolean,
+ *            liveReEnableHold:boolean}}
+ *   `liveReEnableHold` 只管「此刻先别显」,**不是** showDismissible 的条件(理由见头注)。
  */
 export function hostHintFlags(host, state, session, playhead) {
     const outputOn = !!(state && state.global && state.global.output_enabled);
@@ -88,10 +92,8 @@ export function hostHintFlags(host, state, session, playhead) {
     return {
         reaperKeepOpen: host === "reaper" && outputOn,
         reaperPrintNote: host === "reaper" && s.hintEverPrinted === true,
-        // 「输出 ON 且还在播」= 这一段写入没告一段落(循环回范围里还会接着写),先不出
-        liveReEnable:
-            host === "live" &&
-            s.hintPrintEnded === true &&
-            !(outputOn && playing),
+        liveReEnable: host === "live" && s.hintPrintEnded === true,
+        // 「输出 ON 且还在播」= 这一段写入没告一段落(循环回范围里还会接着写),先压着不显
+        liveReEnableHold: outputOn && playing,
     };
 }

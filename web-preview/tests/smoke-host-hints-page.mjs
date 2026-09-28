@@ -27,6 +27,11 @@
 //   ⑥ host=live + **循环跨出写入范围**(播着、输出 ON,把范围改到播放头之前 ⇒ PRINT → ARMED
 //      但走带还在走):⑭ **不出**(下一圈回到范围里还会接着写,「写入已结束」是反话;
 //      #324 复审采纳)⇒ 停走之后才出;
+//   ⑦ host=live:⑭ 出现后 ✕ 掉 ⇒ 在写入范围**外**按播放试听(输出 ON ∧ 在播,但不进 PRINT)
+//      再停走 ⇒ ⑭ **仍关着**(没有新的一次写入结束,就不该冒回来)。#324 复审第 2 轮揪出的回归:
+//      ⑥ 那道「输出 ON ∧ 在播先压着」一度被并进 showDismissible 的 `on`,试听一下就把「关过」
+//      的记录删了。判据取停走**之后**再切一次 tab(强制整页重渲染一次)的那一帧 —— 停走那一拍
+//      之后没有别的事件会来 render,不切的话「还没渲染」与「渲染了但仍关着」分不开;
 //   各场景都要零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-host-hints-page.mjs [仓库根绝对路径]
@@ -760,6 +765,68 @@ try {
         const p2 = await until((x) => x.live);
         check(p2 && p2.live, `⑥ 停走之后 ⑭ 出现(实得 ${shown(p2)})`);
         assertClean("⑥ host=live 播着出范围");
+    }
+
+    // =========================================================================
+    log("=== ⑦ host=live:✕ 掉 ⑭ 后在范围外试听再停走 ⇒ ⑭ 仍关着 ===");
+    {
+        await open("live");
+        await outputOnIntoPrint("⑦");
+        await stopAfterPrint("⑦");
+        const p1 = await until((x) => x.live);
+        check(p1 && p1.live, `⑦ 前提:打印结束后 ⑭ 出现(实得 ${shown(p1)})`);
+        check(await clickGb("banner-liveReEnable-dismiss"), "⑦ 点了 ⑭ 的 ✕");
+        const p2 = await until((x) => !x.live);
+        check(p2 && !p2.live, `⑦ ✕ 之后 ⑭ 收起(实得 ${shown(p2)})`);
+        // 范围改到播放头之前 ⇒ 再播也进不了 PRINT(ARMED ∧ 在播 = 试听)
+        check(
+            await evaluate(
+                SHELL(`const r = s.mock.setRange("manual", 0, 30);
+                       return !!r && r.ok === true;`),
+            ),
+            "⑦ 范围改成手动 0–30s(播放头在范围之后)",
+        );
+        const pageStopped = (want) =>
+            IN(`const o = w.__SCVB_OUTPUT__;
+                return !!o && o.hostEcho().stopped === ${want ? "true" : "false"};`);
+        check(await setPlaying(true), "⑦ 在范围外按播放");
+        check(
+            await waitFor(pageStopped(false), 6000),
+            "⑦ 页面已收到「在播」那一帧",
+        );
+        const p3 = await evaluate(PROBE);
+        check(
+            p3 && !printing(p3) && p3.outputOn,
+            `⑦ 在播但没进 PRINT(试听;实得 ${shown(p3)})`,
+        );
+        check(p3 && !p3.live, "⑦ 试听中 ⑭ 不出");
+        check(await setPlaying(false), "⑦ 停走");
+        check(
+            await waitFor(pageStopped(true), 6000),
+            "⑦ 页面已收到「停走」那一帧",
+        );
+        // 强制整页重渲染一次(切走再切回),判据取那之后的一帧
+        const tabIs = (name) =>
+            IN(`const c = d.getElementById("content");
+                return !!c && c.getAttribute("data-tab") === "${name}";`);
+        await evaluate(
+            IN(
+                `const b = q('[data-tab-btn="tracks"]'); if (b) b.click(); return true;`,
+            ),
+        );
+        check(await waitFor(tabIs("tracks"), 6000), "⑦ 切到「轨道」页");
+        await evaluate(
+            IN(
+                `const b = q('[data-tab-btn="master"]'); if (b) b.click(); return true;`,
+            ),
+        );
+        check(await waitFor(tabIs("master"), 6000), "⑦ 切回总览页");
+        const p4 = await evaluate(PROBE);
+        check(
+            p4 && !p4.live,
+            `⑦ 停走之后 ⑭ **仍关着** —— 试听不是新的一次写入结束,不该把 ✕ 冲掉(实得 ${shown(p4)})`,
+        );
+        assertClean("⑦ host=live ✕ 后试听");
     }
 } catch (e) {
     fail++;

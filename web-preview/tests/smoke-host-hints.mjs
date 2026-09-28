@@ -108,20 +108,33 @@ log("=== ① host-hints.js 纯函数 ===");
         false,
         "Live 未结束过打印:⑭ 不出",
     );
-    // ⑭ 还要「这一段写入告一段落」:输出 ON 且还在播(循环回范围里会接着写)⇒ 先不出(#324 复审)
+    // ⑭ 的「输出 ON 且还在播 ⇒ 先压着不显」是一道**独立的** hold(#324 复审第 1 轮),
+    // 不许并进 liveReEnable 本身 —— 后者是 showDismissible 的 `on`,一假就删「关过」的记录
+    // (#324 复审第 2 轮揪出的回归)。所以:liveReEnable 不看走带,hold 只看「输出 ON ∧ 在播」。
     const ended = { hintPrintEnded: true };
     const PLAY = { isPlaying: true };
     const STOP = { isPlaying: false };
+    const cases = [
+        [ON, PLAY],
+        [ON, STOP],
+        [OFF, PLAY],
+        [OFF, STOP],
+        [ON, null],
+    ];
     eq(
-        [
-            HH.hostHintFlags("live", ON, ended, PLAY).liveReEnable,
-            HH.hostHintFlags("live", ON, ended, STOP).liveReEnable,
-            HH.hostHintFlags("live", OFF, ended, PLAY).liveReEnable,
-            HH.hostHintFlags("live", OFF, ended, STOP).liveReEnable,
-            HH.hostHintFlags("live", ON, ended, null).liveReEnable,
-        ],
-        [false, true, true, true, true],
-        "⑭:输出 ON∧在播 不出;停走 / 关输出 / 无播放头 出",
+        cases.map(
+            ([st, ph]) => HH.hostHintFlags("live", st, ended, ph).liveReEnable,
+        ),
+        [true, true, true, true, true],
+        "⑭ 条件(= showDismissible 的 on)不看走带:打印结束后一直为真,只在进 PRINT 时清",
+    );
+    eq(
+        cases.map(
+            ([st, ph]) =>
+                HH.hostHintFlags("live", st, ended, ph).liveReEnableHold,
+        ),
+        [true, false, false, false, false],
+        "⑭ 压制 hold 只在「输出 ON ∧ 在播」时为真",
     );
     // ⑫⑬ 不看走带
     eq(

@@ -1779,6 +1779,9 @@ function renderBanners() {
     showDismissible("banner-reaperKeepOpen", hints.reaperKeepOpen, "");
     showDismissible("banner-reaperPrintNote", hints.reaperPrintNote, "");
     showDismissible("banner-liveReEnable", hints.liveReEnable, "");
+    // ⑭ 的压制只改显隐、**不经** showDismissible:那条路的 `on` 一假就删「关过」的记录
+    // (#324 复审第 2 轮;理由见 host-hints.js 头注)。
+    if (hints.liveReEnableHold) show($("banner-liveReEnable"), false);
 
     // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
     // 「sidecar 不上了」)。此处原为
