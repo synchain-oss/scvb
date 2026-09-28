@@ -1054,9 +1054,9 @@ TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不�
     // 那格的构造,换成真 Win32 段)。句柄在本用例结束前一直持有,段不会被内核回收。
     scvb::SegmentBackendWin32 backend;
     scvb::SegmentView bad;
-    REQUIRE(backend.createOrOpen(L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup),
-                                                                      scvb::SegmentKind::kCtrl),
-                                 scvb::kCtrlSegmentSize, bad) == scvb::InitResult::kOk);
+    REQUIRE(backend.createOrOpen(
+                L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup), scvb::SegmentKind::kCtrl),
+                scvb::kCtrlSegmentSize, bad) == scvb::InitResult::kOk);
     auto* header = static_cast<scvb::CtrlHeader*>(bad.base);
     REQUIRE(backend.initHeader(bad, &header->magic, &header->abi, &header->generation, scvb::kCtrlBroadcastOffset,
                                /*initData=*/{}, /*allowOverwrite=*/true) == scvb::InitResult::kOk);
