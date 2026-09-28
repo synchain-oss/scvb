@@ -64,7 +64,7 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
 
 ## 说明
 
-- **JUCE 与 GPLv3 的关系**:SCVB 本身以 GPL-3.0-or-later 发布,取 JUCE 的 AGPLv3 授权分支。
+- **JUCE 与 GPLv3 的关系**:本仓自研源码以 GPL-3.0-or-later 发布(发布的二进制整体按 GPLv3 分发,见下面 VST3 SDK 一条),取 JUCE 的 AGPLv3 授权分支。
   按 JUCE 官方口径,分发自己的 GPLv3 代码时只需附本项目的 GPLv3 全文(`LICENSE`),不必附 JUCE 许可证本体。
   每个已发布二进制的完整对应源码在本仓库公开可得(AGPLv3 §13 的保守合规做法)。
 - **VST3 SDK 的许可证**:JUCE 8.0.8 内置的是 VST3 SDK **3.7.12**,其 `LICENSE.txt`(原文见

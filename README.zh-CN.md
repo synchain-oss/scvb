@@ -111,7 +111,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 ## 许可证
 
-[GPL-3.0-or-later](LICENSE)。编进插件的第三方组件(JUCE、VST3 SDK、JUCE 编进来的各个库、WebView2 loader、字体)及其许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md),许可证全文在 `LICENSES/`。
+本仓源码采用 [GPL-3.0-or-later](LICENSE)。发布的 `.vst3` 二进制里还编进了只按 GPLv3 授权和按 AGPLv3 授权的组件,所以二进制整体按 GPLv3 分发(说明见 THIRD-PARTY-NOTICES.md)。编进插件的第三方组件(JUCE、VST3 SDK、JUCE 编进来的各个库、WebView2 loader、字体)及其许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md),许可证全文在 `LICENSES/`。
 
 ## 相关项目
 

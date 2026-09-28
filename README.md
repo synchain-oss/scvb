@@ -111,7 +111,7 @@ The nine hard rules have a **single source of truth**: the `## 硬约束` sectio
 
 ## License
 
-[GPL-3.0-or-later](LICENSE). Third-party components built into the plugins (JUCE, the VST3 SDK, the libraries JUCE compiles in, the WebView2 loader, fonts) and their licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); full licence texts are in `LICENSES/`.
+The source code in this repository is [GPL-3.0-or-later](LICENSE). The released `.vst3` binaries also contain GPLv3-only and AGPLv3 components, so they are distributed under GPLv3 as a whole (details in THIRD-PARTY-NOTICES.md). Third-party components built into the plugins (JUCE, the VST3 SDK, the libraries JUCE compiles in, the WebView2 loader, fonts) and their licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); full licence texts are in `LICENSES/`.
 
 ## Related projects
 
