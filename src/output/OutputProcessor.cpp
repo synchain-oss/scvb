@@ -2119,7 +2119,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // [SL-411 R3] 上面 report 的三个计数器**只**在这里落成 `DBG` 行 —— 而 JUCE 的 `DBG` 在 Release
     // 构建里是**空语句**:发行版用户零信号,只有 Debug/Debugger 下看得见。今天这条路只有损坏的工程
     // 走得到(更高 abi 在容器层就 `RejectedNewer` 了,只有手改过的值才可能越界),所以不是当场可见的
-    // 缺陷;但**别把这句读成「用户会被通知到」**:UI 警告通路尚未接线,登记 SL-412。
+    // 缺陷;但**别把这句读成「用户会被通知到」**:值越界回落至今没有 UI 警告通路。[SL-412] 接上的是
+    // 另一件事 —— 更高 abi 工程被拒载时的 `scvb.error{newerState}` 横幅 —— 不覆盖这里的越界回落。
     runtime_.segmentationMode =
         juce::String::fromUTF8(s.segmentationMode.c_str(), static_cast<int>(s.segmentationMode.size()));
     runtime_.segmentationSensitivity = s.segmentationSensitivity;
