@@ -1914,6 +1914,228 @@ try {
         );
     }
     assertClean("⑧ 在途窗不误中止");
+
+    // =========================================================================
+    log("=== ⑨ [SL-536 / J140] 参数 / 配置入栈后的页面接线 ===");
+    newBucket("SL-536");
+    {
+        // 桩:把 mock 的五个名字包一层记调用序(bridge.js 的 mock 路径按名**调用时**取
+        // `mock[name]`,所以就地替换即生效);undo 仍回 mock 原值(栈空 ok:false),
+        // 这里只看「调没调到、按什么次序」。
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    mk.__sl536 = { log: [], orig: {} };
+                    for (const n of ["undo", "beginParamGesture", "setParam",
+                                     "endParamGesture", "setChannelConfig"]) {
+                        const f = mk[n];
+                        mk.__sl536.orig[n] = f;
+                        mk[n] = (...a) => { mk.__sl536.log.push([n, ...a]); return f.apply(mk, a); };
+                    }
+                    return true;`),
+            ),
+            "(s0)已给 mock 的 undo / gesture 三段 / setChannelConfig 装上调用记录",
+        );
+        const logOf = () =>
+            evaluate(
+                IN(`return w.__SCVB_MOCK__.__sl536.log.map((e) => e.slice());`),
+            );
+        const clearLog = () =>
+            evaluate(
+                IN(`w.__SCVB_MOCK__.__sl536.log.length = 0; return true;`),
+            );
+        const boxOf = (name, fx) =>
+            evaluate(
+                IN(`const n = gb(${JSON.stringify(name)});
+                    if (!n || !n.offsetParent) return null;
+                    n.scrollIntoView({ block: "center" });
+                    const fr = f.getBoundingClientRect();
+                    const r = n.getBoundingClientRect();
+                    return { x: fr.left + r.left + r.width * ${fx}, y: fr.top + r.top + r.height / 2, w: r.width };`),
+            );
+
+        // --- (a) 证据③:配置写回执 ok ⇒ undo 钮置亮 -----------------------------
+        // 先用一次空栈 Ctrl+Z 把 undo 钮置灰(回执 ok:false ⇒ 灰本向),否则起手常亮,
+        // 「被点亮」无从分辨。
+        await evaluate(
+            IN(
+                `if (d.activeElement && d.activeElement.blur) d.activeElement.blur(); return true;`,
+            ),
+        );
+        await pressCtrlZ();
+        check(
+            await waitFor(
+                IN(
+                    `return gb("header-undo").getAttribute("data-disabled") === "1";`,
+                ),
+                4000,
+            ),
+            "(s1)前提:空栈 Ctrl+Z 之后 undo 钮灰",
+        );
+        check(
+            await evaluate(IN(`gb("tabnav-tracks").click(); return true;`)),
+            "(s2)切到轨道页",
+        );
+        check(
+            await waitFor(
+                IN(
+                    `const n = gb("tracks-row-1-leadlock"); return !!(n && n.offsetParent);`,
+                ),
+                6000,
+            ),
+            "(s3)轨道页第 1 行的主唱锁定开关可见",
+        );
+        await clearLog();
+        await evaluate(IN(`gb("tracks-row-1-leadlock").click(); return true;`));
+        check(
+            await waitFor(
+                IN(
+                    `return w.__SCVB_MOCK__.__sl536.log.some((e) => e[0] === "setChannelConfig");`,
+                ),
+                4000,
+            ),
+            "(s4)点开关 ⇒ 发出 setChannelConfig",
+        );
+        check(
+            await waitFor(
+                IN(
+                    `return gb("header-undo").getAttribute("data-disabled") === "0";`,
+                ),
+                4000,
+            ),
+            "(s5)**setChannelConfig 回执 ok ⇒ undo 钮置亮**(无段表事件可认,靠 app.js 包的回执证据)",
+        );
+
+        // --- (b) 焦点在轨道页开关上按 Ctrl+Z ⇒ 到插件的 undo -----------------------
+        await clearLog();
+        await evaluate(
+            IN(`gb("tracks-row-1-freezepan").focus(); return true;`),
+        );
+        check(
+            await evaluate(
+                IN(`return d.activeElement === gb("tracks-row-1-freezepan");`),
+            ),
+            "(s6)前提:焦点真的在冻结 P 开关上",
+        );
+        await pressCtrlZ();
+        check(
+            await waitFor(
+                IN(
+                    `return w.__SCVB_MOCK__.__sl536.log.some((e) => e[0] === "undo");`,
+                ),
+                4000,
+            ),
+            "(s7)焦点在冻结开关上按 Ctrl+Z ⇒ 调到插件 undo()",
+        );
+
+        // --- (c) Tab2 width 旋钮按住拖动中按 Ctrl+Z ⇒ 先中止(回抓握值 + end)再 undo --
+        const stereo = await evaluate(
+            IN_ASYNC(`const m = await import("${base}/web/shared/mock-data.js");
+                      return m.DEMO_STEREO_CHANNELS[0] || 0;`),
+        );
+        check(stereo > 0, "(s8)前提:fixture 里有立体声轨(width 旋钮可拖)");
+        const wBox =
+            stereo > 0 ? await boxOf(`tracks-row-${stereo}-width`, 0.5) : null;
+        check(!!wBox, "(s9)width 旋钮可见、坐标可取");
+        if (wBox) {
+            // 版本前缀不写死:前几段切过版本,此刻激活的未必是 V1。
+            const widSuffix = `_t${String(stereo).padStart(2, "0")}_width`;
+            // 抓握值 = 按下前旋钮的读数(aria-valuenow 取整;width 步进为 1,取整无损)。
+            const grabbed = await evaluate(
+                IN(
+                    `return Number(gb("tracks-row-${stereo}-width").getAttribute("aria-valuenow"));`,
+                ),
+            );
+            await clearLog();
+            await mouse("mousePressed", wBox.x, wBox.y);
+            for (let k = 1; k <= 4; k++) {
+                // 向下拖 = 减小(width 出厂在上限 100,往上拖全被钳住、发不出不同的值)
+                await mouse("mouseMoved", wBox.x, wBox.y + k * 12);
+                await sleep(40);
+            }
+            await pressCtrlZ();
+            await sleep(250);
+            await mouse("mouseReleased", wBox.x, wBox.y + 48);
+            await sleep(250);
+            const lg = await logOf();
+            const isW = (e) =>
+                typeof e[1] === "string" && e[1].endsWith(widSuffix);
+            const sets = lg.filter((e) => e[0] === "setParam" && isW(e));
+            const ends = lg.filter((e) => e[0] === "endParamGesture" && isW(e));
+            const iEnd = lg.findIndex(
+                (e) => e[0] === "endParamGesture" && isW(e),
+            );
+            const iUndo = lg.findIndex((e) => e[0] === "undo");
+            check(
+                lg.some((e) => e[0] === "beginParamGesture" && isW(e)) &&
+                    sets.some((e) => e[2] !== grabbed),
+                `(s10)前提:拖动真的开了 gesture 且中途发过值(日志 ${JSON.stringify(lg).slice(0, 300)})`,
+            );
+            check(
+                iEnd >= 0 && iUndo >= 0 && iEnd < iUndo,
+                "(s11)**Ctrl+Z 先收束 width gesture、再发 undo**",
+            );
+            check(
+                sets.length >= 1 && sets[sets.length - 1][2] === grabbed,
+                `(s12)**收束前回到抓握值**(抓握 ${grabbed},末发 ${sets.length ? sets[sets.length - 1][2] : "无"})`,
+            );
+            check(ends.length === 1, "(s13)松手不再补发 end(只收束一次)");
+        }
+
+        // --- (d) Tab1 MS BALANCE 滑轨按住拖动中按 Ctrl+Z ⇒ 同款中止 --------------------
+        check(
+            await evaluate(IN(`gb("tabnav-master").click(); return true;`)),
+            "(s14)切回总览页",
+        );
+        await sleep(200);
+        const mBox = await boxOf("master-msbalance-slider", 0.5);
+        check(!!mBox, "(s15)MS BALANCE 滑轨可见");
+        if (mBox) {
+            await clearLog();
+            await mouse("mousePressed", mBox.x, mBox.y);
+            await sleep(60);
+            await mouse("mouseMoved", mBox.x + mBox.w * 0.3, mBox.y);
+            await sleep(80);
+            await pressCtrlZ();
+            await sleep(250);
+            await mouse("mouseReleased", mBox.x + mBox.w * 0.3, mBox.y);
+            await sleep(250);
+            const lg = await logOf();
+            const isMs = (e) => e[1] === "ms_balance";
+            const sets = lg.filter((e) => e[0] === "setParam" && isMs(e));
+            const ends = lg.filter(
+                (e) => e[0] === "endParamGesture" && isMs(e),
+            );
+            const iEnd = lg.findIndex(
+                (e) => e[0] === "endParamGesture" && isMs(e),
+            );
+            const iUndo = lg.findIndex((e) => e[0] === "undo");
+            check(
+                sets.length >= 2 && sets[1][2] !== sets[0][2],
+                `(s16)前提:按下 + 拖动发过两个不同的值(日志 ${JSON.stringify(lg).slice(0, 300)})`,
+            );
+            check(
+                iEnd >= 0 && iUndo >= 0 && iEnd < iUndo,
+                "(s17)**Ctrl+Z 先收束 MS BALANCE gesture、再发 undo**",
+            );
+            check(
+                sets.length >= 2 && sets[sets.length - 1][2] === sets[0][2],
+                "(s18)**收束前回到抓握值**(最后一发 setParam = 按下那一发)",
+            );
+            check(ends.length === 1, "(s19)松手不再补发 end(只收束一次)");
+        }
+
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    for (const [n, fn] of Object.entries(mk.__sl536.orig)) mk[n] = fn;
+                    delete mk.__sl536;
+                    return true;`),
+            ),
+            "(s20)已还原 mock",
+        );
+    }
+    assertClean("⑨ SL-536 接线");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
@@ -1925,5 +2147,5 @@ if (fail > 0) {
     console.log(`\n❌ ${fail} 条断言失败`);
     process.exit(1);
 }
-console.log("\n✅ Output 撤销作用面(SL-450)页面级冒烟全绿");
+console.log("\n✅ Output 撤销作用面(SL-450 / SL-536)页面级冒烟全绿");
 process.exit(0);
