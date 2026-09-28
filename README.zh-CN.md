@@ -80,6 +80,10 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 > 9. **看到"时间线缺口 / 重叠"警告时,不要继续导出。** 先按 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
 <!-- END GENERATED hard-rules:zh -->
 
+## 隐私
+
+SCVB 不联网:没有更新检查、没有使用统计、没有账号。它只会在你点击时,用默认浏览器打开说明文档和 WebView2 下载这两类网页。它在 `%APPDATA%\Synchain\SCVB` 下存几项跨工程的偏好,在 `%LOCALAPPDATA%\Synchain\SCVB` 下存界面的浏览器缓存;除了你自己导出的文件,其余都存在你的工程里。完整清单见[用户手册「隐私与本机文件」](docs/USER_GUIDE.zh-CN.md)。
+
 ## 从源码构建
 
 ```powershell
@@ -107,7 +111,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 ## 许可证
 
-[GPL-3.0-or-later](LICENSE);JUCE 与 VST3 SDK 的依赖声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+本仓源码采用 [GPL-3.0-or-later](LICENSE)。发布的 `.vst3` 二进制里还编进了只按 GPLv3 授权和按 AGPLv3 授权的组件,所以二进制整体按 GPLv3 分发(说明见 THIRD-PARTY-NOTICES.md)。编进插件的第三方组件(JUCE、VST3 SDK、JUCE 编进来的各个库、WebView2 loader、字体)及其许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md),许可证全文在 `LICENSES/`。
 
 ## 相关项目
 

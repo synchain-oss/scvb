@@ -5,6 +5,8 @@
 // ⚠ 第一版写成 `from "./tab-wave.js"`:tab-wave 是**工厂函数**,内部函数 export 不出去,
 // 那是一个 `SyntaxError`(整页起不来)。别再那样指。
 import { analyzeRefusalNote } from "../shared/analyze-note.js";
+// [rc-misc e] 组号字母表的唯一真源(页头 badge 同用),诊断文本首行要报组号。
+import { GROUP_IDS } from "./tab-master.js";
 // =============================================================================
 // SCVB Output · Tab4「设置」—— 状态机与桥接线(T35 交付物)。
 // -----------------------------------------------------------------------------
@@ -248,13 +250,42 @@ export function diagRowsOf(store) {
     }));
 }
 
-/** 诊断区可复制文本(「复制诊断信息」按钮的目标内容;extraLines = 未知 code 降级行)。 */
-export function diagText(rows, extraLines) {
+/**
+ * 诊断文本的首行:插件版本 · abi · 组号(契约 §1.1 snapshot.version 与 §2.1 group_id)。
+ * [rc-misc e] 此前复制出去的诊断信息只有五列表格,用户贴过来分不出是哪个版本、哪个组,
+ * 排查时还得再追问一轮。拿不到版本(首帧前)时只报组号;组号缺省(state 还没到)按 1,
+ * 与页头 badge 同口径。组号**不在 1..8** 时原样写出「group ?<值>」而不是兜成 A —— 诊断信息
+ * 不该把异常值藏掉(#315 第 1 轮复审【建议】5)。
+ * 版本段与设置页的「v… · abi …」逐字同源(versionString)。
+ * @param {object} store app.js 事件仓({snapshot, state})
+ */
+export function diagInfoLine(store) {
+    const st = store || {};
+    const ver = versionString(st.snapshot);
+    const raw = (st.state || {}).group_id;
+    const gid = raw === undefined || raw === null ? 1 : raw;
+    const letter = Number.isInteger(gid) ? GROUP_IDS[gid - 1] : undefined;
+    const group = "group " + (letter || "?" + String(gid));
+    return ["SCVB Output", ver, group].filter(Boolean).join(" · ");
+}
+
+/**
+ * 诊断区可复制文本(「复制诊断信息」按钮的目标内容)。
+ * @param {object[]} rows diagRowsOf 的行模型
+ * @param {string[]} [extraLines] 未知 code 降级行(排在表格之后)
+ * @param {string[]} [headLines] 表格之前的行([rc-misc e]:版本 / abi / 组号,见 diagInfoLine)
+ */
+export function diagText(rows, extraLines, headLines) {
     const head = ["CH", "HB", "MIS", "GEN", "SEQ"];
     const body = (rows || []).map((r) =>
         [r.ch, r.hb, r.mis, r.gen, r.seq].join(" "),
     );
-    return [head.join(" "), ...body, ...(extraLines || [])].join("\n");
+    return [
+        ...(headLines || []),
+        head.join(" "),
+        ...body,
+        ...(extraLines || []),
+    ].join("\n");
 }
 
 // =============================================================================
@@ -616,7 +647,7 @@ export function createTabSettings(opts) {
         const unknown = ((getStore() && getStore().unknownCodes) || []).map(
             (c) => "unknown: " + c,
         );
-        const payload = diagText(rows, unknown);
+        const payload = diagText(rows, unknown, [diagInfoLine(getStore())]);
         let ok = false;
         try {
             if (

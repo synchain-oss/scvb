@@ -169,7 +169,7 @@ export const T = {
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
         "tracks.manualOverwriteConfirm":
-            "将以固定值替换该轨(当前版本)的全部分段结果,可撤销",
+            "将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销",
         "tracks.manualOverwriteConfirm.locked": "(含 {l} 个锁定段)",
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
@@ -804,6 +804,9 @@ export const T = {
         "curve.side.out": "向外",
         "curve.side.left": "向左",
         "curve.side.right": "向右",
+        // [rc-misc i] 曲线浮条两组按钮的组名(读屏用 aria-label)
+        "curve.shapeGroup": "形状",
+        "curve.sideGroup": "方向",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "斜率",
         "curve.slope.opt6": "6 dB/oct",
@@ -1199,7 +1202,7 @@ export const T = {
             "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
         "tracks.manualOverwriteConfirm":
-            "This replaces all analyzed segments of this track (current version) with a fixed value. Undoable.",
+            "This sets this control to a fixed value on all analyzed segments of this track (current version); the other control keeps its curve. Undoable.",
         "tracks.manualOverwriteConfirm.locked":
             "(includes {l} locked segments)",
         "in.pill.abiMismatch": "VERSION MISMATCH",
@@ -1745,6 +1748,8 @@ export const T = {
         "curve.side.out": "Out",
         "curve.side.left": "Left",
         "curve.side.right": "Right",
+        "curve.shapeGroup": "Shape",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Slope",
         "curve.slope.opt6": "6 dB/oct",
@@ -2035,7 +2040,7 @@ export const T = {
             "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
         "tracks.manualOverwriteConfirm":
-            "Remplace tous les segments analysés de cette piste (version actuelle) par une valeur fixe. Annulable.",
+            "Fixe cette commande à une valeur constante sur tous les segments analysés de cette piste (version actuelle) ; l'autre commande garde sa courbe. Annulable.",
         "tracks.manualOverwriteConfirm.locked":
             "(dont {l} segments verrouillés)",
         "in.pill.abiMismatch": "VERSION INCOMPATIBLE",
@@ -2598,6 +2603,8 @@ export const T = {
         "curve.side.out": "Extérieur",
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
+        "curve.shapeGroup": "Forme",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Pente",
         "curve.slope.opt6": "6 dB/oct",

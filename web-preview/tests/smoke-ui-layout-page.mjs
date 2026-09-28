@@ -2812,6 +2812,40 @@ try {
         await dismissOverlays();
         check(await switchLangOutput(lang), `${lang}:语言胶囊可点`);
         await sleep(300);
+        // [rc-misc i] 曲线浮条两组按钮的 aria-label 跟着语言走(此前写死英文 "shape"/"side")。
+        {
+            const want = {
+                zh: ["形状", "方向"],
+                en: ["Shape", "Direction"],
+                fr: ["Forme", "Direction"],
+            }[lang];
+            const got = await evaluate(
+                IN(`const t = gb("master-pancurve-toolbar");
+                    if (!t) return null;
+                    const g = (k) => {
+                        const n = t.querySelector('[data-curve-group="' + k + '"]');
+                        return n ? n.getAttribute("aria-label") : null;
+                    };
+                    return [g("shape"), g("side")];`),
+            );
+            check(
+                JSON.stringify(got) === JSON.stringify(want),
+                `${lang}:曲线浮条组名 aria-label 已翻(实得 ${JSON.stringify(got)})`,
+            );
+        }
+        // [rc-misc h] 点 header 连接 pill 跳 Tab2(05 §2.0 第 1 行);真点击、读页面 data-tab。
+        check(await click("header-conn-pill"), `${lang}:连接 pill 可点`);
+        await sleep(200);
+        {
+            const tab = await evaluate(
+                IN(`const c = d.getElementById("content");
+                    return c ? c.getAttribute("data-tab") : null;`),
+            );
+            check(
+                tab === "tracks",
+                `${lang}:点连接 pill 后停在 Tab2(实得 ${JSON.stringify(tab)})`,
+            );
+        }
         await click("tabnav-settings");
         await sleep(300);
         check(await setLoudness("rms"), `${lang}:切响度档可点`);

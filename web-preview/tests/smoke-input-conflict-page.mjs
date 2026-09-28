@@ -470,13 +470,16 @@ try {
             IN(`const c = card(3);
                 if (!c) return false;
                 window.__sl19Shaken = false;
+                window.__sl19ShakeCount = 0;
                 new (w.MutationObserver)((muts) => {
                     for (const m of muts) {
                         if (
                             m.type === "attributes" &&
                             c.getAttribute("data-shake") === "1"
-                        )
+                        ) {
                             window.__sl19Shaken = true;
+                            window.__sl19ShakeCount++;
+                        }
                     }
                 }).observe(c, {
                     attributes: true,
@@ -532,6 +535,42 @@ try {
         "释放确认条已被收起(证明 claimChannel 跑完了最后那句 render(),不只是跑到 shake/toast)",
     );
 
+    // [SL-462 复审] 点击撞车的反馈有两条来路(RPC 返回值 + scvb.error 边沿,mock 里事件先到),
+    // 同一次冲突只能抖一次卡。删除式(未提交,人工核过):把 app.js 两处
+    // `claimConflictShakeDue(...)` 改成恒真 ⇒ 本条读到 2。
+    // 这是「不会多抖」的反向断言,不靠固定等待兜时间:本夹具 channel_id=0,mock 的 setChannelId
+    // 走「从未绑定」那支,在返回之前就同步推出 scvb.error,两条来路都在点击那一次求值里(连同其后的
+    // 微任务)跑完;上面几条 waitFor 都是之后的求值,读到这里时计数已经定了。前提是 mock 同步分发 ——
+    // 换成异步推事件的后端,这条要重新设计。
+    await waitFor(IN(`return window.__sl19ShakeCount >= 1;`), 6000);
+    eq(
+        await evaluate(IN(`return window.__sl19ShakeCount;`)),
+        1,
+        "③ 点击撞车只抖一次卡(RPC 返回值与 channelConflict 事件去重)",
+    );
+    // 去重只配对「一次 RPC + 一次事件」,不能吞掉用户的第二次点击:等上一次抖动动画放完
+    // (animationend 摘掉 data-shake)后再点同一张卡,计数必须到 2。删除式(未提交,人工核过):
+    // 把配对条件里 `last.src !== src` 与 `!last.paired` 去掉(退回按时间窗滑动去重)⇒ 本条读到 1。
+    // 前提:夹具首帧那条 channelConflict{ch:4}(壳页在 iframe load 时才起 driver 推出)已在第一次
+    // 点击之前落地。它若晚到,会覆写去重记录,那次注入下本条仍读到 2 —— 这一格对该注入不是每跑必红。
+    await waitFor(
+        IN(`const c = card(3); return !!c && !c.hasAttribute("data-shake");`),
+        6000,
+    );
+    check(
+        await evaluate(
+            IN(
+                `const c = card(3); if (!c) return false; c.click(); return true;`,
+            ),
+        ),
+        "③ 再点一次通道卡 3",
+    );
+    await waitFor(IN(`return window.__sl19ShakeCount >= 2;`), 6000);
+    eq(
+        await evaluate(IN(`return window.__sl19ShakeCount;`)),
+        2,
+        "③ 连点同一张被占的卡,第二下照常抖(去重不跨点击)",
+    );
     assertClean("③ 通道冲突反馈");
 
     // =========================================================================
@@ -580,6 +619,81 @@ try {
         "⑤ channel_id=1 但 maskBit=false ⇒ 远程摘要行隐藏(闸若退回 channel_id>=1 会显示)",
     );
     assertClean("⑤ passthrough");
+
+    // =========================================================================
+    // [SL-462] 载入路径的冲突提示:没有 setChannelId 的返回值可挂,唯一出口是 scvb.error
+    // {channelConflict}(C++ 侧:首帧基线置空后的边沿补发 / 回滚成功时的一次性信号)。
+    // 页面收到 active:true ⇒ 按 §5.1 的落点抖卡 + 红 toast,号取载荷里的 ch(conflict 态下
+    // scvb.state.channel_id 是 0,不能从那里取);active:false(冲突解除)不弹。
+    // 事件从壳页 driver 会话推(`__SCVB_PREVIEW__.ctl.emit`,理由见 smoke-group-lock-page ⑥),
+    // 所以求值在壳页上下文,不包 IN()。
+    // 删除式(未提交,人工核过):删掉 web/input/app.js scvb.error 处理里 channelConflict 那一支,
+    // 本段「active:true ⇒ toast 上屏 / 文案 / 卡 5 抖动」三条红;把 `e.active !== false` 改成恒真,
+    // 「active:false 不弹」那条红。
+    log(
+        "=== ⑥ scvb.error{channelConflict} ⇒ 抖卡 + 红 toast(SL-462 载入路径)===",
+    );
+    const emitConflict = (ch, groupId, active) =>
+        `(() => {
+            const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+            if (!s || !s.ctl || typeof s.ctl.emit !== "function") return false;
+            s.ctl.emit("scvb.error", {
+                code: "channelConflict",
+                ch: ${ch},
+                detail: { groupId: ${groupId} },
+                active: ${active ? "true" : "false"},
+            });
+            return true;
+        })()`;
+    const TOAST_SHOWN = IN(`const t = gb("input.toast.occupied");
+        return !!t && t.hidden === false;`);
+    // 用默认场景(已连上、没有冲突):`scenario=occupied` 的夹具首帧就会推一条 channelConflict
+    // (它模拟的正是「载入时就被拒」),toast 一上来就在,读不出下面「不弹」那条。
+    await open("");
+    check(
+        (await evaluate(TOAST_SHOWN)) === false,
+        "⑥ 前置:新页面 toast 未显示(否则下面两条读不出东西)",
+    );
+    check(
+        await evaluate(emitConflict(5, 2, false)),
+        "⑥ 推一帧 channelConflict{ch:5, groupId:2, active:false}",
+    );
+    // 反向断言,不靠固定等待:ctl.emit 同步调到页面的 scvb.error 处理器,showOccupiedToast 也是
+    // 同步置 hidden=false,上面那次求值返回时处理器已经跑完。前提同 ③「只抖一次」:mock 同步分发。
+    check(
+        (await evaluate(TOAST_SHOWN)) === false,
+        "⑥ active:false(冲突解除)不弹 toast",
+    );
+    check(
+        await evaluate(
+            IN(`const c = card(5);
+                if (!c) return false;
+                window.__sl462Shaken = false;
+                new (w.MutationObserver)(() => {
+                    if (c.getAttribute("data-shake") === "1") window.__sl462Shaken = true;
+                }).observe(c, { attributes: true, attributeFilter: ["data-shake"] });
+                return true;`),
+        ),
+        "⑥ 在通道卡 5 上挂好 data-shake 闩锁",
+    );
+    check(
+        await evaluate(emitConflict(5, 2, true)),
+        "⑥ 推一帧 channelConflict{ch:5, groupId:2, active:true}",
+    );
+    check(await waitFor(TOAST_SHOWN, 6000), "⑥ active:true ⇒ 红 toast 上屏");
+    eq(
+        await evaluate(
+            IN(`const t = gb("input.toast.occupied.text");
+                return t ? t.textContent : null;`),
+        ),
+        String(T.zh["ch.occupied"]).replace("{n}", "5").replace("{g}", "B"),
+        "⑥ toast 文案逐字等于 ch.occupied(n 取载荷 ch=5,g 取 detail.groupId=2 ⇒ B)",
+    );
+    check(
+        await waitFor(IN(`return window.__sl462Shaken === true;`), 6000),
+        "⑥ 通道卡 5 曾经拿到过 data-shake=1",
+    );
+    assertClean("⑥ channelConflict 事件");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
@@ -602,5 +716,7 @@ if (fail > 0) {
     console.log(`\n❌ ${fail} 条断言失败`);
     process.exit(1);
 }
-console.log("\n✅ Input 通道冲突反馈(SL-19)+ 远程摘要闸(SL-465)页面级冒烟全绿");
+console.log(
+    "\n✅ Input 通道冲突反馈(SL-19)+ 远程摘要闸(SL-465)+ 冲突事件提示(SL-462)页面级冒烟全绿",
+);
 process.exit(0);

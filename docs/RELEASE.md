@@ -6,6 +6,8 @@
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
 
+**发版门禁**:每个版本在 `docs/validation/` 下建一份 `release-checklist-vX.Y.Z.md`(10 §6),逐项打勾,**任何一项未勾不得发布**;当前一份是 [v0.9.0-rc.1](validation/release-checklist-v0.9.0-rc.1.md)。
+
 ## 版本号的唯一真源
 
 SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。运行时经 JUCE 的 `ProjectInfo::versionString` / `JucePlugin_VersionString` 读出。

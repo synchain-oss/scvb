@@ -174,7 +174,7 @@ export function mergeGuardedByDrag(nowMs, lastCommitMs) {
  * 手动还是锁定)一个字节都不动。相邻自动段要不要并起来是另一件事,不在本入口里做。
  *
  * `openEnded` 段(§2.8)是**唯一**允许省 `endS` 的一档:它的 `t1S` 只是一个
- * **保守下界**,不是真末端 —— 那是 `setTrackManual` 造的「单段全时限常值」,
+ * **保守下界**,不是真末端 —— 那是 `setTrackManual` 在空段表上造的「单段全时限常值」,
  * CRVS 里 t1 是 1<<40 哨兵。对它取 `endS = t1S` 会把段的右半截留在手动态。
  * 省掉 `endS` 后真桥按 `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」
  * 推末端 —— **末端取哪个跟 Range 档位走**:`follow` 档是已采集时间线末端,
@@ -545,7 +545,7 @@ export function fmtTimeMs(s) {
  * 只参与取大;没有时下限压在 FALLBACK 上(播放头越过 5 分钟仍能把估计抬上去)。
  */
 /**
- * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 的单段全时限常值,
+ * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 在空段表上写入的单段全时限常值,
  * CRVS 里 t1 = 1<<40 哨兵)表达的是「一直到时间线末端」,不是一个真时刻 —— 对它取
  * `+Infinity` 才能让「包含 / 相交 / 重叠」这些判断得到正确答案。
  *
