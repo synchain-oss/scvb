@@ -244,15 +244,16 @@ export function applySegmentsEvent(prev, next) {
 //
 // **契约面事实**:§1.25/§1.26 只给 `{ok:bool}` 回执(`false` = 该向栈为空),
 // §1.1 首帧快照与 §2.1 `scvb.state` 的字段全集里**都没有** canUndo/canRedo 之类的
-// 可用性信号。既然不发明新桥面(零契约变更),可用性只能由两手证据推出:
+// 可用性信号。既然不发明新桥面(零契约变更),可用性只能由三手证据推出:
 //   ① **回执**:点下去拿到 `{ok:false}` —— 这是「该向栈空」的第一手、也是唯一权威证据;
-//   ② **新事务入栈**:§0.9 左列**八类**入栈操作里,当前 web 侧真正发得出段表事件的**六类**
+//   ② **新事务入栈**:§0.9 左列**十类**入栈操作里,当前 web 侧真正发得出段表事件的**六类**
 //      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起)/
 //      `setVadParams` / `setSegmentation`([J95③a] 起,仅其松手档触发的那一次重分段))
 //      都经 §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
-//      (左列八类 = 上述六类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
-//       ⚠ `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」自 [J82] 起就已过期,
-//       属冻结契约文字、须走 §5 批准流程另开卡订正 —— 本卡不动它,登记在此。)
+//      (左列十类 = 上述六类 + `setPanCurve` + `setVersionName`(后两类的缺口见下)
+//       + [J140] 起的 `setChannelConfig` 与 gesture 三段式(走证据③,见 `withUndoEvidence`)。
+//       `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」随 [J140] 改成「全部」。)
+//   ③ **不走段表事件的入栈写回执**([SL-536]):`setChannelConfig` / `endParamGesture` 回 `{ok:true}`。
 //
 // **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
 //   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
