@@ -200,6 +200,22 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 - Saving the project elsewhere or copying it to another machine carries the features along. A project written by an earlier version that kept its features in an external directory still opens and reads back as before (that read path is retained — opening one still writes an `owner.lock` ownership marker there), and **saving it once pulls the features back into the project and reclaims the external directory** — that step is **irreversible** and the project file grows accordingly; if that external file is gone, the features cannot be recovered (segments and curves are unaffected) — just capture again.
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
 
+## Privacy and files on disk
+
+**SCVB does not use the network.** None of the three plugins sends or downloads anything: there is no update check, no usage statistics, no account and no licence server. The interface is loaded from files built into the plugin, fonts included. Input, Output and Monitor talk to each other only through shared memory on this computer. Two links open a web page, and only when you click them: the documentation link, and the "install WebView2" link that appears when the WebView2 Runtime is missing. Both open in your default browser, not inside the plugin. (The Microsoft Edge WebView2 Runtime that draws the interface is a Windows component kept up to date by Microsoft; SCVB does not change how it behaves.)
+
+**What SCVB writes to disk:**
+
+- **Your project.** Settings, segments, curves and the captured features are saved by your DAW inside the project file, like any other plugin's state.
+- **`%APPDATA%\Synchain\SCVB\ui-defaults.settings`** — a few preferences that apply across projects: the interface language you picked, the interface scale of the Output window, and whether you have already seen the first-run guide and tour.
+- **`%LOCALAPPDATA%\Synchain\SCVB\WebView2\`** — the working folder of the embedded browser that draws the interface (its cache and settings), one subfolder per plugin.
+- **`%APPDATA%\Synchain\SCVB\sessions\`** — only for projects saved by an early version that kept its features outside the project (see "Sessions and files" above). This version does not create new folders there.
+- **An exported suggestions `.csv`** — only when you export one, in the folder you choose.
+
+SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+
+To remove the preferences and the browser cache, close your DAW and delete the two `Synchain\SCVB` folders above. Keep `sessions` if you still have projects from an early version that use it.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
@@ -238,6 +254,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 
 - 15 tracks per group, 2 version slots;
 - one active Output per group at a time;
+- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
