@@ -1769,7 +1769,8 @@ function buildOutputBackend(ctx) {
         // 判序与 native `handlePreviewPanCurve` 逐条同款:参数形态 → null 撤回(只读也放行)→
         // 只读 observer → 版本号不是当前版本 staleVersion → 受理。
         previewPanCurve(v, points) {
-            if (!Number.isInteger(v) || v < 1 || v > 2) return BAD_ARG();
+            if (!Number.isInteger(v) || v < 1 || v > VERSION_COUNT)
+                return BAD_ARG();
             if (points === null || points === undefined) {
                 model.panCurvePreview = null;
                 return OK();

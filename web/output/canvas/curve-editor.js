@@ -811,9 +811,9 @@ export function createCurveEditor(opts) {
         let accepted = false;
         try {
             const res = await bridge.setPanCurve(next);
-            accepted = !!(res && res.ok === true);
             // [rc-misc g] 回执交给外壳点亮撤销钮(判据在 tab-master.js 的 historyAfterPanCurve)。
             onPanCurveCommitted(res);
+            accepted = !!(res && res.ok === true); // [J157] 见 finally:没受理就补发 null
         } catch (e) {
             console.warn(
                 "SCVB curve-editor:setPanCurve() 调用失败 —— " + e.message,
