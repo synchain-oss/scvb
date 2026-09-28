@@ -1052,7 +1052,11 @@ void ScvbOutputAudioProcessor::timerCallback()
         scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
         if (outputEnabled_)
         {
-            mode = (playing && inRange) ? scvb::engine::AuthorityMode::Print : scvb::engine::AuthorityMode::Armed;
+            // 加载守卫未确认 ⇒ 行为止于 ARMED(契约 §1.3 / §1.34):零 gesture、零写入;DSP 仍由
+            // 引擎驱动(authority_.processBlock 读的是 session_.outputEnabled(),不看守卫),试听不受影响。
+            const bool guardPending = runtime_.printGuardPending.load(std::memory_order_acquire);
+            mode = (playing && inRange && !guardPending) ? scvb::engine::AuthorityMode::Print
+                                                         : scvb::engine::AuthorityMode::Armed;
         }
         printer_.setMode(mode);
     }
@@ -1120,6 +1124,26 @@ void ScvbOutputAudioProcessor::syncVizSegment()
     }
 }
 
+// [SL-535] 口径说明(#292 复审):判据是「显示口径」—— 槽位活跃 **且** 心跳在 `kStaleDisplayMs`
+// (2 s)内。所以除了真断开(Input 释放槽位,用户场景走的是这一半),**宿主消息线程卡住 >2 s**
+// (载工程、模态框)之后紧接着的那次分析,也会把心跳陈旧的轨当成未连接、不计入 —— 与界面此刻
+// 显示「未连接」一致,是有意同口径,不是接管判据(接管走 5000 ms + pid 探测)。
+// 另:`previewAnalysis` 与 `startAnalysis` 各自采一次时钟,两侧是「同一判据、不同时刻」,
+// 其间连接态变了会出现「预览能跑、真跑被拒」这种时间采样固有的窗口,后果只是落回拒绝态。
+std::uint16_t ScvbOutputAudioProcessor::connectedForDisplayMask(std::uint64_t nowMs) const
+{
+    static_assert(scvb::engine::kNumTracks <= 16, "connectedForDisplayMask packs tracks into a u16");
+    std::uint16_t mask = 0;
+    for (int ch = 0; ch < scvb::engine::kNumTracks; ++ch)
+    {
+        if (scvb::output::isConnectedForDisplay(session_.channelConn(static_cast<scvb::u32>(ch + 1), nowMs)))
+        {
+            mask = static_cast<std::uint16_t>(mask | (1u << ch));
+        }
+    }
+    return mask;
+}
+
 void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
 {
     // 调用方已持 lifecycleMutex_(timerCallback):可直接读 crvsData_,免去 crvsSnapshot() 的深拷贝。
@@ -1173,15 +1197,9 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         // `connSnapshot()` 的口径也是「取锁前采样」,但它那次采样发生在**已持锁之后**,
         // 对 conn 判据而言是新鲜值;这里在锁内重采,与它等价。
         // 所以本函数里两个时间基准是**有意的**:`due(nowMs)` 用形参(发布节拍要的是进入这一拍
-        // 的时刻),conn 判据用 `nowConn`。**别顺手「简化」成一个。**
-        const auto nowConn = scvb::steadyNowMs();
-        for (int ch = 0; ch < 15; ++ch)
-        {
-            if (scvb::output::isConnectedForDisplay(session_.channelConn(static_cast<scvb::u32>(ch + 1), nowConn)))
-            {
-                in.connectedMask |= (1u << ch);
-            }
-        }
+        // 的时刻),conn 判据用下面调用处在锁内重采的那个值。**别顺手「简化」成一个。**
+        // [SL-535] 逐轨判定收进 `connectedForDisplayMask`(分析的参与面读同一份)。
+        in.connectedMask = connectedForDisplayMask(scvb::steadyNowMs());
     }
     // [N1] metaRevision **只哈希轨名**。width 走帧头段、每帧都刷,与 writeLanes 无关 ——
     // 把它掺进来会让「width 被自动化」变成 needLanes 恒真,每秒 15360 次曲线求值。
@@ -1537,6 +1555,12 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
         crvsPreserved_ = false; // 解除后不再恢复
         preservedCrvsChunk_.clear();
         crvsAtRejectEncoded_.clear();
+        // [SL-218 #307 复审] 横幅⑪ 那句「原数据会原样保留」从这一刻起不再成立 ⇒ 撤下。与保留态同一时机:
+        // 容器编码成功、新表确实写出去之后(编码失败什么都没写出,原数据仍在,横幅照旧成立)。
+        // 只在 CRVS 位是「rejected」时清:那正是保留态对应的那一支。CRVS 位是「missing」
+        // (之后又载了一份只带 PRMS 的预设)时,那条横幅说的是那份预设,不归这里管。
+        if ((stateNotRestoredMask_.load(std::memory_order_acquire) & scvb::output::kNotRestoredCrvsRejected) != 0)
+            stateNotRestoredMask_.store(0, std::memory_order_release);
     }
     destData.append(blob.data(), blob.size());
 }
@@ -1805,6 +1829,20 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
     installFeat(refSection, /*sidecar=*/true, static_cast<std::int64_t>(gz.size()));
 }
 
+// [SL-524][J122] 进入「CRVS 原样留底」态:记下没被采用的原始字节 + 此刻 live 表的编码(保存时拿它判
+// 「用户改过没有」,判据与理由见 crvsPreserved_ 的声明处)。调用方持 lifecycleMutex_。
+// 两个调用点:CRVS 在但 decodeCrvs 不收(排在版本名兜底之后,否则兜底本身会被当成「用户改过」);
+// [SL-219] CFGS 缺失 / 解不开、在读 CRVS 之前就早退(那两支不做版本名兜底)。
+void ScvbOutputAudioProcessor::holdRejectedCrvs(std::vector<std::uint8_t> raw)
+{
+    crvsPreserved_ = true;
+    preservedCrvsChunk_ = std::move(raw);
+    crvsAtRejectEncoded_.clear();
+    // 编码失败 = 留空。encodeCrvs 是确定性的:同一张表此刻编不出、之后也编不出(保存时走
+    // `!crvsEncoded` 那一支,照样写原字节);之后能编出来,说明表已经变了,判「改过」正是本意。
+    (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_);
+}
+
 void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks& chunks)
 {
     // 调用前提:**只在加载一份完整工程时调**(正常路径 = 函数最后一步;CFGS 损坏路径 = 那处
@@ -2020,6 +2058,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         stateAbiMismatch_ = true;
         stateAbiSeen_ = scvb::state::parseHeader(bytes, size, hdr) ? hdr.abi : 0u;
         preservedStateBlob_.assign(bytes, bytes + size);
+        // [SL-218 #307 复审] 上一份工程留下的横幅⑪ 撤掉:此后保存写回的是这份更高 abi 的原始 blob,
+        // 上一份工程的 CRVS 留底不会再写出去,⑪ 说的已不是当前工程(这一支由横幅④ 提示)。
+        // 容器损坏那一支不清:什么都没载入,上一份工程仍是当前工程,保存照旧写它的留底。
+        stateNotRestoredMask_.store(0, std::memory_order_release);
         DBG("SCVB Output: state abi " << stateAbiSeen_ << " > current " << scvb::state::kCurrentAbi
                                       << "; refusing load (upgrade required)");
         return;
@@ -2093,15 +2135,35 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         }
     }
 
+    // [SL-219②][SL-218] CFGS 缺失 / 解不开的两处早退**在读 CRVS 之前**:段表同样没恢复,诊断位
+    // 必须在这里也置上 —— 此前只在下面 CRVS 那一段赋值,而最常见的触发(轨道 / 参数预设只带
+    // PRMS,没有 CFGS)走的正是这里,诊断位停在上一次载入的值上。
+    // blob 里若带着 CRVS,它在这两支里**没被采用**:按 [SL-524][J122] 同一条口径原样留底
+    // (不留的话保存时拿 live 表覆盖它,横幅那句「原数据会原样保留」就是假话)。不带 CRVS 的
+    // (预设)不动保留态,与 [SL-217]「缺 chunk 不等于删除」同口径。
+    const auto markEarlyReturn = [this, &chunks](std::uint8_t cfgsBit) {
+        const scvb::state::Chunk* skipped = chunks.find(scvb::state::kFourccCrvs);
+        if (skipped != nullptr)
+        {
+            holdRejectedCrvs(skipped->payload);
+        }
+        stateNotRestoredMask_.store(
+            static_cast<std::uint8_t>(cfgsBit | (skipped != nullptr ? scvb::output::kNotRestoredCrvsRejected
+                                                                    : scvb::output::kNotRestoredCrvsMissing)),
+            std::memory_order_release);
+    };
+
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
     if (cfg == nullptr)
     {
+        markEarlyReturn(scvb::output::kNotRestoredCfgsMissing);
         return;
     }
     scvb::state::OutputState s;
     scvb::state::OutputDecodeReport report;
     if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s, &report))
     {
+        markEarlyReturn(scvb::output::kNotRestoredCfgsRejected);
         // [SL-226] 配置节损坏 ≠ 部分 blob。这是一份**完整工程**,只是 CFGS 坏了 —— 特征仍必须
         // 按本工程的 FEAT 处理,不能让上一个工程的波形留在 FrameStore 里冒充本工程的:
         // loadedChunks_ 上面已经换成本工程的了,不处理的话**下次保存会把上一个工程的特征
@@ -2119,6 +2181,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 要采集就再点一次 §1.2 setCaptureEnabled。
     captureEnabled_ = false;
     outputEnabled_ = s.outputEnabled != 0;
+    // [加载守卫] 04 §5.3:恢复出 output_enabled=ON ⇒ 待确认,确认前打印器止于 ARMED(见 timerCallback
+    // 三态求值)。恢复 OFF ⇒ 清掉(上一个工程残留的待确认不该带进这个工程)。
+    // 此前这一位**没有任何写 true 的地方**:横幅⑦与确认钮都在,引擎却照常进 PRINT,
+    // 重开工程一按播放就把 DAW 车道(常留在 Latch)上已录的自动化覆盖掉。
+    runtime_.printGuardPending.store(outputEnabled_, std::memory_order_release);
     versionActive_ = static_cast<int>(s.versionActive);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
@@ -2290,8 +2357,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             rejectedCrvs = crvs->payload;
         }
     }
-    // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。
-    crvsNotRestored_ = !crvsLoaded;
+    // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。走到这里 CFGS 已解码成功,所以
+    // 位图只剩 CRVS 那一位(或 0);两处 CFGS 早退在上面 markEarlyReturn 里置。
+    stateNotRestoredMask_.store(crvsLoaded         ? std::uint8_t{0}
+                                : crvsChunkPresent ? scvb::output::kNotRestoredCrvsRejected
+                                                   : scvb::output::kNotRestoredCrvsMissing,
+                                std::memory_order_release);
     if (!crvsLoaded)
     {
         DBG("SCVB Output: [SL-217] 本次 state 未恢复段真身("
@@ -2316,12 +2387,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     }
     else if (crvsChunkPresent)
     {
-        crvsPreserved_ = true;
-        preservedCrvsChunk_ = std::move(rejectedCrvs);
-        crvsAtRejectEncoded_.clear();
-        // 编码失败 = 留空。encodeCrvs 是确定性的:同一张表此刻编不出、之后也编不出(保存时走
-        // `!crvsEncoded` 那一支,照样写原字节);之后能编出来,说明表已经变了,判「改过」正是本意。
-        (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_);
+        holdRejectedCrvs(std::move(rejectedCrvs));
     }
     crvsRevision_.fetch_add(1, std::memory_order_release);
 
@@ -2510,6 +2576,12 @@ void ScvbOutputAudioProcessor::applyOutputEnabled(bool on)
     // 调用方须已持 lifecycleMutex_。与 applyCaptureEnabled 对称的**内部**写点:不触发 J92a 互斥。
     outputEnabled_ = on;
     session_.setOutputEnabled(on);
+    // [加载守卫] 输出一关即解除(见 OutputRuntimeState::printGuardPending 的头注)。桥面 OFF 与
+    // [J92a] 手动开采集连带关输出都走这里。只清不置:再打开时走的是 UI 的 OFF→ON 一次性确认。
+    if (!on)
+    {
+        runtime_.printGuardPending.store(false, std::memory_order_release);
+    }
 }
 
 void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
@@ -2597,6 +2669,13 @@ void ScvbOutputAudioProcessor::disarmRecaptureLocked()
     }
     runtime_.recaptureAutoEnabledCapture = false;
     applyFeatureGates(); // 门控当拍回落到 global.range
+}
+
+void ScvbOutputAudioProcessor::confirmPrintGuard()
+{
+    // 契约 §1.34:幂等;只动这一位,不碰输出开关、不开 gesture。下一拍 25Hz tick 若满足
+    // PRINT 三与条件即恢复正常打印。
+    runtime_.printGuardPending.store(false, std::memory_order_release);
 }
 
 void ScvbOutputAudioProcessor::setOutputEnabled(bool on)
@@ -2978,8 +3057,9 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     // ① 该维度**已冻结**(freeze 对应位=1)= 冻结中调整。静态值只存**参数面 + 冻结位**,
     //    曲线真身一个字节都不动。引擎权威下 DspArbiter 对冻结维度读的就是 rawPan/rawVol
     //    (DspArbiter.cpp §2.3),所以只写参数面照样出声 —— 那正是「写入自动化前的 preview」。
-    // ② 该维度**未冻结** = 用户主动「设为手动」接管。照旧写常值段(04 §1.5 方案 A)+ 参数面,
-    //    UI 随后把 freeze 位置 1(tab-tracks.js「拖动 = 接管手动」)。这条通道不受本次改动影响。
+    // ② 该维度**未冻结** = 用户主动「设为手动」接管。把该轨**每一段的这一维**改写为常值、另一维
+    //    原样保留([J131] / SL-180;此前是压成单段常值)+ 参数面,UI 随后把 freeze 位置 1
+    //    (tab-tracks.js「拖动 = 接管手动」)。
     //
     // 为什么冻结通道必须停手:整表烘焙成「单段全时限常值」之后,解冻回曲线读到的仍是那条常值段,
     // 而再分析按 ADR-008 不覆盖 origin=user 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到
@@ -3005,14 +3085,14 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             if (scvb::state::segmentLocked(s.flags))
                 ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
 
-        // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
-        // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
-        const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
-        applied = isPan ? seg.pan : seg.volDb;
+        // [J131] / SL-180:只改被拖的那一维,另一维**逐段**保留原曲线(段边界不动)。此前压成
+        // 单段常值、另一维从首段继承,拖一下音量卡箍就把整条 pan 曲线压平。构造与钳制口径见
+        // makeManualDimSegments 头注(单测 SERVICE-5..8 直接断言该纯函数,接线格 HOST SL-180)。
+        std::vector<scvb::state::Segment> next = scvb::output::makeManualDimSegments(track.segments, isPan, value);
 
         scvb::output::commitCrvsTransaction(
             authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
-            [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+            [&] { track.segments = std::move(next); }, [this] { rebuildAllCurves(); });
     }
 
     // 手动值还必须落到**参数面**,否则冻结维度上它根本驱动不了声音。
@@ -3409,6 +3489,9 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     }
     const std::int64_t rangeS0 = static_cast<std::int64_t>(hopWindow.firstHop) * hopSamplesPv;
     const std::int64_t rangeS1 = static_cast<std::int64_t>(hopWindow.lastHop) * hopSamplesPv;
+    // [SL-535] 与 `startAnalysis` 同一条参与判据:此刻没连上 Input 的轨不计(它的旧采集数据
+    // 不进分析)。dry-run 与真跑口径分叉 = 预览说有 1 轨、真跑被拒,见上面 [SL-242] 那段。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
 
     for (int t = 0; t < 15; ++t)
     {
@@ -3419,6 +3502,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:有旧采集数据也不计
         }
         if (session_.frameStore().channel(static_cast<scvb::u32>(t + 1)).coveredHops(range) == 0)
         {
@@ -3635,7 +3722,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
     //
     // [SL-393] **计算集与写回集是两回事**,这里取的是**计算集**:范围内所有 enabled 且有
-    // 覆盖的轨,不按 `tracksMask` 筛。
+    // 覆盖的轨,不按 `tracksMask` 筛。([SL-535] 起还要「此刻已连接」,见下面预扫那段。)
     //
     // 为什么:pan 是**指派**出来的,不是逐轨算出来的 —— 一个区间里活跃轨只有一条时,
     // `generateSlots` 的多轨分支整个跳过、唯一的槽就是正中(AutoAssign.cpp:200-208,
@@ -3681,11 +3768,27 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     //
     // ⚠ 判据与后面那趟取样**必须同源**:预扫这一趟填出来的 `applyCovered[]` 就是后面
     // 冻结清除面与指派器口径读的那一份(`features[t].anyCovered` 是计算窗的账,不能替它)。
+    //
+    // [SL-535] **参与判据 = enabled ∧ 此刻已连接**(`connectedForDisplayMask`,UI「未连接」同一口径)。
+    // 用户实测:把通道 10 的轨改到通道 1 之后,通道 10 已没有 Input,但它的旧采集数据仍在
+    // FrameStore 里 ⇒ 点「分析」时它照样进计算集,唯一出声的那条轨于是被当成「两条之一」
+    // 分到一侧而不是居中。只看 enabled 与覆盖分不开「这条轨还在」与「这条轨的 Input 早没了」。
+    // 未连接的轨:**不进计算集**(下面取样那一趟)、**不进写回集**(这一趟;它的段表一个字节不动)。
+    // 不改 enabled 位、不清采集数据 —— Input 连回来,下一次分析它自动回到参与面。
+    // 两处必须**都**判:只判取样 ⇒ 它仍在写回集里,回执 `affected.tracks` 多算它,而且「有数据的轨
+    // 全都没连上」时不再落 §1.6 拒绝态、照样受理一趟没有输入的分析;
+    // 只判这里 ⇒ 它仍喂计算集,别的轨的声像照旧被它挤偏(即本卡的用户症状)。
+    // 所有分析入口(桥面 analyze 的全部形状、松手重分段)都经本函数,判据只落这里与 previewAnalysis。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
     for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:不进写回集
         }
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
         applyCovered[static_cast<std::size_t>(t)] = frames.coveredHops(applyHops) > 0;
@@ -3698,8 +3801,8 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             continue;
         }
         ++a.tracks;
-        // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
-        // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
+        // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 已连接 ∩ 范围内有覆盖)——
+        // 与 previewAnalysis 计 tracks/manualKept 的四条判据逐字同款([SL-535] 加了「已连接」)。diff 的 kept
         // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
         //
         // [SL-393] 这里刻意**仍按写回集**统计:回执 `affected.tracks` 与拒绝态
@@ -3726,6 +3829,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:旧采集数据不进计算集(判据见上面预扫那段)
         }
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
         if (frames.coveredHops(scvb::analysis::HopRange{firstHop, lastHop}) == 0)

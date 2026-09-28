@@ -57,8 +57,8 @@ inline bool isSegmentationMode(const juce::String& mode)
 }
 
 // 「无末端」哨兵:CRVS 里 t1 = 1<<40 表示「覆盖到时间线末端」,真末端由宿主时间线提供
-// (`SegmentEditService.h:89` 的 setTrackManual 常值段)。与 `kVizOpenEndedT1` 同一个数,
-// #89 已在 viz 侧按「只取 t0」处理过;桥面 §2.8 的处理见 `OutputEditor::emitSegments`。
+// (`SegmentEditService.h` `makeManualDimSegments` 在空表上产出的 setTrackManual 常值段)。
+// 与 `kVizOpenEndedT1` 同一个数,#89 已在 viz 侧按「只取 t0」处理过;桥面 §2.8 的处理见 `OutputEditor::emitSegments`。
 inline constexpr std::int64_t kOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
 
 // ---- R4 降级链(桥面 §2.8):无末端段上桥前的有效右端 ----
@@ -66,8 +66,8 @@ inline constexpr std::int64_t kOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
 // HOST R4 用例走同一份代码 —— 用例断的就是真实上桥值,revert 任何一级都会红。
 //
 // ① 工程级已知末端:全 15 轨该版本里所有非哨兵段的最大真末端;一个都没有(全是手动/
-//    冻结轨)→ ② 已采集时间线末端。**必须是工程级、不能是本轨级**:`setTrackManual` 的
-//    产物是单段全时限(`track.segments.assign(1, seg)`),按本轨算永远得 0。
+//    冻结轨)→ ② 已采集时间线末端。**必须是工程级、不能是本轨级**:`setTrackManual` 在
+//    空表上的产物是单段全时限(`makeManualDimSegments`),按本轨算永远得 0。
 inline std::int64_t knownTimelineEndSamples(const scvb::state::VersionCurve& vc, double capturedExtentS,
                                             double sampleRate)
 {
@@ -389,6 +389,122 @@ inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibl
     p.send = true;
     p.active = condition;
     p.nextShown = condition;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
+// [rc-misc a] `scvb.error` 的 `srMismatch` 一档(契约 §5.1 红横幅③「轨 N 采样率不一致,已禁用」)。
+//
+// **正题**:这一码此前在 Output 侧**没有生产者** —— `emitError` 只有 `newerState` / `noTimeline`
+// 两处调用,而 web 的横幅③只看 `scvb.error` 填的 errors map,于是采样率不一致时该轨被静默禁用,
+// 用户只在 Tab2 行灯上看到一个小红点(读的是 `scvb.conn.channels[].srMismatch`)。
+//
+// 形态与 `planConditionErrorEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),多出来的一维是
+// **轨号与 inputSr**:这是轨级错误(§5.1 该行 `ch` 必填、`detail = {inputSr, outputSr}`),
+// 而 web 的 errors map 按**裸 code** 存(同 code 后一帧覆盖前一帧,横幅③一次只显示一个轨号,
+// 见 `web/output/app.js` store.errors 头注)。所以这里只挂**一条**:
+//   · 目标 = 编号最小的不一致轨(`firstSrMismatchOf`);没有 ⇒ ch = 0;
+//   · 目标与屏上一致(同轨同 inputSr)⇒ 不发;
+//   · 目标变了且非 0 ⇒ 发 `active:true`(带新轨号,覆盖旧的那条);
+//   · 目标变成 0 且屏上挂着 ⇒ 发 `active:false` 撤横幅(ch 取屏上那一轨);
+//   · 不可见 ⇒ 一律不发、不推进记账。
+// **为什么不逐轨发 active:true/false**:web 按裸 code 删,撤掉轨 3 那一帧会把仍不一致的轨 5
+// 的横幅一起撤掉。
+// 横幅③ 的「一条」由三个数确定:哪一轨、该轨 Input 的 SR、Output 的 SR(后两个是 §5.1 的
+// `detail`)。三者任一变了都要重发 —— 否则不一致一直持续、只是某一端换了采样率时,屏上
+// `detail` 会停在旧值(#315 第 1 轮复审【建议】2)。同一个结构既当「目标」也当「屏上记账」。
+struct SrMismatchTarget
+{
+    int ch = 0; // 1..15;0 = 当前没有不一致的轨
+    std::uint32_t inputSr = 0;
+    std::uint32_t outputSr = 0;
+};
+
+inline bool sameSrMismatch(const SrMismatchTarget& a, const SrMismatchTarget& b) noexcept
+{
+    if (a.ch != b.ch)
+        return false;
+    return a.ch == 0 || (a.inputSr == b.inputSr && a.outputSr == b.outputSr);
+}
+
+// 15 轨连接实况 → 编号最小的不一致轨。模板化只为不把 `OutputSession.h` 拖进本头文件
+// (元素需有 `srMismatch` 与 `inputSampleRate` 两个成员,即 `ChannelConnInfo`)。
+// `outputSr` = 本 Output 当前采样率(调用方传入;没有不一致的轨时不写进结果)。
+template<typename Channels>
+inline SrMismatchTarget firstSrMismatchOf(const Channels& channels, std::uint32_t outputSr) noexcept
+{
+    SrMismatchTarget t;
+    int ch = 0;
+    for (const auto& info : channels)
+    {
+        ++ch;
+        if (info.srMismatch)
+        {
+            t.ch = ch;
+            t.inputSr = info.inputSampleRate;
+            t.outputSr = outputSr;
+            return t;
+        }
+    }
+    return t;
+}
+
+struct SrMismatchEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    SrMismatchTarget payload; // 载荷的 ch / detail(撤销帧取屏上那一条)
+    SrMismatchTarget nextShown; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline SrMismatchEmitPlan planSrMismatchEmit(const SrMismatchTarget& target, bool visibleNow,
+                                             const SrMismatchTarget& shown) noexcept
+{
+    SrMismatchEmitPlan p;
+    p.nextShown = shown;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (sameSrMismatch(target, shown))
+        return p; // 屏上已是这一态(含「没有且本来就没有」)
+    p.send = true;
+    p.active = target.ch != 0;
+    p.payload = p.active ? target : shown;
+    p.nextShown = p.active ? target : SrMismatchTarget{};
+    return p;
+}
+
+// [SL-218] `scvb.error` 的 `stateNotFullyRestored` 一档:这一拍发不发、发哪一态。
+//
+// 条件源 = `ScvbOutputAudioProcessor::stateNotRestoredMask()`(位定义见 StateRestoreDiag.h;
+// 写入点与清零时机见 `stateNotRestoredMask_` 的声明处)。形态与 `planNewerStateEmit` 同一条纪律
+// (边沿 + 撤销 + 不可见不记账),记账记的是「屏上那一条对应的位图」而不是单个 bool:
+// detail 里的 `missing` / `rejected` 是**读给用户 / 诊断看的**,换了一份缺的节不同的工程
+// 却停在旧的那两张表上,是一句关于当前工程的假话。
+//   · mask ≠ 0 且与屏上那一条不同(含屏上没有)⇒ 发 `active:true`,记下 mask;
+//   · mask ≠ 0 且与屏上相同 ⇒ 不发(持续态,逐拍比会发 25 次/秒);
+//   · mask = 0 且屏上有 ⇒ 发 `active:false` 撤横幅,记 0;
+//   · mask = 0 且屏上没有 ⇒ 不发空撤销帧;
+//   · 不可见 ⇒ 一律不发**且不推进记账**(理由同 `planNewerStateEmit` 的 `!visibleNow` 支)。
+// `shownMask == 0` 就是「屏上没有这一条」—— mask 为 0 从来不会作为 active:true 发出去,
+// 所以这里不需要另一个 bool。
+struct MaskErrorEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    std::uint8_t nextShownMask = 0; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline MaskErrorEmitPlan planStateNotRestoredEmit(std::uint8_t mask, bool visibleNow, std::uint8_t shownMask) noexcept
+{
+    MaskErrorEmitPlan p;
+    p.nextShownMask = shownMask;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (mask == shownMask)
+        return p; // 屏上已是这一态(含「全部恢复且本来就没有」)
+    p.send = true;
+    p.active = mask != 0;
+    p.nextShownMask = mask;
     return p;
 }
 

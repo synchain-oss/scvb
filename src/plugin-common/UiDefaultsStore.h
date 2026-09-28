@@ -9,7 +9,8 @@
 //   • lang_chosen       —— 用户**显式选过**语言(跨工程,§1.30 [J81] 副作用);
 //   • lang_global       —— 选中的语言值本身(只记「选过」不记「选的是哪个」会得到
 //                          「不再问 + 回英文」,比不修更糟,v5 实测 P1-6);
-//   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置;按角色分键)。
+//   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置;按角色分键:
+//                          Output 一份、Monitor 一份 [rc-misc c])。
 //
 // 为什么存在:此前 §1.1 快照里的 guide_seen_global / tour_seen_global 是**硬编码 false**、
 // WebViewHost::persistUiScaleAsDefault 是**空实现** —— 「不再显示」的跨工程承诺从未兑现
@@ -53,6 +54,12 @@ void setTourSeenGlobal(bool seen);
 // 0 = 未设置过(调用方沿用自己的默认 100)。
 int uiScalePercent();
 void setUiScalePercent(int percent);
+
+// [rc-misc c] **Monitor 侧**的缩放全局默认(契约 §10.1 commitUiScale「形制同 §1.29」)。
+// 与 Output 分键,理由同 kKeyUiScale 头注:三个插件的档位表不同,共用一个键会互相污染。
+// 语言不分键:langGlobal 本来就是三个插件共用的那一份(用户选过的语言跨插件生效)。
+int uiScalePercentMonitor();
+void setUiScalePercentMonitor(int percent);
 
 // **仅供测试**:把落盘目录改到临时目录,避免单测写真实用户设置(崩溃即残留、并行
 // worktree 互相串扰)。传空 File 恢复默认位置。生产代码不得调用。

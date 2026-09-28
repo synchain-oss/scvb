@@ -606,7 +606,7 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         "全是 openEnded 段 → 回落 5 分钟,不取哨兵值",
     );
     // v5.3 R4:openEnded 段的**有效右端是 +Infinity**,不是 C++ 给的那个保守下界。
-    // 手动/冻结轨的段是「单段全时限」,C++ 侧只能给出「已知时间线末端」作为下界;
+    // 空段表上手动接管出来的段是「单段全时限」,C++ 侧只能给出「已知时间线末端」作为下界;
     // 前端若拿它当真末端,播放头走过之后就判成「不在任何段内」—— 点不中、切不开。
     eq(
         TW.segEndS({ t0S: 0, t1S: 12, openEnded: true }),
@@ -4018,7 +4018,12 @@ log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测
             /EDITABLE_SELECTOR/.test(cm) && /input\[type="text"\]/.test(cm),
             "(d2)可编辑控件走白名单放行 —— 否则输入框里连粘贴都没了",
         );
-        for (const f of ["web/output/app.js", "web/input/app.js"]) {
+        // [rc-misc c] Monitor 也进这张表:J137 定了 Monitor 进发布包,此前它漏挂了抑制。
+        for (const f of [
+            "web/output/app.js",
+            "web/input/app.js",
+            "web/monitor/app.js",
+        ]) {
             const s = src(f);
             check(
                 /disableNativeContextMenu\(document\);/.test(s),

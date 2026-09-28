@@ -61,6 +61,9 @@ $ grep -n "guideSeenGlobalInput()" src/input/InputEditor.cpp
 SCVB_CONTRACT / STATE_SCHEMA 两份。**留给统筹决定是否另起修宪。**
 `docs/contract-changes/20260825-input-guide-seen.md` 里的同款说法是当时的提案记录,不改。
 
+> **后续**:宪法这一处已由 **J160** 按修宪流程改掉(`params-v0.md` v2.4),见
+> `docs/contract-changes/20260928-j160-constitution-guide-keys.md`。
+
 ## 验证
 
 - `web-preview/tests/smoke-tab4-settings.mjs` ⑥ 节新增一格:实现里确有两个键字面量;

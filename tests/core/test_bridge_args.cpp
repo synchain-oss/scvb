@@ -8,6 +8,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -15,6 +16,7 @@
 
 #include "BridgeArgs.h"
 #include "OutputParams.h"
+#include "output/StateRestoreDiag.h"
 
 using Catch::Approx;
 
@@ -648,6 +650,96 @@ TEST_CASE("planConditionErrorEmit:noTimeline 的边沿/撤销/去重/丢弃", "[
 }
 
 // ---------------------------------------------------------------------------
+// [SL-218] `scvb.error{stateNotFullyRestored}` 的**发送面判定**与 detail 的两张 fourcc 表。
+//
+// 理由同上面 SL-412 / SL-478 两组(`OutputEditor` 编不进任何 C++ 测试目标):条件源会不会
+// 真的被置起来由 `HOST SL-218` 在真 processor 上断,调用点由 smoke-tab2-interactions.mjs 的
+// [SL-218] 行形态钉子锁住。比 SL-478 多一维:位图变了(换了一份缺的节不同的工程)要重发。
+// ---------------------------------------------------------------------------
+TEST_CASE("planStateNotRestoredEmit:边沿/换位图重发/撤销/去重/丢弃", "[output][bridge][SL218]")
+{
+    using scvb::output::planStateNotRestoredEmit;
+    constexpr std::uint8_t kCrvsRej = scvb::output::kNotRestoredCrvsRejected;
+    constexpr std::uint8_t kPreset = scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing;
+
+    SECTION("N1 有位 + 屏上没有 ⇒ 发 active:true 并记下位图")
+    {
+        const auto p = planStateNotRestoredEmit(kCrvsRej, true, 0);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShownMask == kCrvsRej);
+    }
+    SECTION("N2 位图没变 ⇒ 不重复发")
+    {
+        const auto p = planStateNotRestoredEmit(kCrvsRej, true, kCrvsRej);
+        CHECK_FALSE(p.send);
+        CHECK(p.nextShownMask == kCrvsRej);
+    }
+    SECTION("N3 位图变了 ⇒ 再发一次 active:true(detail 那两张表是读给人看的)")
+    {
+        const auto p = planStateNotRestoredEmit(kPreset, true, kCrvsRej);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShownMask == kPreset);
+    }
+    SECTION("N4 全部恢复且屏上挂着 ⇒ 发 active:false 撤横幅")
+    {
+        const auto p = planStateNotRestoredEmit(0, true, kCrvsRej);
+        CHECK(p.send);
+        CHECK_FALSE(p.active);
+        CHECK(p.nextShownMask == 0);
+    }
+    SECTION("N5 全部恢复且屏上本来就没有 ⇒ 不发空撤销帧")
+    {
+        const auto p = planStateNotRestoredEmit(0, true, 0);
+        CHECK_FALSE(p.send);
+    }
+    SECTION("N6 不可见 ⇒ 一律不发,且不推进记账")
+    {
+        const auto raise = planStateNotRestoredEmit(kCrvsRej, false, 0);
+        CHECK_FALSE(raise.send);
+        CHECK(raise.nextShownMask == 0);
+        const auto retract = planStateNotRestoredEmit(0, false, kCrvsRej);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShownMask == kCrvsRej);
+    }
+}
+
+TEST_CASE("notRestoredFourccs:位图 → detail 的 missing / rejected 两张表", "[output][bridge][SL218]")
+{
+    using scvb::output::notRestoredFourccs;
+    const auto asStrings = [](const std::vector<const char*>& v) {
+        std::vector<std::string> out;
+        for (const char* s : v)
+            out.emplace_back(s);
+        return out;
+    };
+    using SV = std::vector<std::string>;
+
+    const auto none = notRestoredFourccs(0);
+    CHECK(none.missing.empty());
+    CHECK(none.rejected.empty());
+
+    // 只带 PRMS 的预设:两节都不在。
+    const auto preset =
+        notRestoredFourccs(scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing);
+    CHECK(asStrings(preset.missing) == SV{"CFGS", "CRVS"});
+    CHECK(preset.rejected.empty());
+
+    // CFGS 坏了、CRVS 在但因早退没被采用:两节都进 rejected。
+    const auto cfgsBad =
+        notRestoredFourccs(scvb::output::kNotRestoredCfgsRejected | scvb::output::kNotRestoredCrvsRejected);
+    CHECK(cfgsBad.missing.empty());
+    CHECK(asStrings(cfgsBad.rejected) == SV{"CFGS", "CRVS"});
+
+    // 四位各落各的表(换位不串表)。
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCrvsMissing).missing) == SV{"CRVS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCrvsRejected).rejected) == SV{"CRVS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCfgsMissing).missing) == SV{"CFGS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCfgsRejected).rejected) == SV{"CFGS"});
+}
+
+// ---------------------------------------------------------------------------
 // [SL-509] §1.2 `noTimeline` 拒绝支只挡「打开」([J107] 允许关、拒绝开)。
 //
 // 缺陷:[SL-478] 接上这一支时不分方向,采集开着时宿主丢了时间线,用户关不掉采集。
@@ -782,4 +874,122 @@ TEST_CASE("parsePanCurvePreviewArgs:previewPanCurve(v, points | null) 的三种�
     // 点表:非数组非 null / 坏点 ⇒ bad(同 setPanCurve 那一份解析)。
     CHECK(args(R"([1, "x"])").kind == PanCurvePreviewArgKind::bad);
     CHECK(args(R"([1, [{"angle":0,"shape":"notch"}]])").kind == PanCurvePreviewArgKind::bad);
+}
+
+// ---------------------------------------------------------------------------
+// [rc-misc a] `scvb.error{srMismatch}` 的**发送面判定**(`firstSrMismatchOf` + `planSrMismatchEmit`)。
+//
+// 缺陷:契约 §5.1 的 `srMismatch`(红横幅③)在 Output 侧没有生产者,横幅③永远不亮。
+// 落纯函数的理由同上面 SL-412 / SL-478 两组(`OutputEditor` 编不进任何 C++ 测试目标);
+// 「每轨 srMismatch / inputSampleRate 真的会被置起来」由 test_output_session.cpp 的
+// channelConn 用例断,调用点由 smoke-tab2-interactions.mjs 的 [rc-misc a] 行形态钉子锁住。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct FakeConnCh
+{
+    bool srMismatch = false;
+    std::uint32_t inputSampleRate = 0;
+};
+} // namespace
+
+TEST_CASE("firstSrMismatchOf:取编号最小的不一致轨,带上它的 inputSr 与 Output SR", "[output][bridge][rcmisc]")
+{
+    std::array<FakeConnCh, 15> chans{};
+    auto t = scvb::output::firstSrMismatchOf(chans, 48000u);
+    CHECK(t.ch == 0);
+    CHECK(t.inputSr == 0u);
+    CHECK(t.outputSr == 0u); // 没有不一致的轨时不带 SR(与「屏上没有」的记账同形)
+
+    chans[6] = {true, 44100u}; // ch 7
+    chans[2] = {true, 96000u}; // ch 3
+    t = scvb::output::firstSrMismatchOf(chans, 48000u);
+    CHECK(t.ch == 3);
+    CHECK(t.inputSr == 96000u);
+    CHECK(t.outputSr == 48000u);
+}
+
+TEST_CASE("planSrMismatchEmit:srMismatch 的边沿/换轨/换 SR/撤销/去重/丢弃", "[output][bridge][rcmisc]")
+{
+    using scvb::output::planSrMismatchEmit;
+    using scvb::output::SrMismatchTarget;
+    const SrMismatchTarget none{};
+    const SrMismatchTarget ch5{5, 44100u, 48000u};
+
+    SECTION("R1 出现不一致 + 屏上没有 ⇒ 发 active:true(带轨号与两个 SR)并记账")
+    {
+        const auto p = planSrMismatchEmit(ch5, true, none);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.payload.ch == 5);
+        CHECK(p.payload.inputSr == 44100u);
+        CHECK(p.payload.outputSr == 48000u);
+        CHECK(p.nextShown.ch == 5);
+        CHECK(p.nextShown.inputSr == 44100u);
+        CHECK(p.nextShown.outputSr == 48000u);
+    }
+
+    SECTION("R2 同轨同两 SR 持续 ⇒ 不重复发")
+    {
+        const auto p = planSrMismatchEmit(ch5, true, ch5);
+        CHECK_FALSE(p.send);
+        CHECK(p.nextShown.ch == 5);
+    }
+
+    SECTION("R3 同轨但 inputSr 变了 ⇒ 重发(detail 里的数要跟着变)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 96000u, 48000u}, true, ch5);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.payload.inputSr == 96000u);
+        CHECK(p.nextShown.inputSr == 96000u);
+    }
+
+    SECTION("R3b 同轨但 Output SR 变了 ⇒ 同样重发(#315 第 1 轮【建议】2)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u, 96000u}, true, ch5);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.payload.outputSr == 96000u);
+        CHECK(p.nextShown.outputSr == 96000u);
+    }
+
+    SECTION("R4 换成另一轨 ⇒ 发 active:true 覆盖,而不是撤销(web 按裸 code 存)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{9, 44100u, 48000u}, true, ch5);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.payload.ch == 9);
+        CHECK(p.nextShown.ch == 9);
+    }
+
+    SECTION("R5 全部恢复一致且屏上挂着 ⇒ 发 active:false 撤横幅,载荷取屏上那一条")
+    {
+        const auto p = planSrMismatchEmit(none, true, ch5);
+        CHECK(p.send);
+        CHECK_FALSE(p.active);
+        CHECK(p.payload.ch == 5);
+        CHECK(p.nextShown.ch == 0);
+        CHECK(p.nextShown.inputSr == 0u);
+        CHECK(p.nextShown.outputSr == 0u);
+    }
+
+    SECTION("R6 没有不一致且屏上本来就没有 ⇒ 不发空撤销帧")
+    {
+        const auto p = planSrMismatchEmit(none, true, none);
+        CHECK_FALSE(p.send);
+    }
+
+    SECTION("R7 不可见 ⇒ 一律不发,且不推进记账")
+    {
+        const auto raise = planSrMismatchEmit(ch5, false, none);
+        CHECK_FALSE(raise.send);
+        CHECK(raise.nextShown.ch == 0);
+
+        const auto retract = planSrMismatchEmit(none, false, ch5);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShown.ch == 5);
+        CHECK(retract.nextShown.inputSr == 44100u);
+        CHECK(retract.nextShown.outputSr == 48000u);
+    }
 }
