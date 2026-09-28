@@ -33,18 +33,42 @@
 namespace scvb::output
 {
 
-// 「单段全时限 `UserEdited` 常值」= `setTrackManual` 手动接管通道的产物特征(契约 §1.16)。
-// 命中返回该段,否则 nullptr。**判据逐字对齐 JS 的 `manualConstantOf`**:只看「段数 == 1」
-// 与 origin,不看 t1 是不是那个 `1<<40` 哨兵 —— 哨兵在上桥时会被降级成「已知时间线末端」
+// 「某一维被手动接管固定为常值」= `setTrackManual` 手动接管通道的产物特征(契约 §1.16 ②)。
+// 命中返回首段(调用方读该维的值),否则 nullptr。**判据逐字对齐 JS 的 `manualDimOf`**:
+//   段表非空 ∧ **每一段** origin == `UserEdited` ∧ **每一段**这一维的值都相等。
+// [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留,于是「段数 == 1」
+// 不再是产物特征:拖过音量卡箍的轨是 N 段 user_edited、vol 全等、pan 仍是原曲线 ——
+// 那条轨的 **vol** 是手动常值,**pan** 不是(pan 仍按曲线读)。空表上的手动接管仍产出
+// 单段全时限,落在本判据的 N=1 特例里,两维同时命中(与改造前同形)。
+// 不看 t1 是不是那个 `1<<40` 哨兵 —— 哨兵在上桥时会被降级成「已知时间线末端」
 // (`BridgeArgs.h` 的 `effectiveT1Samples`),JS 那侧根本看不到它,拿它当判据两侧必然分叉。
-inline const scvb::state::Segment* manualConstantOf(const std::vector<scvb::state::Segment>& segs)
+inline const scvb::state::Segment* manualDimOf(const std::vector<scvb::state::Segment>& segs, bool isPan)
 {
-    if (segs.size() != 1)
+    if (segs.empty())
     {
         return nullptr;
     }
-    return scvb::state::segmentOrigin(segs.front().flags) == scvb::state::SegmentOrigin::UserEdited ? &segs.front()
-                                                                                                    : nullptr;
+    const float first = isPan ? segs.front().pan : segs.front().volDb;
+    for (const scvb::state::Segment& s : segs)
+    {
+        if (scvb::state::segmentOrigin(s.flags) != scvb::state::SegmentOrigin::UserEdited)
+        {
+            return nullptr;
+        }
+        if ((isPan ? s.pan : s.volDb) != first)
+        {
+            return nullptr;
+        }
+    }
+    return &segs.front();
+}
+
+// 该轨有没有**任一维**是手动常值(行上那枚「手动接管」标 / 「恢复自动」入口用)。
+// 命中返回首段,否则 nullptr。逐字对齐 JS 的 `manualConstantOf`。
+inline const scvb::state::Segment* manualConstantOf(const std::vector<scvb::state::Segment>& segs)
+{
+    const scvb::state::Segment* pan = manualDimOf(segs, /*isPan=*/true);
+    return pan != nullptr ? pan : manualDimOf(segs, /*isPan=*/false);
 }
 
 // 曲线在某一时刻**所处的段**。空表返回 nullptr(调用方回落参数面)。
@@ -93,17 +117,18 @@ inline const scvb::state::Segment* curveSegmentAt(const std::vector<scvb::state:
 // ⚠ **生命周期契约**:这三个指针指进**调用方那个 `segs` 容器**,本结构体不持有任何东西。
 // 于是 `segs` 必须活得比这个结果久 —— 把一个按值返回段表的函数直接塞进调用参数里,
 // 指针在那条完整表达式结束时就悬垂(#245 第 1 轮复审在 HOST SL-363 上抓到的正是这一幕)。
-// 下面三个 `= delete` 的右值重载把这类误用从「运行期 UB」变成**编译期错误**,零运行期成本。
+// 下面几个 `= delete` 的右值重载把这类误用从「运行期 UB」变成**编译期错误**,零运行期成本。
 struct DistReadback
 {
     const scvb::state::Segment* pan = nullptr;
     const scvb::state::Segment* vol = nullptr;
-    const scvb::state::Segment* manual = nullptr; // 命中的手动常值段(调用方要标「手动接管」时用)
+    const scvb::state::Segment* manual = nullptr; // 任一维是手动常值时的首段(调用方要标「手动接管」时用)
 };
 
 // 优先级链(J78「显示的是该维度的权威」),逐条即 JS 的 `readbackSegsOf`:
 //   · **冻结**维度 → 参数面(宿主自动化 / 冻结手动值当家,[J85]),不看段表;
-//   · 有**手动常值段** → 该段,且**不看输出档**(手动接管写的是曲线真身,ON/OFF 听到的都是它);
+//   · 该维是**手动常值**(`manualDimOf`,逐维判定)→ 首段,且**不看输出档**(手动接管写的是
+//     曲线真身,ON/OFF 听到的都是它);
 //   · 否则输出 **ON** → 播放头所处的段;
 //   · 否则输出 **OFF**(跟随宿主)→ 参数面;
 //   · 段表为空 → 两维都 nullptr。
@@ -112,18 +137,22 @@ inline DistReadback readbackSegsOf(const std::vector<scvb::state::Segment>& segs
                                    std::int64_t t)
 {
     DistReadback out;
-    out.manual = manualConstantOf(segs);
-    const scvb::state::Segment* seg =
-        out.manual != nullptr ? out.manual : (outputOn ? curveSegmentAt(segs, t) : nullptr);
-    out.pan = scvb::engine::freezeHasDim(freezeBits, /*isPan=*/true) ? nullptr : seg;
-    out.vol = scvb::engine::freezeHasDim(freezeBits, /*isPan=*/false) ? nullptr : seg;
+    // [J131] / SL-180:手动常值**逐维**判定 —— 拖过音量卡箍的轨 vol 是常值、pan 仍是曲线,
+    // 两维共用一个「有没有手动段」的判定会把 pan 读成首段的值(显示上又把曲线压平一次)。
+    const scvb::state::Segment* manPan = manualDimOf(segs, /*isPan=*/true);
+    const scvb::state::Segment* manVol = manualDimOf(segs, /*isPan=*/false);
+    out.manual = manPan != nullptr ? manPan : manVol;
+    const scvb::state::Segment* curve = outputOn ? curveSegmentAt(segs, t) : nullptr;
+    out.pan = scvb::engine::freezeHasDim(freezeBits, /*isPan=*/true) ? nullptr : (manPan != nullptr ? manPan : curve);
+    out.vol = scvb::engine::freezeHasDim(freezeBits, /*isPan=*/false) ? nullptr : (manVol != nullptr ? manVol : curve);
     return out;
 }
 
-// **绑临时量一律编译期拒绝**(#245 第 1 轮复审建议 2)。三个函数回的都是指进 `segs` 的裸指针,
+// **绑临时量一律编译期拒绝**(#245 第 1 轮复审建议 2)。这几个函数回的都是指进 `segs` 的裸指针,
 // 生命周期契约此前只写在注释里,而第一个踩到它的正是本卡自己的 HOST SL-363 用例
 // (`readbackSegsOf(segmentsOfTrack(...), …)` —— 按值返回的临时量当场析构)。
 // 反向验证:把那一行改回传临时量,MSVC 报 C2280「尝试引用已删除的函数」,编译不过。
+const scvb::state::Segment* manualDimOf(std::vector<scvb::state::Segment>&&, bool) = delete;
 const scvb::state::Segment* manualConstantOf(std::vector<scvb::state::Segment>&&) = delete;
 const scvb::state::Segment* curveSegmentAt(std::vector<scvb::state::Segment>&&, std::int64_t) = delete;
 DistReadback readbackSegsOf(std::vector<scvb::state::Segment>&&, int, bool, std::int64_t) = delete;

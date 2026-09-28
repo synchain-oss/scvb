@@ -700,13 +700,37 @@ TEST_CASE("DistReadback:段选择口径逐条对齐 web/shared/readback.js", "[v
     const std::vector<scvb::state::Segment> none;
     REQUIRE(scvb::output::curveSegmentAt(none, 0) == nullptr);
 
-    // 手动常值段:判据只看「段数 == 1 ∧ origin == UserEdited」。
+    // 手动常值:逐维判定「每段 origin == UserEdited ∧ 每段这一维都相等」;单段是 N=1 特例,两维同时命中。
     REQUIRE(scvb::output::manualConstantOf(manual) != nullptr);
     REQUIRE(scvb::output::manualConstantOf(gap) == nullptr);
     {
         auto notManual = manual;
         notManual.front().flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
         REQUIRE(scvb::output::manualConstantOf(notManual) == nullptr);
+    }
+
+    // [J131] / SL-180:拖过音量卡箍的轨 = 多段 user_edited、vol 全等、pan 仍是曲线。
+    // vol 读手动常值(不看输出档),pan 按播放头读曲线段 —— 两维共用一个判定时 pan 会被读成首段。
+    {
+        const std::vector<scvb::state::Segment> volManual = {
+            makeSegV(0.0, 10.0, -60.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited),
+            makeSegV(20.0, 30.0, 60.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
+        CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/false) == &volManual.front());
+        CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/true) == nullptr);
+        CHECK(scvb::output::manualConstantOf(volManual) == &volManual.front()); // 行上的标仍亮
+        const auto on = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/true, atSec(25.0));
+        REQUIRE(on.pan != nullptr);
+        CHECK(on.pan->pan == 60.0f); // ← 逐维判定删掉(两维共用 manual)时这里是 -60
+        REQUIRE(on.vol != nullptr);
+        CHECK(on.vol->volDb == -9.0f);
+        const auto off = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/false, atSec(25.0));
+        CHECK(off.pan == nullptr); // pan 不是手动常值 ⇒ 输出 OFF 回落参数面
+        REQUIRE(off.vol != nullptr); // vol 是手动常值 ⇒ 不看输出档
+        CHECK(off.vol->volDb == -9.0f);
+        // 任一段不是 UserEdited ⇒ 两维都不算手动(分析新产出的 auto 段混进来时)。
+        auto mixed = volManual;
+        mixed.back().flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+        CHECK(scvb::output::manualDimOf(mixed, /*isPan=*/false) == nullptr);
     }
 
     // 优先级链四档。

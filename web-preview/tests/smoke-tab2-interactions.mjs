@@ -227,7 +227,7 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
     eq(TT.lockedCountOf(B, 1), 0, "B 形态 locked 计数 0");
     check(
         TT.manualConstantOf(TT.segmentsOfCh(B, 1)) !== null,
-        "B 形态 = 单段全时限 user_edited 常值(解冻提示的触发面)",
+        "B 形态 = 单段 user_edited(两维都是手动常值;解冻提示的触发面)",
     );
 
     // 形态 C:含 locked 段 —— 弹且正文追加「(含 {l} 个锁定段)」
@@ -1031,6 +1031,15 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     );
 
     // §1.16 setTrackManual:回 replacedSegments/replacedLocked,并经 §2.8 回推常值段
+    // [J131] / SL-180:先记下轨 2 拖之前的段表(首帧 snapshot),下面对拍「pan 曲线逐段保留」。
+    const snapFrame = seen.segments.find((s) => s.reason === "snapshot");
+    const preSegs = (
+        (snapFrame && TT.segmentsOfCh(snapFrame, 2)) || { segments: [] }
+    ).segments.map((s) => ({ t0S: s.t0S, t1S: s.t1S, pan: s.pan }));
+    check(
+        preSegs.length >= 2 && new Set(preSegs.map((s) => s.pan)).size >= 2,
+        `[SL-180] 前置:轨 2 拖之前是多段、pan 不全等(否则下面「保留曲线」空绿);实得 ${preSegs.length} 段`,
+    );
     seen.segments.length = 0;
     const res = await bridge.setTrackManual(2, "vol", -6);
     check(
@@ -1062,8 +1071,27 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     const tm = seen.segments.find((s) => s.reason === "trackManual");
     check(!!tm, "§2.8 回推 reason=trackManual");
     const constSeg = TT.manualConstantOf(TT.segmentsOfCh(tm, 2));
-    check(!!constSeg, "回推的是单段全时限 user_edited 常值(04 §1.5 方案 A)");
+    check(!!constSeg, "回推的段表 vol 维是 user_edited 手动常值(契约 §1.16 ②)");
     eq(constSeg.volDb, -6, "常值段 volDb = 写入值");
+    // [J131] / SL-180:拖音量卡箍只固定 vol,pan 曲线逐段保留(段数、边界、每段 pan 都不变)。
+    eq(
+        TT.segmentsOfCh(tm, 2).segments.map((s) => ({
+            t0S: s.t0S,
+            t1S: s.t1S,
+            pan: s.pan,
+        })),
+        preSegs,
+        "[SL-180] 拖 vol 后 pan 曲线逐段保留(修复前压成单段、pan 取首段)",
+    );
+    check(
+        TT.segmentsOfCh(tm, 2).segments.every((s) => s.volDb === -6),
+        "[SL-180] 每段 vol = 写入值",
+    );
+    eq(
+        TT.manualDimOf(TT.segmentsOfCh(tm, 2), "pan"),
+        null,
+        "[SL-180] pan 维不算手动常值(读回仍走曲线)",
+    );
     // 读回路径([J85] 逐维按 freeze 位分叉):
     //   • 未冻结维度 → 读常值段(手动接管通道写的就是曲线真身);
     //   • 冻结维度   → 读**参数面**(冻结通道只写参数面,段表里那条常值段可能是旧的 ——
@@ -1952,13 +1980,21 @@ log(
     }
 
     // ---- SL-230 mock 对拍:手动常值**不上锁**,与真桥一致 -------------------
-    // 真桥 makeManualConstantSegment 写的是 makeSegmentFlags(UserEdited, **false**);
+    // 真桥 makeManualDimSegments 写的是 makeSegmentFlags(UserEdited, **false**);
     // mock 原先写 locked=true,于是 clearManual(对 locked 免疫)在 web-preview 里对
     // 它自己造出来的手动常值完全无效 —— 点了没反应,而真机上是有效的。
+    // [J131] 起 mock 有两支(空表单段 / 非空表逐段改一维),两支都要不上锁。
     {
         const mock = src("web-preview/mock/juce-bridge-mock.js");
         const svc = src("src/output/SegmentEditService.h");
-        check(/proto\.locked = false;/.test(mock), "(d1)mock 的手动常值不上锁");
+        check(
+            /proto\.locked = false;/.test(mock),
+            "(d1)mock 的手动常值不上锁(空表支)",
+        );
+        check(
+            /n\.locked = false;/.test(mock),
+            "(d1b)mock 的手动常值不上锁(非空表逐段支)",
+        );
         check(
             /makeSegmentFlags\(scvb::state::SegmentOrigin::UserEdited, false\)/.test(
                 svc,

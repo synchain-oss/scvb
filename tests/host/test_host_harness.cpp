@@ -519,7 +519,7 @@ TEST_CASE("HOST 手动写回:改 vol 不动 pan、改 pan 不动 vol,值真实�
         const auto crvs = r.out.crvsSnapshot();
         const auto& segs =
             crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
-        REQUIRE(segs.size() == 1); // setTrackManual 的产物 = 单段全时限常值
+        REQUIRE(segs.size() == 1); // 空表上 setTrackManual 的产物 = 单段全时限常值(非空表见 HOST SL-180)
         return segs.front();
     };
 
@@ -1913,11 +1913,12 @@ TEST_CASE("HOST clearManual 不得清掉 locked 段(契约 §1.6/§5.4)", "[host
         return n;
     };
 
-    // 手动写回 → 单段 user_edited 且 **locked=false**(makeManualConstantSegment 的口径)。
+    // 手动写回 → 每段 user_edited 且 **locked=false**(makeManualDimSegments 的口径;[J131] 起
+    // 分析过的轨不再压成单段,段数 = 分析产出的段数)。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, replacedLocked));
-    REQUIRE(segsOf().size() == 1);
+    REQUIRE_FALSE(segsOf().empty());
     REQUIRE(lockedCount() == 0);
 
     // 用户显式挂锁(§5.4 set_locked:只改 locked,不动 origin)。
@@ -3144,7 +3145,7 @@ TEST_CASE("HOST P0-A:covered 列的抽样上界不影响「有没有数据」的
 // ---------------------------------------------------------------------------
 // v5.3 R4:**只有一个「无末端」段的轨**,上桥的 t1S 必须严格大于 t0S。
 //
-// setTrackManual 的产物是「单段全时限常值」(track.segments.assign(1, seg)),于是
+// setTrackManual 在空表上的产物是「单段全时限常值」(makeManualDimSegments),于是
 // 手动/冻结轨这一整类**本轨内一个非哨兵段都没有**。降级值若按本轨算就永远得 0,
 // t1S == t0S,段在波形页上坍缩成零宽:点不中、切不开 —— 而那正是最常被点的那批轨。
 // 降级必须取**工程级**已知末端(全轨非哨兵段最大 t1 → 采集覆盖 → 最小非零宽度)。
@@ -3155,7 +3156,7 @@ TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t3
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
 
-    // 造出「整轨只有一个无末端段」:setTrackManual 会把段表整表换成单段全时限。
+    // 造出「整轨只有一个无末端段」:空表上 setTrackManual 写入单段全时限。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
@@ -3425,6 +3426,120 @@ TEST_CASE("HOST J85:解冻回引擎曲线,输出随时间运动(不残留常值�
 }
 
 // ---------------------------------------------------------------------------
+// [J131] / SL-180:**未冻结**轨拖音量卡箍(手动接管通道)只把 vol 固定为常值,pan 曲线逐段保留。
+//
+// 修复前 `setTrackManual` 把段表整表换成「单段全时限常值、另一维从首段继承」—— 拖一下音量,
+// 整条 pan 曲线被压成首段那个 pan(前段硬左、后段硬右的曲线变成全程硬左)。
+// 镜像(拖 pan 卡箍压平 vol 曲线)走的是同一个函数的另一支,一并钉住。
+//
+// 夹具:空表接管 → 切成两段 → 两段 pan / vol 各不相同(与 HOST J85 解冻用例同一造法)。
+// 删除式:把 `makeManualDimSegments` 非空表那一支改回「压成单段、另一维取首段」⇒
+// ① 的 `size() == 2` 与逐段 pan 两格、② 的听感「后段偏右」、③ 的逐段 vol 两格一起红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-180:未冻结拖音量卡箍只固定 vol,pan 曲线逐段保留(镜像同款)", "[host][t37][manual][SL180]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威:曲线真身驱动 DSP(听感格要它)
+
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // 造一条两维都随时间变化的曲线。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -100.0f, replaced, replacedLocked));
+    scvb::state::SegmentEditArgs split;
+    split.op = scvb::state::SegmentEditOp::Split;
+    split.segIdx = 0;
+    split.tSamples = static_cast<std::int64_t>(5.0 * kSr);
+    REQUIRE(r.out.editSegment(kTestChannel - 1, split) == scvb::state::SegmentEditResult::Ok);
+    for (int i = 0; i < 2; ++i)
+    {
+        scvb::state::SegmentEditArgs sv;
+        sv.op = scvb::state::SegmentEditOp::SetValues;
+        sv.segIdx = i;
+        sv.hasPan = true;
+        sv.pan = (i == 0) ? -100.0f : 100.0f; // 前段硬左、后段硬右
+        sv.hasVol = true;
+        sv.volDb = (i == 0) ? -6.0f : 3.0f;
+        REQUIRE(r.out.editSegment(kTestChannel - 1, sv) == scvb::state::SegmentEditResult::Ok);
+    }
+    const auto before = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(before.size() == 2);
+    REQUIRE(before[0].pan != before[1].pan); // 前置:pan 确实是一条曲线,不是常值(否则下面空绿)
+    REQUIRE(before[0].volDb != before[1].volDb);
+
+    // —— ① 拖音量卡箍:vol 未冻结 ⇒ 手动接管通道 ——
+    setFreezeBits(r.out, kTestChannel, 0);
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -9.0f, replaced, replacedLocked));
+    const auto afterVol = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(afterVol.size() == 2); // ← 修复前 1(整表压成单段)
+    for (std::size_t i = 0; i < afterVol.size(); ++i)
+    {
+        CHECK(afterVol[i].pan == before[i].pan); // ← 修复前两段都是 -100(后段那格红)
+        CHECK(afterVol[i].t0 == before[i].t0);
+        CHECK(afterVol[i].t1 == before[i].t1);
+        CHECK(afterVol[i].volDb == -9.0f); // vol 维 = 常值
+        CHECK(scvb::state::segmentOrigin(afterVol[i].flags) == scvb::state::SegmentOrigin::UserEdited);
+        CHECK_FALSE(scvb::state::segmentLocked(afterVol[i].flags));
+    }
+    CHECK(replaced == 2); // 如实回报被改写的段数(两段都是 set_values 产物 ⇒ 都锁着)
+    CHECK(replacedLocked == 2);
+    CHECK(paramValueOf(r.out, scvb::params::volId(v, kTestChannel)) == Catch::Approx(-9.0f).margin(0.01));
+
+    // 读回链(Tab1 分布图 / Monitor 的 panNow 同一份):vol 读成手动常值,pan 仍按播放头读曲线。
+    {
+        const auto rb = scvb::output::readbackSegsOf(afterVol, /*freezeBits=*/0, /*outputOn=*/true,
+                                                     static_cast<std::int64_t>(8.0 * kSr));
+        REQUIRE(rb.pan != nullptr);
+        REQUIRE(rb.vol != nullptr);
+        CHECK(rb.pan->pan == 100.0f); // 播放头在后段 ⇒ 后段的 pan(不是首段的 -100)
+        CHECK(rb.vol->volDb == -9.0f);
+        CHECK(rb.manual != nullptr); // 行上「手动接管」标仍亮(vol 那一维是手动常值)
+        CHECK(scvb::output::manualDimOf(afterVol, /*isPan=*/false) != nullptr);
+        CHECK(scvb::output::manualDimOf(afterVol, /*isPan=*/true) == nullptr);
+    }
+
+    // —— ② 听感:pan 曲线仍在动(前段偏左、后段偏右)——
+    const auto balanceAt = [&r](double tSec) {
+        r.ph.timeSamples = static_cast<std::int64_t>(tSec * kSr);
+        r.runBlocks(40, 0.5f); // 走过切换斜坡
+        float l = 0.0f;
+        float rr = 0.0f;
+        for (int i = 0; i < 12; ++i)
+        {
+            r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+            const auto m = r.out.meterSnapshot();
+            l = std::max(l, m.busPeak[0]);
+            rr = std::max(rr, m.busPeak[1]);
+        }
+        REQUIRE(l > 0.0f);
+        REQUIRE(rr > 0.0f);
+        return l / rr;
+    };
+    CHECK(balanceAt(2.0) > 1.2f);
+    CHECK(balanceAt(8.0) < 0.83f); // ← 修复前整轨硬左,这里 > 1
+
+    // —— 撤销:一步回到拖之前的两段(段值与 flags 逐字节)——
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), before));
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), afterVol));
+
+    // —— ③ 镜像:拖 pan 卡箍(pan 未冻结)⇒ 只固定 pan,vol 维逐段保留 ——
+    REQUIRE(r.out.undo()); // 回到两维都是曲线的夹具
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 20.0f, replaced, replacedLocked));
+    const auto afterPan = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(afterPan.size() == 2);
+    for (std::size_t i = 0; i < afterPan.size(); ++i)
+    {
+        CHECK(afterPan[i].pan == 20.0f);
+        CHECK(afterPan[i].volDb == before[i].volDb); // ← 修复前两段都是 -6(后段那格红)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [J85] ④(用户现场后半句):解冻之后**再分析**必须能更新该轨曲线。
 // 修复前:冻结中调整烘焙出的是 origin=user_edited 段,普通再分析按 ADR-008 不覆盖它 ——
 // 于是「重新分析也不动」。修复后段表始终是 auto,再分析照常重算。
@@ -3661,20 +3776,19 @@ TEST_CASE("HOST SL-187:setTrackManual 的自写不得被记成 hostEcho", "[host
 // ===========================================================================
 // [SL-188] PR #111 复审【重要】:J85 的「解冻即回引擎分析曲线」在**跨维度**这条路上不成立。
 //
-// 手动接管通道走 `track.segments.assign(1, seg)` —— **整表**换成一段常值,另一维的值只从
+// 改前手动接管通道走 `track.segments.assign(1, seg)` —— **整表**换成一段常值,另一维的值只从
 // 首段继承。于是「分析出 N 段 → 冻 pan 调值 → 拖 vol(未冻结,接管)」之后,pan 那一维的
 // 分析曲线连带被拍平,解冻 pan 读到的仍是常值段,普通再分析按 ADR-008 不覆盖 user 段。
 // 症状与 v5.3 A2 现场逐字相同,只是入口从 pan 换成了 vol。
 //
-// 这是 04 §1.5 方案 A(每轨一张段表、两维同段)的**既有设计**,确认条正文也确实写着
-// 「替换该轨的**全部**分段结果」,J85 ⑤ 又明令手动接管通道逐字不动 —— 所以本用例**不主张
-// 它该被保住**,而是把「当前行为就是会被压平」钉死:哪天有人改了方案 A,这条会红,
-// 提醒他同步改掉 PR #106 描述里登记的那条已知残留(而不是默默把语义换掉)。
+// 本用例原先把「会被压平」钉成现行语义(J85 ⑤ 明令不动,留给用户裁;SL-180)。
+// **[J131](用户 2026-09-28)裁定改**:只固定被拖的那一维,另一维保留原曲线 —— 本用例随之改成
+// 钉「不再压平」(与 `HOST SL-180` 互补:那条从手编两段出发、带听感;本条从**多段 auto 表**出发,
+// 经过「冻 pan → 拖 vol → 解冻」这条真实路径)。
 //
-// 已有的 `HOST J85:冻结中调整只落参数面` 那条跨维断言是从**已经被压平**的单段表出发的,
-// 恰好盖住了这个洞 —— 本用例从**多段 auto 表**出发,补上那一半。
+// 已有的 `HOST J85:冻结中调整只落参数面` 那条跨维断言是从单段表出发的,盖不住多段这一半。
 // ===========================================================================
-TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(方案 A 现行语义)", "[host][t37][v55][SL188]")
+TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 不再压平 pan([J131])", "[host][t37][v55][SL188][SL180]")
 {
     Rig r;
     r.ph.playing = true;
@@ -3725,18 +3839,22 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(�
     // 拖 **vol**(该维未冻结 → 走手动接管通道)。
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -6.0f, replaced, replacedLocked));
 
-    // ★ 钉死现行语义:整表被换成单段常值,**pan 那一维的分析曲线一并没了**。
+    // ★ [J131] 起的语义:只有 vol 那一维被固定,**pan 那一维的分析曲线逐段保留**(段数、边界、每段 pan)。
     const auto after = segmentsOfTrack(r.out, kTestChannel);
-    CHECK(after.size() == 1);
-    CHECK(scvb::state::segmentOrigin(after.front().flags) == scvb::state::SegmentOrigin::UserEdited);
-    CHECK(after.front().volDb == -6.0f);
-    CHECK(replaced == static_cast<int>(before.size())); // 如实回报替换掉了多少段
-    // pan 维:继承自**首段**,而不是原来那条随时间变化的曲线。
-    CHECK(after.front().pan == before.front().pan);
+    REQUIRE(after.size() == before.size()); // ← 改前 1(整表换成单段)
+    for (std::size_t i = 0; i < after.size(); ++i)
+    {
+        CHECK(scvb::state::segmentOrigin(after[i].flags) == scvb::state::SegmentOrigin::UserEdited);
+        CHECK(after[i].volDb == -6.0f);
+        CHECK(after[i].pan == before[i].pan); // ← 改前:全部是首段的 pan
+        CHECK(after[i].t0 == before[i].t0);
+        CHECK(after[i].t1 == before[i].t1);
+    }
+    CHECK(replaced == static_cast<int>(before.size())); // 如实回报改写了多少段
 
-    // 于是解冻 pan 之后,曲线上再也取不出时间变化 —— 这正是「入口换成 vol 的同一个环」。
+    // 于是解冻 pan 之后,pan 仍是那条分析曲线(段表没被这次拖 vol 压平)。
     setFreezeBits(r.out, kTestChannel, 0);
-    CHECK(segmentsOfTrack(r.out, kTestChannel).size() == 1);
+    CHECK(segmentsOfTrack(r.out, kTestChannel).size() == before.size());
 
     // 出口仍在:重新识别(含手动段)能把它清掉,段表回到 auto(与 HOST P0-3 同一条链路)。
     runAnalysis(0.0, coveredS, /*clearManual=*/true);

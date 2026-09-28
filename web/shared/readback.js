@@ -49,18 +49,37 @@ export function segmentsOfCh(segments, ch) {
 }
 
 /**
- * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
- * (契约 §1.16 编码 = 04 §1.5 方案 A)。两处用它:
- *   ① **未冻结**维度的读回值(05 §2.2「读回值同样取自该段」)—— [J85] 之后冻结维度改读
- *      参数面,因为冻结通道根本不写曲线,段表里那条常值段只可能是**冻结前**留下的旧值;
+ * 「某一维被手动接管固定为常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
+ * (契约 §1.16 ②)。判据:段表非空 ∧ **每一段** `origin === "user_edited"` ∧ **每一段**
+ * 这一维的值都相等。命中返回首段(调用方读该维的值),否则 null。
+ *
+ * [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留 —— 拖过音量卡箍的轨
+ * 是 N 段 user_edited、vol 全等、pan 仍是原曲线:那条轨的 **vol** 是手动常值、**pan** 不是。
+ * 「段数 == 1」因此不再是产物特征;空表上的手动接管仍产出单段全时限,落在 N=1 特例里,
+ * 两维同时命中(与改造前同形)。
+ * **判据逐字对齐 native 的 `manualDimOf`(`src/core/output/DistReadback.h`)**,改一侧必须同改另一侧。
+ */
+export function manualDimOf(segChannel, dim) {
+    const segs = (segChannel && segChannel.segments) || [];
+    if (!segs.length) return null;
+    const key = dim === "pan" ? "pan" : "volDb";
+    const first = segs[0] && segs[0][key];
+    for (const s of segs) {
+        if (!s || s.origin !== "user_edited") return null;
+        if (s[key] !== first) return null;
+    }
+    return segs[0];
+}
+
+/**
+ * 该轨有没有**任一维**是手动常值(`manualDimOf` 两维取或)。两处用它:
+ *   ① Tab2 行上那枚「手动接管」标与「恢复自动」入口;
  *   ② 解冻提示(该位 1→0 且该轨仍由手动常值驱动)。
- * 命中返回该段本身(调用方要读 pan/volDb),否则 null。
+ * 读回值**不**用它 —— 读回按维走 `readbackSegsOf`(一维手动不等于两维都手动)。
+ * 命中返回首段,否则 null。逐字对齐 native 的同名函数。
  */
 export function manualConstantOf(segChannel) {
-    const segs = (segChannel && segChannel.segments) || [];
-    if (segs.length !== 1) return null;
-    const s = segs[0];
-    return s && s.origin === "user_edited" ? s : null;
+    return manualDimOf(segChannel, "pan") || manualDimOf(segChannel, "vol");
 }
 
 /**
@@ -118,8 +137,10 @@ export function curveSegmentAt(segChannel, tS) {
  * [SL-241] 这条优先级链原先只长在 `rowFromStore` 里,分布图那边压根没有 —— 抽出来之后
  * 两处调同一个函数,再想分叉得先改这里。口径逐条即 J78「显示的是该维度的权威」:
  *   · **冻结**维度 → 参数面(宿主自动化 / 冻结手动值当家),不看段表([J85]);
- *   · 有**手动常值段** → 该段(05 §2.2「读回值同样取自该段」)。**这一档不看输出档** ——
- *     手动接管写的是曲线真身,ON/OFF 两边听到的都是它;
+ *   · 该维是**手动常值**(`manualDimOf`,**逐维**判定)→ 首段(05 §2.2「读回值同样取自该段」)。
+ *     **这一档不看输出档** —— 手动接管写的是曲线真身,ON/OFF 两边听到的都是它。
+ *     [J131] / SL-180:拖过音量卡箍的轨 vol 是常值、pan 仍是曲线,两维不能再共用一个
+ *     「有没有手动段」的判定 —— 那样 pan 会被读成首段的值,显示上又把曲线压平一次;
  *   · 否则输出 **ON**(引擎按曲线驱动)→ 播放头所处的曲线段(SL-211 复审终轮③a 裁定)。
  *     ⚠ DSP 那边其实是三态(§1.3 PRINT / ARMED / FOLLOW):ON 但停着或在区间外(ARMED)时
  *     引擎**还没开始**驱动,这一档显示是**有意**领先 DSP 一步的 —— 那正是本卡要修的那一幕
@@ -128,20 +149,26 @@ export function curveSegmentAt(segChannel, tS) {
  *   · 段表为空(还没分析过)→ 两维都 `null`,回落参数面。
  *
  * 为什么一次算两维、而不是每维调一次:`frozen` 只决定「用不用」,不影响算出来**是哪一段**。
- * 逐维调会把 `manualConstantOf` + `curveSegmentAt` 全量重算一遍(后者每次还新分配一个
+ * 逐维调会把手动判定 + `curveSegmentAt` 全量重算一遍(后者每次还新分配一个
  * `filter` 数组),而调用方是 25Hz 的整页 render × 15 轨(#159 复审【建议】2)。
  *
- * 同时把命中的**手动常值段**一并回出(`manual`)。Tab2 的行上还要一个「手动接管」标,
- * 调用方自己再调一次 `manualConstantOf` 的话不只是白算 —— 标和链有可能分头改到分家。
- * 回出来之后,那个标与这条链**必然**同一个判定(#159 复审第三轮)。
+ * 同时把命中的**手动常值段**一并回出(`manual` = 任一维手动时的首段,即 `manualConstantOf`
+ * 的同一个判定)。Tab2 的行上还要一个「手动接管」标,调用方自己再调一次 `manualConstantOf`
+ * 的话不只是白算 —— 标和链有可能分头改到分家。回出来之后,那个标与这条链**必然**同一个
+ * 判定(#159 复审第三轮)。
+ * **逐条对齐 native 的 `readbackSegsOf`(`src/core/output/DistReadback.h`)**。
  */
 export function readbackSegsOf(segChannel, bits, outputOn, timeS) {
-    const manual = manualConstantOf(segChannel);
-    const seg = manual || (outputOn ? curveSegmentAt(segChannel, timeS) : null);
+    const manPan = manualDimOf(segChannel, "pan");
+    const manVol = manualDimOf(segChannel, "vol");
+    const curve =
+        outputOn && !(manPan && manVol)
+            ? curveSegmentAt(segChannel, timeS)
+            : null;
     const frozen = bits || {};
     return {
-        pan: frozen.pan ? null : seg,
-        vol: frozen.vol ? null : seg,
-        manual,
+        pan: frozen.pan ? null : manPan || curve,
+        vol: frozen.vol ? null : manVol || curve,
+        manual: manPan || manVol,
     };
 }

@@ -54,8 +54,8 @@ inline bool isSegmentationMode(const juce::String& mode)
 }
 
 // 「无末端」哨兵:CRVS 里 t1 = 1<<40 表示「覆盖到时间线末端」,真末端由宿主时间线提供
-// (`SegmentEditService.h:89` 的 setTrackManual 常值段)。与 `kVizOpenEndedT1` 同一个数,
-// #89 已在 viz 侧按「只取 t0」处理过;桥面 §2.8 的处理见 `OutputEditor::emitSegments`。
+// (`SegmentEditService.h` `makeManualDimSegments` 在空表上产出的 setTrackManual 常值段)。
+// 与 `kVizOpenEndedT1` 同一个数,#89 已在 viz 侧按「只取 t0」处理过;桥面 §2.8 的处理见 `OutputEditor::emitSegments`。
 inline constexpr std::int64_t kOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
 
 // ---- R4 降级链(桥面 §2.8):无末端段上桥前的有效右端 ----
@@ -63,8 +63,8 @@ inline constexpr std::int64_t kOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
 // HOST R4 用例走同一份代码 —— 用例断的就是真实上桥值,revert 任何一级都会红。
 //
 // ① 工程级已知末端:全 15 轨该版本里所有非哨兵段的最大真末端;一个都没有(全是手动/
-//    冻结轨)→ ② 已采集时间线末端。**必须是工程级、不能是本轨级**:`setTrackManual` 的
-//    产物是单段全时限(`track.segments.assign(1, seg)`),按本轨算永远得 0。
+//    冻结轨)→ ② 已采集时间线末端。**必须是工程级、不能是本轨级**:`setTrackManual` 在
+//    空表上的产物是单段全时限(`makeManualDimSegments`),按本轨算永远得 0。
 inline std::int64_t knownTimelineEndSamples(const scvb::state::VersionCurve& vc, double capturedExtentS,
                                             double sampleRate)
 {
