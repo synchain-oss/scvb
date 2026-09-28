@@ -1268,6 +1268,15 @@ function checkEventPayloadFields() {
                 "stale",
             ],
         },
+        // [J147] §2.6 加了四个可选字段(bpm / timeSigNum / timeSigDen / ppq)。这一事件此前不在
+        // 本表里 —— 它的载荷行全是标量、`emitPlayhead` 只有一层 `payload`,补进来零误判面。
+        {
+            event: "scvb.playhead",
+            anchor: "isPlaying",
+            fn: "OutputEditor::emitPlayhead",
+            varName: "payload",
+            otherLevels: [],
+        },
     ];
 
     for (const c of CASES) {
@@ -1280,8 +1289,10 @@ function checkEventPayloadFields() {
             );
             continue;
         }
+        // 可选字段在契约里写作 `name?:type`([J147] 起认这个 `?`):不认的话 §2.6 的
+        // `loopStartS?:f64` 一类会被当成「契约没登记」,把实发的可选字段判红。
         const docFields = new Set(
-            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map(
+            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g)].map(
                 (m) => m[1],
             ),
         );

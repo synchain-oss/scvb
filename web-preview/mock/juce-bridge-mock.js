@@ -327,6 +327,13 @@ function makeContext(role, world) {
         // `requestRender` 都不排。只有 `ctl.setHostTimeAvailable` 写它(见那一条),
         // 页面与契约面一个字节都不知道它存在。
         hostTimeAvailable: true,
+        // [J147] **宿主报的速度 / 拍号**(契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。
+        // null = 宿主不给(页面按秒显示)。初值取 world.caps.hostTempo(`?tempo=` 可覆写,
+        // 见 state-driver 的 parsePreviewQuery);运行中只有 `ctl.setHostTempo` 写它。
+        // 拍位置按一张两段的速度表造:可选的 `pre: {untilS, bpm}` = 「untilS 秒之前是另一个速度」,
+        // 缺省即「从 0 秒起恒速」(ppq = 秒 × bpm / 60)。停着时用 `setHostTempo` 换一张表 =
+        // 用户在宿主里改了速度表(同一时刻的拍位置 / 速度变了,页面据此作废旧观察)。
+        hostTempo: world.caps.hostTempo ? { ...world.caps.hostTempo } : null,
         // [J157] §1.37 拖动预览此刻在「音频」里的那份({version, points} | null)。只有
         // previewPanCurve / setPanCurve 写它;页面与契约面不读(预览不回推任何事件)。
         panCurvePreview: null,
@@ -867,6 +874,23 @@ function makeContext(role, world) {
         setHostTimeAvailable(on) {
             model.hostTimeAvailable = on !== false;
         },
+        /**
+         * [J147] **预览专用**开关(同 `setHostTimeAvailable`,不在桥面契约里):
+         * `{bpm, num, den, pre?: {untilS, bpm}}` = 宿主从下一帧起按这张速度表报;`null` = 宿主不报。
+         */
+        setHostTempo(t) {
+            model.hostTempo =
+                t && Number.isFinite(t.bpm)
+                    ? {
+                          bpm: t.bpm,
+                          num: t.num,
+                          den: t.den,
+                          pre: t.pre
+                              ? { untilS: t.pre.untilS, bpm: t.pre.bpm }
+                              : null,
+                      }
+                    : null;
+        },
         /** §2.6 的可选字段:宿主提供 loop 才出现,缺失即字段不存在(不发哨兵)。 */
         playheadOverrides(tS) {
             // 宿主不给走带位置时,native 侧 timeS 恒 0.0 —— 连同 inRange 一起按 0 算,
@@ -881,6 +905,27 @@ function makeContext(role, world) {
             if (loop) {
                 extra.loopStartS = loop.startS;
                 extra.loopEndS = loop.endS;
+            }
+            // [J147] 与 native `hostTempoOf` 同口径:bpm 与拍号同进同出;ppq 另要求本帧有
+            // 时间线(没有时 timeS 是填的 0,不能与它配对)。
+            const ht = model.hostTempo;
+            if (ht) {
+                // 与载荷里的 timeS 配对:makePlayhead 把 timeS 取整到毫秒,这里用同一个值算,
+                // 否则「拍位置 − 秒 × bpm / 60」会带上取整残差。
+                const tMs = Math.round(t * 1000) / 1000;
+                const pre = ht.pre || null;
+                const before = !!pre && tMs < pre.untilS;
+                extra.bpm = before ? pre.bpm : ht.bpm;
+                extra.timeSigNum = ht.num;
+                extra.timeSigDen = ht.den;
+                if (model.hostTimeAvailable) {
+                    extra.ppq = !pre
+                        ? (tMs * ht.bpm) / 60
+                        : before
+                          ? (tMs * pre.bpm) / 60
+                          : (pre.untilS * pre.bpm) / 60 +
+                            ((tMs - pre.untilS) * ht.bpm) / 60;
+                }
             }
             return extra;
         },

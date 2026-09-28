@@ -290,6 +290,14 @@ void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::Positi
         pod.bpm = *bpm;
         pod.flags |= scvb::engine::kPlayheadTempoValid;
     }
+    // [J147] 拍号:Tab1 手动范围按小节显示要它(契约 §2.6 `timeSigNum`/`timeSigDen`)。
+    // 只拷两个 int,零分配;合理域的判定留给 [M] 侧的 hostTempoOf(PlayheadShot.h)。
+    if (const auto sig = pos.getTimeSignature(); sig.hasValue())
+    {
+        pod.timeSigNum = sig->numerator;
+        pod.timeSigDen = sig->denominator;
+        pod.flags |= scvb::engine::kPlayheadTimeSigValid;
+    }
     if (const auto loop = pos.getLoopPoints(); loop.hasValue())
     {
         pod.loopStartPpq = loop->ppqStart;

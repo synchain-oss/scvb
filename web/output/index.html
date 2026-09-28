@@ -306,6 +306,8 @@
          [data-gb="master-width|master-msbalance|master-leadselect|master-distchart"]
                                      data-host-echo="0|1"(§0.5 hostEcho 灰显,只更新显示不回写)
          .range-manual__tc           data-invalid="0|1"(manual 起止校验失败)
+         [data-gb="master-range-bars"] data-est="0|1"(小节换算行:1 = 估算态斜体半透明)+ hidden(没读到宿主速度)
+         [data-gb="master-range-note"] hidden(两端小节都精确)+ data-t 三选一([J147])
          [data-gb="scale-confirm"]   hidden(10 秒防呆确认,卡片层单例)
          [data-gb="guide-overlay-rules-missing"] hidden(guide.rule1..9 未生成时的占位注记)
        ================================================================= */
@@ -1906,6 +1908,11 @@
                 font-size: var(--fs-95);
                 font-style: italic;
                 color: var(--txt-est);
+            }
+            /* [J147] 斜体/半透明是**估算态**的样式(05 §2.1 ②);两个端点都精确时按常规读数显示。 */
+            .range-manual__conv[data-est="0"] {
+                font-style: normal;
+                color: var(--txt-2);
             }
             .range-manual__btn {
                 padding: var(--sp-4) var(--sp-8);
@@ -6997,14 +7004,17 @@
                                             />
                                         </div>
                                         <!-- 「小节+拍+tick」↔「mm:ss.mmm」双向联动(04 §2.3);换算行(设计稿 L404)。
-                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),而**宿主 tempo map 没有任何桥入口**,
-                                             小节↔秒换算做不出来 —— 故本波把**可编辑侧**改成桥面单位 mm:ss.mmm,
-                                             换算行显示同一区间的另一种写法;拿到 tempo map(T33)后再把小节侧接回来。 -->
+                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),**可编辑侧**是桥面单位 mm:ss.mmm。
+                                             [J147] 换算行显示同一区间落在第几小节第几拍:速度 / 拍号 / 拍位置取自
+                                             scvb.playhead 的 bpm / timeSigNum / timeSigDen / ppq(宿主**当前位置**的值,
+                                             不是整张速度表 —— 估算与校准的口径见 web/output/host-tempo.js 头注)。
+                                             一帧速度都没读到过时本行隐藏、下面的注释行改说「按秒显示」。 -->
                                         <span
                                             class="range-manual__conv sc-num"
-                                            data-gb="master-range-timecode"
-                                            >01:12.400 → 01:47.900</span
-                                        >
+                                            data-gb="master-range-bars"
+                                            data-est="1"
+                                            hidden
+                                        ></span>
                                         <div class="range-manual__row">
                                             <button
                                                 class="range-manual__btn range-manual__btn--wide"
@@ -7026,11 +7036,16 @@
                                                 +4
                                             </button>
                                         </div>
-                                        <!-- tempo 表未覆盖区域:小节值为估算态(斜体/半透明,设计稿 L410) -->
+                                        <!-- 注释行(设计稿 L410),[J147] 起按情况三选一、精确时隐藏
+                                             (tab-master.js renderRangeBars):估算 master.barsEstimateNote /
+                                             拍号变过 master.barsMeterNote / 没读到速度 master.rangeSecondsNote。
+                                             初值 = 「还没读到速度」那一态,与页面启动时的速度模型一致。 -->
                                         <span
                                             class="range-manual__note"
-                                            data-t="master.barsEstimateNote"
-                                            >小节为估算值,播放该区域后校准</span
+                                            data-gb="master-range-note"
+                                            data-t="master.rangeSecondsNote"
+                                            >未读到宿主速度与拍号,范围按秒显示,±4
+                                            为 4 秒</span
                                         >
                                     </div>
                                 </div>
