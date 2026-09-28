@@ -108,6 +108,32 @@ log("=== ① host-hints.js 纯函数 ===");
         false,
         "Live 未结束过打印:⑬ 不出",
     );
+    // ⑬ 还要「这一段写入告一段落」:输出 ON 且还在播(循环回范围里会接着写)⇒ 先不出(#324 复审)
+    const ended = { hintPrintEnded: true };
+    const PLAY = { isPlaying: true };
+    const STOP = { isPlaying: false };
+    eq(
+        [
+            HH.hostHintFlags("live", ON, ended, PLAY).liveReEnable,
+            HH.hostHintFlags("live", ON, ended, STOP).liveReEnable,
+            HH.hostHintFlags("live", OFF, ended, PLAY).liveReEnable,
+            HH.hostHintFlags("live", OFF, ended, STOP).liveReEnable,
+            HH.hostHintFlags("live", ON, ended, null).liveReEnable,
+        ],
+        [false, true, true, true, true],
+        "⑬:输出 ON∧在播 不出;停走 / 关输出 / 无播放头 出",
+    );
+    // ⑪⑫ 不看走带
+    eq(
+        [
+            HH.hostHintFlags("reaper", ON, { hintEverPrinted: true }, PLAY)
+                .reaperKeepOpen,
+            HH.hostHintFlags("reaper", ON, { hintEverPrinted: true }, PLAY)
+                .reaperPrintNote,
+        ],
+        [true, true],
+        "⑪⑫ 在播时照出(不看走带)",
+    );
     // state / session 缺席不抛
     const safe = HH.hostHintFlags("reaper", null, null);
     eq(

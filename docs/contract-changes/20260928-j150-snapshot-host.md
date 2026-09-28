@@ -32,7 +32,7 @@
 | 为什么只进快照 | 宿主在实例寿命内不变;编辑器每次重建都会重新调 `requestInitialState()`(§0.6),拿得到 |
 | 为什么 `cubase` 单列 | Cubase 是主测宿主,页面级冒烟要拿它当「有名有姓、但不该出提示」的反例;并进 `other` 的话「Cubase 上不出」只是「other 上不出」的同义反复 |
 | `?` 的含义 | native 本版恒发;`?` 是给 UI 的容忍纪律 —— **缺席或不认识的值一律按 `other` 处理**(不出任何提示)。今后加宿主只许放宽取值域 |
-| UI 消费 | `web/output/host-hints.js`:reaper ∧ 输出开关 ON ⇒ ⑪「写入自动化期间请保持本插件窗口打开」;reaper ∧ 本会话进过 PRINT ⇒ ⑫ 一次性首选项提示;live ∧ 打印刚结束 ⇒ ⑬「点 Re-Enable Automation」。三条都是建议类横幅,带 ✕(沿 [SL-373] `showDismissible` 口径) |
+| UI 消费 | `web/output/host-hints.js`:reaper ∧ 输出开关 ON ⇒ ⑪「写入自动化期间请保持本插件窗口打开」;reaper ∧ 本会话进过 PRINT ⇒ ⑫ 一次性首选项提示;live ∧ 打印已结束 ∧(停走或输出关)⇒ ⑬「点 Re-Enable Automation」。三条都是建议类横幅,带 ✕(沿 [SL-373] `showDismissible` 口径) |
 
 ### 改动面(契约文本两处)
 

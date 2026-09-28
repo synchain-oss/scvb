@@ -19,8 +19,13 @@
 //   ④ 不给 host(= 快照默认 other):同 ③;
 //   ⑤ host=live + **走带位置冻住**(`ctl.setHostTimeAvailable(false)`,§2.6 帧逐字不变 ⇒
 //      页面对这种帧不记账,与真桥 diff-then-emit 不发它同形):此时打印边沿**只**从
-//      scvb.state(输出开关)来 —— 打开再关掉输出 ⇒ ⑬ 必须出。把 app.js 里 scvb.state
-//      那一处记账删掉,①②③④ 照绿(走带在走,§2.6 帧会补上),只有本格红;
+//      scvb.state(输出开关)来 —— 打开再关掉输出 ⇒ ⑬ 必须出。这是专为 scvb.state 那一处
+//      记账造的尺子:它**只**靠那一处。(实测把那一处删掉,② 的第一次打印结束也会红 ——
+//      ② 进 PRINT 那一拍来自输出开关,本套一看到 footer 进打印行就立刻停走,赶在下一帧
+//      §2.6 之前;那是顺带的,别拿 ② 当这一处的判据。)
+//   ⑥ host=live + **循环跨出写入范围**(播着、输出 ON,把范围改到播放头之前 ⇒ PRINT → ARMED
+//      但走带还在走):⑬ **不出**(下一圈回到范围里还会接着写,「写入已结束」是反话;
+//      #324 复审采纳)⇒ 停走之后才出;
 //   各场景都要零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-host-hints-page.mjs [仓库根绝对路径]
@@ -511,7 +516,7 @@ async function outputOnIntoPrint(label) {
     return p;
 }
 
-// 停走并等到「打印刚结束」那一次 render(footer 切到 printDone)。
+// 停走并等到「打印结束」那一次 render(footer 切到 printDone)。
 async function stopAfterPrint(label) {
     check(await setPlaying(false), `${label}:停走`);
     const p = await until((x) => x.footerMode === "printDone");
@@ -726,6 +731,34 @@ try {
             `⑤ 关掉输出(打印结束)⇒ ⑬ 出现 —— 边沿是 scvb.state 那一处记上的(实得 ${shown(p2)})`,
         );
         assertClean("⑤ host=live 冻住走带");
+    }
+
+    // =========================================================================
+    log("=== ⑥ host=live + 播着出了写入范围:⑬ 等停走才出 ===");
+    {
+        await open("live");
+        await outputOnIntoPrint("⑥");
+        // 范围改到播放头之前(fixture 的播放头在 42s 之后)⇒ 页面相位 PRINT → ARMED,走带照走
+        check(
+            await evaluate(
+                SHELL(`const r = s.mock.setRange("manual", 0, 30);
+                       return !!r && r.ok === true;`),
+            ),
+            "⑥ 范围改成手动 0–30s(播放头已在范围之后)",
+        );
+        const p1 = await until((x) => x.footerMode === "printDone");
+        check(
+            p1 && p1.footerMode === "printDone" && p1.outputOn,
+            `⑥ 播着离开范围:PRINT 结束那一帧渲染过了、输出仍 ON(实得 ${shown(p1)})`,
+        );
+        check(
+            p1 && !p1.live,
+            `⑥ 输出 ON 且还在播 ⇒ ⑬ 先不出(实得 ${shown(p1)})`,
+        );
+        check(await setPlaying(false), "⑥ 停走");
+        const p2 = await until((x) => x.live);
+        check(p2 && p2.live, `⑥ 停走之后 ⑬ 出现(实得 ${shown(p2)})`);
+        assertClean("⑥ host=live 播着出范围");
     }
 } catch (e) {
     fail++;

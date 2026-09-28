@@ -178,8 +178,8 @@
 - **REAPER 与 Ableton Live 上的宿主专属提示**([J150]):Output 认出宿主后,在 **REAPER** 里输出开关
   打开(写入自动化)期间,页面顶部常显「写入自动化期间请保持本插件窗口打开」(REAPER 在插件窗口关着时
   可能不写自动化);本次打开插件窗口后第一次进入写入时,再出一条一次性提示,写明 REAPER 首选项里
-  Parameter automation notifications 该设成什么。在 **Ableton Live** 里,每次写入结束(停走、播放头离开
-  范围或关掉输出开关)后提示点 Re-Enable Automation。三条都可以点 ✕ 关掉;Cubase 与其他宿主上界面不变。
+  Parameter automation notifications 该设成什么。在 **Ableton Live** 里,写入结束且停走(或关掉输出开关)后
+  提示点 Re-Enable Automation(循环播放时每圈出入写入范围不算结束,不提示)。三条都可以点 ✕ 关掉;Cubase 与其他宿主上界面不变。
   桥契约 §1.1 的首帧快照多一个可选字段 `host`(变更文档
   `docs/contract-changes/20260928-j150-snapshot-host.md`),工程存档与自动化参数不变(#324)
 

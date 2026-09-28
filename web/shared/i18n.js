@@ -871,7 +871,7 @@ export const T = {
         //    不说「车道」:[J97] 用户裁定界面用词不用「车道」,这里改说「没有录到自动化」。
         "banner.reaperPrintNote":
             "REAPER:若写完后没有录到自动化,请在 Preferences → Plug-ins → VST → VST compatibility 中把 Parameter automation notifications 设为 process all notifications",
-        // ⑬ Live ∧ 写入刚结束:03 §4.4 ①。Re-Enable Automation 是 Live 界面上的按钮原名,保持英文。
+        // ⑬ Live ∧ 写入已结束 ∧(停走或输出关):03 §4.4 ①。Re-Enable Automation 是 Live 界面上的按钮原名,保持英文。
         "banner.liveReEnable":
             "Live:写入已结束。Re-Enable Automation 按钮亮起属正常现象,点击它即可恢复读取自动化",
         // [SL-373] 用户 v5.6.8 实测:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。

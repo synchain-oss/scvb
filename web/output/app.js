@@ -1762,7 +1762,12 @@ function renderBanners() {
     // 文案里没有占位符 ⇒ 签名恒空串,「关过之后还能再出现」全靠「条件为假就删记录」那一半
     // (⑪:输出关掉再打开;⑫:本会话闩住、不再出;⑬:下一次打印结束)。
     // 导览期 `vs` 是 demo store,它的宿主是 "other" ⇒ 三条恒不出。
-    const hints = hostHintFlags(snapshotHost(vs.snapshot), s, vs.session);
+    const hints = hostHintFlags(
+        snapshotHost(vs.snapshot),
+        s,
+        vs.session,
+        vs.playhead,
+    );
     showDismissible("banner-reaperKeepOpen", hints.reaperKeepOpen, "");
     showDismissible("banner-reaperPrintNote", hints.reaperPrintNote, "");
     showDismissible("banner-liveReEnable", hints.liveReEnable, "");
@@ -2217,6 +2222,8 @@ if (bridge) {
         // 逐字相同的一帧不带新信息,跳过 —— 与真桥同形:native 侧 diff-then-emit(§0.4)
         // 根本不会发这样的帧。于是「走带位置冻住」的宿主上,输出开关带来的边沿**只**
         // 由 scvb.state 那一处接住;smoke-host-hints-page 的 ⑤ 靠这一点把那一处钉住。
+        // ⚠ 这个 `!same` **不是正确性闸**:trackPrintEdges 对同值幂等,去掉它结果不变、
+        // 也没有任何一格会红;它只负责让 ⑤ 分得清两路来源(#324 复审)。
         if (!same) trackHostHintEdges();
         // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
         // **覆写前**的 `playhead` 一起算 ——

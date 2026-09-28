@@ -16,10 +16,14 @@
 //     ✕ 之后保持关着,直到输出关掉再打开才重新出现。
 //   · `reaperPrintNote` —— REAPER ∧ 本会话**进过** PRINT。03 §4.2 对策②「进入 PRINT 时弹
 //     一次性提示」,内容是 REAPER 首选项里那条宿主端解法。闩锁本会话内不清 ⇒ ✕ 一次,
-//     本会话不再出现(「一次性」)。**不随打印结束收起**:它讲的是「写完车道仍为空怎么办」,
+//     本会话不再出现(「一次性」)。**不随打印结束收起**:它讲的是「写完没录到自动化怎么办」,
 //     用户最需要它的那一刻恰好在打印之后。
-//   · `liveReEnable` —— Live ∧ 打印刚结束(PRINT → 非 PRINT 的边沿置位,下一次进 PRINT 清位)。
-//     03 §4.4 对策①「打印结束时 UI 提示点 Re-Enable Automation」。✕ 之后到下一次打印结束才再出。
+//   · `liveReEnable` —— Live ∧ 打印已结束(PRINT → 非 PRINT 的边沿置位,下一次进 PRINT 清位)
+//     ∧ **走带停了或输出关了**。03 §4.4 对策①「打印结束时 UI 提示点 Re-Enable Automation」。
+//     后一半是 #324 复审采纳的:循环区跨出写入范围时,每一圈出范围都是一次 PRINT → ARMED,
+//     而下一圈回到范围里又会接着写 —— 这时说「写入已结束、去点 Re-Enable」既不对、点了也
+//     留不住(下一圈又会把按钮点亮),横幅还会随每一圈忽隐忽现。所以只在「这一段写入真的
+//     告一段落」(停走 / 关输出)时出。✕ 之后到下一次打印结束才再出。
 //
 // 「本会话」= 这一个页面实例的寿命(关掉插件窗口再打开 = 新会话),与 `dismissedBanners`
 // 同一份口径:不入 state chunk、不落盘、不进契约。
@@ -71,14 +75,20 @@ export function trackPrintEdges(session, printing) {
  * @param {string} host      snapshotHost(...) 的结果
  * @param {object} state     store.state(§2.1 深合并结果)
  * @param {object} session   store.session(trackPrintEdges 写过的那一份)
+ * @param {object} playhead  store.playhead(§2.6;缺席 = 不在播)
  * @returns {{reaperKeepOpen:boolean, reaperPrintNote:boolean, liveReEnable:boolean}}
  */
-export function hostHintFlags(host, state, session) {
+export function hostHintFlags(host, state, session, playhead) {
     const outputOn = !!(state && state.global && state.global.output_enabled);
+    const playing = !!(playhead && playhead.isPlaying);
     const s = session || {};
     return {
         reaperKeepOpen: host === "reaper" && outputOn,
         reaperPrintNote: host === "reaper" && s.hintEverPrinted === true,
-        liveReEnable: host === "live" && s.hintPrintEnded === true,
+        // 「输出 ON 且还在播」= 这一段写入没告一段落(循环回范围里还会接着写),先不出
+        liveReEnable:
+            host === "live" &&
+            s.hintPrintEnded === true &&
+            !(outputOn && playing),
     };
 }
