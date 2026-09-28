@@ -1345,6 +1345,8 @@ void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
         else
         {
             // §1.6 拒绝态行:range ∩ coverage = ∅ → {ok:false, affected:{0,0,0}},**不带 reason**。
+            // [SL-535] 「范围内有采集数据,但那些轨此刻都没连上 Input」也落这一行:分析只认已连接的轨,
+            // 对它而言那份覆盖不存在。复用既有拒绝态,不新增 reason(§7 manifest 给 analyze 只登记了 busy)。
             juce::var affected = obj();
             put(affected, "intervals", 0);
             put(affected, "tracks", 0);
