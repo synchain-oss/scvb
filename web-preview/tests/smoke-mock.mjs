@@ -1243,7 +1243,8 @@ const KNOWN_UNMAPPED = new Set([
     //   所以「这个名字该在 output 列还是 input 列」本格无从判断。今天 `connected`
     //   就是这一态(MAP 有、只在 input 列,`output.html?scenario=connected` 照样印
     //   `unknown`),同态的还有 occupied / no-output / passthrough / abi-mismatch /
-    //   sr-mismatch / group-mismatch / input-first-run 共 8 个。
+    //   sr-mismatch / group-mismatch / input-first-run / claim-unavailable /
+    //   claim-abi-mismatch 共 10 个。
     //   `smoke-output-dist-page.mjs:566-570` 记的两次栽法里,本格接住第一次
     //   (`printing` 形态),**第二次(`connected` 形态)仍无判据** —— 要覆盖它得让
     //   `SCENARIO_MAP` 带上 role,不在本卡范围内。

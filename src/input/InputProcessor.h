@@ -57,7 +57,9 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     // [M] UI/桥入口(T25 冻结契约):设置 channel/group,触发 claim 迁移(01 §4.1)。
-    // 返回迁移后的 claim 态(T30 桥据此回 {ok}/{conflict:true} 并经 scvb.state 回推 claim)。
+    // 返回**这次请求本身**的结果,不一定等于会话此刻的 state():补偿式回滚成功时会话回到旧通道、仍是
+    // kActive;改组时 ctrl 段打不开则会话原样留在旧组 —— 两种都是请求失败。桥面回执据此映射(InputBridgeLogic.h
+    // claimRequestResponse, §3.2/§3.3,[J156]);会话当下的 claim 态另经 scvb.state 回推。
     scvb::input::InputClaimState setChannelId(int channelId);
     scvb::input::InputClaimState setGroupId(int groupId);
 

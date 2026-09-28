@@ -160,6 +160,9 @@ const SCENARIO_NAMES = {
         "group-mismatch",
         // 05 §3 文末 J80 节引入:T48 Input 首启轻量引导(语言卡 → 5 步 mini tour)
         "input-first-run",
+        // [SL-463 / J156] 点卡 / 切组回非冲突失败(契约 §3.2/§3.3 `{ok:false, reason}`)
+        "claim-unavailable",
+        "claim-abi-mismatch",
     ],
     // [T46] Monitor 侧的演示场景;名单真源 = ./mock/monitor-mock.js 的
     // MONITOR_SCENARIOS(此处引用而不是抄一份,免得两处漂开)。
