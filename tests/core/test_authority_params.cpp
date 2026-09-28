@@ -7,9 +7,14 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <thread>
+#include <vector>
 
 #include "OutputAuthority.h"
 #include "OutputParams.h"
@@ -412,4 +417,182 @@ TEST_CASE("AUTH-PARAMS-10 坏点在进表之前被挡住(接线格,不是零件�
     f.auth.setPanCurve(1, {other});
     REQUIRE(f.auth.activePanCurveLut().get() != baseline);
     REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(0.0f)) == Approx(-3.0).margin(0.03));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-445] 快照池回收。此前池「进程寿命保活、绝不释放」,每次改曲线留下一份 128 KiB 的 LUT。
+// 现在音频线程每块报 oldestHeldSeq,发布方在消息线程上释放 seq 更小的快照。
+// 这一组钉三件事:①池有上界(不回收 ⇒ 红);②音频线程**当前那份**不被放(判据取等号 ⇒ 红);
+// ③换表淡入窗口开着时,**旧表那份**也不被放(确认值不算窗口 ⇒ 红)。④是真双线程的压力格。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// 单点 bell,中心 0°、增益 db:在 P=0 处 G 恰为 db,换 db 就换一张表(no-op 守卫不会挡)。
+std::vector<scvb::PanCurvePoint> bellAt0(float db)
+{
+    scvb::PanCurvePoint p;
+    p.angle = 0.0f;
+    p.gainDb = db;
+    p.shape = scvb::PanCurveShape::bell;
+    p.q = 1.5f;
+    p.side = scvb::PanCurveSide::out;
+    return {p};
+}
+
+} // namespace
+
+TEST_CASE("AUTH-PARAMS-11 快照池有上界:音频线程在跑时,连改 300 次曲线池不随之增长",
+          "[authority][params][pancurve][sl445]")
+{
+    AuthorityParamsFixture f;
+    (void)f.auth.processBlock(true, 0.0);
+
+    // 模拟 Q 滑杆断续拖:每次提交之间音频线程跑过一块(256 样本 ≈ 5 ms,短于 30 ms 淡入窗口,
+    // 所以窗口一直在「重开」—— 这是确认值最保守的那种节奏)。
+    std::weak_ptr<const scvb::PanCurveLut> firstLut;
+    std::size_t maxPool = 0;
+    for (int i = 0; i < 300; ++i)
+    {
+        f.auth.setPanCurve(1, bellAt0(-1.0f - static_cast<float>(i % 11)));
+        if (i == 0)
+            firstLut = f.auth.activePanCurveLut();
+        (void)f.auth.processBlock(true, 0.0);
+        for (int n = 0; n < 256; ++n)
+            (void)f.auth.nextSample();
+        maxPool = std::max(maxPool, f.auth.snapshotPoolSize());
+    }
+    // 不回收时池 = 发布次数(≥ 300);回收时稳态只留「旧表那份 + 上一块那份 + 刚发的」量级。
+    CHECK(maxPool <= 4);
+    CHECK(f.auth.snapshotPoolSize() <= 4);
+    // 被放掉的不只是 744 B 的快照壳,还有它钉住的那张 128 KiB 的表 —— 这才是 SL-445 要收的内存。
+    CHECK(firstLut.expired());
+}
+
+TEST_CASE("AUTH-PARAMS-12 音频线程还没跑下一块时,它手上那份快照一律不放", "[authority][params][pancurve][sl445]")
+{
+    AuthorityParamsFixture f;
+    f.auth.setPanCurve(1, bellAt0(-3.0f));
+    std::weak_ptr<const scvb::PanCurveLut> held = f.auth.activePanCurveLut();
+    (void)f.auth.processBlock(true, 0.0);
+    for (int n = 0; n < 4096; ++n)
+        (void)f.auth.nextSample(); // 走完「从 G≡0 到这张表」的淡入窗口:此后确认值只看本块那份
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+    (void)f.auth.processBlock(true, 0.0); // 音频线程此刻持有这份(本块快照 + 本块 LUT 裸指针)
+    REQUIRE(f.auth.arbiter().panCurveLut() != nullptr);
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0); // 窗口关着 ⇒ 下面钉的是「本块那份」,不是旧表那份
+
+    // 消息线程连发 20 份新表,音频线程一块都没跑:它的确认值还停在「手上那份」。
+    // authority 自己对 -3 dB 那张表的引用在第一次换表时就没了,之后它只靠快照活着。
+    for (int i = 0; i < 20; ++i)
+        f.auth.setPanCurve(1, bellAt0(-4.0f - static_cast<float>(i)));
+
+    // 判据是「严格小于」确认值才放;写成小于等于,手上这份就被放了,下面那次解引用即悬垂。
+    CHECK_FALSE(held.expired());
+    if (!held.expired()) // 注入态下这里已悬垂:只在判据成立时才去读,不让测试自己踩 UAF
+        CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-3.0f).margin(0.03));
+
+    // 对照(活性):音频线程跑过一块、窗口走完,再发一份 ⇒ 这份就该放了。
+    // 少了这一格,一个「永远什么都不放」的实现也能让上面两条全绿。
+    (void)f.auth.processBlock(true, 0.0);
+    for (int n = 0; n < 4096; ++n)
+        (void)f.auth.nextSample();
+    (void)f.auth.processBlock(true, 0.0);
+    f.auth.setPanCurve(1, bellAt0(-30.0f));
+    CHECK(held.expired());
+}
+
+TEST_CASE("AUTH-PARAMS-13 换表淡入窗口开着时,旧表那份快照不放", "[authority][params][pancurve][xfade][sl445]")
+{
+    AuthorityParamsFixture f;
+    const auto flat = constCurve(0.0, 0.0);
+
+    f.auth.setPanCurve(1, bellAt0(0.0f));
+    std::weak_ptr<const scvb::PanCurveLut> oldLut = f.auth.activePanCurveLut();
+    (void)f.auth.processBlock(true, 0.0);
+    for (int n = 0; n < 4096; ++n)
+        (void)f.auth.nextSample(); // 「从 G≡0 到第一张表」的窗口走完
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+
+    // 换表 ⇒ 开窗,旧表 = oldLut(音频线程跨块持有它的裸指针)。
+    f.auth.setPanCurve(1, bellAt0(-12.0f));
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() > 0);
+
+    // 窗口内再发几份**不换表**的快照(段编辑形态:setCurve 走 rebindSources,LUT 指针不变,
+    // 所以窗口不会重开),并让音频线程每份都跑一块 —— 确认值若只看「本块那份」,就会
+    // 一路推过持有旧表的那份,把它放掉。
+    for (int i = 0; i < 4; ++i)
+    {
+        f.auth.setCurve(1, 0, &flat);
+        (void)f.auth.processBlock(true, 0.0);
+        for (int n = 0; n < 64; ++n)
+            (void)f.auth.nextSample();
+    }
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() > 0); // 窗口确实还开着,本格前提成立
+    CHECK_FALSE(oldLut.expired());
+    const auto x = f.auth.arbiter().panCurveXfade();
+    CHECK(x.previous != nullptr);
+    // 旧表仍可读且内容没变(0 dB 那张)。注入态下它已悬垂,只在判据成立时才读。
+    if (!oldLut.expired() && x.previous != nullptr)
+        CHECK(x.previous->gainDb(0.0f) == Approx(0.0f).margin(0.03));
+
+    // 活性对照:窗口关上后下一块把确认值推过去,再发一份 ⇒ 旧表那份放掉。
+    for (int n = 0; n < 4096; ++n)
+        (void)f.auth.nextSample();
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+    (void)f.auth.processBlock(true, 0.0);
+    f.auth.setCurve(1, 0, &flat);
+    CHECK(oldLut.expired());
+}
+
+TEST_CASE("AUTH-PARAMS-14 压力:消息线程连发、音频线程并发读,读到的表始终完整且池有上界",
+          "[authority][params][pancurve][xfade][sl445]")
+{
+    // 真双线程。它能证明的是「没崩、读到的值始终在合法集合里、池不涨」;
+    // ⚠ 它**证明不了**「时序绝无 use-after-free」:Release 下被放掉的 128 KiB 块多半立刻被下一张
+    //   表复用,内容仍是一张合法的表,读不出异常。时序正确性由 AUTH-PARAMS-12/13 两格确定性地钉。
+    AuthorityParamsFixture f;
+    f.auth.setPanCurve(1, bellAt0(-1.0f));
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> badReads{0};
+    std::atomic<long> blocks{0};
+    std::thread audio([&] {
+        while (!stop.load(std::memory_order_acquire))
+        {
+            (void)f.auth.processBlock(true, 0.0);
+            for (int n = 0; n < 32; ++n)
+            {
+                (void)f.auth.nextSample();
+                // 所有提交过的表在 P=0 处都在 [-12, -1] dB;淡入是两张合法表的凸组合,仍在区间内。
+                const float g = scvb::panCurveGainDb(f.auth.arbiter().panCurveXfade(), 0.0f);
+                if (!std::isfinite(g) || g > -0.9f || g < -12.1f)
+                    badReads.fetch_add(1, std::memory_order_relaxed);
+            }
+            blocks.fetch_add(1, std::memory_order_release);
+        }
+    });
+
+    std::size_t maxPool = 0;
+    for (int i = 0; i < 400; ++i)
+    {
+        f.auth.setPanCurve(1, bellAt0(-1.0f - static_cast<float>(i % 12)));
+        maxPool = std::max(maxPool, f.auth.snapshotPoolSize());
+    }
+    // 让音频线程再跑 128 块(每块 32 样本,共 4096 > 30 ms 淡入窗口 1440):最后一次换表的窗口
+    // 必已关上,确认值推到最后一份 pan 快照;再发一份触发回收 ⇒ 池只剩那份 + 刚发的。
+    const long seen = blocks.load(std::memory_order_acquire);
+    while (blocks.load(std::memory_order_acquire) < seen + 128)
+        std::this_thread::yield();
+    f.auth.setCurve(1, 0, nullptr);
+    stop.store(true, std::memory_order_release);
+    audio.join();
+
+    CHECK(badReads.load() == 0);
+    CHECK(blocks.load() > 0);
+    // 上界取宽:音频线程可能被调度器饿住一阵,期间的发布照积;但绝不会接近「400 份全留」。
+    CHECK(maxPool < 200);
+    CHECK(f.auth.snapshotPoolSize() <= 2);
 }
