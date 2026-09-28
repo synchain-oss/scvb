@@ -654,6 +654,8 @@ tour = createTour({
     card,
     bridge,
     getT: () => dictNow,
+    // 导览的 demo 仓只从真快照取 `version`(设置页 / 页脚的版本号),其余照旧全是 demo。
+    getRealSnapshot: () => store.snapshot,
     activateTab,
     getActiveTab: () => content.getAttribute("data-tab"),
     requestRender: () => requestRender(),

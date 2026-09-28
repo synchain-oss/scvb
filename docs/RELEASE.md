@@ -12,7 +12,7 @@
 
 SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。运行时经 JUCE 的 `ProjectInfo::versionString` / `JucePlugin_VersionString` 读出。
 
-**铁律:除真源外,任何地方都不得硬编码版本号** —— README、docs、UI HTML、脚本、workflow 一律不写死。README 里的版本靠 badge 动态显示(shields.io 读 GitHub Release)。
+**铁律:除真源外,任何地方都不得硬编码版本号** —— README、docs、UI HTML、脚本、workflow 一律不写死。README 里的版本靠 badge 动态显示(shields.io 读 GitHub Release,带 `include_prereleases`,所以 rc 发布后显示的是 rc 的版本号;徽章链到 Releases 列表页而不是 `releases/latest`,后者只认正式版)。
 
 下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag;官网下载页上线后再加上它的常量。
 
@@ -69,28 +69,27 @@ semver 语义(音频插件特化):
 
 0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `scripts/package.ps1` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
-2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。
+2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。新的对比链接指向第 6 步才推的 tag,推之前 GitHub 回 404,CI 的死链检查会红 —— 同一个 PR 在 `.markdown-link-check.json` 里给这两个确切地址加一条临时放行,tag 推上去之后删掉。
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:先按下方「`stage` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `stage` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
-## `stage` 与 `prod` 两个分支(J163)
+## `staging` 与 `prod` 两个分支(J163 / J163a)
 
 | 分支 | 指向 | 什么时候前移 |
 |---|---|---|
-| `stage` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算) |
+| `staging` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算) |
 | `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 一律不动 `prod` |
 
-- rc 发布后:`git push origin vX.Y.Z-rc.N^{commit}:refs/heads/stage`
-- 正式版发布后,两条都推:`git push origin vX.Y.Z^{commit}:refs/heads/stage`,然后 `git push origin vX.Y.Z^{commit}:refs/heads/prod`
+- rc 发布后:`git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging`
+- 正式版发布后,两条都推:`git push origin vX.Y.Z^{commit}:refs/heads/staging`,然后 `git push origin vX.Y.Z^{commit}:refs/heads/prod`
 - 都**不加 `--force`**:推不上说明目标分支不是这次 tag 的祖先,先查清再动。
 - 前移发生在「点了发布」之后,不在推 tag 时:tag 推上去只建草稿,草稿不算已发布。演练 tag(`v0.0.0-test*`)从不发布,两个分支都不动。
-- **`stage` 分支现在还不存在**,首个 rc(`v0.9.0-rc.1`)发布后由上面那条 rc 命令创建。
-- `prod` 截至 2026-09-28 仍停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表),它是之后所有提交的祖先,所以首个正式版那次前移同样是快进。
+- 预发布分支用仓库里**已有的** `staging`,不另建新分支(J163a)。`staging` 与 `prod` 截至 2026-09-28 都停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表);它是之后所有提交的祖先,所以首个 rc(`v0.9.0-rc.1`)那次前移 `staging`、首个正式版那次前移 `prod`,都是快进。
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
 

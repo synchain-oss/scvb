@@ -41,7 +41,7 @@ git rebase --signoff      # 一段区间
 
 ## 3. 分支模型
 
-默认主干是 `dev`(研发分支);`prod` 是稳定正式版分支,只由维护者在发正式版时前移,插件里的文档链接固定指向它(J149,见 [docs/RELEASE.md](docs/RELEASE.md));**没有 stage 分支**。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
+默认主干是 `dev`(研发分支);`prod` 是稳定正式版分支,只由维护者在发正式版时前移,插件里的文档链接固定指向它(J149,见 [docs/RELEASE.md](docs/RELEASE.md));`staging` 跟最新一个已发布版本(含预发布 rc),同样只由维护者在发布之后前移(J163 / J163a)。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
 
 - **内部贡献者**:从 `feature/v1` 开 `feat/<TASK-ID>-<slug>` 子支线,PR 回 `feature/v1`。一张卡一条子支线一个 PR。same-repo 提到 `dev` 的 PR 只接受 `feat/*` / `feature/*`(外加 `dependabot/*`)。
 - **外部贡献者(J31 / J41)**:fork 本仓 → 用**任意分支名**(请不要用 `dev` / `stage` / `prod` / `feature/v1` / `feature/extraction`)→ PR 到 `dev`。

@@ -6,8 +6,8 @@
   06 §3.8 六条硬要求在本脚本里的落点(按条号):
     ① 文件名由版本号算出(-Version,缺省读 CMakeLists.txt 的 project(SCVB VERSION x.y.z)),不写字面量。
     ② 按目录枚举 *.vst3 bundle,断言**恰好 3 个**且名字恰好是 SCVB Input / Output / Monitor
-       (06 原文写两个,[J75] T45 加了 Monitor;发布是否带 Monitor 仍待用户拍板,本脚本按「带」实现,
-       Monitor 在 INSTALL.txt 里标为可选)。打包保住 `<name>.vst3/Contents/...` 层级。
+       (06 原文写两个,[J75] T45 加了 Monitor;[J137] 定为三个 bundle 同一个 zip 发布,Monitor 是
+       可选安装,INSTALL.txt 里标为可选)。打包保住 `<name>.vst3/Contents/...` 层级。
     ③ .sha256 为独立文件(sha256sum 格式,`sha256sum -c` 可直接校验);package-summary.md 含
        version / zipFileName / sizeBytes / sha256 / releaseDate。
     ④ 生成 INSTALL.txt:安装路径、九条使用规则的前 3 条(从用户手册的生成区原样取,不在这里抄第二份)、

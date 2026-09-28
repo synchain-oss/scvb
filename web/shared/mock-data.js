@@ -369,8 +369,9 @@ const DEFAULT_SESSION_GUID = "5c0b7d2e-3a41-4f88-9b6a-1d2e3f405162";
 
 /** 插件版本号的 mock 固定值,**不跟随真源**(真源 = 顶层 CMakeLists.txt 的 project(SCVB VERSION);
  *  真插件的版本号由 native 下发 `JucePlugin_VersionString`)。
- *  ⚠ 它不只出现在 web-preview:导览 demo 快照(`makeTourDemoSnapshot`)也带着它,导览走到设置页时
- *  版本行显示的就是这个值,与真插件的版本号不同。 */
+ *  导览 demo 快照(`makeTourDemoSnapshot`)也带着它,但导览渲染用的 demo 仓(`web/output/tour.js` 的
+ *  `buildDemoStore`)会丢掉这一份、改用真快照的 `version` —— 所以真插件的导览里不会出现它;预览里
+ *  导览显示它,是因为预览的真快照本身就来自 mock。 */
 const PLUGIN_VERSION = "0.1.0";
 
 /** 段布局 abi(契约 §1.1:version.abi = ipc 段布局 abi,`RegistryHeader.abi` 同源)。 */

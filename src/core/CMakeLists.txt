@@ -108,6 +108,13 @@ endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# 核心库版本串(scvb::coreVersion())取自顶层 project(SCVB VERSION ...),源码里不写字面量。
+# 用 SCVB_VERSION(由 project(SCVB ...) 设定)而不是 PROJECT_VERSION:后者指「最近一次 project()
+# 调用」,名字上不绑定本项目。
+# PRIVATE:只有 ScvbCore.cpp 读它,不把宏带进链接 scvb_core 的其他目标。
+# 对拍在 tests/core/test_smoke.cpp:它直接读顶层 CMakeLists.txt 的那一行,不经这个定义。
+target_compile_definitions(scvb_core PRIVATE SCVB_VERSION_STRING="${SCVB_VERSION}")
+
 # T21:miniz(vendored,third_party/miniz;zlib 兼容,gzip 用,ADR-011 零新依赖)。
 # 第三方源码按 C++ 编译并关警告(不污染 /W4 零 warning 门禁);miniz.h 仅由 FeaturesCodec.cpp 内部包含。
 target_include_directories(scvb_core PRIVATE ${CMAKE_SOURCE_DIR}/third_party/miniz)
