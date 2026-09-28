@@ -175,7 +175,7 @@ private:
     void pushFpReport(u64 value) noexcept;
 
     std::atomic<const FeatRingBinding*> binding_{nullptr}; // 消息线程写 / 音频线程读
-    std::vector<std::unique_ptr<FeatRingBinding>> owned_; // 旧绑定保活(进程寿命,T16 同款)
+    std::vector<std::unique_ptr<FeatRingBinding>> owned_; // 旧绑定保活(进程寿命;T16 已改回收,SL-445)
     // 注意:指针发布协议(不可变快照 = 从不原地替换),但指向对象本身由音频线程独占演化
     // (extractor 滤波态 / pendingSkip / nextHop);消息线程只整体替换指针、绝不触碰旧对象字段。
     std::atomic<FeatRunState*> state_{nullptr}; // 消息线程写 / 音频线程读写(经快照)

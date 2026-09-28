@@ -1172,6 +1172,296 @@ try {
         );
         assertClean("scenario=stale(SL-373 ✕)");
     }
+
+    // =========================================================================
+    // [J125] ⑧ toast③「已重采集 X.Xs,建议重分析该范围」+「立即重分析」。
+    //
+    // 为什么页面级:这条链是「§2.1 撤防那一跳 + §2.6 播放头累计 → 会话态 → 下一帧
+    // renderBanners 显隐 + 填秒数 → 钮点下去走 §1.6 analyze」。node 侧那套
+    // (smoke-recapture-toast.mjs)只证明记账会算,证明不了事件真被喂进去、秒数真进了 DOM、
+    // 钮真调到了桥。
+    //
+    // 夹具:布防 / 撤防走 mock 的**契约函数本身**(`__SCVB_PREVIEW__.mock.recaptureArm`,
+    // 与页面点开关调的是同一个函数,state 回推照真桥时序异步到达);走带走壳页的
+    // `ctl.setTransport`(driver 按 30Hz 推 §2.6)。期望秒数 = driver 自己的播放头
+    // 从起播到停播走过的时长 —— 与页面读的是同一串 timeS,容差只留一位小数的舍入。
+    //
+    // 删除式(每条都在本节红):
+    //   · app.js 里删掉 `trackRecapDone();` 那一行 ⇒ ⑧b「toast 出现」红;
+    //   · renderBanners 里删掉 `fill($("toast-recaptured-text"), …)` ⇒ ⑧b 秒数那一格红
+    //     (文案停在带 {s} 的原串上);
+    //   · 「立即重分析」handler 里删掉 `tabWave.reanalyzeRange(...)` ⇒ ⑧c 调用数红;
+    //   · ✕ 的 handler 里删掉 `store.session.recapDone = null;` ⇒ ⑧d「✕ 收起」红。
+    log(
+        "=== ⑧ [J125] toast③:撤防后弹出、秒数对、立即重分析调 analyze、✕ 收起 ===",
+    );
+    {
+        await open("connected");
+        await evaluate(
+            IN(`for (const n of ["guide-overlay-start", "tour-ask-later"]) {
+                    const b = gb(n);
+                    if (b && !b.disabled) b.click();
+                }
+                return true;`),
+        );
+        // 本节的「布防态到了页面」看 Tab3 的布防行,而 app.js 只投影**当前激活**的 tab ——
+        // 所以全程要停在 Tab3(open() 已切过去;⑧c 的「立即重分析」也会切回来)。先断一次,
+        // 以后谁在前面插了切 tab,红在这一格而不是「布防态没到」。
+        const onWave = IN(
+            `const c = d.getElementById("content"); return !!c && c.getAttribute("data-tab") === "wave";`,
+        );
+        check(
+            await evaluate(onWave),
+            "⑧ 前置:停在波形页(布防行只在 Tab3 前台刷新)",
+        );
+        const MASK = (1 << 2) | (1 << 3); // 轨 3、4
+        const toastShown = IN(
+            `const n = gb("toast-recaptured"); return !!n && !n.hidden;`,
+        );
+        const toastHidden = IN(
+            `const n = gb("toast-recaptured"); return !!n && n.hidden;`,
+        );
+        const toastText = IN(
+            `const n = gb("toast-recaptured-text"); return n ? n.textContent.trim() : null;`,
+        );
+        // 「布防态到了页面」看的是**布防行** `wave-recapture-row`,不是行里那枚 badge:
+        // badge 本体从不挂 hidden(显隐在外层行上),拿它当信号恒真 —— 第一版就这么写,
+        // 结果起播抢在布防回推之前,⑧c 的起点差了两帧才被照出来。
+        const badgeShown = IN(
+            `const n = gb("wave-recapture-row"); return !!n && !n.hidden;`,
+        );
+        const badgeHidden = IN(
+            `const n = gb("wave-recapture-row"); return !!n && n.hidden;`,
+        );
+        const shell = (body) =>
+            evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.mock) return null;
+                ${body}
+            })()`);
+        const transportT = () => shell(`return s.ctl.model.transport.timeS;`);
+        const setPlaying = (on) =>
+            shell(
+                `s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} }); return true;`,
+            );
+        const arm = () =>
+            shell(`return s.mock.recaptureArm(${MASK}, 0, 290, false);`);
+        const disarm = () => shell(`return s.mock.recaptureArm(0, 0, 0);`);
+        // 播 ≥ secs 秒(按 driver 自己的播放头量,不按墙钟),停下,返回 [t0, t1]。
+        const playFor = async (secs) => {
+            await setPlaying(false);
+            await sleep(200); // 让停走帧先落到页面:起播前一帧必须是停着的那一帧
+            const t0 = await transportT();
+            await setPlaying(true);
+            check(
+                await waitFor(
+                    `(() => { const s = window.__SCVB_PREVIEW__;
+                        return s.ctl.model.transport.timeS >= ${t0} + ${secs}; })()`,
+                    Math.max(8000, secs * 4000),
+                ),
+                `⑧ 走带真的走了 ${secs}s(driver 播放头)`,
+            );
+            await setPlaying(false);
+            await sleep(300); // 停播那一拍的 §2.6 落到页面
+            const t1 = await transportT();
+            return [t0, t1];
+        };
+
+        check(
+            (await shell(
+                `return typeof s.mock.recaptureArm === "function";`,
+            )) === true,
+            "⑧ 前置:壳页预览会话可用(__SCVB_PREVIEW__.mock.recaptureArm)",
+        );
+        check(await evaluate(toastHidden), "⑧ 前置:初始 toast③ 收起");
+
+        // ---- ⑧a 布防后没播就撤防 ⇒ 不弹(0.0s 没有信息量)
+        await setPlaying(false);
+        const a0 = await arm();
+        check(
+            a0 && a0.armed === true,
+            `⑧a 布防受理(实得 ${JSON.stringify(a0)})`,
+        );
+        check(
+            await waitFor(badgeShown, 3000),
+            "⑧a 布防态到了页面(Tab3 布防行亮)",
+        );
+        await disarm();
+        // 布防行与 toast 在同一次 render() 里投影(renderBanners 在 tab render 之前),
+        // 布防行熄了 = 撤防那一帧已经渲染过,不再另等。
+        check(await waitFor(badgeHidden, 3000), "⑧a 撤防态到了页面(布防行熄)");
+        check(await evaluate(toastHidden), "⑧a 没播过 ⇒ 撤防后 toast 仍收起");
+
+        // ---- ⑧b 布防 → 播 ~1.5s → 停 → 撤防 ⇒ toast 出现,秒数 = 播放头走过的时长
+        await arm();
+        check(await waitFor(badgeShown, 3000), "⑧b 布防态到了页面");
+        const [t0, t1] = await playFor(1.5);
+        const want = t1 - t0;
+        check(
+            want > 1 && want < 60,
+            `⑧b 前置:播放头从 ${t0} 走到 ${t1}(没绕回片头,否则期望值不成立)`,
+        );
+        check(
+            await evaluate(toastHidden),
+            "⑧b 布防还在 ⇒ toast 还不出(信号是撤防那一跳)",
+        );
+        await disarm();
+        check(await waitFor(toastShown, 3000), "⑧b 撤防后 toast③ 出现");
+        const txt = (await evaluate(toastText)) || "";
+        const m = /(\d+\.\d)\s*s/.exec(txt);
+        check(
+            !!m && !txt.includes("{s}"),
+            `⑧b 文案填了秒数、没有裸占位符(实得「${txt}」)`,
+        );
+        if (m) {
+            check(
+                Math.abs(Number(m[1]) - want) <= 0.15,
+                `⑧b 秒数 ${m[1]} ≈ 播放头走过的 ${want.toFixed(3)}s(容差 0.15:一位小数舍入)`,
+            );
+        }
+        check(
+            /已重采集/.test(txt) && /建议重分析该范围/.test(txt),
+            `⑧b 中文文案取自 05 §2.0(实得「${txt}」)`,
+        );
+        // 切语言后秒数照填(applyI18n 先写整串,render 再填 —— 少了后一步就是裸 {s})
+        const byLang = {};
+        for (const lang of ["en", "fr", "zh"]) {
+            await evaluate(
+                IN(
+                    `const b = gb("header-lang-${lang}"); if (b) b.click(); return true;`,
+                ),
+            );
+            // setLang → refreshI18n → render 同一 tick 同步完成,{s} 当拍就回填,不用等。
+            byLang[lang] = (await evaluate(toastText)) || "";
+            check(
+                !!m &&
+                    byLang[lang].includes(m[1]) &&
+                    !byLang[lang].includes("{s}"),
+                `⑧b ${lang}:秒数照填(实得「${byLang[lang]}」)`,
+            );
+        }
+        check(
+            byLang.zh !== byLang.en &&
+                byLang.en !== byLang.fr &&
+                byLang.zh !== byLang.fr,
+            "⑧b 三语文案两两不同(没有整块回退到另一语)",
+        );
+
+        // ---- ⑧e 真上屏:有布局盒,且整块落在卡片里(不是只挂没挂 hidden)。
+        //   ← 去掉 index.html 里 `#toast-region .sc-toast { position: relative; }`
+        //     ⇒ toast 以 region 的零尺寸原点往右下长、出卡片,本格红。
+        const geo = await evaluate(
+            IN(`const t = gb("toast-recaptured");
+                const c = d.getElementById("card");
+                const g = gb("toast-recaptured-goto");
+                if (!t || !c || !g) return null;
+                const r = t.getBoundingClientRect();
+                const k = c.getBoundingClientRect();
+                const b = g.getBoundingClientRect();
+                return {
+                    boxes: t.getClientRects().length,
+                    inside: r.left >= k.left - 0.5 && r.right <= k.right + 0.5 &&
+                        r.top >= k.top - 0.5 && r.bottom <= k.bottom + 0.5,
+                    btnInside: b.left >= r.left && b.right <= r.right &&
+                        b.top >= r.top && b.bottom <= r.bottom,
+                    r: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
+                    k: [Math.round(k.left), Math.round(k.top), Math.round(k.right), Math.round(k.bottom)],
+                };`),
+        );
+        check(
+            !!geo && geo.boxes > 0 && geo.inside && geo.btnInside,
+            `⑧e toast 有布局盒、整块在卡片内、钮在 toast 内(实得 ${JSON.stringify(geo)})`,
+        );
+
+        // ---- ⑧f 只读观察态(第二个 Output)不显:那边「立即重分析」会被写闸挡回,是死钮。
+        //   ← 把 renderBanners 里 `!!done && !vs.readOnly` 改回 `!!done` ⇒ 本格红。
+        const pushSecond = (active) =>
+            shell(`const err = { code: "secondOutput", active: ${active ? "true" : "false"} };
+                s.ctl.emit("scvb.error", err); return true;`);
+        await pushSecond(true);
+        check(
+            await waitFor(toastHidden, 3000),
+            "⑧f 只读观察态 ⇒ toast 收起(钮点了不会有反应,不给)",
+        );
+        await pushSecond(false);
+        check(
+            await waitFor(toastShown, 3000),
+            "⑧f 只读位撤掉 ⇒ toast 回来(记账没丢)",
+        );
+
+        // ---- ⑧c 「立即重分析」⇒ 跳 Tab3 + 调一次 §1.6 analyze,范围 = 刚重采的那一块
+        await shell(`
+            const calls = [];
+            const orig = s.mock.analyze;
+            window.__toast3Calls = calls;
+            s.mock.analyze = function (...a) {
+                calls.push(JSON.parse(JSON.stringify(a)));
+                return orig.apply(this, a);
+            };
+            return true;`);
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        await sleep(200);
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("toast-recaptured-goto"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑧c 点「立即重分析」",
+        );
+        check(await waitFor(toastHidden, 3000), "⑧c 点完 toast 收起");
+        check(
+            await waitFor(
+                IN(
+                    `const c = d.getElementById("content"); return !!c && c.getAttribute("data-tab") === "wave";`,
+                ),
+                3000,
+            ),
+            "⑧c 跳到了波形页(05 §2.0「一键跳 §2.3 重分析」)",
+        );
+        await sleep(300);
+        const calls = (await evaluate(`window.__toast3Calls || null`)) || [];
+        check(
+            calls.length === 1,
+            `⑧c analyze 恰好调了一次(实得 ${calls.length} 次)`,
+        );
+        const sc = calls[0] && calls[0][0];
+        check(
+            !!sc &&
+                sc.tracksMask === MASK &&
+                Math.abs(sc.startS - t0) <= 0.02 &&
+                Math.abs(sc.endS - t1) <= 0.02,
+            `⑧c scope = {轨 3/4, ${t0}–${t1}}(实得 ${JSON.stringify(sc)})`,
+        );
+
+        // ---- ⑧d 再来一次,这次点 ✕ ⇒ 收起,且不调 analyze
+        await arm();
+        check(await waitFor(badgeShown, 3000), "⑧d 布防态到了页面");
+        await playFor(0.5);
+        await disarm();
+        check(
+            await waitFor(toastShown, 3000),
+            "⑧d 第二次撤防后 toast 再次出现",
+        );
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("toast-recaptured-close"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑧d 点 ✕",
+        );
+        check(await waitFor(toastHidden, 3000), "⑧d ✕ 之后 toast 收起");
+        await sleep(300);
+        check(
+            ((await evaluate(`window.__toast3Calls || null`)) || []).length ===
+                1,
+            "⑧d ✕ 不触发 analyze(调用数仍是 1)",
+        );
+        assertClean("scenario=connected(J125 toast③)");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
