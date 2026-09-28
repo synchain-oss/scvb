@@ -11,7 +11,8 @@
 // 跑什么(每格:拖到 X ⇒ 先确认乐观值已上屏,再松手 ⇒ 必须回到基线值):
 //   ① 默认场景,回执拒绝的五类:ringFull(对照,旧代码也回滚)/ outputOffline / unassigned /
 //      busy / 回执 null(mock 抛错,app.js 的 call() 吞掉返回 null);
-//   ② 旧请求被拒时用户已经又拖到了新值 ⇒ 不得把正在拖的值打回去(rollbackPriority 的守卫);
+//   ② 旧请求被拒时用户已经又拖到了新值 ⇒ 不得把正在拖的值打回去(rollbackPriority 的值守卫);
+//   ②b 同一个值松手两次,第一次被拒 ⇒ 不得清掉第二次还在路上的值(rollbackPriority 的序号守卫);
 //   ③ 成功对照:用 mock 原实现({queued:true} + 120ms 后 scvb.config 回执)⇒ 停在新值;
 //   ④ 闸门早退两类:?scenario=no-output(offline)、?fixture=empty(unassigned)——
 //      并断 remoteSetPriority 一次都没被调;
@@ -20,7 +21,8 @@
 // 删除式(未提交,人工核过,见 PR 描述):
 //   · 把回执判断改回只认 ringFull ⇒ ① 除 ringFull 外四格红;
 //   · 删掉闸门分支里的 rollbackPriority(next) ⇒ ④ 两格红;
-//   · 删掉 rollbackPriority 里的守卫 ⇒ ② 红。
+//   · 删掉 rollbackPriority 里「值仍是这次送出的」那条 ⇒ ② 红;
+//   · 删掉 rollbackPriority 里「seq 是最新一次」那条 ⇒ ②b 红。
 //
 // 用法:node web-preview/tests/smoke-input-priority-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -477,6 +479,10 @@ try {
         ),
         "① 滑杆可用(已分配 + Output 在线)",
     );
+    // 首帧 conn 与 config 是两个事件:滑杆放行只说明 conn 到了。config 若晚一步到,
+    // 它会在第一格拖动之后把乐观值清掉(scvb.config 回执让位),前提断言偶发红 ——
+    // 删除式实跑里撞到过两次。等一小段让首帧全部落地再读基线。
+    await sleep(800);
     const base1 = await readVal();
     check(Number.isInteger(base1), `① 读到基线值(实得 ${base1})`);
     const x1 = base1 === 7 ? 3 : 7;
@@ -522,6 +528,7 @@ try {
         ),
         "② 放行第一次请求的拒绝回执",
     );
+    // 这里断言的是「某件事没有发生」(没被回滚),没法轮询到一个终态,只能固定等一段。
     await sleep(400);
     eq(await readVal(), y1, "② 旧请求被拒不回滚正在拖的新值");
     // 收尾:y 也被拒 ⇒ 回到基线,给③一个干净起点。
@@ -532,6 +539,42 @@ try {
     check(await release(), "② 收尾松手");
     check(await waitFor(valIs(base1), 3000), "② 收尾:回到基线");
     assertClean("② 守卫");
+
+    // =========================================================================
+    log("=== ②b 同值两次松手:第一次被拒不得清掉第二次还在路上的值 ===");
+    // 拖到 X 松手(挂起)→ 拖走再拖回 X 松手(挂起)→ 放行第一次的拒绝:值必须仍是 X。
+    // 只按「值相等」判断的回滚分辨不出这是哪一次松手,会在这里提前退回基线。
+    check(
+        await mockPriority(
+            `return new Promise((ok) => { (w.__prioQ = w.__prioQ || []).push(ok); });`,
+        ),
+        "②b mock 已替换为排队挂起回执",
+    );
+    await evaluate(IN(`w.__prioQ = []; return true;`));
+    check(await drag(x1), "②b 拖到 x");
+    check(await waitFor(valIs(x1), 3000), "②b 乐观值 x 已上屏");
+    check(await release(), "②b 第一次松手(挂起)");
+    check(await drag(y1), "②b 拖走到 y");
+    check(await waitFor(valIs(y1), 3000), "②b 乐观值 y 已上屏");
+    check(await drag(x1), "②b 拖回 x");
+    check(await waitFor(valIs(x1), 3000), "②b 乐观值 x 再次上屏");
+    check(await release(), "②b 第二次松手(挂起)");
+    check(
+        await waitFor(IN(`return (w.__prioQ || []).length === 2;`), 3000),
+        "②b 两次请求都已发出",
+    );
+    await evaluate(
+        IN(`w.__prioQ[0]({ queued: false, reason: "busy" }); return true;`),
+    );
+    // 这里断言的是「某件事没有发生」(没被回滚),没法轮询到一个终态,只能固定等一段。
+    await sleep(400);
+    eq(await readVal(), x1, "②b 第一次被拒不清掉第二次的乐观值");
+    // 收尾:第二次也被拒 ⇒ 回到基线。
+    await evaluate(
+        IN(`w.__prioQ[1]({ queued: false, reason: "busy" }); return true;`),
+    );
+    check(await waitFor(valIs(base1), 3000), "②b 收尾:第二次被拒后回到基线");
+    assertClean("②b 序号");
 
     // =========================================================================
     log("=== ③ 成功对照:{queued:true} 不回滚,停在新值 ===");
@@ -546,8 +589,23 @@ try {
     );
     check(await drag(x1), "③ 拖到 x");
     check(await waitFor(valIs(x1), 3000), "③ 乐观值 x 已上屏");
+    // 松手前在 mock 上挂 scvb.config 监听:等回执真的到了(priority === x)再断言,
+    // 不把判据钉在 mock 的回声延迟上。
+    check(
+        await evaluate(
+            IN(`w.__cfgPrio = null;
+                w.__SCVB_MOCK__.addEventListener("scvb.config", (c) => {
+                    if (c && Number.isFinite(c.priority)) w.__cfgPrio = c.priority;
+                });
+                return true;`),
+        ),
+        "③ 挂好 scvb.config 监听",
+    );
     check(await release(), "③ 松手");
-    await sleep(600); // mock 120ms 后回 scvb.config;多等一段确认没被回滚打回
+    check(
+        await waitFor(IN(`return w.__cfgPrio === ${x1};`), 6000),
+        "③ scvb.config 回执已到(priority = x)",
+    );
     eq(await readVal(), x1, "③ 送达后停在新值(不被回滚)");
     assertClean("③ 成功对照");
 
@@ -566,6 +624,7 @@ try {
             ),
             `④ ${name}:滑杆已被闸门禁用(前提)`,
         );
+        await sleep(800); // 同 ① 读基线前的等待
         const b = await readVal();
         check(Number.isInteger(b), `④ ${name}:读到基线值(实得 ${b})`);
         check(

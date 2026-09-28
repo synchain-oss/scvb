@@ -1102,7 +1102,8 @@ TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不�
     // ① 存档记工程组号,不是回退组。
     CHECK(savedGroup() == kProjectGroup);
 
-    // ② 用户在界面上明确点了当前(回退)组:寻址 no-op,但存档要改成这一组。
+    // ② 桥调用 setGroupId(当前回退组):寻址 no-op,但存档要改成这一组。只覆盖 native/桥入口 ——
+    // Input 页面的组胶囊对当前组直接早退、不调桥,用户在界面上走不到这一格。
     victim.setGroupId(kTestGroup);
     CHECK(victim.bridgeTickSnapshot().groupId == kTestGroup);
     CHECK(savedGroup() == kTestGroup);

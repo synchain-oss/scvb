@@ -661,8 +661,9 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     const juce::ScopedLock lock(lifecycleMutex_);
     if (groupId == groupId_)
     {
-        // [SL-458] 寻址上是 no-op,但用户主动选了这一组:载入回退后 savedGroupId_ 可能还是工程
-        // 原值,用户明确选当前组就该以它为准。
+        // [SL-458] 寻址上是 no-op,但调用方明确要这一组:载入回退后 savedGroupId_ 可能还是工程
+        // 原值,以这次调用为准。⚠ Input 页面的组胶囊对当前组直接早退、不调桥(web/input/app.js
+        // 组胶囊 click 处理),所以今天用户在界面上走不到这里;回退后要让存档跟上,得改到别的组。
         savedGroupId_ = groupId;
         return session_.state(); // 同组 no-op(§3.3:{ok:true})
     }
