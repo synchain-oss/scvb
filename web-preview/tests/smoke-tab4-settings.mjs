@@ -232,6 +232,38 @@ log("=== ② 纯函数 ===");
         ).startsWith("CH HB MIS GEN SEQ\n01 0.04s 0 3 42"),
         "诊断可复制文本以表头 + 行开头",
     );
+
+    // [rc-misc e] 复制出去的诊断信息要带插件版本 / abi / 组号(此前只有五列表格)。
+    eq(
+        TS.diagInfoLine({
+            snapshot: { version: { plugin: "0.9.0", abi: 6 } },
+            state: { group_id: 3 },
+        }),
+        "SCVB Output · v0.9.0 · abi 6 · group C",
+        "诊断首行 = 版本 · abi · 组号",
+    );
+    eq(
+        TS.diagInfoLine({ state: {} }),
+        "SCVB Output · group A",
+        "首帧前拿不到版本:只报组号(缺省组 1 = A)",
+    );
+    eq(
+        TS.diagInfoLine({ state: { group_id: 9 } }),
+        "SCVB Output · group ?9",
+        "组号越界原样写出,不兜成 A(诊断不藏异常值)",
+    );
+    check(
+        TS.diagText([], ["unknown: x"], ["HEAD"]) ===
+            "HEAD\nCH HB MIS GEN SEQ\nunknown: x",
+        "headLines 排在表头之前,extraLines 排在最后",
+    );
+    // 接线:复制按钮真的把首行传进去了(纯函数对、没人调也白搭)。
+    check(
+        /diagText\(rows, unknown, \[diagInfoLine\(getStore\(\)\)\]\)/.test(
+            src("web/output/tab-settings.js"),
+        ),
+        "copyDiag 把 diagInfoLine 作为首行传给 diagText",
+    );
 }
 
 // =============================================================================
