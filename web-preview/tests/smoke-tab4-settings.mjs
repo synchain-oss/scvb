@@ -434,7 +434,13 @@ log("=== ④ 词条:T35 新增 set.* key ===");
         for (const lang of ["zh", "en", "fr"])
             for (const [k, v] of Object.entries(T[lang]))
                 if (/豁免|exempt/i.test(String(v))) hits.push(`${lang}:${k}`);
-        eq(hits, [], "[J130] 词条值零「豁免 / exempt」字样");
+        eq(
+            hits,
+            [],
+            "[J130] 词条值零「豁免 / exempt」字样(音量开关显示层是参与语义,默认全开;" +
+                "写「豁免」会让用户把默认读成「全被豁免」。若命中的词条与音量开关无关," +
+                "把它的 key 显式排除,别删这一格)",
+        );
     }
     //   格 5:用户手册轨道页那一行用同一个叫法(中英两份)。
     check(
@@ -827,6 +833,32 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
                 `[J132] ${name} 不再写「命名空间按侧分 / input.* output.* 分键」`,
             );
         }
+        // 契约里另外两个实现事实也要有尺子(复审补):落盘文件名从 openFile() 现读拼出;
+        // tour 全局位只有一个键。
+        const app = /options\.applicationName\s*=\s*"([^"]+)"/.exec(uds);
+        const suffix = /options\.filenameSuffix\s*=\s*"([^"]+)"/.exec(uds);
+        const fileName = app && suffix ? `${app[1]}.${suffix[1]}` : null;
+        check(
+            fileName !== null,
+            "[J132] 从 UiDefaultsStore.cpp 读到 applicationName / filenameSuffix",
+        );
+        for (const [name, text] of [
+            ["SCVB_CONTRACT", contract],
+            ["STATE_SCHEMA", schema],
+        ])
+            check(
+                fileName !== null && text.includes(`\`${fileName}\``),
+                `[J132] ${name} 写的落盘文件名 = 实现的 ${fileName}`,
+            );
+        eq(
+            uds.match(/"tour_seen_global[^"]*"/g),
+            ['"tour_seen_global"'],
+            "[J132] 实现侧 tour 全局位只有一个键(契约:只有 Output 一个键)",
+        );
+        check(
+            contract.includes("`tour_seen_global` 只有 Output 一个键"),
+            "[J132] SCVB_CONTRACT 写明 tour_seen_global 只有 Output 一个键",
+        );
     }
 
     // B:桥面 conn 必须来自 registry 实况,不得再有 T29 的占位常量。UI 的连接数口径是

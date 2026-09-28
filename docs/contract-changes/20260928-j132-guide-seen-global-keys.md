@@ -65,9 +65,12 @@ SCVB_CONTRACT / STATE_SCHEMA 两份。**留给统筹决定是否另起修宪。*
 
 - `web-preview/tests/smoke-tab4-settings.mjs` ⑥ 节新增一格:实现里确有两个键字面量;
   两份契约都写出 `guide_seen_global_input`,且不再出现旧括注的写法。
-- 删除式:把 ① 或 ② 改回旧文字 ⇒ 该格红;复原 ⇒ 绿(读数见 PR 描述)。
+- 复审补的两格:两份契约写的落盘文件名 = 从 `UiDefaultsStore.cpp` 的 `applicationName` /
+  `filenameSuffix` 现读拼出的名字;实现里 `tour_seen_global*` 只有一个键,且契约写明了这一点。
+- 删除式:把 ① 或 ② 改回旧文字、改契约里的文件名、改实现的文件后缀、给实现加第二个 tour 键、
+  删契约里「只有 Output 一个键」那句 ⇒ 各自那一格红;复原 ⇒ 绿(读数见 PR 描述)。
 
-## 兼容性
+## 兼容性影响
 
 零行为变化:不动任何键名、任何落盘位置、任何首启判据。老用户已勾的「不再显示」不受影响。
 
