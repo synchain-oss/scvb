@@ -664,6 +664,18 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
     publishPlayhead(pos, haveT0, playing);
 
+    // [SL-216 / J136] 记下这一块的 lead_select —— 分析据此知道「这段时间谁是主唱」。
+    // 只在走带播放且时间线有效时记:停住时宿主给的是定位点上的值,不代表那段时间被「经过」过。
+    // 取值口径与 DspArbiter::readLeadSelect 同(截断取整 + 夹到 0..15),听到的与记下的是同一个数。
+    if (playing && haveT0 && t0 >= 0)
+    {
+        const int lead = handles_.rawLeadSelect != nullptr
+                             ? std::clamp(static_cast<int>(handles_.rawLeadSelect->load(std::memory_order_relaxed)), 0,
+                                          scvb::analysis::kLeadMaxValue)
+                             : 0;
+        leadRecorder_.record(t0, t0 + total, lead);
+    }
+
     for (int offset = 0; offset < total; offset += preparedMaxBlock_)
     {
         const int n = juce::jmin(preparedMaxBlock_, total - offset);
@@ -994,6 +1006,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
     reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)
+    leadRecorder_.drainInto(leadTimeline_); // [SL-216] 音频线程记下的 lead_select 块并入时间线
 
     // 时间线健康前置(§4.2 [J51]):连续无时间线 ≥0.5s → 清 mask(Inputs 走 J12 直通)。
     if (timelineValid_.load(std::memory_order_relaxed) == 0)
@@ -1542,6 +1555,29 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
         return;
     }
     chunks.set(scvb::state::kFourccUiConfig, std::move(uicf));
+
+    // [SL-216] LEAD:lead_select 时间线记录。它是分析的**输入**(与 FEAT 同类),不随工程走的话
+    // 重开工程再分析,主唱就从分析里消失了 —— 与重开前那次分析的结果不一致。
+    //   · 读到过更高 minor 的块 → 原样回写那份字节(本构建不认识,不能拿内存里的记录覆盖);
+    //   · 有记录 → 编码写入;没有 → 不写这一块(旧工程与「从没播过」逐字节同形)。
+    if (leadChunkNewer_)
+    {
+        chunks.set(scvb::state::kFourccLead, preservedLeadChunk_);
+    }
+    else
+    {
+        leadRecorder_.drainInto(leadTimeline_);
+        if (leadTimeline_.empty())
+        {
+            chunks.remove(scvb::state::kFourccLead);
+        }
+        else
+        {
+            std::vector<std::uint8_t> lead;
+            scvb::analysis::encodeLeadChunk(leadTimeline_.runs(), lead);
+            chunks.set(scvb::state::kFourccLead, std::move(lead));
+        }
+    }
 
     // CRVS:段真身(版本名/段表/pan_curve)从 live crvsData_ 编码(T29;覆盖 loadedChunks_ 的旧 CRVS)。
     // [SL-524][J122] 例外:上次载入拒收了 CRVS、且 live 表自那以后没变过 ⇒ 原样写回拒收的原始字节,
@@ -2171,6 +2207,40 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     };
 
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+
+    // [SL-216] LEAD(lead_select 时间线记录)。落点与 FEAT 同一条取舍:有 CFGS = 这是一份完整工程
+    // (CFGS 解码失败也算 —— 与上面 readFeaturesChunk 在损坏分支里照样调用同理),记录整份换成本工程的;
+    // 只带 PRMS 的轨道 / 参数预设(cfg == nullptr)不动它 —— 载一个预设不该抹掉这首歌的主唱记录。
+    // 音频线程队列里还没排干的块是**上一份工程**那次播放记下的,先丢掉。
+    if (cfg != nullptr)
+    {
+        (void)leadRecorder_.discard();
+        leadTimeline_.clear();
+        leadChunkNewer_ = false;
+        preservedLeadChunk_.clear();
+        if (const scvb::state::Chunk* lead = chunks.find(scvb::state::kFourccLead); lead != nullptr)
+        {
+            std::vector<scvb::analysis::LeadRun> runs;
+            const auto st = scvb::analysis::decodeLeadChunk(lead->payload.data(), lead->payload.size(), runs);
+            if (st == scvb::analysis::LeadDecodeStatus::Ok)
+            {
+                leadTimeline_.assign(runs);
+            }
+            else if (st == scvb::analysis::LeadDecodeStatus::NewerMinor)
+            {
+                // 新版本写的记录:本构建不解、按「没有记录」分析,保存时原样带走。
+                leadChunkNewer_ = true;
+                preservedLeadChunk_ = lead->payload;
+            }
+            else
+            {
+                // 坏块:按「没有记录」处理(分析退回改动前的行为,播放期覆盖层照常),下次保存以
+                // 内存里的记录为准。它是可以重新播一遍补回来的派生数据,不值得为它整份拒载工程。
+                DBG("SCVB Output: LEAD chunk malformed, ignored");
+            }
+        }
+    }
+
     if (cfg == nullptr)
     {
         markEarlyReturn(scvb::output::kNotRestoredCfgsMissing);
@@ -2981,6 +3051,13 @@ scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     return crvsData_;
+}
+
+std::vector<scvb::analysis::LeadRun> ScvbOutputAudioProcessor::leadTimelineSnapshot()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    leadRecorder_.drainInto(leadTimeline_);
+    return leadTimeline_.runs();
 }
 
 ScvbOutputAudioProcessor::AnalysisConfigPair ScvbOutputAudioProcessor::analysisConfigWithApplied()
@@ -3859,6 +3936,11 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 真要把 warning 透出来,该走流水线的 `result.warnings`(addWarningOnce)那条通路,
     // 而不是在配置装配处另起一套 —— 那是独立改动,不在本卡。
     cfg.balance.loudnessMode = scvb::analysis::parseLoudnessMode(runtime_.loudnessMode.toRawUTF8()).mode;
+    // [SL-216 / J136] 主唱进分析:把计算窗内的 lead_select 记录交给管线(先排干音频线程那一侧,
+    // 刚播完就点分析时最后几块还在队列里)。取**计算窗**而非写回窗 —— 区间链从计算窗起点排起,
+    // 写回窗外的上下文区间也要按同一份主唱来排,否则范围分析与全量分析在窗内的解会不一样。
+    leadRecorder_.drainInto(leadTimeline_);
+    cfg.leadRuns = leadTimeline_.runsOverlapping(cfg.rangeStartSample, cfg.rangeEndSample);
 
     // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须
     // **把 freeze 位清零**。此前只清段不清位,于是:
