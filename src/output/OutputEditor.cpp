@@ -255,7 +255,10 @@ void OutputEditor::emitTick()
     emitState(first);
     scvb::output::settleResendLatch(emitParams(first || pendingParamsFull_), pendingParamsFull_);
     if (first || (tickCount_ % 6 == 0))
+    {
         emitConn(); // ~4Hz(25Hz 6 分频)
+        emitSrMismatchError(); // [rc-misc a] 横幅③ 与 conn 同源同节拍
+    }
     if (first || (tickCount_ % 25 == 0))
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
@@ -796,6 +799,25 @@ void OutputEditor::emitNoTimelineError()
         return;
     emitError("noTimeline", 0, obj(), plan.active);
     noTimelineShown_ = plan.nextShown;
+}
+
+// [rc-misc a] §2.9 `scvb.error` 的 `srMismatch` 一档(§5.1 红横幅③)。
+// envelope:code + ch(轨级,§5.1 该行 ch 必填)+ `detail:{inputSr, outputSr}` + active。
+// 此前本码在 Output 侧零生产者,横幅③永远不亮(Tab2 行灯读的是 scvb.conn,不受影响)。
+// 判定/记账见 `BridgeArgs.h` 的 `planSrMismatchEmit`;记账口径与 `emitNewerStateError` 同款。
+void OutputEditor::emitSrMismatchError()
+{
+    const auto snap = processor_.connSnapshot();
+    const auto plan = scvb::output::planSrMismatchEmit(scvb::output::firstSrMismatchOf(snap.channels),
+                                                       webView().isVisible(), srMismatchShownCh_, srMismatchShownSr_);
+    if (!plan.send)
+        return;
+    juce::var detail = obj();
+    put(detail, "inputSr", static_cast<juce::int64>(plan.inputSr));
+    put(detail, "outputSr", static_cast<juce::int64>(juce::roundToInt(processor_.sampleRate())));
+    emitError("srMismatch", plan.ch, detail, plan.active);
+    srMismatchShownCh_ = plan.nextShownCh;
+    srMismatchShownSr_ = plan.nextShownSr;
 }
 
 // ============================================================================

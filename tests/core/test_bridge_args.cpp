@@ -8,6 +8,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <cmath>
 #include <map>
 
@@ -670,4 +671,105 @@ TEST_CASE("noTimelineRejectsCaptureSwitch:无时间线只拒打开,关照常受�
     // 判序 observer → noTimeline(仅 on=true)→ badArg:参数不是严格布尔时不落这一支,交给 badArg。
     CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var()));
     CHECK_FALSE(noTimelineRejectsCaptureSwitch(true, juce::var("true")));
+}
+
+// ---------------------------------------------------------------------------
+// [rc-misc a] `scvb.error{srMismatch}` 的**发送面判定**(`firstSrMismatchOf` + `planSrMismatchEmit`)。
+//
+// 缺陷:契约 §5.1 的 `srMismatch`(红横幅③)在 Output 侧没有生产者,横幅③永远不亮。
+// 落纯函数的理由同上面 SL-412 / SL-478 两组(`OutputEditor` 编不进任何 C++ 测试目标);
+// 「每轨 srMismatch / inputSampleRate 真的会被置起来」由 test_output_session.cpp 的
+// channelConn 用例断,调用点由 smoke-tab2-interactions.mjs 的 [rc-misc a] 行形态钉子锁住。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct FakeConnCh
+{
+    bool srMismatch = false;
+    std::uint32_t inputSampleRate = 0;
+};
+} // namespace
+
+TEST_CASE("firstSrMismatchOf:取编号最小的不一致轨,带上它的 inputSr", "[output][bridge][rcmisc]")
+{
+    std::array<FakeConnCh, 15> chans{};
+    auto t = scvb::output::firstSrMismatchOf(chans);
+    CHECK(t.ch == 0);
+    CHECK(t.inputSr == 0u);
+
+    chans[6] = {true, 44100u}; // ch 7
+    chans[2] = {true, 96000u}; // ch 3
+    t = scvb::output::firstSrMismatchOf(chans);
+    CHECK(t.ch == 3);
+    CHECK(t.inputSr == 96000u);
+}
+
+TEST_CASE("planSrMismatchEmit:srMismatch 的边沿/换轨/撤销/去重/丢弃", "[output][bridge][rcmisc]")
+{
+    using scvb::output::planSrMismatchEmit;
+    using scvb::output::SrMismatchTarget;
+
+    SECTION("R1 出现不一致 + 屏上没有 ⇒ 发 active:true(带轨号与 inputSr)并记账")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, true, 0, 0u);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.ch == 5);
+        CHECK(p.inputSr == 44100u);
+        CHECK(p.nextShownCh == 5);
+        CHECK(p.nextShownSr == 44100u);
+    }
+
+    SECTION("R2 同轨同 inputSr 持续 ⇒ 不重复发")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, true, 5, 44100u);
+        CHECK_FALSE(p.send);
+        CHECK(p.nextShownCh == 5);
+    }
+
+    SECTION("R3 同轨但 inputSr 变了 ⇒ 重发(detail 里的数要跟着变)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 96000u}, true, 5, 44100u);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.inputSr == 96000u);
+        CHECK(p.nextShownSr == 96000u);
+    }
+
+    SECTION("R4 换成另一轨 ⇒ 发 active:true 覆盖,而不是撤销(web 按裸 code 存)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{9, 44100u}, true, 5, 44100u);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.ch == 9);
+        CHECK(p.nextShownCh == 9);
+    }
+
+    SECTION("R5 全部恢复一致且屏上挂着 ⇒ 发 active:false 撤横幅,ch 取屏上那一轨")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{}, true, 5, 44100u);
+        CHECK(p.send);
+        CHECK_FALSE(p.active);
+        CHECK(p.ch == 5);
+        CHECK(p.nextShownCh == 0);
+        CHECK(p.nextShownSr == 0u);
+    }
+
+    SECTION("R6 没有不一致且屏上本来就没有 ⇒ 不发空撤销帧")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{}, true, 0, 0u);
+        CHECK_FALSE(p.send);
+    }
+
+    SECTION("R7 不可见 ⇒ 一律不发,且不推进记账")
+    {
+        const auto raise = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, false, 0, 0u);
+        CHECK_FALSE(raise.send);
+        CHECK(raise.nextShownCh == 0);
+
+        const auto retract = planSrMismatchEmit(SrMismatchTarget{}, false, 5, 44100u);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShownCh == 5);
+        CHECK(retract.nextShownSr == 44100u);
+    }
 }

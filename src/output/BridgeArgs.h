@@ -390,6 +390,88 @@ inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibl
 }
 
 // -----------------------------------------------------------------------------
+// [rc-misc a] `scvb.error` 的 `srMismatch` 一档(契约 §5.1 红横幅③「轨 N 采样率不一致,已禁用」)。
+//
+// **正题**:这一码此前在 Output 侧**没有生产者** —— `emitError` 只有 `newerState` / `noTimeline`
+// 两处调用,而 web 的横幅③只看 `scvb.error` 填的 errors map,于是采样率不一致时该轨被静默禁用,
+// 用户只在 Tab2 行灯上看到一个小红点(读的是 `scvb.conn.channels[].srMismatch`)。
+//
+// 形态与 `planConditionErrorEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),多出来的一维是
+// **轨号与 inputSr**:这是轨级错误(§5.1 该行 `ch` 必填、`detail = {inputSr, outputSr}`),
+// 而 web 的 errors map 按**裸 code** 存(同 code 后一帧覆盖前一帧,横幅③一次只显示一个轨号,
+// 见 `web/output/app.js` store.errors 头注)。所以这里只挂**一条**:
+//   · 目标 = 编号最小的不一致轨(`firstSrMismatchOf`);没有 ⇒ ch = 0;
+//   · 目标与屏上一致(同轨同 inputSr)⇒ 不发;
+//   · 目标变了且非 0 ⇒ 发 `active:true`(带新轨号,覆盖旧的那条);
+//   · 目标变成 0 且屏上挂着 ⇒ 发 `active:false` 撤横幅(ch 取屏上那一轨);
+//   · 不可见 ⇒ 一律不发、不推进记账。
+// **为什么不逐轨发 active:true/false**:web 按裸 code 删,撤掉轨 3 那一帧会把仍不一致的轨 5
+// 的横幅一起撤掉。
+struct SrMismatchTarget
+{
+    int ch = 0; // 1..15;0 = 当前没有不一致的轨
+    std::uint32_t inputSr = 0;
+};
+
+// 15 轨连接实况 → 编号最小的不一致轨。模板化只为不把 `OutputSession.h` 拖进本头文件
+// (元素需有 `srMismatch` 与 `inputSampleRate` 两个成员,即 `ChannelConnInfo`)。
+template<typename Channels>
+inline SrMismatchTarget firstSrMismatchOf(const Channels& channels) noexcept
+{
+    SrMismatchTarget t;
+    int ch = 0;
+    for (const auto& info : channels)
+    {
+        ++ch;
+        if (info.srMismatch)
+        {
+            t.ch = ch;
+            t.inputSr = info.inputSampleRate;
+            return t;
+        }
+    }
+    return t;
+}
+
+struct SrMismatchEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    int ch = 0; // 载荷的 ch(撤销帧取屏上那一轨)
+    std::uint32_t inputSr = 0;
+    int nextShownCh = 0; // 记账:只在 send 为真时才会与入参不同
+    std::uint32_t nextShownSr = 0;
+};
+
+inline SrMismatchEmitPlan planSrMismatchEmit(SrMismatchTarget target, bool visibleNow, int shownCh,
+                                             std::uint32_t shownSr) noexcept
+{
+    SrMismatchEmitPlan p;
+    p.nextShownCh = shownCh;
+    p.nextShownSr = shownSr;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (target.ch == shownCh && (target.ch == 0 || target.inputSr == shownSr))
+        return p; // 屏上已是这一态(含「没有且本来就没有」)
+    p.send = true;
+    if (target.ch == 0)
+    {
+        p.active = false;
+        p.ch = shownCh;
+        p.inputSr = shownSr;
+    }
+    else
+    {
+        p.active = true;
+        p.ch = target.ch;
+        p.inputSr = target.inputSr;
+    }
+    p.nextShownCh = target.ch;
+    p.nextShownSr = target.ch == 0 ? 0u : target.inputSr;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
 // [SL-509] §1.2 `setCaptureEnabled` 的 `noTimeline` 拒绝支:**只挡「打开」**([J107],用户
 // 2026-09-26 裁定「允许关、拒绝开」)。
 //

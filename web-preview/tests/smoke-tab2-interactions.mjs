@@ -586,6 +586,41 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             !/^[^/\n]*"\d+\.\d+\.\d+"/m.test(oe),
             "[rc-misc b] OutputEditor.cpp 的代码行里不再有写死的版本号字面量",
         );
+
+        // [rc-misc a] 横幅③ `srMismatch` 的生产者(此前 Output 侧零调用方)。纯函数的边沿/换轨/
+        // 撤销/丢弃由 test_bridge_args.cpp 的 planSrMismatchEmit 用例钉;这里钉「真的在调、
+        // 条件取 connSnapshot、信封带 ch 与 detail、闩锁按 plan 回填」这四跳。
+        {
+            const body = fnBodyOf("emitSrMismatchError");
+            check(
+                /^[ \t]*emitSrMismatchError\(\);/m.test(fnBodyOf("emitTick")),
+                "[rc-misc a] emitTick 真的调了 emitSrMismatchError",
+            );
+            check(
+                /^[ \t]*const auto snap = processor_\.connSnapshot\(\);/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*const auto plan = scvb::output::planSrMismatchEmit\(scvb::output::firstSrMismatchOf\(snap\.channels\),\s*webView\(\)\.isVisible\(\), srMismatchShownCh_, srMismatchShownSr_\);/m.test(
+                        body,
+                    ),
+                "[rc-misc a] 条件取 connSnapshot 的每轨 srMismatch,判定走纯函数",
+            );
+            check(
+                /^[ \t]*emitError\("srMismatch", plan\.ch, detail, plan\.active\);/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*put\(detail, "inputSr",/m.test(body) &&
+                    /^[ \t]*put\(detail, "outputSr",/m.test(body),
+                "[rc-misc a] 载荷按 §2.9 信封发出(轨级带 ch,detail = {inputSr, outputSr})",
+            );
+            check(
+                /^[ \t]*srMismatchShownCh_ = plan\.nextShownCh;/m.test(body) &&
+                    /^[ \t]*srMismatchShownSr_ = plan\.nextShownSr;/m.test(
+                        body,
+                    ),
+                "[rc-misc a] 闩锁按 plan 回填",
+            );
+        }
     }
 
     // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
