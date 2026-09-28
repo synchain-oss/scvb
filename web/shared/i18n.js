@@ -841,6 +841,10 @@ export const T = {
         "banner.srMismatch": "轨 {n} 采样率不一致,已禁用",
         "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
         "banner.noTimeline": "宿主未提供时间线",
+        // [SL-218][J134] 横幅 ⑪(§5.1 stateNotFullyRestored):上次载入工程时段表没能恢复
+        // (缺失 / 损坏 / 由更新版本写入,或配置节缺失使整段没读)。文案逐字取用户裁定。
+        // 段表保留不清空;文件里原来那份原样写回,直到用户改动段表([SL-524][J122])。
+        "banner.stateNotRestored": "段表没能恢复,原数据会原样保留",
         // 已采集特征过期(§2.8 `channels[].stale`)。两种成因共用这一位:① 上游改动(04 §4.5
         // fingerprint watchdog,SL-177)—— 典型场景是在 Input 前面插了 EQ/压缩并改了参数;
         // ② [SL-485] 该轨的采集采样率与当前采样率不同。文案因此只说「过期」并把两种成因都列出来,
@@ -1786,6 +1790,8 @@ export const T = {
         "banner.sidecarMissing":
             "Capture data missing or outdated — please re-capture",
         "banner.noTimeline": "Host provides no timeline",
+        "banner.stateNotRestored":
+            "The segment table could not be restored; the original data will be kept as is",
         "banner.staleCapture":
             "Captured features are out of date on {m} track(s) (upstream audio or sample rate differs from when they were captured) — re-capture recommended",
         "banner.fpPausedByCapture":
@@ -2642,6 +2648,8 @@ export const T = {
         "banner.sidecarMissing":
             "Données de capture manquantes ou périmées — veuillez recapturer",
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
+        "banner.stateNotRestored":
+            "La table des segments n'a pas pu être restaurée ; les données d'origine seront conservées telles quelles",
         "banner.staleCapture":
             "Les caractéristiques capturées sont périmées sur {m} piste(s) (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",
         "banner.fpPausedByCapture":

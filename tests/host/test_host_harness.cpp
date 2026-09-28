@@ -4978,6 +4978,227 @@ TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设
     }
 }
 
+// ---------------------------------------------------------------------------
+// [SL-219][SL-218][J134][J135] 「没恢复」诊断位图的三个来路 + 更高 CRVS minor 原样带走。
+//
+// ① 更高 minor([SL-219]①):未来构建写的 CRVS,本构建解不开 ⇒ 按 [SL-524][J122] 原样写回,
+//    保存两次都逐字节相同。载荷故意带一段本构建不认识的尾部,证明写回的不是重编码。
+// ② CFGS 缺失 / 解不开([SL-219]②):setStateInformation 在读 CRVS 之前早退,此前诊断位
+//    停在上一次载入的值上(先载一份完整工程把它清成 0,正是这一格要比出来的差别)。
+//    blob 带着 CRVS 时,那份 CRVS 同样原样带走(不然横幅那句「原数据会原样保留」是假话)。
+// ③ 位图的值逐一核对(上桥 detail 的 missing / rejected 两张表就从它算)。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 一份**合法**、带用户段的 CRVS 载荷(ch1 两段),与 live 表(新开实例 = 空表)不同。
+std::vector<std::uint8_t> userCrvsPayload(const juce::MemoryBlock& base, int versionActive)
+{
+    scvb::state::CrvsData d;
+    const auto basePayload = crvsPayloadOf(base);
+    REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+    const auto flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    d.versions[static_cast<std::size_t>(versionActive - 1)].tracks[0].segments = {
+        scvb::state::Segment{0, 480000, 30.0f, -6.0f, flags},
+        scvb::state::Segment{480000, 960000, -40.0f, -3.0f, flags}};
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeCrvs(d, payload));
+    return payload;
+}
+
+// 在 base 的容器上改 chunk:dropCfgs = 删掉 CFGS;cfgsPayload 非空 = 换成它;crvsPayload 非空 = 换成它。
+std::vector<std::uint8_t> blobEdited(const juce::MemoryBlock& base, bool dropCfgs,
+                                     const std::vector<std::uint8_t>& cfgsPayload,
+                                     const std::vector<std::uint8_t>& crvsPayload)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    if (dropCfgs)
+    {
+        chunks.chunks.erase(
+            std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                           [](const scvb::state::Chunk& c) { return c.fourcc == scvb::state::kFourccCfgs; }),
+            chunks.chunks.end());
+    }
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCfgs && !cfgsPayload.empty())
+            c.payload = cfgsPayload;
+        if (c.fourcc == scvb::state::kFourccCrvs && !crvsPayload.empty())
+            c.payload = crvsPayload;
+    }
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+// 只留 PRMS:轨道 / 参数预设的形态(没有 CFGS、没有 CRVS)。
+std::vector<std::uint8_t> blobPrmsOnly(const juce::MemoryBlock& base)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(
+        std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                       [](const scvb::state::Chunk& c) { return c.fourcc != scvb::state::kFourccPrms; }),
+        chunks.chunks.end());
+    REQUIRE(chunks.chunks.size() == 1u);
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+} // namespace
+
+TEST_CASE("HOST SL-219①:更高 CRVS minor 的载荷原样带走,保存逐字节相同", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+
+    // 未来构建的 CRVS:minor = 当前 +1,后面多一段本构建不认识的字节。
+    auto future = userCrvsPayload(base, r.out.versionActive());
+    REQUIRE(future.size() >= 2u);
+    const std::uint16_t newerMinor = static_cast<std::uint16_t>(scvb::state::kCrvsMinorVersion + 1u);
+    future[0] = static_cast<std::uint8_t>(newerMinor & 0xFFu);
+    future[1] = static_cast<std::uint8_t>(newerMinor >> 8);
+    for (std::uint8_t b : {std::uint8_t{0xA5}, std::uint8_t{0x5A}, std::uint8_t{0x01}, std::uint8_t{0x02}})
+        future.push_back(b);
+    scvb::state::CrvsData probe;
+    REQUIRE_FALSE(scvb::state::decodeCrvs(future.data(), future.size(), probe)); // 前提:本构建确实不收
+
+    const auto blob = blobEdited(base, false, {}, future);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.hasCrvsNotRestored());
+    CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        INFO("save #" << (i + 1));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == future); // ★ 不是空表,也不是按本构建布局重编码
+    }
+}
+
+TEST_CASE("HOST SL-219②:CFGS 缺失的早退点也置诊断位(只带 PRMS 的预设)", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+
+    // 先载一份完整工程:位图清成 0。不先清的话,下面比不出「早退点没置位、停在旧值上」。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == 0);
+
+    const auto preset = blobPrmsOnly(base);
+    r.out.setStateInformation(preset.data(), static_cast<int>(preset.size()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.hasCrvsNotRestored()); // ★ 改前:停在 false
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing));
+
+    // 对照:再载完整工程 ⇒ 清回 0(横幅撤下的条件源)。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.stateNotRestoredMask() == 0);
+}
+
+TEST_CASE("HOST SL-219②:CFGS 缺失但带 CRVS ⇒ 置位且 CRVS 原样带走", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto user = userCrvsPayload(base, r.out.versionActive());
+
+    const auto blob = blobEdited(base, /*dropCfgs=*/true, {}, user);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(segmentsOfTrack(r.out, 1).empty()); // 前提:CRVS 确实没被采用(早退在读它之前)
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsRejected));
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == user); // ★ 改前:写的是 live 空表
+}
+
+TEST_CASE("HOST SL-219②:CFGS 解不开的早退点也置诊断位,CRVS 原样带走", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == 0);
+
+    const auto user = userCrvsPayload(base, r.out.versionActive());
+    const std::vector<std::uint8_t> badCfgs(12, std::uint8_t{0xEE}); // 解不开的 CFGS
+    const auto blob = blobEdited(base, false, badCfgs, user);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsRejected | scvb::output::kNotRestoredCrvsRejected));
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == user);
+}
+
+// [SL-218 #307 复审第 1 轮] 横幅⑪ 的清位 / 不清位时机,各一格:
+//   E1 用户改过段表后的那次保存 ⇒ 清(「原样保留」从此不成立);没改之前保存不清;
+//   E2 载入更高 abi 的工程 ⇒ 清(上一份工程的留底不再写出);
+//   E3 容器损坏 ⇒ 不动(什么都没载入,上一份工程仍是当前工程)。
+TEST_CASE("HOST SL-218:横幅条件的清位时机(改段后保存 / 更高 abi / 容器损坏)", "[host][sl219][sl218]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto rejected = rejectedCrvsPayload(base, r.out.versionActive());
+    const auto bad = blobWithCrvsPayload(base, rejected);
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+
+    SECTION("E1 改段后保存 ⇒ 清;没改之前保存不清")
+    {
+        juce::MemoryBlock untouched;
+        r.out.getStateInformation(untouched);
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected); // 原样写回期间照旧亮
+        int replaced = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        REQUIRE(crvsPayloadOf(saved) != rejected); // 前提:这次确实写了新表
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E2 载入更高 abi 的工程 ⇒ 清")
+    {
+        std::vector<std::uint8_t> newer(static_cast<const std::uint8_t*>(base.getData()),
+                                        static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        const std::uint32_t abi = scvb::state::kCurrentAbi + 1u;
+        for (int i = 0; i < 4; ++i)
+            newer[static_cast<std::size_t>(4 + i)] = static_cast<std::uint8_t>((abi >> (8 * i)) & 0xFFu);
+        r.out.setStateInformation(newer.data(), static_cast<int>(newer.size()));
+        Rig::pumpMessages(100);
+        REQUIRE(r.out.hasStateAbiMismatch()); // 前提:确实走了更高 abi 那一支
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E3 容器损坏 ⇒ 不动")
+    {
+        std::vector<std::uint8_t> corrupt(static_cast<const std::uint8_t*>(base.getData()),
+                                          static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        corrupt[0] ^= 0xFFu; // magic 坏
+        r.out.setStateInformation(corrupt.data(), static_cast<int>(corrupt.size()));
+        Rig::pumpMessages(100);
+        REQUIRE_FALSE(r.out.hasStateAbiMismatch());
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+    }
+}
+
 // ===========================================================================
 // [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
 //

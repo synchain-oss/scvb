@@ -510,6 +510,51 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
                 "[SL-478] 闩锁按 plan 回填(无条件推进会让不可见期那一帧被永久吞掉)",
             );
         }
+        // [SL-218] `stateNotFullyRestored` 的**调用点钉子**(理由同上面 [SL-478] 那一组:
+        // `OutputEditor.cpp` 编不进 C++ 测试目标;纯函数在 test_bridge_args.cpp,条件源在 HOST SL-219)。
+        // 一律带行形态锚,注释掉整行即不匹配。
+        {
+            const body = fnBodyOf("emitStateNotRestoredError");
+            check(
+                /^[ \t]*emitStateNotRestoredError\(\);[ \t]*$/m.test(
+                    fnBodyOf("emitTick"),
+                ),
+                "[SL-218] emitTick 真的调了 emitStateNotRestoredError",
+            );
+            check(
+                /^[ \t]*const std::uint8_t mask = processor_\.stateNotRestoredMask\(\);[ \t]*$/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*const auto plan = scvb::output::planStateNotRestoredEmit\(mask, webView\(\)\.isVisible\(\), stateNotRestoredShown_\);[ \t]*$/m.test(
+                        body,
+                    ),
+                "[SL-218] 条件取 processor 的 stateNotRestoredMask(),判定走纯函数",
+            );
+            check(
+                /^[ \t]*const auto lists = scvb::output::notRestoredFourccs\(mask\);[ \t]*$/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*put\(detail, "missing", missing\);[ \t]*$/m.test(
+                        body,
+                    ) &&
+                    /^[ \t]*put\(detail, "rejected", rejected\);[ \t]*$/m.test(
+                        body,
+                    ) &&
+                    /^[ \t]*emitError\("stateNotFullyRestored", 0, detail, plan\.active\);[ \t]*$/m.test(
+                        body,
+                    ),
+                "[SL-218] 载荷按 §2.9 信封发出(detail = {missing, rejected},由位图算出;不带 ch)",
+            );
+            check(
+                /^[ \t]*stateNotRestoredShown_ = plan\.nextShownMask;[ \t]*$/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*std::uint8_t stateNotRestoredShown_ = 0;[ \t]*$/m.test(
+                        oeh,
+                    ),
+                "[SL-218] 闩锁按 plan 回填位图(不可见期不推进)",
+            );
+        }
         // ② §1.2/§1.3 两个 handler:observer 判据之后、badArg 之前回 {ok:false, reason:"noTimeline"}。
         //   · §1.3 输出开关:条件就是 hostTimelineMissing(),开和关都拒;
         //   · §1.2 采集开关([SL-509] / [J107]):条件改走纯函数 noTimelineRejectsCaptureSwitch

@@ -1,7 +1,7 @@
 # PARAMETERS —— SCVB 自动化参数表(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-09-28([J136] / [SL-216] `lead_select` 的说明列补「播放时记下的值进入分析」:选中轨在分析里按主唱锁处理、其余声部围绕它排布;实时居中覆盖照旧。**零参数面变更** —— ParamID / index / 顺序 / 范围 / 默认 / versionHint 一个字节未动,详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`);上一次更新 2026-09-26([J102] §二 state 树移出 `global.range`(运行期状态,不随工程走;**零参数面变更**),与 `docs/STATE_SCHEMA.md` §一 同步,详见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`);上一次更新 2026-09-15(**两处,均零参数面变更**):[SL-416] `analysis.vad` 五字段与 `transition_ramp_ms` 改为**随工程落盘**(§一 那两行补注;容器 abi 4→5,详见 `docs/contract-changes/20260914-sl416-vad-persist.md`);[SL-413] `analysis.segmentation.mode` 标注为 **v1 保留位** —— UI 不露出、引擎不消费、恒写 0=valley;§四 命名与兼容规则那条「读到高版本 → 拒载并提示升级」补上 [SL-412] 的接线实况。**123 参数表逐字未改**、ParamID / index / 顺序 / versionHint 一个字节未动(变更文档 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`);上一次更新 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
+> 最后更新: 2026-09-28(同日两处,均**零参数面变更**:① [J136] / [SL-216] `lead_select` 的说明列补「播放时记下的值进入分析」:选中轨在分析里按主唱锁处理、其余声部围绕它排布;实时居中覆盖照旧 —— ParamID / index / 顺序 / 范围 / 默认 / versionHint 一个字节未动,详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`;② [SL-218] / [SL-219]:§四「读到高版本 → 拒载并提示升级」那条里 CRVS minor 一支的接线实况改实,详见 `docs/contract-changes/20260928-sl218-219-state-not-restored.md`);上一次更新 2026-09-26([J102] §二 state 树移出 `global.range`(运行期状态,不随工程走;**零参数面变更**),与 `docs/STATE_SCHEMA.md` §一 同步,详见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`);上一次更新 2026-09-15(**两处,均零参数面变更**):[SL-416] `analysis.vad` 五字段与 `transition_ramp_ms` 改为**随工程落盘**(§一 那两行补注;容器 abi 4→5,详见 `docs/contract-changes/20260914-sl416-vad-persist.md`);[SL-413] `analysis.segmentation.mode` 标注为 **v1 保留位** —— UI 不露出、引擎不消费、恒写 0=valley;§四 命名与兼容规则那条「读到高版本 → 拒载并提示升级」补上 [SL-412] 的接线实况。**123 参数表逐字未改**、ParamID / index / 顺序 / versionHint 一个字节未动(变更文档 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`);上一次更新 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -101,5 +101,5 @@ ui: {scale, language}
 ## 四、命名与兼容规则
 
 - ParamID 字符串与 index 双冻结;VST3 参数 ID 由 JUCE 从 ParamID hash——**首个 release 后不可改 ParamID**
-- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(**本条是要求,不是「已接线」的事实断言**:[SL-412] 起 **Output 侧**已按 §2.9 发 `scvb.error{newerState}` 到红横幅④;**Input 侧同一通路**统筹 2026-09-16 裁「本版不做、另立卡封存」;CRVS minor 那一支也未接线 —— 实况口径见 `docs/STATE_SCHEMA.md` §三)
+- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(**本条是要求,不是「已接线」的事实断言**:[SL-412] 起 **Output 侧**已按 §2.9 发 `scvb.error{newerState}` 到红横幅④;**Input 侧同一通路**统筹 2026-09-16 裁「本版不做、另立卡封存」;CRVS minor 那一支:原样回写与琥珀横幅⑪(`stateNotFullyRestored`)已接([SL-524] / [SL-218]),横幅不专说「请升级」—— 实况口径见 `docs/STATE_SCHEMA.md` §三)
 - 显示名可在 UI/i18n 层变化,ParamID/index 不动
