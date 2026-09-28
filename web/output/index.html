@@ -5607,6 +5607,30 @@
                         <!-- 词条 banner.noTimeline(T31 Wave 2 新增) -->
                         <span data-t="banner.noTimeline">宿主未提供时间线</span>
                     </div>
+                    <!-- ⑪ [SL-218] 上次载入时段表没能恢复(§5.1 stateNotFullyRestored,琥珀)。
+                         持续性条件,不给 ✕;收到 active:false 才撤下(撤下时机见契约 §5.1 该行)。 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-stateNotRestored"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span data-t="banner.stateNotRestored"
+                            >段表没能恢复,原数据会原样保留</span
+                        >
+                    </div>
                     <!-- ⑧ 上游改动 → 采集数据过期(04 §4.5 fingerprint watchdog,SL-177)。
                          **只提示,不自动失效、不阻断任何操作**;{m} = §2.8 里 stale 的轨数。 -->
                     <div class="sc-banner" data-gb="banner-staleCapture" hidden>
