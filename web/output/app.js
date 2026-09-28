@@ -39,6 +39,9 @@ import {
     applySegmentsEvent,
     HISTORY_AVAIL_INIT,
     historyAfterCall,
+    connPillModel,
+    historyAfterPanCurve,
+    historyAfterRename,
     historyAfterSegments,
     GROUP_IDS,
     CHANNEL_COUNT,
@@ -381,6 +384,22 @@ tabbar.addEventListener("keydown", (e) => {
 
 activateTab("master", { push: false });
 
+// [rc-misc h] 05 §2.0 第 1 行:点击 header 连接 pill 跳 Tab2(轨道页看逐轨连接状态)。
+// pill 在 index.html 上是 role="button" + tabindex="0",键盘 Enter / 空格同效。
+{
+    const connPill = $("header-conn-pill");
+    if (connPill) {
+        const goTracks = () => activateTab("tracks");
+        connPill.addEventListener("click", goTracks);
+        connPill.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                goTracks();
+            }
+        });
+    }
+}
+
 // --------------------------------------- Tab1 ① 三件套开关的 data-on / aria 派生(单一状态源)
 // 状态真源 = .master-flow 上的 data-cap / data-out(05 §1.3);开关的**视觉**真源 =
 // base.css 的 `.sc-toggle[data-on="1"]`。两者之间只允许一条派生边,写在这里:
@@ -465,6 +484,14 @@ const curveEditor = createCurveEditor({
     getT: () => dictNow,
     // T33 起全页统一走 rAF 合帧的 requestRender(),不再逐事件同步整页 render()
     onLocalChange: () => requestRender(),
+    // [rc-misc g] 曲线写入入栈的证据是 setPanCurve 的回执(判据见 historyAfterPanCurve)
+    onPanCurveCommitted: (res) => {
+        store.session.history = historyAfterPanCurve(
+            store.session.history,
+            res,
+        );
+        requestRender();
+    },
 });
 curveEditor.mount();
 
@@ -1015,7 +1042,14 @@ function endRename(commit) {
     if (!commit || !v) return;
     const raw = verUi.renameInput ? verUi.renameInput.value : "";
     // 契约 §1.10:≤16 由 C++ 截断、空串/纯空白回落默认 "V{v}";返回回显实际落盘名。
+    const oldName = ((store.state.versions || [])[v - 1] || {}).name;
     call("setVersionName", v, raw).then((res) => {
+        // [rc-misc g] 改名入栈的证据只有回执(§2.8 不为改名发段表事件),判据见 historyAfterRename。
+        store.session.history = historyAfterRename(
+            store.session.history,
+            oldName,
+            res,
+        );
         if (res && typeof res.name === "string") {
             const versions = (store.state.versions || []).slice();
             if (versions[v - 1]) {
@@ -1375,16 +1409,14 @@ function renderHeader() {
     const count = $("header-conn-count");
     if (count) count.textContent = n + "/" + CHANNEL_COUNT;
     if (pill) {
-        pill.setAttribute("data-tone", n > 0 ? "green" : "gray");
-        pill.setAttribute("data-pulse", n > 0 ? "1" : "0");
+        // [rc-misc h] 模型见 tab-master.js 的 connPillModel(05 §2.0 第 1 行「· 采集中」后缀)。
+        const pm = connPillModel(n, viewStore().state, viewStore().playhead);
+        pill.setAttribute("data-tone", pm.tone);
+        pill.setAttribute("data-pulse", pm.pulse ? "1" : "0");
         const label = pill.querySelector("[data-t]");
-        if (label) {
-            fillKeyed(
-                label,
-                n > 0 ? "state.connected" : "state.notConnected",
-                {},
-            );
-        }
+        if (label) fillKeyed(label, pm.key, {});
+        const capSuffix = $("header-conn-capturing");
+        if (capSuffix) capSuffix.hidden = !pm.capturing;
     }
 
     // 独立「组 {X}」badge(J71③)

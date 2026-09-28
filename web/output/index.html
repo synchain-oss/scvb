@@ -5382,16 +5382,23 @@
                     </div>
 
                     <!-- 05 §2.0 行1:Header 连接摘要 pill(设计稿 L266-269 pill() 工厂 = base.css .sc-pill) -->
+                    <!-- [rc-misc h] 采集中追加「· 采集中」后缀;点击 / Enter / 空格跳 Tab2 -->
                     <span
                         class="sc-pill"
                         data-tone="gray"
                         data-gb="header-conn-pill"
+                        role="button"
+                        tabindex="0"
+                        style="cursor: pointer"
                     >
                         <span class="sc-pill__dot"></span>
                         <span class="sc-num" data-gb="header-conn-count"
                             >0/15</span
                         >
                         <span data-t="state.notConnected">未连接</span>
+                        <span data-gb="header-conn-capturing" hidden
+                            >· <span data-t="capturing">采集中</span></span
+                        >
                     </span>
 
                     <!-- 05 §2.0 行4:语言胶囊(中/EN/FR;设计稿 L270-274) -->

@@ -258,6 +258,84 @@ log("=== ② mock 端到端:桥回执 → 置灰 ===");
 }
 
 // =============================================================================
+log("=== ②b [rc-misc g] setPanCurve / setVersionName 的回执点亮撤销钮 ===");
+
+{
+    const { historyAfterPanCurve, historyAfterRename } = TM;
+    const grey = { undo: false, redo: true }; // 刚把撤销栈撤空的那一态
+
+    // setPanCurve:C++ 每次受理都压一条事务 ⇒ ok:true 即入栈(undo 亮、redo 被清)。
+    eq(
+        historyAfterPanCurve(grey, { ok: true }),
+        { undo: true, redo: false },
+        "setPanCurve 回执 ok:true ⇒ undo 亮、redo 灰",
+    );
+    eq(
+        historyAfterPanCurve(grey, { ok: false, reason: "badArg" }),
+        grey,
+        "setPanCurve 被拒(badArg)⇒ 两向不动",
+    );
+    eq(historyAfterPanCurve(grey, { observer: true }), grey, "observer ⇒ 不动");
+    eq(historyAfterPanCurve(grey, null), grey, "桥没接上(null)⇒ 不动");
+
+    // setVersionName:名字没变 C++ 不压事务 ⇒ 只有落盘名变了才算入栈。
+    eq(
+        historyAfterRename(grey, "V1", { ok: true, name: "Lead" }),
+        { undo: true, redo: false },
+        "改名回执 name 变了 ⇒ undo 亮、redo 灰",
+    );
+    eq(
+        historyAfterRename(grey, "V1", { ok: true, name: "V1" }),
+        grey,
+        "改名后落盘名没变(空串回落默认 / 原样提交)⇒ 两向不动",
+    );
+    eq(historyAfterRename(grey, "V1", null), grey, "桥没接上 ⇒ 不动");
+
+    // mock 端到端:两个桥函数的回执真长这样(回执形状改了,上面的判据就接不上)。
+    const s = driver.createPreviewSession({
+        role: "output",
+        params: "?fixture=fifteen-tracks",
+    });
+    const { createBridge } = await import(u("web/shared/bridge.js"));
+    const bridge = createBridge({ role: "output", mockBackend: s.mock });
+    await bridge.requestInitialState();
+    const pc = await bridge.setPanCurve([]);
+    eq(
+        historyAfterPanCurve(grey, pc),
+        { undo: true, redo: false },
+        `mock setPanCurve 回执 ${JSON.stringify(pc)} 能点亮`,
+    );
+    const rn = await bridge.setVersionName(1, "Lead");
+    eq(
+        historyAfterRename(grey, "V1", rn),
+        { undo: true, redo: false },
+        `mock setVersionName 回执 ${JSON.stringify(rn)} 能点亮`,
+    );
+
+    // 接线:两个调用点真的把回执喂给了判据(纯函数对、没人调也白搭)。
+    const appJs = src("web/output/app.js");
+    const ce = src("web/output/canvas/curve-editor.js");
+    check(
+        /onPanCurveCommitted: \(res\) => \{\s*store\.session\.history = historyAfterPanCurve\(\s*store\.session\.history,\s*res,\s*\);/.test(
+            appJs,
+        ),
+        "app.js:曲线编辑器的 onPanCurveCommitted 走 historyAfterPanCurve",
+    );
+    check(
+        /const res = await bridge\.setPanCurve\(next\);\s*(?:\/\/[^\n]*\n\s*)*onPanCurveCommitted\(res\);/.test(
+            ce,
+        ),
+        "curve-editor.js:setPanCurve 回执交给 onPanCurveCommitted",
+    );
+    check(
+        /call\("setVersionName", v, raw\)\.then\(\(res\) => \{\s*(?:\/\/[^\n]*\n\s*)*store\.session\.history = historyAfterRename\(\s*store\.session\.history,\s*oldName,\s*res,\s*\);/.test(
+            appJs,
+        ),
+        "app.js:改名回执走 historyAfterRename",
+    );
+}
+
+// =============================================================================
 log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式钉住)===");
 
 {

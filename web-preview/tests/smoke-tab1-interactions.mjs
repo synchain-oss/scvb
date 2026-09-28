@@ -2262,6 +2262,74 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
 }
 
 // =============================================================================
+log(
+    "=== [rc-misc h] Header 连接 pill:「· 采集中」后缀 + 点击跳 Tab2(05 §2.0 第 1 行)===",
+);
+{
+    const on = { global: { capture_enabled: true } };
+    const off = { global: { capture_enabled: false } };
+    const playIn = { isPlaying: true, inRange: true };
+    const playOut = { isPlaying: true, inRange: false };
+    const stopped = { isPlaying: false, inRange: true };
+    const m = (n, st, ph) => TM.connPillModel(n, st, ph);
+
+    eq(
+        m(3, off, playIn),
+        {
+            tone: "green",
+            pulse: true,
+            key: "state.connected",
+            capturing: false,
+        },
+        "有连接、采集关 ⇒ 绿、无后缀(与此前逐字同款)",
+    );
+    eq(
+        m(0, off, null),
+        {
+            tone: "gray",
+            pulse: false,
+            key: "state.notConnected",
+            capturing: false,
+        },
+        "零连接 ⇒ 灰「未连接」",
+    );
+    check(
+        m(3, on, playIn).capturing,
+        "采集开 + 播放 + 在 range 内 ⇒ 挂「· 采集中」",
+    );
+    check(!m(3, on, stopped).capturing, "采集开但停着(已布防)⇒ 不挂");
+    check(
+        !m(3, on, playOut).capturing,
+        "采集开、播放但出了 range(不写特征)⇒ 不挂",
+    );
+    check(m(0, on, playIn).pulse, "采集中即使零连接也脉冲");
+
+    // 接线:渲染真的按模型切后缀;pill 真的挂了点击 / 键盘跳 Tab2。
+    const appJs = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+    const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    check(
+        /const pm = connPillModel\(/.test(appJs) &&
+            /capSuffix\.hidden = !pm\.capturing;/.test(appJs),
+        "render:pill 走 connPillModel,后缀按 capturing 显隐",
+    );
+    check(
+        /const goTracks = \(\) => activateTab\("tracks"\);\s*connPill\.addEventListener\("click", goTracks\);/.test(
+            appJs,
+        ),
+        "pill 点击跳 Tab2(tracks)",
+    );
+    check(
+        /data-gb="header-conn-pill"\s+role="button"\s+tabindex="0"/.test(
+            html,
+        ) &&
+            /data-gb="header-conn-capturing" hidden[\s\S]{0,40}data-t="capturing"/.test(
+                html,
+            ),
+        "index.html:pill 可聚焦(role=button)+ 后缀节点默认隐藏、文案走词条 capturing",
+    );
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error(`\nsmoke-tab1-interactions 失败(${fail} 项)`);
     process.exit(1);
