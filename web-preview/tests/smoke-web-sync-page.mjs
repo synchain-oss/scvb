@@ -768,42 +768,8 @@ try {
         check(await clickGb("tabnav-tracks"), "(w0)切到 Tab2");
         await sleep(300);
         const COLLAR = '[data-gb="tracks-row-1-vol-collar"]';
-        const cw = await centerOf(COLLAR);
-        check(
-            cw && cw.w > 2 && cw.h > 2,
-            `(w1)卡箍有真实尺寸(实得 ${JSON.stringify(cw)})`,
-        );
-        // 落点必须是卡箍本身:打在管体或别的格子上,下面「音量不变」恒成立。
-        eq(
-            await evaluate(
-                IN(`const fr = f.getBoundingClientRect();
-                    const el = d.elementFromPoint(${cw.x} - fr.left, ${cw.y} - fr.top);
-                    return !!el && el === q(${JSON.stringify(COLLAR)});`),
-            ),
-            true,
-            "(w2)滚轮落点**就是卡箍本身**",
-        );
-        // 探针挂在 iframe 的 window 上(冒泡末端):读的是所有监听器跑完之后的
-        // defaultPrevented,且只记目标在卡箍上的那几次。
-        check(
-            await evaluate(
-                IN(`w.__wheelProbe = [];
-                    const col = q(${JSON.stringify(COLLAR)});
-                    w.addEventListener("wheel", (e) => {
-                        if (col.contains(e.target)) {
-                            w.__wheelProbe.push({ prevented: e.defaultPrevented });
-                        }
-                    });
-                    return true;`),
-            ),
-            "(w3)滚轮探针已挂",
-        );
-        const volBefore = await evaluate(
-            IN(
-                `return q(${JSON.stringify(COLLAR)}).getAttribute("aria-valuenow");`,
-            ),
-        );
         // 卡箍所在的滚动区(轨道表体):「页面照常滚动」要看它的 scrollTop 真的动了。
+        // 先把它归到顶端、再取落点 —— 反过来的话,归零会把卡箍挪走,取到的坐标就过期了。
         const SCROLLER = `const col = q(${JSON.stringify(COLLAR)});
             let sc = col && col.parentElement;
             while (sc && !(sc.scrollHeight > sc.clientHeight + 1 &&
@@ -819,6 +785,51 @@ try {
             "(w3b)卡箍在一个可滚动的区域里(已回到顶端)",
         );
         await sleep(200);
+        const cw = await centerOf(COLLAR);
+        check(
+            cw && cw.w > 2 && cw.h > 2,
+            `(w1)卡箍有真实尺寸(实得 ${JSON.stringify(cw)})`,
+        );
+        // 落点必须在卡箍上:打在管体或别的格子上,下面「音量不变」恒成立。
+        eq(
+            await evaluate(
+                IN(`const fr = f.getBoundingClientRect();
+                    const el = d.elementFromPoint(${cw.x} - fr.left, ${cw.y} - fr.top);
+                    return !!el && q(${JSON.stringify(COLLAR)}).contains(el);`),
+            ),
+            true,
+            "(w2)滚轮落点**在卡箍上**",
+        );
+        // 等待窗按产品常量取:写死的话,常量改大后「零提交」会在提交到点之前就判完,静默变绿。
+        const commitMs = await evaluate(
+            IN_ASYNC(`const m = await import("${base}/web/output/tab-tracks.js");
+                return m.MANUAL_COMMIT_MS;`),
+        );
+        check(
+            Number.isFinite(commitMs) && commitMs > 0,
+            `(w3c)读到延迟提交窗 MANUAL_COMMIT_MS(实得 ${commitMs})`,
+        );
+        // 探针挂在 iframe 的 window 上(冒泡末端):读的是所有监听器跑完之后的
+        // defaultPrevented,且只记目标在卡箍上的那几次。本段收尾摘掉。
+        check(
+            await evaluate(
+                IN(`w.__wheelProbe = [];
+                    const col = q(${JSON.stringify(COLLAR)});
+                    w.__wheelProbeFn = (e) => {
+                        if (col.contains(e.target)) {
+                            w.__wheelProbe.push({ prevented: e.defaultPrevented });
+                        }
+                    };
+                    w.addEventListener("wheel", w.__wheelProbeFn);
+                    return true;`),
+            ),
+            "(w3)滚轮探针已挂",
+        );
+        const volBefore = await evaluate(
+            IN(
+                `return q(${JSON.stringify(COLLAR)}).getAttribute("aria-valuenow");`,
+            ),
+        );
         const wheelAt = (dy) =>
             cdp.send("Input.dispatchMouseEvent", {
                 type: "mouseWheel",
@@ -838,7 +849,8 @@ try {
         // 再向下滚一格:这一格应当把表体往下滚(卡箍随之移走,所以只滚一格)。
         const top0 = await scrollTop();
         await wheelAt(120);
-        await sleep(600); // 走完 300ms 防抖窗:接了防抖提交的话这里一定已经发出
+        // 走完两个延迟提交窗:接了防抖提交的话这里一定已经发出
+        await sleep(2 * (Number.isFinite(commitMs) ? commitMs : 300));
         const top1 = await scrollTop();
         const probe = await evaluate(IN(`return w.__wheelProbe;`));
         check(
@@ -869,10 +881,14 @@ try {
             "(w7)**卡箍读数不变**(本地回声也没动)",
         );
         log(
-            `  (表体 scrollTop ${top0} -> ${top1};卡箍上共收到 ${(probe || []).length} 格滚轮)`,
+            `  (表体 scrollTop ${top0} -> ${top1};卡箍上共收到 ${(probe || []).length} 格滚轮;等待 ${2 * commitMs}ms)`,
         );
         await evaluate(
-            IN(`${SCROLLER} if (sc) sc.scrollTop = 0; return true;`),
+            IN(`if (w.__wheelProbeFn) w.removeEventListener("wheel", w.__wheelProbeFn);
+                w.__wheelProbeFn = null;
+                w.__wheelProbe = null;
+                ${SCROLLER} if (sc) sc.scrollTop = 0;
+                return true;`),
         );
     }
     assertClean("②b Tab2 卡箍滚轮");
