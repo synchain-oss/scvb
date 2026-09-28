@@ -12,6 +12,9 @@
 //   ⑤ sourceKind 口径:source_channels 0/undefined→unmeasured,1→mono,2→stereo。
 //   ④ remoteSetPriority:未分配 → {queued:false,reason:"unassigned"},
 //      Output 离线 → {queued:false,reason:"outputOffline"},在线 → {queued:true}。
+//   ⑥ [SL-463 / J156] 非冲突失败回执(契约 §3.2/§3.3):claim-unavailable / claim-abi-mismatch
+//      两个场景下 setChannelId / setGroupId 回 {ok:false, reason},不回 {ok:true};
+//      状态按真桥的形状走(换通道回滚 ⇒ 原通道不变;首次选通道 ⇒ channel_id 0)。
 //
 // 用法:node web-preview/tests/smoke-input.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -294,6 +297,76 @@ for (const [sc, want] of SK_CASES) {
     check(got === want, `sourceKind(${String(sc)}) 应 ${want},实得 ${got}`);
     log(`  sourceKind(${String(sc)}) = ${got}`);
 }
+
+log("\n=== ⑥ [SL-463] 非冲突失败回执:{ok:false, reason} ===");
+// claim-unavailable:开箱已接管 ch2。换到 ch5 ⇒ 回执 unavailable,会话回滚 ⇒ 仍是 ch2 / active。
+await withInput("scenario=claim-unavailable", async (b, seen) => {
+    const st0 = seen.get("scvb.state:last");
+    check(
+        st0 && st0.channel_id === 2 && st0.claim === "active",
+        `claim-unavailable 开箱应 ch2 / active,实得 ${JSON.stringify(st0 && { ch: st0.channel_id, claim: st0.claim })}`,
+    );
+    const r = await b.setChannelId(5);
+    check(
+        r &&
+            r.ok === false &&
+            r.reason === "unavailable" &&
+            r.conflict === undefined,
+        `claim-unavailable setChannelId(5) 应 {ok:false,reason:"unavailable"},实得 ${JSON.stringify(r)}`,
+    );
+    const again = await b.setChannelId(2); // 重选当前通道 = 真桥快路径,不重建段 ⇒ 成功
+    check(
+        again && again.ok === true,
+        `claim-unavailable 重选当前 ch2 应 {ok:true},实得 ${JSON.stringify(again)}`,
+    );
+    const g = await b.setGroupId(2);
+    check(
+        g && g.ok === false && g.reason === "unavailable",
+        `claim-unavailable setGroupId(2) 应 {ok:false,reason:"unavailable"},实得 ${JSON.stringify(g)}`,
+    );
+    const st = await awaitSeen(
+        seen,
+        "scvb.state",
+        (v) => v.group_id === 2,
+        "切组失败后的 scvb.state",
+    );
+    check(
+        st && st.channel_id === 0 && st.claim === "idle",
+        `新组建段失败后应 channel_id 0 / claim idle(§5.2 ② 支),实得 ${JSON.stringify(st && { ch: st.channel_id, claim: st.claim })}`,
+    );
+    log(
+        `  setChannelId(5) → ${JSON.stringify(r)};setGroupId(2) → ${JSON.stringify(g)}`,
+    );
+});
+// claim-abi-mismatch:开箱未分配。第一次点卡 ⇒ 回执 abiMismatch,claim 随之 abiMismatch 且带 abi_remote。
+await withInput("scenario=claim-abi-mismatch", async (b, seen) => {
+    const r = await b.setChannelId(4);
+    check(
+        r && r.ok === false && r.reason === "abiMismatch",
+        `claim-abi-mismatch setChannelId(4) 应 {ok:false,reason:"abiMismatch"},实得 ${JSON.stringify(r)}`,
+    );
+    const st = await awaitSeen(
+        seen,
+        "scvb.state",
+        (v) => v.claim === "abiMismatch",
+        "abi 不符后的 scvb.state",
+    );
+    check(
+        st &&
+            st.channel_id === 0 &&
+            Number.isInteger(st.abi_remote) &&
+            st.abi_remote !== st.abi,
+        `abi 不符后应 channel_id 0 且带不同的 abi_remote,实得 ${JSON.stringify(st && { ch: st.channel_id, abi: st.abi, abi_remote: st.abi_remote })}`,
+    );
+    const rel = await b.setChannelId(0); // 释放不 claim 任何段 ⇒ 真桥不会失败
+    check(
+        rel && rel.ok === true,
+        `claim-abi-mismatch setChannelId(0) 应 {ok:true},实得 ${JSON.stringify(rel)}`,
+    );
+    log(
+        `  setChannelId(4) → ${JSON.stringify(r)};setChannelId(0) → ${JSON.stringify(rel)}`,
+    );
+});
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

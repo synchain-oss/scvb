@@ -95,6 +95,10 @@ export const SCENARIO_MAP = Object.freeze({
     "abi-mismatch": "fifteen-tracks",
     "sr-mismatch": "fifteen-tracks",
     "group-mismatch": "fifteen-tracks",
+    // [SL-463 / J156] Input 认领的**非冲突**失败(契约 §3.2/§3.3 `{ok:false, reason}`):
+    // 点卡 / 切组的回执是失败,界面要抖卡 + 弹说明 toast。开箱态由 buildWorld 的场景覆写给。
+    "claim-unavailable": "fifteen-tracks",
+    "claim-abi-mismatch": "fifteen-tracks",
     // T31 接线两档:落在健康满配世界上,由 buildWorld 的场景覆写改快照初值
     // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
     "print-guard": "fifteen-tracks",
@@ -421,6 +425,9 @@ export function buildWorld(opts = {}) {
         loop: { ...HOST_LOOP },
         occupiedMask: ALL_CHANNELS_MASK,
         groupConflict: false,
+        // [SL-463 / J156] Input 认领的非冲突失败:null | "unavailable" | "abiMismatch"
+        // (由 claim-unavailable / claim-abi-mismatch 两个场景置,语义见 juce-bridge-mock.js §3.2/§3.3)。
+        claimFailure: null,
         ringFull: false,
         noTimeline: false,
         // [SL-354] 「状态回声延后一拍」—— 只有开了它,mock 的时序才与真桥同形。
@@ -897,6 +904,35 @@ export function buildWorld(opts = {}) {
         inputClaim = "idle";
         groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output
         caps.occupiedMask = 0; // 本组(B)无其它 Input
+    } else if (opts.scenario === "claim-unavailable") {
+        // [SL-463 / J156] 开箱已接管 ch2(组 A);之后点别的卡 / 切组,建段都失败 ⇒ 回执
+        // {ok:false, reason:"unavailable"}。本组没有别的 Input(不让冲突先截走这次点击)。
+        const connected = connectedInputSnapshot(2);
+        inputSnapshot = {
+            ...connected,
+            conn: { ...connected.conn, occupiedMask: 1 << 1 }, // 只有本实例占 ch2
+        };
+        inputClaim = "active";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "unavailable";
+    } else if (opts.scenario === "claim-abi-mismatch") {
+        // [SL-463 / J156] 开箱未分配;本组 registry 由另一 abi 的 SCVB 建 ⇒ 第一次点卡回执
+        // {ok:false, reason:"abiMismatch"},claim 随之变 abiMismatch(红 pill + 横幅)。
+        // 开箱的 claim 还是 unassigned:真桥在打开 registry 之前探测不到对端 abi。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 0,
+            group_id: 1,
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 0,
+            },
+            config: { config_seq: 42 },
+        });
+        inputClaim = "unassigned";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "abiMismatch";
     }
 
     // ---- Input 首启链的开箱位([J80] T48)---------------------------------------
