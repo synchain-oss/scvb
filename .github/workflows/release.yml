@@ -113,6 +113,9 @@ jobs:
 
           # 同一个 tag 重跑:已有**草稿**就覆盖资产并把正文重置为新的 summary(否则正文里的 SHA-256
           # 会是上一次的);已发布的 Release 一律不碰。三种状态各走各的分支,不靠真值语义兜底。
+          # 「没有 Release」是正常路径上的非零退出:显式关掉 native 命令的 ErrorActionPreference 联动,
+          # 不让它在 $found 求值之前变成终止错误(pwsh 7.3+ 才有这个变量,默认 false,这里写死不依赖默认)。
+          $PSNativeCommandUseErrorActionPreference = $false
           $isDraft = gh release view "$env:TAG_NAME" --json isDraft -q .isDraft 2>$null
           $found = ($LASTEXITCODE -eq 0)
           # 已发布 ⇒ 有意判红(不是 exit 0):重跑一个已发布的 tag 需要人来看一眼,别当 bug 改成放行。
