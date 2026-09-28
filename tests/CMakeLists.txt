@@ -60,6 +60,7 @@ add_executable(scvb_tests
   core/test_input_state.cpp
   core/test_input_session.cpp
   core/test_input_bridge_ipc.cpp
+  core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
   core/test_output_session.cpp
@@ -316,6 +317,7 @@ endif()
 if(WIN32)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
+  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
