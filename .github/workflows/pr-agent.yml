@@ -20,10 +20,11 @@ jobs:
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest # 容器 action,slim 无 docker daemon 会挂
     permissions:
-      issues: write # 只给这两个;故意不给 contents: write —— 收窄爆炸半径
+      issues: write
       pull-requests: write
+      contents: read # C05 实测补:actions/checkout 克隆必需(06 §3.6 权限行遗漏,已勘误);仍不给 contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
       - uses: qodo-ai/pr-agent@8e4d32e5497defd43c023a404f73560c62728961 # v0.39.0 —— pin 到 commit SHA,升级手动改
         env:
@@ -36,11 +37,17 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.DEEPSEEK_KEY }}
           ANTHROPIC_API_BASE: https://api.deepseek.com/anthropic
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 模型基线(用户决策 2026-08-10):默认 deepseek-v4-flash;litellm 不认 [1M] 括号,永远用裸名
-          config.model: anthropic/deepseek-v4-flash
-          config.fallback_models: anthropic/deepseek-v4-pro
-          config.custom_model_max_tokens: 1000000 # 1M 档;切回不带 [1M] 的 pro 时改回 131072
-          config.max_model_tokens: 900000 # 同上;切回 pro 时改回 120000
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # C05 实测补:v0.39.0 容器同时读标准名;与点号键同值双写
+          # 模型基线(用户决策 2026-08-10 默认 flash;2026-09-10 改为 deepseek-flash(永久 id),回退用 v4 flash):litellm 不认 [1M] 括号,永远用裸名
+          config.model: anthropic/deepseek-flash
+          config.fallback_models: anthropic/deepseek-v4-flash
+          config.custom_model_max_tokens: 1000000 # 1M 档;换成不带 1M 上下文的 id 时改回 131072
+          config.max_model_tokens: 850000 # 输入输出共用 1M 上下文,给输出留出 131072 以上;换 131072 档时三项要一起改,且输入+输出须小于窗口并留余量,如 131072 / 90112 / 32768
+          # config.max_output_tokens 不设时默认 0,请求不带输出上限,由服务端默认值兜底;deepseek-flash 带推理(reasoning_effort=medium),
+          # 实测约 4K 就被推理吃完,导致 "Empty content in model response, finish_reason: length",review/code-suggestions 全空跑但 job 仍报绿。
+          # 32768 在约 270K token 的 PR 上也不够(推理本身就用了 22–27K);按实际用量计费,上限设高不会多花钱。
+          config.max_output_tokens: 131072
+          config.ai_timeout: 300 # 默认 120s;输出上限抬到 131072 且带推理后,大 PR 单次生成可能超过 120s,超时同样是「不出内容而 job 报绿」
           # 必须显式含 "synchronize",否则 push 更新 PR 不复审(action runner 源码默认不处理 synchronize)
           github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "synchronize"]'
           github_action_config.auto_review: "true"
