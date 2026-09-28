@@ -40,15 +40,21 @@ jobs:
     runs-on: ubuntu-latest # V-4 确认前一律 latest(§4.2 口径注)
     timeout-minutes: 20
     steps:
+      # 回帖的 id 留给后面「核对有没有发出审查总结」那一步:只数这条之后的评论。
       - name: Ack
+        id: ack
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
-        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "已收到 /review,开始审查。"
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="已收到 /review,开始审查。" -q .id)
+          case "$id" in '' | *[!0-9]*) echo "::error::unexpected ack comment id: '$id'"; exit 1 ;; esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
       # PR 的 diff 一旦触及 .github/workflows/,立即中止,改由维护者本地人工审。
       # 本 job 不签出 PR 代码,PR 里改过的 workflow 在这里不会被执行;这一步是纵深防御:
       # 改 workflow 的 PR 不该只凭一次 AI 审查放行。
+      # 回帖成功后留一个标记文件,末尾的「失败回帖」见到它就不再重复回一条。
       - name: Assert PR does not touch workflows
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,7 +64,8 @@ jobs:
           echo "$files"
           if echo "$files" | grep -qE '^\.github/workflows/'; then
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
-              --body "该 PR 修改了 .github/workflows/,按安全策略不能通过 /review 审查;请维护者本地拉分支人工审。"
+              --body "该 PR 修改了 .github/workflows/,按安全策略不能通过 /review 审查;请维护者本地拉分支人工审。" &&
+              touch "$RUNNER_TEMP/review-dispatch-reported"
             exit 1
           fi
 
@@ -111,7 +118,10 @@ jobs:
           pre="## 本次运行的前提(维护者 /review 手动触发)
           工作区签出的是 PR 的目标分支 ${BASE},不是 PR 的代码 —— 这条通道出于安全考虑不签出 PR 代码。
           PR 的改动一律用 \`gh pr diff ${PR}\` 读;Read / Glob / Grep 读到的是目标分支上的文件(契约文档、改动前的上下文),
-          不要把工作区里的文件当成 PR 改动后的样子。下面是常规审查说明。"
+          不要把工作区里的文件当成 PR 改动后的样子。
+          inline comment 的行号以 \`gh pr diff\` 里改动后那一侧的行号为准;Read 读到的是改动前的文件,行号对不上。
+          本次没有进度评论,你的最终输出不会出现在 PR 上:审查总结(含最后的结论)必须用 \`gh pr comment ${PR}\` 发一条到 PR 上。
+          下面是常规审查说明。"
           d="EOF_$(openssl rand -hex 16)"
           {
             echo "prompt<<$d"; printf '%s\n\n%s\n' "$pre" "$prompt"; echo "$d"
@@ -122,9 +132,45 @@ jobs:
       # 不开 track_progress:在 issue_comment 上它会把 action 切到 tag 模式,
       # 而 tag 模式会自己 fetch 并签出 PR head,还会追加改文件与 git commit/push 的工具,正是这里要避开的。
       # 给了 prompt 就是 agent 模式:不切分支,工具只有 claude_args 里 --allowedTools 列出的那些。
+      # base_branch:agent 模式下 action 从这个分支恢复 .claude/、CLAUDE.md 等配置路径,不传就取默认分支,
+      # 会和上面签出的目标分支对不上(CLAUDE.md 是 prompt 要求先读的文件之一)。
+      # 这一步自己的超时比 job 的 20 分钟短:超时按这一步失败处理,job 还剩时间跑末尾的失败回帖。
       - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main, Claude Code 2.1.280
+        timeout-minutes: 17
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch: ${{ steps.pr.outputs.base }}
           prompt: ${{ steps.cfg.outputs.prompt }}
           claude_args: ${{ steps.cfg.outputs.args }}
+
+      # 没有进度评论,模型的最终输出不会自动出现在 PR 上;模型跑完却没发总结时,
+      # PR 上只剩 Ack 那一句,看起来和「审过、没问题」一样。这里核一次:Ack 之后
+      # 至少要有一条 github-actions[bot] 的 issue 评论,且不是本 workflow 的固定回帖。
+      # 只防「一条总结都没发」:同一时间窗里别的 workflow 也以这个身份发了评论时,这一步会放行。
+      - name: Assert a review summary was posted
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          ACK_ID: ${{ steps.ack.outputs.id }}
+        run: |
+          case "$ACK_ID" in '' | *[!0-9]*) echo "::error::missing ack comment id: '$ACK_ID'"; exit 1 ;; esac
+          q='.[] | select(.user.login == "github-actions[bot]" and .id > '"$ACK_ID"')'
+          q="$q"' | select((.body | startswith("已收到 /review")) or (.body | startswith("/review 未完成")) | not) | .id'
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q "$q")
+          [ -n "$ids" ] || { echo "::error::review finished without posting a summary comment on PR #$PR"; exit 1; }
+          echo "summary comment id(s):"; echo "$ids"
+
+      # 任何一步红了(含上面审查那一步超时)或 job 被取消(包括被新的 /review 顶掉),PR 上都要有下文 ——
+      # 否则 Ack 之后再无动静,与「审过、没问题」无从区分。
+      # 「PR 改了 workflows」那一步回过帖时会留标记文件,这里见到就不再重复。
+      - name: Report failure on the PR
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ ! -e "$RUNNER_TEMP/review-dispatch-reported" ] || exit 0
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+            --body "/review 未完成:本次审查失败、超时或被取消(例如又发了一次 /review),PR 上没有审查结论不代表没有问题。日志:$RUN_URL"
