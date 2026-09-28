@@ -13,7 +13,10 @@ juce_add_plugin(SCVBMonitor
   FORMATS                  VST3
   PRODUCT_NAME             "SCVB Monitor"
 
-  VST3_CATEGORIES          "Fx"
+  # [J151] 子分类 Fx → Analyzer:Monitor 只读、音频原样直通,归到宿主插件浏览器的「分析器」
+  # 一类。JUCE 把列表用 | 拼起来,生成的子分类串 = "Fx|Analyzer"(VST3 SDK 的
+  # PlugType::kFxAnalyzer);Input / Output 仍是 "Fx"。
+  VST3_CATEGORIES          "Fx" "Analyzer"
 
   BUNDLE_ID                "com.synchain.scvb.monitor"
 
