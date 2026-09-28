@@ -212,7 +212,7 @@ juce::var OutputEditor::buildSnapshot()
     put(o, "session_guid", juce::var(processor_.sessionGuid()));
     juce::var version = obj();
     // 版本串取 JUCE 由 CMake project(VERSION) 生成的宏,与 Input / Monitor 同形。此前是字面量 "0.1.0",
-    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚与「说明文档」按钮都跟着错)。
+    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚版本号跟着错)。
     put(version, "plugin", JucePlugin_VersionString);
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);
@@ -330,6 +330,9 @@ void OutputEditor::emitTick()
     // [SL-478] 横幅⑥ 的生产者。条件是 processor 定时器里去抖过的值(0.5s,与清注入 mask 同一判据),
     // 所以这里逐拍调用不会让横幅随单块抖动翻转;边沿/撤销/不可见不记账由 plan 管。
     emitNoTimelineError();
+    // [SL-218] 横幅⑪ 的生产者。条件是 processor 的位图(载入时整份重算,清零时机见其声明处),
+    // 与 `newerState` 一样收在这一拍:编辑器打开前就载入过的,bridgeReady_ 后第一拍看见。
+    emitStateNotRestoredError();
 }
 
 // ============================================================================
@@ -825,6 +828,31 @@ void OutputEditor::emitSrMismatchError()
     srMismatchShownOutSr_ = plan.nextShown.outputSr;
 }
 
+// [SL-218] §2.9 `scvb.error` 的 `stateNotFullyRestored` 一档(§5.1 琥珀横幅⑪)。
+// envelope:code + `detail:{missing, rejected}` + active,**不带 ch**(页级条件)。
+// 两张表由纯函数 `notRestoredFourccs`(StateRestoreDiag.h)从位图算出;撤销帧同样带 detail
+// (取的是此刻的位图 = 0 ⇒ 两张空表),web 侧撤销只看 code + active,不读它。
+// 记账口径与 `emitNewerStateError` 同款(按 plan 已采到的可见性回填,理由见那一段)。
+void OutputEditor::emitStateNotRestoredError()
+{
+    const std::uint8_t mask = processor_.stateNotRestoredMask();
+    const auto plan = scvb::output::planStateNotRestoredEmit(mask, webView().isVisible(), stateNotRestoredShown_);
+    if (!plan.send)
+        return;
+    const auto lists = scvb::output::notRestoredFourccs(mask);
+    juce::var missing = mkArray();
+    for (const char* f : lists.missing)
+        push(missing, juce::String(f));
+    juce::var rejected = mkArray();
+    for (const char* f : lists.rejected)
+        push(rejected, juce::String(f));
+    juce::var detail = obj();
+    put(detail, "missing", missing);
+    put(detail, "rejected", rejected);
+    emitError("stateNotFullyRestored", 0, detail, plan.active);
+    stateNotRestoredShown_ = plan.nextShownMask;
+}
+
 // ============================================================================
 // 载荷构造
 // ============================================================================
@@ -959,7 +987,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
-    put(printGuard, "pending", rt.printGuardPending);
+    put(printGuard, "pending", processor_.printGuardPending());
     put(o, "print_guard", printGuard);
 
     juce::var recapture = obj();
@@ -2496,7 +2524,7 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
 
 void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
 {
-    processor_.runtime().printGuardPending = false; // 幂等(§1.34)
+    processor_.confirmPrintGuard(); // 幂等(§1.34)
     c(okResp());
 }
 
