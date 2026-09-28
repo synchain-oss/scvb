@@ -204,6 +204,18 @@ log("=== ② mock 端到端(?host=)===");
     dflt.stop();
     // 导览 demo 快照:宿主 other(导览期三条恒不出的前提)
     eq(MD.FIFTEEN_TRACKS.snapshot.host, "other", "导览 demo 快照 host = other");
+    // 导览 demo store 与真 store 同形:host 留在 snapshot 旁路,不混进 state 子树
+    const TOUR = await import(u("web/output/tour.js"));
+    const demo = TOUR.buildDemoStore();
+    eq(
+        HH.snapshotHost(demo.snapshot),
+        "other",
+        "导览 demo store 读出的宿主 = other",
+    );
+    check(
+        !Object.prototype.hasOwnProperty.call(demo.state, "host"),
+        "导览 demo store 的 state 子树里没有 host(快照专属键)",
+    );
 }
 
 // =============================================================================
