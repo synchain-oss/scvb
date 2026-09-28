@@ -13,11 +13,16 @@
     ④ 生成 INSTALL.txt:安装路径、九条使用规则的前 3 条(从用户手册的生成区原样取,不在这里抄第二份)、
        未签名插件的「解除锁定 / SmartScreen」步骤(U13)、精确到 tag 的源码声明。
     ⑤ zip 根目录带 LICENSE.txt(= 仓库 LICENSE,GPLv3 全文)、THIRD-PARTY-NOTICES.md、LICENSES/ 全部许可证
-       全文;THIRD-PARTY-NOTICES.md「随二进制分发」表点名的每个许可证 + 本项目的 GPL-3.0-or-later 都必须
-       在 LICENSES/ 里有全文,缺就红(演练 tag 用 -AllowMissingLicenseTexts 降为警告)。
+       全文、third_party/notices/ 全部上游版权 / 许可声明原文(与仓库同一相对路径,所以 NOTICES 里写的
+       `third_party/notices/...` 在解压目录里原样可查);THIRD-PARTY-NOTICES.md「随二进制分发」表点名的每个
+       许可证 + 本项目的 GPL-3.0-or-later 都必须在 LICENSES/ 里有全文,缺就红(演练 tag 用
+       -AllowMissingLicenseTexts 降为警告)。THIRD-PARTY-NOTICES.md 全文里点名的每个声明文件路径
+       (`third_party/notices/<文件>` / `LICENSES/<文件>`)都必须是仓库里存在、且在上面打包范围内的文件,
+       否则红,演练 tag 也不放行。
        U2 裁定不附 LICENSE-EXCEPTION.md,所以没有它。
     ⑥ 打包后重新打开 zip 断言:三个 bundle 的 DLL 条目、上面每个合规文件、INSTALL.txt 的源码声明行都在;
-       每个条目解出来的字节与源文件逐一比哈希;根目录不许有清单外的东西。
+       THIRD-PARTY-NOTICES.md 点名的每个声明文件路径在 zip 里都有同名条目;每个条目解出来的字节与源文件
+       逐一比哈希;根目录不许有清单外的东西(third_party/ 下只许有 notices/)。
   确定性:条目按序数排序,时间戳统一取 SOURCE_DATE_EPOCH / HEAD 提交时间(都取不到才用 1980-01-01),
   所以同一份输入在同一运行时下重跑,zip 的 sha256 不变。不同 .NET 运行时(PS 5.1 与 7)的 deflate
   实现不同,跨运行时不保证字节一致。
@@ -144,6 +149,17 @@ $licenseFiles = @(Get-ChildItem -LiteralPath $licenseDir -File)
 foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $f) -PathType Leaf)) { Fail "仓库根缺 $f" }
 }
+# third_party/notices/ 下的全部文件(JUCE 内置库与 WebView2 loader 的上游版权 / 许可声明原文,例如
+# HarfBuzz 的逐行版权只写在 harfbuzz.COPYING 里)都进 zip,zip 内路径与仓库相同。
+# 键 = zip 内路径,值 = 源文件全路径。
+$noticesDir = Join-Path $RepoRoot 'third_party\notices'
+if (-not (Test-Path -LiteralPath $noticesDir -PathType Container)) { Fail '仓库缺 third_party/notices/ 目录' }
+$noticesRoot = (Get-Item -LiteralPath $noticesDir).FullName.TrimEnd('\', '/')
+$noticeFiles = @{}
+foreach ($f in @(Get-ChildItem -LiteralPath $noticesRoot -Recurse -File)) {
+  $noticeFiles[('third_party/notices/' + $f.FullName.Substring($noticesRoot.Length).TrimStart('\', '/').Replace('\', '/'))] = $f.FullName
+}
+if ($noticeFiles.Count -eq 0) { Fail 'third_party/notices/ 下没有任何文件' }
 # 「随二进制分发」表里每个许可证(第 3 列开头的 SPDX 标识)都必须在 LICENSES/ 里有全文
 # (文件名 = <SPDX>.<任意扩展名>);再加本项目自己的 GPL-3.0-or-later。表读不出行即判红,不当成「没有依赖」。
 $notices = [IO.File]::ReadAllLines((Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md'), [Text.Encoding]::UTF8)
@@ -174,6 +190,28 @@ if ($missingLicenseTexts.Count -gt 0) {
   if ($AllowMissingLicenseTexts) { Write-Host "[WARN] $msg —— 演练模式放行,记进 package-summary.md" -ForegroundColor Yellow }
   else { Fail $msg }
 }
+# THIRD-PARTY-NOTICES.md 全文(不止「随二进制分发」表:HarfBuzz 的指向写在「版权行」一节)里点名的每个
+# 声明文件路径 —— `third_party/notices/<文件>` 与 `LICENSES/<文件>`,以 / 结尾的目录引用不算 —— 都必须是
+# 本次要打进 zip 的文件。NOTICES 进 zip 后,这些路径就是用户手里唯一的指引,指向包里没有的文件等于没给。
+# 打包后 ⑥ 再对 zip 本身判一次。演练 tag 也不放行:缺的不是全文,是 NOTICES 自己许诺的原文。
+$citedNoticePaths = New-Object System.Collections.Generic.List[string]
+foreach ($m in [regex]::Matches(($notices -join "`n"), '(?<![\w./-])((?:third_party/notices|LICENSES)/[A-Za-z0-9._+-]+)')) {
+  $p = $m.Groups[1].Value.TrimEnd('.')   # 句末句点不属于路径
+  if ($p.EndsWith('/')) { continue }      # 「目录/...」这类省略写法剥完句点只剩目录,不是文件引用
+  if (-not $citedNoticePaths.Contains($p)) { $citedNoticePaths.Add($p) }
+}
+# 一个都读不出来说明写法变了(比如改成了别的路径前缀),不当成「没有引用」静默放行。
+if ($citedNoticePaths.Count -eq 0) { Fail 'THIRD-PARTY-NOTICES.md 里没读到任何 third_party/notices/<文件> 或 LICENSES/<文件> 形态的路径(写法变了?)' }
+foreach ($p in $citedNoticePaths) {
+  $packed = $noticeFiles.ContainsKey($p)
+  if (-not $packed -and $p -match '^LICENSES/([^/]+)$') {
+    $name = $Matches[1]
+    $packed = [bool]($licenseFiles | Where-Object { $_.Name -eq $name })
+  }
+  if ($packed) { continue }
+  if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $p) -PathType Leaf)) { Fail "THIRD-PARTY-NOTICES.md 点名了 $p,仓库里没有这个文件" }
+  Fail "THIRD-PARTY-NOTICES.md 点名了 $p,它不在打包清单里(只打 LICENSES/ 顶层文件与 third_party/notices/ 全部文件)"
+}
 
 # ── ④ INSTALL.txt ─────────────────────────────────────────────────────────────
 $sourceUrl = "https://github.com/$RepoSlug/tree/$Tag"
@@ -201,6 +239,7 @@ $install.AddRange([string[]]@(
   '  SCVB Output.vst3    required - goes on the vocal bus',
   '  SCVB Monitor.vst3   optional - read-only window for watching a whole group; install it only if you want it',
   '  LICENSE.txt, THIRD-PARTY-NOTICES.md, LICENSES\   licence texts',
+  '  third_party\notices\   original copyright and licence notices of the third-party code built into the plugins',
   '  INSTALL.txt         this file',
   'Input and Output are a pair and share one version number. Install both from the same zip.',
   '',
@@ -237,7 +276,7 @@ $install.AddRange([string[]]@(
   "All nine rules: $guideEn",
   '',
   'Licence: SCVB is free software under the GNU GPL v3 or later (LICENSE.txt).',
-  'Third-party components and their licences: THIRD-PARTY-NOTICES.md and LICENSES\.',
+  'Third-party components and their licences: THIRD-PARTY-NOTICES.md, LICENSES\ and third_party\notices\.',
   "Issues: https://github.com/$RepoSlug/issues",
   '',
   '== 中文 ==',
@@ -247,6 +286,7 @@ $install.AddRange([string[]]@(
   '  SCVB Output.vst3    必装 —— 插在人声总线上',
   '  SCVB Monitor.vst3   可选 —— 只读的整组观察窗,需要才装',
   '  LICENSE.txt、THIRD-PARTY-NOTICES.md、LICENSES\   许可证全文',
+  '  third_party\notices\   编进插件的第三方代码的上游版权与许可声明原文',
   '  INSTALL.txt         本文件',
   'Input 与 Output 是一对,共用一个版本号,请从同一个 zip 里一起安装。',
   '',
@@ -279,17 +319,18 @@ $install.AddRange([string[]]@(
   "完整九条:$guideZh",
   '',
   '许可证:SCVB 以 GNU GPL v3 或更高版本发布(LICENSE.txt);第三方组件及其许可证见',
-  'THIRD-PARTY-NOTICES.md 与 LICENSES\。',
+  'THIRD-PARTY-NOTICES.md、LICENSES\ 与 third_party\notices\。',
   "问题反馈:https://github.com/$RepoSlug/issues",
   ''
 ))
 # 中文一段里的 ** 是写给自己看的强调,txt 不渲染 markdown,落盘前剥掉。
 $installText = (($install.ToArray() -join "`r`n") -replace '\*\*', '')
 
-# -Preflight:只做不依赖构建产物的检查(版本 / tag、许可证全文覆盖、INSTALL.txt 的规则提取)就退出。
+# -Preflight:只做不依赖构建产物的检查(版本 / tag、许可证全文覆盖、NOTICES 点名的声明文件、
+# INSTALL.txt 的规则提取)就退出。
 # release.yml 的 verify-tag 在 20 分钟的构建之前先跑它,这几类问题不必等构建完才红。
 if ($Preflight) {
-  Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,规则 en/zh 各 3 条)"
+  Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,NOTICES 点名的声明文件 $($citedNoticePaths.Count) 个已核,规则 en/zh 各 3 条)"
   exit 0
 }
 
@@ -334,6 +375,7 @@ try {
   $entries['LICENSE.txt'] = (Join-Path $RepoRoot 'LICENSE')
   $entries['THIRD-PARTY-NOTICES.md'] = (Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md')
   foreach ($f in $licenseFiles) { $entries[('LICENSES/' + $f.Name)] = $f.FullName }
+  foreach ($k in $noticeFiles.Keys) { $entries[$k] = $noticeFiles[$k] }
   $entries['INSTALL.txt'] = $installPath
 
   $keys = [string[]]@($entries.Keys)
@@ -373,15 +415,24 @@ try {
       if (-not $inZip.ContainsKey($k)) { Fail "zip 内缺条目:$k" }
       if ($inZip[$k] -ne (Get-Sha256 $entries[$k])) { Fail "zip 内条目与源文件字节不一致:$k" }
     }
+    # NOTICES 点名的每个声明文件路径,在用户实际拿到的 zip 里逐个核对(打包前核的是仓库侧)。
+    # 排在下面的必需条目清单之前:漏打 third_party/notices/ 时先报的是「哪条引用落空」。
+    foreach ($p in $citedNoticePaths) {
+      if (-not $inZip.ContainsKey($p)) { Fail "THIRD-PARTY-NOTICES.md 点名的 $p 不在 zip 里(用户包里这条指引会落空)" }
+    }
     $required = @('LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
     foreach ($f in $licenseFiles) { $required += ('LICENSES/' + $f.Name) }
+    foreach ($k in $noticeFiles.Keys) { $required += $k }
     foreach ($b in $ExpectedBundles) { $required += "$b/Contents/x86_64-win/$b" }
     foreach ($r in $required) { if (-not $inZip.ContainsKey($r)) { Fail "zip 内缺必需条目:$r" } }
-    # 根目录白名单:三个 bundle 目录、LICENSES/、三个根文件,别的都不该出现。
-    $allowedTop = @($ExpectedBundles) + @('LICENSES', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
+    # 根目录白名单:三个 bundle 目录、LICENSES/、third_party/(其下只许 notices/)、三个根文件,别的都不该出现。
+    $allowedTop = @($ExpectedBundles) + @('LICENSES', 'third_party', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
     foreach ($n in $inZip.Keys) {
       $top = ($n -split '/', 2)[0]
       if ($allowedTop -notcontains $top) { Fail "zip 根目录出现清单外的条目:$n" }
+      if ($top -eq 'third_party' -and -not $n.StartsWith('third_party/notices/', [StringComparison]::Ordinal)) {
+        Fail "zip 的 third_party/ 下出现 notices/ 以外的条目:$n"
+      }
     }
     $installEntry = $zr.GetEntry('INSTALL.txt')
     $rd = New-Object System.IO.StreamReader($installEntry.Open(), [Text.Encoding]::UTF8)
@@ -412,6 +463,8 @@ try {
     "| cmakeVersion | $cmakeVersion |",
     "| bundles | $($ExpectedBundles -join ', ') |",
     "| missingLicenseTexts | $(if ($missingLicenseTexts.Count -gt 0) { ($missingLicenseTexts -join ', ') + ' (pipeline test only - must be empty for a real release)' } else { 'none' }) |",
+    "| thirdPartyNotices | $($noticeFiles.Count) files under third_party/notices/ |",
+    "| citedNoticePaths | $($citedNoticePaths -join ', ') (every file path THIRD-PARTY-NOTICES.md cites is in the zip) |",
     '',
     "Corresponding source: $sourceUrl",
     '',
