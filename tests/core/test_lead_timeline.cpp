@@ -61,7 +61,7 @@ PipelineConfig makeConfig(std::size_t numHops, int activeTracks)
 }
 
 // 三轨同时发声(同一包络,能量相同)—— 每个区间三轨都活跃,指派结果只由槽位规则决定。
-// 轨 1(下标 0)优先级拉到 10:没有主唱时它拿中心槽(02 §5.3 p_target),
+// 轨 1(下标 0)优先级压到 0:优先级高 → 角度大(02 §5.3 p_target),所以最低的那条拿中心槽;
 // 这样「选轨 2 当主唱」与「没选」给出的中心轨不同,两种结果可区分。
 struct ThreeVoices
 {
@@ -74,7 +74,7 @@ struct ThreeVoices
             features[static_cast<std::size_t>(t)] = makeAlternating(4, 80, 60, 0.05f);
         }
         cfg = makeConfig(features[0].kwMs.size(), 3);
-        cfg.tracks[0].priority = 10.0;
+        cfg.tracks[0].priority = 0.0;
     }
 };
 
@@ -262,7 +262,7 @@ TEST_CASE("SL216 LEAD 坏块整块不用;更高 minor 单列", "[analysis][lead]
 // 管线:主唱进槽位/平衡计算
 // ---------------------------------------------------------------------------
 
-TEST_CASE("SL216 管线:没有记录 → 优先级最高的轨 1 拿中心(前提:可区分)", "[analysis][lead][sl216][pipeline]")
+TEST_CASE("SL216 管线:没有记录 → 优先级最低的轨 1 拿中心(前提:可区分)", "[analysis][lead][sl216][pipeline]")
 {
     ThreeVoices v;
     const auto res = runAnalysisPipeline(v.features, v.cfg);

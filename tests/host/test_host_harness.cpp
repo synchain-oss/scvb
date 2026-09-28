@@ -11961,6 +11961,10 @@ TEST_CASE("HOST SL-216:lead_select 记录随工程存取;完整工程无 LEAD �
     CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
 
     // 完整工程但没有 LEAD(旧工程 / 从没播过):记录清空,不能把上一份工程的主唱带进来。
+    // 载入前先放几块、**不泵消息**:这几块还留在音频线程队列里(是上一份工程的播放),
+    // 载入必须把它们一并丢掉,不能在下一次排干时混进新工程。
+    setLeadSelect(r.out, 7);
+    r.runBlocks(10, 0.25f, /*pumpEveryN=*/0);
     const auto noLead = blobWithout(full, scvb::state::kFourccLead);
     r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
     Rig::pumpMessages(60);
@@ -12000,6 +12004,12 @@ TEST_CASE("HOST SL-216:更高 minor 的 LEAD 块原样回写,不被内存里的�
     Rig::pumpMessages(60);
     CHECK(r.out.leadTimelineSnapshot().empty()); // 不认识 → 分析按「没有记录」
 
+    // 再载一份只带 PRMS 的预设:loadedChunks_ 被整个换成 {PRMS},那份更高 minor 的字节
+    // 只剩自留的那一份 —— 保存时仍必须写回它。
+    const auto presetOnly = blobKeeping(full, {scvb::state::kFourccPrms});
+    r.out.setStateInformation(presetOnly.data(), static_cast<int>(presetOnly.size()));
+    Rig::pumpMessages(60);
+
     // 再播一段(内存里有了新记录),保存:LEAD 仍是那份更高 minor 的原始字节。
     r.runBlocks(20);
     juce::MemoryBlock saved;
@@ -12027,4 +12037,20 @@ TEST_CASE("HOST SL-216:长时间播放不分析不存盘,记录队列由定时�
     CHECK(runs[0].lead == 4);
     CHECK(runs[0].t0 == start);
     CHECK(runs[0].t1 == start + static_cast<std::int64_t>(kBlocks) * kBlock);
+}
+
+TEST_CASE("HOST SL-216:走带停住时不记录(定位点上的值不代表那段时间被播过)", "[host][sl216]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 2);
+    r.runBlocks(20);
+    const auto before = r.out.leadTimelineSnapshot();
+    REQUIRE(before.size() == 1);
+
+    // 停住、换值、空转:宿主照样调 processBlock(t0 不动),但这不算「播过」。
+    r.ph.playing = false;
+    setLeadSelect(r.out, 9);
+    r.runBlocks(20);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
 }
