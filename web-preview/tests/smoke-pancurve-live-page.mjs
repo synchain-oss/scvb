@@ -470,6 +470,25 @@ const settled = () =>
         5000,
     );
 
+// 按下之前:收掉可能晚到的 tour 询问卡,并断按下点此刻命中的是画布本身(不是罩层 / 工具条)。
+const ensureHit = (pt) =>
+    waitFor(
+        IN(`const later = gb("tour-ask-later");
+            const ov = gb("tour-ask");
+            if (later && ov && !ov.hidden) later.click();
+            const c = gb("master-pancurve-canvas");
+            const fr = f.getBoundingClientRect();
+            return d.elementFromPoint(${pt.x} - fr.left, ${pt.y} - fr.top) === c;`),
+        5000,
+    );
+// 诊断:按下点此刻是什么元素(前提格红了时打出来,别让「没进拖动态」只剩一句话)。
+const whatIsAt = (pt) =>
+    evaluate(
+        IN(`const fr = f.getBoundingClientRect();
+            const el = d.elementFromPoint(${pt.x} - fr.left, ${pt.y} - fr.top);
+            return el ? el.tagName + "." + el.className + "[" + (el.getAttribute("data-gb") || "") + "]" : null;`),
+    );
+
 const minGap = (ps) => {
     let g = Infinity;
     for (let i = 1; i < ps.length; i++) g = Math.min(g, ps[i].t - ps[i - 1].t);
@@ -547,6 +566,19 @@ try {
         ),
         "画布中心点此刻命中画布本身(无遮挡)",
     );
+    // 点集与画布尺寸都到位再动手:首帧 READY 只说明编辑器挂上了,demo 的 6 个点经异步回声进 store、
+    // 画布经 ResizeObserver 定尺寸都可能晚一拍 —— 早按下去 hitTest 落空,整段「没进拖动态」,
+    // 与「没发预览」长得一样(实测 10 次里有 2 次)。
+    check(
+        await waitFor(
+            IN(`const c = gb("master-pancurve-canvas");
+                const r = c.getBoundingClientRect();
+                return w.__SCVB_OUTPUT__.curve().curveSig.split("|").length === 6 &&
+                       r.width > 50 && r.height > 20;`),
+            8000,
+        ),
+        "(p0a)demo 的 6 个点已进 store、画布已布局出真实尺寸",
+    );
     check(await installLog(), "(p0)页内调用日志装上(mock 有 previewPanCurve)");
     assertClean("① 首帧");
 
@@ -558,13 +590,21 @@ try {
     {
         // 第 4 点(angle 0 / 0 dB,bell):离两侧邻点(-24° / 28°)最远,纵向拖不会越过谁。
         const start = await pointXY(0, 0);
+        check(await ensureHit(start), "(p0c)按下点此刻命中画布本身(无罩层)");
         const d0 = await curveDiag();
         const k0 = await logMark();
         await mouse("mousePressed", start.x, start.y);
-        check(
-            (await curveDiag()).dragging === true,
-            "(p0b)pointerdown 后确实进了拖动态",
-        );
+        const pressed = await curveDiag();
+        if (
+            !check(
+                pressed.dragging === true,
+                "(p0b)pointerdown 后确实进了拖动态",
+            )
+        ) {
+            log(
+                `  诊断:按下点 ${JSON.stringify(start)} 处是 ${await whatIsAt(start)};diag=${JSON.stringify(pressed)}`,
+            );
+        }
         // 约 1 秒连续拖:每 ~16 ms 一步,往上抬增益,横向 ±3 px 抖动。
         const tLoop = Date.now();
         let step = 0;
@@ -618,7 +658,7 @@ try {
             `  (拖动 ${loopMs} ms:预览 ${inLoop.length} 份,最小间隔 ${gap.toFixed(1)} ms,全程预览 ${previewsOf(all).length} 份 / 提交 ${commits.length} 次)`,
         );
         check(
-            gap >= 49,
+            gap >= 49.9,
             `(p3)相邻两份预览间隔 ≥ 50 ms(≤ 20 Hz;实得最小间隔 ${gap.toFixed(1)} ms)`,
         );
         check(

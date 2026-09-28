@@ -1075,6 +1075,11 @@ export function createCurveEditor(opts) {
     function schedulePreview(next, srcVersion) {
         local.previewNext = { next, srcVersion };
         if (local.previewTimer) return; // 末发那一拍会取最新一份
+        sendOrArmPreview();
+    }
+
+    /** 窗口空着就发;没空就按剩余时间挂末发定时器。 */
+    function sendOrArmPreview() {
         const wait = local.previewAt + PREVIEW_MIN_INTERVAL_MS - nowMs();
         if (wait <= 0) {
             sendPreview();
@@ -1082,8 +1087,10 @@ export function createCurveEditor(opts) {
         }
         local.previewTimer = setTimeout(() => {
             local.previewTimer = 0;
-            sendPreview();
-        }, wait);
+            // 回到这里再判一次:浏览器按整毫秒排程,定时器可能比 performance.now() 早零点几毫秒
+            // 到(实测相邻两份间隔 49.4 ms)。早了就补挂剩下那一点,保证间隔真的 ≥ 50 ms。
+            sendOrArmPreview();
+        }, Math.ceil(wait));
     }
 
     function sendPreview() {
