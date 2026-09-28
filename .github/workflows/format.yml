@@ -265,7 +265,9 @@ jobs:
         # [SL-538] 铁律第 3 条此前没有机检:compliance.yml 与 release.yml 的 `actions/checkout@v4`
         # 就这样一直留着,直到有人人工翻到。这里逐个取 workflow 与 `.github/actions/` 下复合 action
         # 里 `uses:` 后面的值,判据只有一条:
-        # 本地 action(`./` 开头)放行,其余必须是 `<ref>@<40 位小写十六进制>`。
+        # 本地引用只放行 `./.github/actions/` 与 `./.github/workflows/` 下的(被指向的文件都在
+        # 本步扫描集里;路径含 `..` 不放行),其余必须是 `<ref>@<40 位小写十六进制>`。
+        # 指向别处的 `./…` 判红:那份 action.yml 不在扫描集里,放行就等于不查。
         # 不查 `# vX.Y.Z` 注释(它是给人和 dependabot 看的,钉住执行内容的是 SHA)。
         # 形态上宁红勿漏:加引号、值写在下一行、`docker://` 这类判据没见过的写法一律判红,
         # 真要用再来改这里;`run:` 块里不以 `#` 开头的行出现这个键名,同样按引用判。
@@ -275,7 +277,7 @@ jobs:
           shopt -s nullglob globstar
           files=(.github/workflows/*.yml .github/workflows/*.yaml)
           [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow files under .github/workflows"; exit 1; }
-          # `uses: ./…` 放行的前提是它指向的复合 action 自己也被查;目录不存在时 nullglob 给空
+          # 放行 `./.github/actions/…` 的前提是那里的复合 action 自己也被查;目录不存在时 nullglob 给空
           files+=(.github/actions/**/action.yml .github/actions/**/action.yaml)
           # 键名拼出来而不写字面量:本文件也在被扫的集合里,这段脚本自己若含那个字面量就会扫到自己
           awk -v key="use""s:" '
@@ -285,7 +287,7 @@ jobs:
               s = $0
               while (match(s, key "[[:space:]]*[^[:space:]]+")) {
                 v = substr(s, RSTART + length(key), RLENGTH - length(key)); sub(/^[[:space:]]*/, "", v); n++
-                if (v !~ /^\.\//) {
+                if (v !~ /^\.\/\.github\/(actions|workflows)\// || v ~ /\.\./) {
                   at = index(v, "@"); sha = substr(v, at + 1)
                   if (at == 0 || length(sha) != 40 || sha ~ /[^0-9a-f]/) { print FILENAME ":" FNR ": " v; bad++ }
                 }
