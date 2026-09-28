@@ -140,7 +140,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或字符串 `"all"`(同 `analyze`) |
 | 返回 | `{intervals:int, tracks:int, manualKept:int}` |
-| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
+| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**参与面**([J119],2026-09-28 用户批准;变更文档 `20260928-sl535-analysis-connected-only.md`):`coverage` 只计 scope 内 **`enabled` 且此刻已连接 Input** 的轨 —— 「已连接」= §2.3 `scvb.conn` 同轨 `slotState=2 ∧ heartbeatFresh`(与 UI「未连接」显示同一判据;宿主挂起 `suspended` 不算断开);没连上的轨的采集数据**保留不清**、`enabled` **不改**,连回来后下一次分析自动回到参与面。`tracks` 数的就是这个参与面;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
 | 拒绝态 | 无(空集合返回 `{0,0,0}`) |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步,目标 <10ms;UI 侧节流调用 |
@@ -153,7 +153,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或 `"all"`;`opts?`:`{clearManual?:bool=false}` |
 | 返回 | `{ok:bool, affected:{intervals:int, tracks:int, manualKept:int}}` 或 `{ok:false, reason:"busy"}` —— **受理回执 + 影响面**,不是最终结果 |
 | 语义 | 离线分析(秒级)。native function 只负责启动:[M] 提交 [W] job 后即 resolve;**结果一律经 `scvb.segments` 回推**,运行态经 `scvb.state.analysis_run` 下推(01 §6.4)。`clearManual:true` = 「重新识别(含手动段)」:仅把目标段 `origin` 重置为 `auto` 后重算;**`locked=true` 段不受影响,须先逐段解锁**(04 §4.4,J34);该分支须 UI 二次确认。默认(`clearManual:false`)只覆盖 `origin=auto` 段(ADR-008 v1.1)。 |
-| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled);已有分析在跑 → `{ok:false, reason:"busy"}` |
+| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled)。`coverage` 的参与面同 §1.5([J119]:只计 `enabled` 且此刻已连接 Input 的轨)⇒ 范围里有采集数据、但那些轨都没连上时同样落这一态,**不新增 reason**;已有分析在跑 → `{ok:false, reason:"busy"}` |
 | 撤销 | **是**([J89],2026-08-28 用户批准;变更文档 `20260827-sl209-analyze-undoable.md`)。一次分析(全量 / 选区 / 单轨重新识别)= **一条**撤销步:提交前把整个 CRVS 快照压进**既有** UndoManager(与段编辑同栈),撤销 = 恢复分析前的段表,重做 = 重放分析结果;撤销/重做各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8 枚举与行为均不变)。**与「重分析不覆盖 user 段」(ADR-008)天然共存**:快照的是整个 `CrvsData`,还原的是「分析前的那一刻」,那一刻本就含着这一轮会被保留的用户段与范围外 auto 段 —— 不需要另算「实际被替换面」。局部重分析同理(改的面更小,快照口径不变) |
 | 线程/频率 | [M] 启动 → [W] 执行;用户操作触发 |
 | 真源 | 05 §1.4 / §2.3;线程语义 01 §6.4 |

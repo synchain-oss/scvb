@@ -663,16 +663,17 @@ export function analyzeScope(state) {
 }
 
 /**
- * [SL-535] Tab1 影响预览(`previewAnalyze`)的重取指纹:三样变了任一样才重新问。
- *   · scope —— 范围档 / 范围 / 启用轨(原有);
+ * [SL-535] Tab1 影响预览(`previewAnalyze`)的重取指纹:四样变了任一样才重新问。
+ *   · scope —— 范围档 / 范围 / 启用轨(原有;follow 档只有字面 `"all"`,不含启用轨);
  *   · 已连接轨号 —— dry-run 只数已连接的轨,Input 连上 / 断开后旧数不再成立;
  *   · 有覆盖的轨号(`coverage[ch] > 0`)—— 首次采集时覆盖从无到有,旧的 `tracks: 0` 不再成立。
  *     只看「有没有」、不看百分比:百分比每帧都涨,拼进去就等于每帧问一次;
  *   · 启用轨掩码 —— dry-run 无条件按 `enabled` 筛,而 follow 档的 scope 是字面 `"all"`,
  *     不含掩码;轨道页拨「参与」开关后不重取,原因句就按旧轨数判(#292 复审③)。
  *     scope 形状不动(`"all"` 是 §1.5 契约面),掩码只拼进指纹。
- * 后两样是 #292 复审加的:dry-run 的 `tracks` 进了「无数据」判据(`analyzeNoData` 第三参),
- * 指纹少一样,那一样变了之后原因句就会按陈旧的 0 继续亮着。
+ * scope 之外的三样都是 #292 加的(已连接轨号 = 复审①、有覆盖的轨号 = 复审②、启用轨掩码 = 复审③):
+ * dry-run 的 `tracks` 进了「无数据」判据(`analyzeNoData` 第三参),指纹少一样,那一样变了之后
+ * 原因句就会按陈旧的 0 继续亮着。
  */
 export function previewFingerprint(state, conn, coverage) {
     const covered = Object.keys(coverage || {})
