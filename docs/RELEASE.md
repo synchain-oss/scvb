@@ -60,9 +60,9 @@ semver 语义(音频插件特化):
 
 - 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
 - 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
-- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。**截至本段写下时,该表登记的 WebView2 SDK 许可证 BSD-3-Clause 在 `LICENSES/` 里没有全文 —— 补上之前,正式版和 rc tag 都会停在 `verify-tag` 的 preflight(构建之前)。**
+- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。这项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
-- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun -AllowMissingLicenseTexts`;这个开关只用于本地试打包与演练 tag,BSD-3-Clause 全文补上之前不带它会红在许可证检查上),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
+- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
 
 ## 发版清单
 
