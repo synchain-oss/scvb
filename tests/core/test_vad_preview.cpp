@@ -13,6 +13,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -229,4 +230,64 @@ TEST_CASE("[j146] ChannelFrames::mutationSeq:改特征的入口都 +1,只动 vad
     CHECK(bumped());
     f.reset();
     CHECK(bumped());
+}
+
+// 隐藏用例([.][j146cost]):拖动档预览的单次代价实测面(契约 §1.18「目标 <50ms」)。ctest 默认不跑 ——
+// 门禁里不该有按墙钟判红的断言(与 test_viz_publish_cost.cpp 的 [vizcost] 同一纪律)。
+// 手工:`scvb_tests.exe "[j146cost]"`,读 WARN 行。量的是计算核(VAD + S1 + 后验),不含 FrameStore 取样
+// (那一段只在建缓存时付一次,量级与松手那一趟 startAnalysis 的取样相同)。
+TEST_CASE("[j146] 预览单次代价:15 轨 × 4 分钟,建缓存一次 vs 命中缓存每次 vs 不缓存每次", "[.][j146cost]")
+{
+    constexpr int kTracks = 15;
+    constexpr int kN = 24000; // 4 分钟 @ 10ms
+    std::vector<std::vector<float>> kws(static_cast<std::size_t>(kTracks));
+    for (int t = 0; t < kTracks; ++t)
+    {
+        auto& kw = kws[static_cast<std::size_t>(t)];
+        kw.assign(static_cast<std::size_t>(kN), lufsToKw(-60.0));
+        // 每轨:唱 9 s(中间一个谷)、停 2 s,响度逐轨错开
+        for (int h = 0; h < kN; ++h)
+        {
+            const int ph = (h + t * 37) % 1100;
+            if (ph < 900)
+                kw[static_cast<std::size_t>(h)] = lufsToKw((ph > 430 && ph < 450) ? -32.0 : -12.0 - (t % 5) * 3.0);
+        }
+    }
+    using clk = std::chrono::steady_clock;
+    const auto ms = [](clk::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+
+    const auto t0 = clk::now();
+    std::vector<scvb::analysis::VadPreviewTrackCache> caches;
+    for (const auto& kw : kws)
+        caches.push_back(scvb::analysis::buildVadPreviewTrackCache(kw.data(), kw.size()));
+    const auto t1 = clk::now();
+
+    const auto sweep = paramSweep();
+    std::vector<float> post(static_cast<std::size_t>(kN));
+    std::size_t sink = 0;
+    constexpr int kReps = 20;
+    for (int r = 0; r < kReps; ++r)
+    {
+        const auto& p = sweep[static_cast<std::size_t>(r) % sweep.size()];
+        for (auto& c : caches)
+            sink += scvb::analysis::runVadPreviewTrack(c, 0, p.vad, p.seg, kHopSec, post.data()).size();
+    }
+    const auto t2 = clk::now();
+    for (int r = 0; r < kReps; ++r)
+    {
+        const auto& p = sweep[static_cast<std::size_t>(r) % sweep.size()];
+        for (const auto& kw : kws)
+        {
+            const auto vr = scvb::analysis::runEnergyVad(kw.data(), kw.size(), 0, p.vad, post.data());
+            std::vector<float> env;
+            sink +=
+                scvb::analysis::splitLongVadSegments(vr.segments, 0, p.seg, kHopSec, kw.data(), kw.size(), env, nullptr)
+                    .size();
+        }
+    }
+    const auto t3 = clk::now();
+    WARN("15 tracks x 4 min: build cache once = " << ms(t1 - t0) << " ms; cached per call = " << ms(t2 - t1) / kReps
+                                                  << " ms; uncached per call = " << ms(t3 - t2) / kReps << " ms (spans "
+                                                  << sink << ")");
+    CHECK(sink > 0);
 }

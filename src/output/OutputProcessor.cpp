@@ -3730,6 +3730,18 @@ std::uint8_t ScvbOutputAudioProcessor::vadPreviewQAt(int track, std::uint64_t ho
     return i < q.size() ? q[i] : fallback;
 }
 
+ScvbOutputAudioProcessor::VadPreviewHead ScvbOutputAudioProcessor::vadPreviewHead() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return VadPreviewHead{vadPreview_.seq, vadPreview_.active};
+}
+
+ScvbOutputAudioProcessor::VadPreviewState ScvbOutputAudioProcessor::vadPreviewSnapshot() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return vadPreview_;
+}
+
 std::size_t ScvbOutputAudioProcessor::vadPreviewBytes() const
 {
     std::size_t n = vadPreviewPosterior_.capacity() * sizeof(float);

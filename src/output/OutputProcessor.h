@@ -545,8 +545,20 @@ public:
     };
     // [M] 按当前 runtime 参数重算预览并返回(引用在下一次调用 / 结束前有效)。
     const VadPreviewState& previewVadSegmentation();
-    // [M] 当前预览状态(editor 在 emitTick 里据 seq 补发收尾帧)。
+    // [M] 当前预览状态的**无锁引用** —— 只给单线程场景用(host 用例)。editor 走下面两个加锁版。
     const VadPreviewState& vadPreview() const { return vadPreview_; }
+    // 加锁版(editor 发 §2.10 用)。为什么要锁:宿主可以在消息线程之外调 setStateInformation,
+    // 它经 discardPendingResegment 结束预览、把 spans 的堆内存 swap 掉 —— editor 在 [M] 上不加锁
+    // 逐段读就会与之竞争。所以 editor 只读这两个:
+    //   · 头(seq + active):每拍比 seq 用,只拷两个标量;
+    //   · 快照:seq 变了才取,整份拷贝(每轨几十到几百对 double,≤50Hz 下可忽略)。
+    struct VadPreviewHead
+    {
+        std::uint32_t seq = 0;
+        bool active = false;
+    };
+    VadPreviewHead vadPreviewHead() const;
+    VadPreviewState vadPreviewSnapshot() const;
     // [M] 诊断 / 用例:缓存重建次数(命中时不变 —— <50ms 的机制就是它)与当前占用字节。
     std::uint64_t vadPreviewCacheBuilds() const { return vadPreviewCacheBuilds_; }
     std::size_t vadPreviewBytes() const;

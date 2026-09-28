@@ -12856,6 +12856,10 @@ TEST_CASE("HOST J146:拖动档每次调用当场产出预览,段与 VAD 列随�
     CHECK((pvLow.tracksMask & (1u << (kTestChannel - 1))) != 0);
     const auto spansLow = pvLow.spans[kTestChannel - 1];
     INFO("spans@-60 = " << spansLow.size());
+    // editor 读的是加锁版:头与快照必须与无锁引用同一份。
+    CHECK(r.out.vadPreviewHead().seq == pvLow.seq);
+    CHECK(r.out.vadPreviewHead().active);
+    CHECK(r.out.vadPreviewSnapshot().spans[kTestChannel - 1] == spansLow);
     CHECK(spansLow.size() >= 8); // 4 响 + 4 轻,各自成段
     for (const auto& sp : spansLow)
     {

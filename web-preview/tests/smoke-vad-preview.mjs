@@ -280,6 +280,15 @@ log("=== ③ C++ 接线的源码钉子(OutputEditor 编不进测试目标)===");
             emitFn.includes("webView().isVisible()"),
         "emitVadPreview 发的是 §2.10 那个名字,且不可见时不推进基线",
     );
+    // (D-S4)editor 只读加锁的头 / 快照:宿主可能在别的线程 setStateInformation → 结束预览、
+    // swap 掉 spans 的内存,不加锁逐段读会与之竞争。
+    check(
+        emitFn.includes("processor_.vadPreviewSnapshot()") &&
+            emitFn.includes("processor_.vadPreviewHead()") &&
+            !emitFn.includes("processor_.vadPreview()") &&
+            !tick.includes("processor_.vadPreview()"),
+        "(D-S4) emitVadPreview / emitTick 只走加锁的 vadPreviewHead / vadPreviewSnapshot",
+    );
 }
 
 log(fail === 0 ? "\n全绿" : `\n${fail} 条 FAIL`);

@@ -321,8 +321,9 @@ void OutputEditor::emitTick()
     // 条件类(§0.4 第 3 条第三档):首帧只在**正处于预览中**时补发,空闲时不发空帧。
     if (first)
     {
-        vadPreviewSentSeq_ = processor_.vadPreview().seq;
-        vadPreviewForce_ = processor_.vadPreview().active;
+        const auto head = processor_.vadPreviewHead();
+        vadPreviewSentSeq_ = head.seq;
+        vadPreviewForce_ = head.active;
     }
     emitVadPreview();
 
@@ -638,8 +639,8 @@ void OutputEditor::emitPlayhead()
 void OutputEditor::emitVadPreview()
 {
     // §2.10:载荷 = 预览的**整份当前态**(不是增量),按 seq diff —— seq 没动就是什么都没变。
-    const auto& pv = processor_.vadPreview();
-    if (pv.seq == vadPreviewSentSeq_ && !vadPreviewForce_)
+    // 只走加锁的头 / 快照,不读 processor 的无锁引用(理由见 `vadPreviewHead` 的头注)。
+    if (processor_.vadPreviewHead().seq == vadPreviewSentSeq_ && !vadPreviewForce_)
     {
         return;
     }
@@ -648,6 +649,8 @@ void OutputEditor::emitVadPreview()
     {
         return;
     }
+    // 取头与取快照之间预览可能又前进了一拍:发的是快照那份,基线也记快照的 seq。
+    const auto pv = processor_.vadPreviewSnapshot();
     juce::var channels = mkArray();
     if (pv.active)
     {
