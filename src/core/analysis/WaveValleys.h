@@ -24,7 +24,9 @@ namespace scvb::analysis
 inline constexpr std::uint64_t kSnapValleyMaxScanHops = 360000;
 
 // 请求窗两侧各多看这么多 hop 作上下文(3 s)。谷的 depth 要向两侧走到「第一个更低点」,
-// 贴着窗边截断会把窗边的谷算浅、甚至算没;有了上下文,同一个谷在相邻两块里算出同一个结果。
+// 贴着窗边截断会把窗边的谷算浅、甚至算没(test_wave_valleys.cpp 的窄窗那一格钉着)。
+// 3 s 盖得住句间停顿与换气那个量级;侧峰若要走出 3 s 之外才遇到,窗边的谷仍可能被算浅 ——
+// 所以别把它读成「任何两块对同一个谷一定给出同一个结果」。
 inline constexpr std::uint64_t kSnapValleyContextHops = 300;
 
 // 返回 [startS, endS) 内的谷点时刻(秒,升序,取谷底 hop 的**中心**时刻 (hop+0.5)·hopS)。
