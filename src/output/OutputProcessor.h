@@ -490,8 +490,17 @@ public:
         std::vector<double> maxDb;
         std::vector<int> vad;
         std::vector<int> covered;
+        // [J145] §1.27 `valleys[]`:[startS,endS) 内的吸附谷时刻(秒,升序,至多 cols 个)。
+        // 算法与口径见 `analysis/WaveValleys.h`;门槛取当前 `runtime_.segmentationSensitivity`
+        // (与 S1 谷切分候选同一条 minDepth)。未覆盖 / 已覆盖跨度超上限 ⇒ 空。
+        std::vector<double> valleys;
     };
     WaveformTile waveformOf(int channel, double startS, double endS, int cols);
+    // [J145] 瓦片 → §1.27 回包 `{minDb,maxDb,vad,covered,stale,passId,valleys}`(字段序与契约一致)。
+    // 放在 processor 而不是 OutputEditor:编辑器依赖 WebView2、不在 host 套件的 TU 清单里,
+    // 拼装留在那边的话「谷点有没有真的进回包」离线永远测不到 —— 而此前坏的恰恰是这一跳。
+    // stale / passId 这一版恒 0(见实现处注释)。纯函数,不取锁。
+    static juce::var waveformResponse(const WaveformTile& tile);
 
     // [M] 已采集内容的时间线右端(秒)= 全轨 coverage 的最大终点;无采集数据回 0。
     // follow 档下「分析全部」的终点取它,而不是当前播放头 —— 见 parseAnalyzeScope 的头注。

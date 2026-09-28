@@ -2385,35 +2385,10 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    const auto tile = processor_.waveformOf(ch, startS, endS, cols);
-    juce::var minDb = mkArray();
-    juce::var maxDb = mkArray();
-    juce::var vad = mkArray();
-    juce::var covered = mkArray();
-    juce::var stale = mkArray();
-    juce::var passId = mkArray();
-    for (int i = 0; i < cols; ++i)
-    {
-        const auto k = static_cast<std::size_t>(i);
-        push(minDb, tile.minDb[k]);
-        push(maxDb, tile.maxDb[k]);
-        push(vad, tile.vad[k]);
-        push(covered, tile.covered[k]);
-        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
-        push(stale, 0);
-        push(passId, 0);
-    }
-    juce::var valleys = mkArray();
-
-    juce::var o = obj();
-    put(o, "minDb", minDb);
-    put(o, "maxDb", maxDb);
-    put(o, "vad", vad);
-    put(o, "covered", covered);
-    put(o, "stale", stale);
-    put(o, "passId", passId);
-    put(o, "valleys", valleys);
-    c(o);
+    // [J145] 瓦片 → §1.27 回包的拼装挪到了 `ScvbOutputAudioProcessor::waveformResponse`:此前这里
+    // 回的 `valleys` 是一个**从不填**的空数组,而本 TU 依赖 WebView2、不在 host 套件的 TU 清单里 ——
+    // 拼装留在这里,「谷点有没有真的进回包」这一跳离线就永远测不到(HOST J145 那格钉的就是它)。
+    c(ScvbOutputAudioProcessor::waveformResponse(processor_.waveformOf(ch, startS, endS, cols)));
 }
 
 void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
