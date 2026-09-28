@@ -91,7 +91,8 @@ struct OutputRuntimeState
     // [SL-472] 除 `sourceChannels` 外七项**随工程保存**(CFGS 第五档,abi 5→6):`getStateInformation`
     // 写、`setStateInformation` 恢复,值域由 codec 校验。**下面的初值同时是旧工程(abi≤5)与坏值的回落值**
     // —— `OutputStateCodec.h` 的 `OutputChannelState` 逐项抄了这一组;改这里的初值要连着那边一起改
-    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。
+    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。[J150] `autoLabel` **不在这一组**:它不进 CFGS,
+    // 随 PRMS 走(见该字段的注释)。
     struct Channel
     {
         bool enabled = true;
@@ -103,6 +104,13 @@ struct OutputRuntimeState
         bool leadLock = false;
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
+        // [J150] 最近一次**自动**填进 label 的 DAW 轨道名(空 = 没有)。「label 是不是用户亲手起的」
+        // 不另存标志位,而是由这两者**推导**(见 labelFollowsTrackName):label 为空、或仍等于上次自动填的
+        // 名字 ⇒ 跟随轨道名;否则 ⇒ 用户命名,不再被轨道名覆盖。于是桥面 setChannelConfig、撤销、载入
+        // 改 label 时都不用同步任何标志 —— 改成别的名字自然成了用户命名,清空自然回到自动。
+        // 不进 CFGS:随工程存在 PRMS 根节点属性 `channels_auto_label`(见 OutputUiState.h)。
+        juce::String autoLabel;
+        bool labelFollowsTrackName() const { return label.isEmpty() || label == autoLabel; }
 
         // 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
         //
@@ -560,6 +568,12 @@ private:
 
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
+
+    // [M] [J150] Input 经 ctrl 段轨道名区带来的 DAW 轨道名 → 「用户没改过名」的通道的 label。
+    // 只在本实例 kActive 时做(只读观察实例不改配置,与 publishConfigBroadcast 同口径);
+    // 已连接、归属对得上、名字非空才采信(三道门在 OutputSession::readOwnedTrackName)。
+    // 有变化返回 true(调用方 bump config_seq,广播区 / UI / 存档一起跟上)。
+    bool applyTrackNames(scvb::u64 nowMs);
 
     // [M] 非阻塞回收退休的分析作业(每拍一次;线程还在跑就留到下一拍)。
     void reapRetiredJobs();

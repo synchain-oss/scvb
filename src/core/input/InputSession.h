@@ -152,6 +152,9 @@ public:
     u32 remoteAbi() const noexcept { return registry_.remoteAbi(); } // abi 不符时探测到的对端 abi
     u32 configSeq() const { return registry_.configSeq(); } // 本组 OutputSlot.config_seq(§4.3 变化检测)
     InputConnSnapshot connSnapshot(u64 nowMs) const; // §4.2 的 IPC 四字段 + occupiedMask
+    // [J150] 本实例**实际持有**的那个 slot 此刻的 InputSlot.heartbeat_ms(ctrl 段轨道名区的归属判据,
+    // 见 CtrlPlane.h 的 CtrlTrackName)。未持有 slot / registry 未映射 → 0。
+    u64 ownSlotHeartbeatMs() const;
     std::uint8_t groupsOnline(u64 nowMs) const; // 本组位(OutputSlot 心跳)+ 跨组只读探测(01 §4.5/J70)
 
 private:

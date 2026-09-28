@@ -105,7 +105,7 @@ FeatFrame ring[capacity_hops];
 |---|---|---|
 | `kCtrlBroadcastOffset` | 64 | 不变(T06 冻结) |
 | `kCtrlBroadcastBytes` | 9344 | 不变(T06 冻结) |
-| `sizeof(CtrlBroadcast)` | **2048** | 新增(落在 9344 预算内,余 7296 字节留给后续) |
+| `sizeof(CtrlBroadcast)` | **2048** | 新增(落在 9344 预算内,余 7296 字节留给后续;其中 1920 字节已由 [J150] 轨道名区占用,见下) |
 
 ```c
 struct CtrlChannelConfig {         // size 32 align 4;每轨配置镜像
@@ -133,6 +133,28 @@ struct CtrlBroadcast {             // size 2048 align 64;广播区总布局
   **并发口径**:写方 = 本组 `kActive` 的那一个 Output 的 **[M]**(只读观察实例**不写**,避免两个实例抢写让 Input 在两份配置之间抖动);读方 = 各 Input 的 **[M]**,跨进程 **seqlock**,撕裂即沿用上帧、**不自旋**。写侧奇数增量取 `relaxed` + 紧跟一道 `atomic_thread_fence(release)` —— release **store** 只挡「之前的写下沉」,挡不住「其后的载荷写上浮到奇数 seq 之前」,而那正是这里要防的方向(载荷 2KB、跨进程、读写双方分别编译,窗口比进程内的 `PlayheadShot` 宽两个量级)。
 
   **abi 不变**:布局只在 T06 留白的广播区内新增,既有结构体的偏移/尺寸/段名全部未动;`tests/golden/ipc-layout.txt` 既有行一行没改,只新增两个结构体块。旧 Output 不写广播区 → 新 Input 读到 `config_seq == 0` → 判定「本组没有 Output 在广播」→ 走默认值分支,与旧行为一致,不误把全零当实况;反向(新 Output + 旧 Input)旧 Input 不读该区,无影响。这正是 `config_seq` 从 1 起算的用途。
+- **Input → Output 轨道名区([J150];落在同一份广播区预算内,紧跟 `CtrlBroadcast`,不移动、不改写任何既有结构体)**:Input 把宿主经 `updateTrackProperties` 告知的 DAW 轨道名写进**本 channel 那一条**;Output 据此给「用户没改过名」的通道自动填 `channels[].label`(04 §7 步 2)。它**不是**命令环里的 `set_label` 那类 op —— 不经命令环、不直接改 label,填不填、何时填由 Output 决定(规则见 `SCVB_CONTRACT.md` §1.15);字符串型 op 仍不在 v1(见下「命令环」一条)。
+
+| 常量 | 值 | 变化 |
+|---|---|---|
+| `kCtrlTrackNamesOffset` | **2112**(= 64 + `sizeof(CtrlBroadcast)`) | 新增 |
+| `sizeof(CtrlTrackName)` | **128**(×15 条 = 1920 字节,止于 4032) | 新增(仍在 9344 预算内;广播区剩余由 7296 降为 5376 字节) |
+
+```c
+struct CtrlTrackName {             // size 128 align 64;×15,channel N 那一条在 2112 + (N-1)×128
+  atomic<u32> seq;                 // 0    seqlock:写前置奇 → 写载荷 → 写后 +1(偶);0 = 从未写过
+  u32 _pad;                        // 4
+  u64 owner_heartbeat_ms;          // 8    写入时本 slot 的 InputSlot.heartbeat_ms(归属判据)
+  char utf8[100];                  // 16..116  UTF-8、NUL 结尾;空串 = 宿主没给轨道名
+  char _tail[12];                  // 116..128 显式补齐到 64 的整数倍
+};
+```
+
+  **并发口径**:每条**单写** —— 写方 = **实际持有**该 channel 的那个 Input 的 **[M]**(25Hz 每拍重写,只在 claim 为活跃时写;与命令环同一条 SPSC 纪律);读方 = 本组 `kActive` 的 Output 的 **[M]**(只读观察实例不采信、不改配置)。seqlock 与广播区同款奇偶协议,但写方按条独立:写前把 `seq` **置奇**(`seq | 1`)而不是 `+1` —— 上一任写方死在临界区里留下奇数残值时,`+1` 会让下一次写入在**写载荷期间**呈偶数;读方撕裂即本拍放弃、不自旋。`utf8` 由写方在最后一个完整 UTF-8 序列边界截断(≤ 99 字节,可以长于 label 的 24 码点上限,截到 24 码点是 Output 落 label 时的事);读方把末字节强制成 NUL,并**拒收非严格 UTF-8**(过长编码 / 代理区 / 超 U+10FFFF / 截断的续字节),对端字节不可信。
+
+  **归属判据(为什么不需要谁去清旧条目)**:Output 只在三件事同时成立时采信一条:① 该轨此刻「已连接」(与 UI 连接灯同一判据:`InputSlot.state == 2` 且心跳年龄 ≤ 2000ms);② 条目的 `owner_heartbeat_ms` **等于**该 slot 此刻的 `heartbeat_ms`;③ 名字非空。Input 换通道 / 换组 / 崩溃后,新主人在 claim 时就写了自己的心跳,旧条目随即失配 —— 离开的一方不必清,Output 也不会把上一任的名字填给下一任。Input 断开时 Output 什么都不做,label 停在最后一次的轨道名上。
+
+  **abi 不变**:与上一条同一论证 —— 只在 T06 留白的广播区预算内新增一个块,既有结构体的偏移/尺寸/段名全部未动;`tests/golden/ipc-layout.txt` 既有行一行没改,只新增 `CtrlTrackName` 一个结构体块与一行 `offset ctrl_track_names 2112`。旧 Output + 新 Input:旧 Output 不读这块,Input 写了也无人采信,行为与之前一致;新 Output + 旧 Input:这块全零(`seq == 0` = 从未写过),Output 读不到任何轨道名,label 保持用户设置的样子 —— 两个方向都退化成「没有轨道名」,不拒连、不半兼容。变更文档 `docs/contract-changes/20260928-j150-track-name-auto-label.md`。
 - **Output 全局信息小节(J09,细化授权;不改既有字段、不改段名)**:采集开关状态、Output 采样率、失准计数(gapCount/overlapCount/epoch 摘要)等机器可读字段——供 Input 状态灯与自动化验证读取
 
 ```c
@@ -147,7 +169,7 @@ struct OutputGlobalInfo {          // size 256 align 64
 };
 ```
 
-- **Input → Output 命令环**(SPSC,每 slot 一条):`{seq, channel, op, value}`,op 全集 = `{kSetPriority, kFpReport}`(v1 冻结,[J36] 以 01 §4.4-c 枚举为准,禁止两端各自发明;`set_label` 等字符串型 op 不在 v1,需 abi+1 增补变长区);Output 消息线程消费并落 state(唯一真源,ADR-004)。[J46] `value` 字段定型为 **u64**;`kFpReport` 载荷打包 `tile_idx(高16位) | fingerprint 截断(低48位)`,单条记录原子;「跨轨上游延迟汇总」op 不进 v1,入 abi+1 增补清单
+- **Input → Output 命令环**(SPSC,每 slot 一条):`{seq, channel, op, value}`,op 全集 = `{kSetPriority, kFpReport}`(v1 冻结,[J36] 以 01 §4.4-c 枚举为准,禁止两端各自发明;`set_label` 等字符串型 op 不在 v1,需 abi+1 增补变长区;[J150] 的 DAW 轨道名不经命令环,走上面的轨道名区);Output 消息线程消费并落 state(唯一真源,ADR-004)。[J46] `value` 字段定型为 **u64**;`kFpReport` 载荷打包 `tile_idx(高16位) | fingerprint 截断(低48位)`,单条记录原子;「跨轨上游延迟汇总」op 不进 v1,入 abi+1 增补清单
 - **连接状态灯**:Input 读 OutputSlot.heartbeat + connected_mask;Output 读各 InputSlot.heartbeat
 - **健康 Output 判定(J12)**:Input 直通↔静音仲裁的「健康 Output」= OutputSlot 心跳新鲜(≤2000ms 口径)∧ `connected_mask` 含本 channel;检测不到健康 Output → Input 直通(80ms ramp + 5s 滞回,ADR-002 v1)
 

@@ -422,6 +422,29 @@ void ScvbInputAudioProcessor::timerCallback()
     captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
 
     drainFpReports();
+    publishTrackName(); // [J150] 轨道名 → ctrl 段轨道名区(Output 据此自动填 label)
+}
+
+void ScvbInputAudioProcessor::publishTrackName()
+{
+    // 寻址用**实际持有**的 channel(boundChannel),不用 channelId_ 那个配置镜像:两者在「配置了但没
+    // 绑定」时会分叉([SL-446]),拿配置号写会写进别的实例正占着的那一条(双写方)。没持有任何 slot 时
+    // boundChannel() 为 0(claim 失败态的结构性保证,见 InputSession::openAndClaim),writeTrackName 对 0
+    // 什么都不写 —— 「只有持有者才写」由这一条保证,不另设门。ctrl_ 未打开时同样静默不写。
+    // 归属判据取本 slot 此刻的心跳:Output 只采信「条目记的心跳 == slot 此刻的心跳」的条目,所以即便
+    // ctrl_ 与 session_ 一时不在同一组(换组失败回退的窄窗),写进去的条目也不会被那一组的 Output 采信。
+    // 每拍都写(不做「没变就不写」):条目 128 字节、每轨一条,25Hz 的开销可以忽略;换来的是段被
+    // 覆盖式重初始化清零、换通道、换组之后都不需要任何「补写」逻辑 —— 下一拍自然写对。
+    ctrl_.writeTrackName(session_.boundChannel(), session_.ownSlotHeartbeatMs(), trackNameUtf8_);
+}
+
+void ScvbInputAudioProcessor::updateTrackProperties(const TrackProperties& properties)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    if (properties.name.has_value())
+    {
+        trackNameUtf8_ = properties.name->toStdString();
+    }
 }
 
 void ScvbInputAudioProcessor::drainFpReports()

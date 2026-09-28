@@ -1086,10 +1086,11 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
-    // 两个都要跑(不能靠 || 短路):优先级与检测值各自独立地弄脏配置。
+    // 三个都要跑(不能靠 || 短路):优先级、检测值、[J150] 轨道名各自独立地弄脏配置。
     const bool prioChanged = applyRemotePriorities();
     const bool srcChanged = refreshSourceChannels();
-    if (prioChanged || srcChanged)
+    const bool nameChanged = applyTrackNames(now);
+    if (prioChanged || srcChanged || nameChanged)
     {
         ++runtime_.configSeq;
     }
@@ -1298,6 +1299,42 @@ bool ScvbOutputAudioProcessor::applyRemotePriorities()
     return changed;
 }
 
+bool ScvbOutputAudioProcessor::applyTrackNames(scvb::u64 nowMs)
+{
+    // [J150] 04 §7 步 2:「轨道名自动填入 label」。只读观察实例不改配置(本组真源是 kActive 那一个)。
+    if (session_.state() != scvb::output::OutputClaimState::kActive)
+    {
+        return false;
+    }
+    bool changed = false;
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        auto& c = runtime_.channels[static_cast<std::size_t>(t)];
+        if (!c.labelFollowsTrackName())
+        {
+            continue; // 用户亲手起的名字:不跟随 DAW 轨道名
+        }
+        std::string name;
+        if (!session_.readOwnedTrackName(static_cast<scvb::u32>(t + 1), nowMs, name))
+        {
+            // 掉线 / 条目不归现任 Input / 宿主没给名字:什么都不做 —— label 停在最后一次的轨道名上
+            // (Input 断开后「保留最后的名字」就是这一行的效果,不是另写的逻辑)。
+            continue;
+        }
+        // 与桥面 setChannelConfig 同一上限:24 码点(JUCE String 在 UTF-8 构建下按码点截,
+        // 与 `OutputEditor::handleSetChannelConfig` 的 `substring(0, 24)` 同口径)。
+        const juce::String next = juce::String::fromUTF8(name.data(), static_cast<int>(name.size()))
+                                      .substring(0, static_cast<int>(scvb::state::kOutputChannelLabelMaxChars));
+        c.autoLabel = next; // 先记「自动填的是什么」:label 与它相等 ⇔ 仍跟随轨道名
+        if (next != c.label)
+        {
+            c.label = next;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void ScvbOutputAudioProcessor::publishConfigBroadcast()
 {
     // 只读观察实例不得写广播区:本组真源是那个 kActive 的 Output,两个实例抢写会让 Input
@@ -1415,6 +1452,17 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
                                        runtime_.tourSeen.load(std::memory_order_relaxed),
                                        runtime_.langChosen.load(std::memory_order_relaxed)});
     scvb::output::writeSessionGuid(state, sessionGuid_); // [SL-215] 会话 GUID 随 PRMS 落盘
+    // [J150] channels[].auto_label 随 PRMS 落盘(理由见 OutputUiState.h 那组函数的头注):每轨原样记内存里的
+    // autoLabel,载入后「label 是否跟随轨道名」的推导与存盘前逐轨相同。每次整条覆写,不留上一份工程的残值
+    // (replaceState 会把载入的属性原样带进 APVTS 状态树)。
+    {
+        std::array<juce::String, scvb::engine::kNumTracks> autoLabels;
+        for (std::size_t t = 0; t < autoLabels.size(); ++t)
+        {
+            autoLabels[t] = runtime_.channels[t].autoLabel;
+        }
+        scvb::output::writeAutoLabels(state, autoLabels);
+    }
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -2080,6 +2128,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
 
+    // [J150] channels[].auto_label 随 PRMS 走、却要跟 CFGS 里的 label 一起落地(下面 channels 那段):
+    // 先在这里读出来。缺席(本功能之前的工程)/ 畸形 ⇒ 全空 ⇒ 非空 label 一律视为用户命名。
+    std::array<juce::String, scvb::engine::kNumTracks> loadedAutoLabels;
+
     // PRMS:123 参数(宿主自动化面)。
     if (const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms); prms != nullptr)
     {
@@ -2101,6 +2153,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             {
                 sessionGuid_ = loadedGuid;
             }
+            loadedAutoLabels = scvb::output::readAutoLabels(loaded); // [J150]
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
         }
@@ -2185,6 +2238,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         dst.leadLock = src.leadLock;
         dst.leadVolExempt = src.leadVolExempt;
         dst.pairId = static_cast<int>(src.pairId);
+        // [J150] auto_label:与 label 相等 ⇒ 这条 label 是上次存盘时自动填的轨道名,继续跟随;不等(含缺席 =
+        // 本功能之前的工程)⇒ 非空 label 视为用户命名。旧构建另存时会把这个 PRMS 属性原样带回来,但用户
+        // 若在旧构建里改过名字,label 就不再等于它 —— 仍判成用户命名,不会被轨道名覆盖。
+        dst.autoLabel = loadedAutoLabels[t];
     }
     // 走既有的通道配置推送路径,不另造:桥面改完配置也只做这一件事(`++configSeq`)。
     // 与桥面「值变化才 bump」不同,这里**无条件** bump,是有意的:载入是整份替换,逐项比对省下的只是

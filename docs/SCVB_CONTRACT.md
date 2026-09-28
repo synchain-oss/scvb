@@ -245,7 +245,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `ch: 1..15`;`patch`(**全部字段可选,只写给出的字段**):<br>`{ enabled?:bool, label?:string(≤24 字符), priority?:0..10(int), lead_lock?:bool, lead_vol_exempt?:bool, participate_in_auto_pan?:bool, pair_id?:0\|1..7 }` |
 | 返回 | `{ok:true}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:**未显式设置一律 true**(J83 取代 J60 的按源声道推导 —— `source_channels` 来自轨道总线布局而非素材声道数,mono 素材放在 stereo 轨上就报 2;排除权在轨道页每轨的开关)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。 |
+| 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:**未显式设置一律 true**(J83 取代 J60 的按源声道推导 —— `source_channels` 来自轨道总线布局而非素材声道数,mono 素材放在 stereo 轨上就报 2;排除权在轨道页每轨的开关)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。<br>**[J150] `label` 的自动填入(04 §7 步 2)**:本轨 Input 在线、且宿主经 `updateTrackProperties` 告知了 DAW 轨道名时,Output 把轨道名(截到 24 码点)**自动**写进 `label`,DAW 里改名跟着改(数据面 = ctrl 段轨道名区,IPC_CONTRACT §4)。「这条 label 是不是用户亲手起的」不另设字段,**由 label 与上次自动填入的名字推导**:经本函数写成**非空且不同于**上次自动填入值的 label ⇒ 用户命名,此后不再被轨道名覆盖;写成**空串** ⇒ 回到自动,下一拍按当前轨道名填回;写成恰好等于当前自动填入值 ⇒ 与自动填入无区别,仍跟随。Input 断开(掉线 / 改成未分配 / 删轨)后 label **保留最后一次的轨道名**。自动填入不经本函数,但同样 `config_seq+1` 并经 `scvb.state` 回推、ctrl 广播区刷新;只读观察实例不做自动填入。随工程保存见 STATE_SCHEMA §一 `channels[15].auto_label`。变更文档 `docs/contract-changes/20260928-j150-track-name-auto-label.md`。 |
 | **不可写字段** | `source_channels`(1\|2)为 **Input 实测检测值**,只读、经 `scvb.state.channels[].source_channels` 下推;**`auto_pan`/`auto_vol` 已删除**(J65,改由每轨 `freeze` 自动化参数承载)。patch 含上述键 → `{ok:false, reason:"badArg"}` |
 | 拒绝态 | 只读观察态(`outputReadOnly=true`)下全 UI 写控件 disabled;C++ 侧收到写入返回 `{observer:true}` 且不改 state |
 | 撤销 | 否 |
@@ -802,7 +802,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 | `kNone` | 0 | — | — | 保留值,不投递 |
 | `kSetPriority` | **1** | Input 单页优先级 stepper → **`remoteSetPriority(n)`**(§3.4) | `value = n`(0..10,u64) | **v1 op,双向一致** |
 | `kFpReport` | **2** | **无 UI 入口** —— Input [M] 25Hz 排水后自动上报 fingerprint(04 §4.5) | `value = (u64(tile_idx) << 48) \| (hash & 0x0000FFFFFFFFFFFF)`;tile_idx 高 16 位(≈18.2 小时时间线上限),fingerprint 截断为低 48 位;**单条记录原子**,不引入跨记录配对 | **v1 op**;**本契约不为其设桥函数**(07 T25 卡「新增 `fp_report` 的上行入口」的措辞与 05 §1.4 / 01 §4.4-c 冲突,取后者,见裁定记录 A-12) |
-| 字符串型(`set_label` 等) | — | 无(Input 页 label 只读显示) | 记录仅有标量 `value` 字段,字符串无法过环 | **不在 v1**;将来须走 abi+1 增补变长区(ipc §4)。01 草案的 `remoteSetChannelConfig({field,value})` 已裁剪废除(§8) |
+| 字符串型(`set_label` 等) | — | 无(Input 页 label 只读显示) | 记录仅有标量 `value` 字段,字符串无法过环 | **不在 v1**;将来须走 abi+1 增补变长区(ipc §4)。01 草案的 `remoteSetChannelConfig({field,value})` 已裁剪废除(§8)。**[J150] 的 DAW 轨道名不是这一类**:它不经命令环、不直接改 label,走 ctrl 段轨道名区(ipc §4),由 Output 按 §1.15 的规则决定是否填入 |
 
 **纪律**:新增 op **必须两处同步**(本表 ↔ 01 §4.4-c);禁止两端各自发明;跨轨上游延迟汇总 op 明确**不进 v1**(J46,入 abi+1 增补清单)。
 

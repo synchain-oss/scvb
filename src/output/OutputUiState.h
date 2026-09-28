@@ -47,6 +47,7 @@
 
 #include <juce_data_structures/juce_data_structures.h>
 
+#include <array>
 #include <string>
 
 #include "state/FeaturesCodec.h" // isValidSessionGuid(不可信 state 字节的 guid 形状校验)
@@ -131,6 +132,58 @@ inline juce::String readSessionGuid(const juce::ValueTree& apvtsState)
     }
     const juce::String guid = apvtsState.getProperty(kSessionGuidProp, juce::String()).toString();
     return scvb::state::isValidSessionGuid(guid.toStdString()) ? guid : juce::String();
+}
+
+// [J150] channels[15].auto_label —— 每轨「最近一次自动填进 label 的 DAW 轨道名」(没自动填过为空串)。
+// 载入时 label 为空或与它相等 ⇒ 继续跟随;不等 ⇒ 用户命名。
+// 编码:一个 JSON 数组(15 个字符串),落在 PRMS 根节点属性面而不是 CFGS 的 channels 档:
+//   · CFGS 是定长布局,加字段要么升容器 abi(Input / Output / Monitor 三个插件共用这一个 abi,升了之后
+//     **三个**插件的新工程在旧构建里都整块拒载),要么走尾部 unknownTail;
+//   · 存「名字」而不存「是不是用户起的」一位标志,是为了**自证**:旧构建不认识这个属性,却会经
+//     APVTS replaceState / copyState 把它原样带回来 —— 若存的是标志位,用户在旧构建里改过名字、回到
+//     新构建时标志还说「自动」,轨道名就会把用户的名字覆盖掉;存名字时 label 已经不等于它,仍判成
+//     用户命名。
+// 与 session_guid / ui_* 同一条理由(同 abi 内两个方向都容忍增删,无需升 abi、无需迁移函数)。
+inline const juce::Identifier kAutoLabelsProp{"channels_auto_label"};
+inline constexpr int kAutoLabelCount = 15;
+
+inline void writeAutoLabels(juce::ValueTree& apvtsState, const std::array<juce::String, kAutoLabelCount>& labels)
+{
+    if (!apvtsState.isValid())
+    {
+        return;
+    }
+    juce::Array<juce::var> arr;
+    for (const auto& l : labels)
+    {
+        arr.add(l);
+    }
+    apvtsState.setProperty(kAutoLabelsProp, juce::JSON::toString(juce::var(arr), /*allOnOneLine=*/true), nullptr);
+}
+
+// 读回(state 字节不可信,§7.3):不是 JSON 数组 ⇒ 全空;数组短于 15 ⇒ 缺的那几条记空串,长出来的忽略
+// (只按下标取、绝不越界)。**不逐条校验内容**:这里的值只拿来与 label 比「等不等」、从不写进 label,
+// 一条畸形值最坏让那条 label 被当成「自动」、下次宿主改名时跟着轨道名变 —— 不涉及内存安全,也不改写
+// 任何别的字段(label 本身已由 CFGS 解码校验过);逐条过滤能挡的只有这一种无害情形,不值一道判据。
+inline std::array<juce::String, kAutoLabelCount> readAutoLabels(const juce::ValueTree& apvtsState)
+{
+    std::array<juce::String, kAutoLabelCount> out;
+    if (!apvtsState.isValid() || !apvtsState.hasProperty(kAutoLabelsProp))
+    {
+        return out;
+    }
+    const juce::var parsed = juce::JSON::parse(apvtsState.getProperty(kAutoLabelsProp).toString());
+    const juce::Array<juce::var>* arr = parsed.getArray();
+    if (arr == nullptr)
+    {
+        return out;
+    }
+    const int n = juce::jmin(arr->size(), kAutoLabelCount);
+    for (int t = 0; t < n; ++t)
+    {
+        out[static_cast<std::size_t>(t)] = arr->getReference(t).toString();
+    }
+    return out;
 }
 
 } // namespace scvb::output
