@@ -7321,6 +7321,65 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     r.out.removeListener(&spy);
 }
 
+// [SL-536 / #311 复审【重要】] PRINT 区间里打印器替每条车道开着 gesture(AutomationPrinter::tick
+// 「冻结 / 未冻结车道在区间内都保持打开」)。冻结通道的手动写入与它的撤销 / 重做都在同一参数上
+// 写宿主,若各自再 begin/end 就会嵌套(GestureSpy 记 doubleBegin),而自己那一下 end 会替打印器
+// 把宿主那边的 gesture 提前关掉(之后打印写入落在 gesture 之外)。本格断:整个过程配对不乱,
+// 且撤销 / 重做之后打印器那条车道的 gesture 在宿主侧**仍然开着**。
+TEST_CASE("HOST SL-536:PRINT 中冻结通道写入与撤销 / 重做不与打印器的 gesture 嵌套", "[host][sl536][print][e2e]")
+{
+    GestureSpy spy; // 须比 rig 活得久(理由见 SL-231 那格)
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.ph.timeSamples = 0;
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+    const int v = r.out.versionActive();
+    const juce::String panId = scvb::params::panId(v, kCh);
+    auto* pan = r.out.getAPVTS().getParameter(panId);
+    REQUIRE(pan != nullptr);
+    const int panIdx = pan->getParameterIndex();
+
+    // 先冻 pan(非车道参数,自己的 gesture 不与打印器相干),再从干净起点开输出进 PRINT。
+    REQUIRE(r.out.uiBeginParamGesture(scvb::params::freezeId(v, kCh)));
+    REQUIRE(r.out.uiSetParam(scvb::params::freezeId(v, kCh), 1.0f));
+    REQUIRE(r.out.uiEndParamGesture(scvb::params::freezeId(v, kCh)));
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(300);
+    r.out.addListener(&spy);
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(40, 0.5f);
+    MonoMultiRig::pump(300);
+    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    REQUIRE(spy.open.count(panIdx) == 1); // 前提:打印器此刻确实替这条车道开着 gesture
+
+    const float before = pan->convertFrom0to1(pan->getValue());
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, 42.0f, replaced, locked)); // 冻结通道
+    CHECK(r.out.undo());
+    CHECK(pan->convertFrom0to1(pan->getValue()) == Catch::Approx(before).margin(0.01));
+    CHECK(r.out.redo());
+    CHECK(pan->convertFrom0to1(pan->getValue()) == Catch::Approx(42.0f).margin(0.01));
+
+    CHECK(spy.doubleBegin == 0); // 嵌套 begin
+    CHECK(spy.orphanEnd == 0);
+    CHECK(spy.open.count(panIdx) == 1); // 打印器那一对没被我们的 end 提前关掉
+
+    r.runBlocks(20, 0.5f);
+    MonoMultiRig::pump(200);
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(400);
+    CHECK(spy.open.empty());
+    CHECK(spy.ends == spy.begins);
+    r.out.removeListener(&spy);
+}
+
 // ---------------------------------------------------------------------------
 // [SL-489] releaseResources 之后打印器不得再开 gesture;prepareToPlay 之后照常恢复。
 //
