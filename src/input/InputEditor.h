@@ -7,7 +7,8 @@
 //   scvb.conn   ~4Hz(250ms 折半);
 //   scvb.config 25Hz 轮询,config_seq 变化才发;
 //   scvb.groups ~1Hz;
-//   scvb.error  随 claim 态迁移边沿即时发(channelConflict/srMismatch;abi 不占 error code,§4.5)。
+//   scvb.error  随 claim 态迁移边沿即时发(channelConflict/srMismatch;abi 不占 error code,§4.5);
+//               另有两处 [SL-462] 补发 channelConflict:首帧基线遇 conflict 置空、载入撞车回滚成功的一次性信号。
 
 #include "WebViewHost.h"
 
@@ -68,7 +69,7 @@ private:
     juce::String lastGroupsJson_;
     juce::String lastErrorJson_;
     juce::uint32 lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵 = 首 tick 必发 scvb.config(§0.4;其后仅 seq 变化才发)
-    juce::String lastClaim_; // 快照时初始化为当前 claim(error 只发迁移边沿)
+    juce::String lastClaim_; // 快照时初始化为当前 claim(error 只发迁移边沿);conflict 例外置空([SL-462])
     int lastErrorChannelId_ = -1; // error 边沿键的 channel 分量(claim 同但 channel 变也重发;哨兵 -1)
     int lastErrorGroupId_ = -1; // error 边沿键的 group 分量(同 claim/channel 换组也重发;哨兵 -1)
     int lastErrorInputSr_ = -1; // error 边沿键的 inputSr 分量(srMismatch 本机 SR 变化也重发;哨兵 -1)

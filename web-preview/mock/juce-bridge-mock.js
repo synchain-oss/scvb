@@ -1658,7 +1658,8 @@ function buildOutputBackend(ctx) {
             };
             // [J85] 冻结通道与手动接管通道分家(真桥 OutputProcessor::setTrackManual 同款):
             // 该维度**已冻结** → 静态值只落参数面,曲线真身一个字节不动(解冻即回引擎曲线,
-            // 不留常值段);**未冻结** → 用户主动接管,照旧写全时限常值段(04 §1.5 方案 A)。
+            // 不留常值段);**未冻结** → 用户主动接管,把每段的这一维改写成常值、另一维保留
+            // ([J131];空表才落全时限单段常值)。
             // 解码口径与 native 的 `scvb::engine::freezeBitsOf`(`src/core/engine/FreezeBits.h`)
             // 及 UI 的 `freezeBits`(`web/output/tab-tracks.js`)**三侧逐条一致**:
             // 四舍五入 → 钳到 [0,3];非有限值回 0 = 未冻结。旧写法 `Math.trunc(x) & bit` 在
@@ -1679,11 +1680,28 @@ function buildOutputBackend(ctx) {
             const old = segmentsOf(ch);
             const replacedSegments = old.length;
             const replacedLocked = old.filter((s) => s.locked).length;
+            // [J131] / SL-180:段表非空 ⇒ **只改被拖的那一维**,段边界与另一维逐段保留
+            // (真桥 `scvb::output::makeManualDimSegments` 同款)。此前压成单段、另一维取首段,
+            // 拖一下音量卡箍整条 pan 曲线就被压平。每段 origin=user_edited、locked=false
+            // (理由见下面空表那一支的 [SL-230] 注释,两支同口径)。
+            if (old.length) {
+                const next = old.map((s) => {
+                    const n = clone(s);
+                    if (panOrVol === "pan") n.pan = applied;
+                    else n.volDb = applied;
+                    n.origin = "user_edited";
+                    n.locked = false;
+                    return n;
+                });
+                model.segByCh.set(ch, { ch, segments: next, stale: false });
+                setParamPlane();
+                pushSegments("trackManual", [ch]);
+                return { ok: true, replacedSegments, replacedLocked };
+            }
+            // 空表:没有曲线可保留,照旧落单段全时限常值。
             // 段对象形状取生成器产物为原型(不自造字段),只改该改的几个键。
-            const seed =
-                old[0] ||
-                makeSegments(model.segVersion, "snapshot", [ch]).channels[0]
-                    .segments[0];
+            const seed = makeSegments(model.segVersion, "snapshot", [ch])
+                .channels[0].segments[0];
             if (!seed) {
                 return { ok: true, replacedSegments, replacedLocked };
             }
@@ -1693,7 +1711,7 @@ function buildOutputBackend(ctx) {
             proto.t1S = model.durationS;
             proto.origin = "user_edited";
             // [SL-230] **locked = false,与真桥一致**。真桥的
-            // `scvb::output::makeManualConstantSegment`(src/output/SegmentEditService.h)
+            // `scvb::output::makeManualDimSegments`(src/output/SegmentEditService.h)
             // 写的是 `makeSegmentFlags(SegmentOrigin::UserEdited, false)` —— 手动接管产生的
             // 常值段**不上锁**。mock 这里原先写 true,后果不是「多锁一下」那么轻:
             // `clearManual` 按契约对 locked 段免疫(§1.6「须先逐段解锁」),于是在 web-preview 里
