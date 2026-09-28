@@ -16,11 +16,11 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag;官网下载页上线后再加上它的常量。
 
-**三个插件(Input / Output / Monitor)共用同一个版本号、同一次发布、同一个 zip。** Input 与 Output 本来就配对使用,分开编号的直接后果是用户装出不匹配的组合,而 SCVB 会拒绝半兼容连接;Monitor 是可选的只读观察窗,跟着同一个版本走。
+**三个插件(Input / Output / Monitor)共用同一个版本号、同一次发布、同一个 zip。** Input 与 Output 必须配对,分开编号的直接后果是用户装出不匹配的组合:IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然连得上,混装也不受支持 —— 新 Output 配旧 Input 做离线渲染,人声可能被双路叠加(SL-260,发布说明模板「升级须知」第一条就是它)。Monitor 是可选的只读观察窗,可以不装,但版本号与另两个相同、在同一个 zip 里发布。
 
 ## Tag 规则
 
-- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。
+- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc 构建在插件设置页里显示的版本号不带 `-rc.N`(它来自 CMake 版本),区分 rc 几要看 zip 文件名或 Release 页。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
 - 其他形态(`v1.2.3-beta.1`、`v1.2` 等)一律被拒。
 - tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。
@@ -74,13 +74,28 @@ semver 语义(音频插件特化):
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
-7. **核对产物**(草稿 Release 的资产):zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` / `SCVB Monitor.vst3` 三个完整 bundle 齐全,合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
+7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:**正式版先把 `prod` 前移到本次 tag**:`git push origin vX.Y.Z^{commit}:refs/heads/prod`(不加 `--force`;推不上说明 `prod` 不是这次 tag 的祖先,先查清再动)。插件里的文档链接都指向 `prod`(见下「文档链接」),`prod` 不前移,用户在插件里点开的就还是上一个正式版的手册。预发布(`-rc.N`)是否也前移 `prod` 由维护者决定;不前移时,rc 构建里的文档链接打开的是上一个正式版的手册,而**首个正式版之前 `prod` 上还没有这些文件,是 404**。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:先按下方「`stage` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `stage` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+
+## `stage` 与 `prod` 两个分支(J163)
+
+| 分支 | 指向 | 什么时候前移 |
+|---|---|---|
+| `stage` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算) |
+| `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 一律不动 `prod` |
+
+- rc 发布后:`git push origin vX.Y.Z-rc.N^{commit}:refs/heads/stage`
+- 正式版发布后,两条都推:`git push origin vX.Y.Z^{commit}:refs/heads/stage`,然后 `git push origin vX.Y.Z^{commit}:refs/heads/prod`
+- 都**不加 `--force`**:推不上说明目标分支不是这次 tag 的祖先,先查清再动。
+- 前移发生在「点了发布」之后,不在推 tag 时:tag 推上去只建草稿,草稿不算已发布。演练 tag(`v0.0.0-test*`)从不发布,两个分支都不动。
+- **`stage` 分支现在还不存在**,首个 rc(`v0.9.0-rc.1`)发布后由上面那条 rc 命令创建。
+- `prod` 截至 2026-09-28 仍停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表),它是之后所有提交的祖先,所以首个正式版那次前移同样是快进。
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
 
 - **插件里的文档链接一律指向 `prod` 分支上的固定路径**(用户裁定 J149:`prod` 是稳定正式版分支,`dev` 是研发分支)。设置页「说明文档」按钮打开 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md`(中文界面)或 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md`(英文、法文界面);九条使用规则里 DAW 兼容表的地址是 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。这些地址**不随插件版本号变,也不 pin 到 tag** —— 此前「按插件版本号 pin 到同号 tag」的做法(SL-220 / #298)已由 J149 取代,不要改回去。代价照实写:旧版插件打开的是最新正式版的手册,不是它自己那一版的。
+- **rc 期间这些链接打开是 404,已接受(J163)。** `prod` 只跟正式版,首个正式版发布之前 `prod` 上没有这三个文件,所以 `v0.9.0-rc.N` 这批 rc 构建里的「说明文档」按钮与九条规则里的 DAW 兼容表地址都打不开。首个正式版发布、`prod` 前移之后,**同一批 rc 构建里的链接也随之恢复**(地址没变,变的是 `prod` 上的内容),插件不用更新。首个正式版之后再发的 rc,这些链接打开的是上一个正式版的手册。**首个正式版之前的每个 rc,发布说明都必须写明这一点**(模板「升级须知」里有对应一句),并在 [KNOWN_ISSUES](KNOWN_ISSUES.md) KI-7 登记。
 - 地址写在 `web/output/tab-settings.js` 的 `docsUrl()` 与红字真源 `docs/USER_GUIDE.zh-CN.md#硬约束` 里(后者经 `scripts/gen-hard-rules.mjs` 生成到插件词条);`web-preview/tests/smoke-tab4-settings.mjs` 扫 `web/` 下的仓库 `blob/` 链接,指向 `prod` 以外的分支或 tag 即红。
 - **插件一旦发出去,里面的地址就改不了了。** 所以 `docs/USER_GUIDE.md`、`docs/USER_GUIDE.zh-CN.md`、`docs/DAW_COMPATIBILITY.md` 在 `prod` 上不要改名、不要挪位置 —— 改了,已经发出去的每一版插件里的这几个链接都会一起失效。
 - **发布说明(GitHub Release 正文)里的链接仍固定在本次的 tag 上**(见下方模板与模板后的说明):那是这一版自己的记录,不跟着 `prod` 走。
@@ -116,13 +131,14 @@ U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认
 > SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**;zip 里的第三个插件 SCVB Monitor 是**可选**的只读旁观窗口。
 
 ## ⚠️ 升级须知
-<!-- 「三个插件一起升级」与「文档链接」两条每次都留;其余有则填,无则删 -->
+<!-- 「三个插件一起升级」与「文档链接」两条每次都留;「rc 期间 404」那条首个正式版之前的 rc 必留、之后删;其余有则填,无则删 -->
 - **Input、Output、Monitor 三个一起升级,不要混装。** IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然能连上,但新 Output 配旧 Input 做离线渲染,两侧的交接方式不同,人声可能被**双路叠加**(不升 IPC abi 的有意取舍,见 `docs/contract-changes/` 相应变更文档)—— 所以升级一律三个一起换。
 - state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}。**用本版保存的工程,拿到 state abi 更低的旧版本(含此前的内部测试包)里打开时会被拒载**:Output 显示「工程来自较新版本」横幅,Input 以默认值运行(没有横幅)。建议不要在旧版本里打开并保存这类工程。
-  <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
+  <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,J114 批准,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
 - 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「说明文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是最新正式版的手册。
+- **本版是预发布(rc):插件里的这些文档链接在 rc 期间打开是 404,正式版发布后恢复**,插件不用更新(`prod` 分支只跟正式版,首个正式版之前上面还没有这些文件)。在那之前请用本说明里的链接,或 zip 里 `INSTALL.txt` 的手册链接(同样固定在 `v{X.Y.Z}` 上)。
 
 ## 本次更新
 ### ⚠️ 契约变更
