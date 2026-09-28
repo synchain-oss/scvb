@@ -65,7 +65,7 @@ export const CHANNEL_COUNT = 15;
 export const KNOB_DRAG_PX = 150;
 
 /**
- * 手动常值的**延迟提交**窗口(ms)。滚轮一格一格、方向键按住不放(OS 自动重复 ~30 Hz)
+ * 手动常值的**延迟提交**窗口(ms)。pan 旋钮滚轮一格一格、方向键按住不放(OS 自动重复 ~30 Hz)
  * 都会连出一串值,而 `setTrackManual` 的**手动接管通道**入撤销栈(契约 §0.9;[J85] 冻结通道
  * 不产生 CRVS 事务、不入栈),逐次发会把宿主 UndoManager 灌满 —— 故「回声即时、提交防抖」:
  * 停手 300 ms 才落一次。防抖对两条通道一视同仁(冻结通道逐帧发同样是白费的宿主往返)。
@@ -410,8 +410,8 @@ export function leadLockCount(channels) {
 }
 
 /**
- * §2.8 里 `stale` 为真的轨数(04 §4.5 fingerprint watchdog:该轨上游音频与已采集特征
- * 不一致,建议重新采集)。横幅 ⑧ 与 tab 导航琥珀点共用它。
+ * §2.8 里 `stale` 为真的轨数(该轨已采集特征过期,建议重新采集;成因是上游改动 ——
+ * 04 §4.5 fingerprint watchdog —— 或 [SL-485] 采样率与采集时不同)。横幅 ⑧ 与 tab 导航琥珀点共用它。
  *
  * **必须读合并后的段表视图,不能读单个事件的 `channels`** —— §2.8 的 `channels` 只含
  * 受影响轨(一次段编辑只带一轨),拿事件当全量算会把其余轨的 stale 一起抹掉。
@@ -1791,7 +1791,10 @@ export function createTabTracks(opts) {
         // 提交进引擎+撤销栈——丢弃本次拖动并回退乐观值(pr-agent Reviewer Guide)
         body.addEventListener("pointercancel", cancelDrag);
 
-        // pan 滚轮 ±1(05 §2.2 冻结态);滚完 300ms 才提交一次,不逐格灌撤销栈
+        // pan 滚轮 ±1(05 §2.2 冻结态);滚完 300ms 才提交一次,不逐格灌撤销栈。
+        // 音量卡箍**刻意不接滚轮**([J117] SL-537 用户裁定:滚轮要上下滚表体,接了容易误触音量)——
+        // 别在这里补一条 vol-collar 分支,也别对它 preventDefault;页面级冒烟
+        // smoke-web-sync-page.mjs ②b 钉着这两条。
         body.addEventListener(
             "wheel",
             (e) => {

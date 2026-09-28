@@ -829,11 +829,13 @@ export const T = {
         "banner.srMismatch": "轨 {n} 采样率不一致,已禁用",
         "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
         "banner.noTimeline": "宿主未提供时间线",
-        // 上游改动的过期检测(04 §4.5 fingerprint watchdog,SL-177):该轨上游音频与已采集
-        // 特征对不上 —— 典型场景是在 Input 前面插了 EQ/压缩并改了参数。
+        // 已采集特征过期(§2.8 `channels[].stale`)。两种成因共用这一位:① 上游改动(04 §4.5
+        // fingerprint watchdog,SL-177)—— 典型场景是在 Input 前面插了 EQ/压缩并改了参数;
+        // ② [SL-485] 该轨的采集采样率与当前采样率不同。文案因此只说「过期」并把两种成因都列出来,
+        // 不能只说「上游音频不一致」([SL-520]:换采样率时那句是错的原因)。
         // **只提示,不自动失效、不阻断任何操作**(04 §4.5 UI 条)。
         "banner.staleCapture":
-            "{m} 轨的上游音频与已采集特征不一致,建议重新采集",
+            "{m} 轨的已采集特征已过期(上游音频或采样率与采集时不同),建议重新采集",
         // [SL-239] 横幅 ⑨:采集 ON 期间上一条提示整条是哑的(FeatRing::accumulateFp
         // 末尾那道上报闸里的 capturing 条件 —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。
         // 用户按终验清单做「改狠上游 EQ → 应出 ⚠」时采集通常还开着,于是他看到的是
@@ -851,7 +853,8 @@ export const T = {
         // 错误码);①-⑥ 那六条是 SCVB_CONTRACT §5.1 降级纪律② 明令「不可手动关闭」的
         // 持续性条件,不加、也不许加。钮面是字形 ✕,可访问名走本词条。
         "banner.dismiss": "关掉这条提示",
-        "wave.staleTrack": "该轨上游音频与已采集特征不一致,建议重新采集",
+        "wave.staleTrack":
+            "该轨的已采集特征已过期(上游音频或采样率与采集时不同),建议重新采集",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
         // Tab1 空态卡(A1;用户裁定 2026-08-18:五步制,前三步红字,
@@ -1762,14 +1765,14 @@ export const T = {
             "Capture data missing or outdated — please re-capture",
         "banner.noTimeline": "Host provides no timeline",
         "banner.staleCapture":
-            "Upstream audio no longer matches the captured features on {m} track(s) — re-capture recommended",
+            "Captured features are out of date on {m} track(s) (upstream audio or sample rate differs from when they were captured) — re-capture recommended",
         "banner.fpPausedByCapture":
             "Upstream-change detection is paused while capture is on (these features are being rewritten as the new baseline) — turn capture off, then play, to check whether upstream changed",
         "banner.recaptureVoided":
             "Re-capture is still armed but capture is off — this re-capture will record nothing. Turn capture back on, or disarm.",
         "banner.dismiss": "Dismiss this notice",
         "wave.staleTrack":
-            "Upstream audio no longer matches the captured features on this track — re-capture recommended",
+            "Captured features on this track are out of date (upstream audio or sample rate differs from when they were captured) — re-capture recommended",
         "master.versionArmedConfirm":
             "Engine output will fade smoothly to the new version. Continue?",
         "master.empty.step1":
@@ -2613,14 +2616,14 @@ export const T = {
             "Données de capture manquantes ou périmées — veuillez recapturer",
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
         "banner.staleCapture":
-            "L'audio en amont ne correspond plus aux caractéristiques capturées sur {m} piste(s) — recapture recommandée",
+            "Les caractéristiques capturées sont périmées sur {m} piste(s) (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",
         "banner.fpPausedByCapture":
             "La détection des changements en amont est suspendue tant que la capture est active (ces caractéristiques sont réécrites comme nouvelle référence) — désactivez la capture, puis lancez la lecture, pour vérifier si l'amont a changé",
         "banner.recaptureVoided":
             "La recapture est toujours armée mais la capture est désactivée — cette recapture n'enregistrera rien. Réactivez la capture, ou désarmez.",
         "banner.dismiss": "Masquer cet avis",
         "wave.staleTrack":
-            "L'audio en amont ne correspond plus aux caractéristiques capturées sur cette piste — recapture recommandée",
+            "Les caractéristiques capturées sur cette piste sont périmées (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",
         "master.versionArmedConfirm":
             "La sortie du moteur passera progressivement à la nouvelle version. Continuer ?",
         "master.empty.step1":

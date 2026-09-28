@@ -30,8 +30,8 @@
 // 2. 同 abi 内 CRVS 的 minor 高于当前(kCrvsMinorVersion)时,decodeCrvs 只拒解本块,容器级 loadState
 //    仍返回 Ok —— Output 接线卡必须把「同 abi 但 CRVS minor 更高」按「等同拒载 + preservedOriginal
 //    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
-// 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
-//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
+// 3. wire-format 与 docs/STATE_SCHEMA.md 交叉校验的基准 = 本头 + tests/golden/state/abi{N}.bin
+//    (abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
 namespace scvb::state
 {
 
