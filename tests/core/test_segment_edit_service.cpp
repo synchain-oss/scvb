@@ -131,72 +131,103 @@ TEST_CASE("SERVICE-4 通用 commitCrvsTransaction:undo 还原 meta.name", "[sege
 // T37 三轮 D 族回归:setTrackManual 的两个维度不得互相冲掉。
 // 真机症状:「改了音量再改 pan,音量退回默认;先 pan 后音量,pan 回居中」。
 // 根因是构造常值段时把**另一维**硬写成默认值,而 UI 的读回值对 pan/vol 读的是同一段。
+//
+// [J131] / SL-180:另一维不只是「不许回默认」,而是**逐段保留原曲线** —— 此前把段表压成
+// 单段、另一维从首段继承,于是拖一下音量卡箍,整条 pan 曲线被压成首段的 pan。
+// SERVICE-5/6 用**多段、另一维各不相同**的段表钉这一条(单段夹具区分不出「保留曲线」与
+// 「继承首段」)。
 // ---------------------------------------------------------------------------
 
-TEST_CASE("SERVICE-5 makeManualConstantSegment:写 pan 保留既有 vol", "[segedit][service][t37]")
+namespace
 {
-    std::vector<Segment> existing;
-    Segment prev;
-    prev.t0 = 0;
-    prev.t1 = static_cast<std::int64_t>(1) << 40;
-    prev.pan = 0.0f;
-    prev.volDb = -6.0f; // 用户先调过音量
-    prev.flags = makeSegmentFlags(SegmentOrigin::UserEdited, false);
-    existing.push_back(prev);
+// 三段、pan 与 vol 都随段变化、含一个锁定的手编段 —— 「另一维曲线」的最小夹具。
+std::vector<Segment> threeVaryingSegments()
+{
+    std::vector<Segment> segs(3);
+    const float pans[3] = {-60.0f, 10.0f, 80.0f};
+    const float vols[3] = {-6.0f, 2.0f, -3.5f};
+    for (std::size_t i = 0; i < segs.size(); ++i)
+    {
+        segs[i].t0 = static_cast<std::int64_t>(i) * 48000 * 4;
+        segs[i].t1 = segs[i].t0 + 48000 * 3; // 段间留 1s 空隙
+        segs[i].pan = pans[i];
+        segs[i].volDb = vols[i];
+        segs[i].flags = makeSegmentFlags(SegmentOrigin::Auto, false);
+    }
+    segs[1].flags = makeSegmentFlags(SegmentOrigin::UserEdited, true); // 手编 + 锁定
+    return segs;
+}
+} // namespace
 
-    const Segment seg = scvb::output::makeManualConstantSegment(existing, /*isPan=*/true, 40.0f);
+TEST_CASE("SERVICE-5 makeManualDimSegments:写 pan 逐段保留 vol 曲线", "[segedit][service][t37][SL180]")
+{
+    const std::vector<Segment> existing = threeVaryingSegments();
+    const std::vector<Segment> out = scvb::output::makeManualDimSegments(existing, /*isPan=*/true, 40.0f);
 
-    REQUIRE(seg.pan == 40.0f);
-    REQUIRE(seg.volDb == -6.0f); // ← 修复前这里是 0.0f(音量被打回默认)
-    REQUIRE(scvb::state::segmentOrigin(seg.flags) == SegmentOrigin::UserEdited);
-    REQUIRE(seg.t0 == 0);
+    REQUIRE(out.size() == existing.size()); // 段表不再被压成一段
+    for (std::size_t i = 0; i < out.size(); ++i)
+    {
+        CHECK(out[i].pan == 40.0f); // 被拖维度 = 常值
+        CHECK(out[i].volDb == existing[i].volDb); // ← 改造前:三段都是首段的 -6
+        CHECK(out[i].t0 == existing[i].t0); // 段边界不动
+        CHECK(out[i].t1 == existing[i].t1);
+        CHECK(scvb::state::segmentOrigin(out[i].flags) == SegmentOrigin::UserEdited);
+        CHECK_FALSE(scvb::state::segmentLocked(out[i].flags)); // 与改造前那条常值段同口径:不上锁
+    }
 }
 
-TEST_CASE("SERVICE-6 makeManualConstantSegment:写 vol 保留既有 pan", "[segedit][service][t37]")
+TEST_CASE("SERVICE-6 makeManualDimSegments:写 vol 逐段保留 pan 曲线", "[segedit][service][t37][SL180]")
 {
-    std::vector<Segment> existing;
-    Segment prev;
-    prev.t0 = 0;
-    prev.t1 = static_cast<std::int64_t>(1) << 40;
-    prev.pan = -75.0f; // 用户先调过 pan
-    prev.volDb = 0.0f;
-    prev.flags = makeSegmentFlags(SegmentOrigin::UserEdited, false);
-    existing.push_back(prev);
+    const std::vector<Segment> existing = threeVaryingSegments();
+    const std::vector<Segment> out = scvb::output::makeManualDimSegments(existing, /*isPan=*/false, 3.5f);
 
-    const Segment seg = scvb::output::makeManualConstantSegment(existing, /*isPan=*/false, 3.5f);
-
-    REQUIRE(seg.volDb == 3.5f);
-    REQUIRE(seg.pan == -75.0f); // ← 修复前这里是 0.0f(pan 回居中)
+    REQUIRE(out.size() == existing.size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+    {
+        CHECK(out[i].volDb == 3.5f);
+        CHECK(out[i].pan == existing[i].pan); // ← 改造前:三段都是首段的 -60(整条 pan 曲线被压平)
+        CHECK(out[i].t0 == existing[i].t0);
+        CHECK(out[i].t1 == existing[i].t1);
+        CHECK(scvb::state::segmentOrigin(out[i].flags) == SegmentOrigin::UserEdited);
+        CHECK_FALSE(scvb::state::segmentLocked(out[i].flags));
+    }
 }
 
-TEST_CASE("SERVICE-7 makeManualConstantSegment:空表落默认 + 越界钳制", "[segedit][service][t37]")
+TEST_CASE("SERVICE-7 makeManualDimSegments:空表落单段全时限 + 默认 + 越界钳制", "[segedit][service][t37]")
 {
     const std::vector<Segment> empty;
 
-    const Segment a = scvb::output::makeManualConstantSegment(empty, /*isPan=*/true, 999.0f);
-    REQUIRE(a.pan == 100.0f); // 钳到 +100
-    REQUIRE(a.volDb == 0.0f); // 空表 → vol 默认 0dB
+    const std::vector<Segment> a = scvb::output::makeManualDimSegments(empty, /*isPan=*/true, 999.0f);
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].t0 == 0);
+    CHECK(a[0].t1 == (static_cast<std::int64_t>(1) << 40)); // 无末端哨兵(§2.8 openEnded)
+    CHECK(a[0].pan == 100.0f); // 钳到 +100
+    CHECK(a[0].volDb == 0.0f); // 空表 → vol 默认 0dB
 
-    const Segment b = scvb::output::makeManualConstantSegment(empty, /*isPan=*/false, -999.0f);
-    REQUIRE(b.volDb == -24.0f); // 钳到 -24dB
-    REQUIRE(b.pan == 0.0f); // 空表 → pan 默认居中
+    const std::vector<Segment> b = scvb::output::makeManualDimSegments(empty, /*isPan=*/false, -999.0f);
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].volDb == -24.0f); // 钳到 -24dB
+    CHECK(b[0].pan == 0.0f); // 空表 → pan 默认居中
 }
 
-TEST_CASE("SERVICE-8 makeManualConstantSegment:交替写两维互不干扰(真机复现序列)", "[segedit][service][t37]")
+TEST_CASE("SERVICE-8 makeManualDimSegments:交替写两维互不干扰(真机复现序列)", "[segedit][service][t37]")
 {
     std::vector<Segment> segs; // 从空表起步
 
     // 先调音量 → 再调 pan → 再调音量:三步之后两维都应是最后一次写入的值。
-    segs.assign(1, scvb::output::makeManualConstantSegment(segs, /*isPan=*/false, -8.0f));
+    segs = scvb::output::makeManualDimSegments(segs, /*isPan=*/false, -8.0f);
+    REQUIRE(segs.size() == 1);
     REQUIRE(segs[0].volDb == -8.0f);
 
-    segs.assign(1, scvb::output::makeManualConstantSegment(segs, /*isPan=*/true, 55.0f));
-    REQUIRE(segs[0].pan == 55.0f);
-    REQUIRE(segs[0].volDb == -8.0f); // 音量没被 pan 冲掉
+    segs = scvb::output::makeManualDimSegments(segs, /*isPan=*/true, 55.0f);
+    REQUIRE(segs.size() == 1);
+    CHECK(segs[0].pan == 55.0f);
+    CHECK(segs[0].volDb == -8.0f); // 音量没被 pan 冲掉
 
-    segs.assign(1, scvb::output::makeManualConstantSegment(segs, /*isPan=*/false, 2.0f));
-    REQUIRE(segs[0].volDb == 2.0f);
-    REQUIRE(segs[0].pan == 55.0f); // pan 没被音量冲掉
+    segs = scvb::output::makeManualDimSegments(segs, /*isPan=*/false, 2.0f);
+    REQUIRE(segs.size() == 1);
+    CHECK(segs[0].volDb == 2.0f);
+    CHECK(segs[0].pan == 55.0f); // pan 没被音量冲掉
 }
 
 // ---------------------------------------------------------------------------
@@ -232,8 +263,12 @@ TEST_CASE("SERVICE-9 clampManualValue:四边界 + 非有限值", "[segedit][serv
     CHECK(scvb::output::clampManualValue(/*isPan=*/false, -inf) == 0.0f);
     // 建段通道走的是同一把尺子:NaN 不得落进段表(两维分别验)。
     const std::vector<Segment> empty;
-    CHECK(scvb::output::makeManualConstantSegment(empty, /*isPan=*/true, nan).pan == 0.0f);
-    CHECK(scvb::output::makeManualConstantSegment(empty, /*isPan=*/false, nan).volDb == 0.0f);
+    CHECK(scvb::output::makeManualDimSegments(empty, /*isPan=*/true, nan).front().pan == 0.0f);
+    CHECK(scvb::output::makeManualDimSegments(empty, /*isPan=*/false, nan).front().volDb == 0.0f);
+    // 非空表那一支同样过这把尺子(逐段写入的值不得是 NaN)。
+    std::vector<Segment> one(1);
+    one[0].t1 = 48000;
+    CHECK(scvb::output::makeManualDimSegments(one, /*isPan=*/false, nan).front().volDb == 0.0f);
 }
 
 // ---------------------------------------------------------------------------

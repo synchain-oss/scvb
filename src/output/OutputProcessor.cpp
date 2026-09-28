@@ -3245,8 +3245,9 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     // ① 该维度**已冻结**(freeze 对应位=1)= 冻结中调整。静态值只存**参数面 + 冻结位**,
     //    曲线真身一个字节都不动。引擎权威下 DspArbiter 对冻结维度读的就是 rawPan/rawVol
     //    (DspArbiter.cpp §2.3),所以只写参数面照样出声 —— 那正是「写入自动化前的 preview」。
-    // ② 该维度**未冻结** = 用户主动「设为手动」接管。照旧写常值段(04 §1.5 方案 A)+ 参数面,
-    //    UI 随后把 freeze 位置 1(tab-tracks.js「拖动 = 接管手动」)。这条通道不受本次改动影响。
+    // ② 该维度**未冻结** = 用户主动「设为手动」接管。把该轨**每一段的这一维**改写为常值、另一维
+    //    原样保留([J131] / SL-180;此前是压成单段常值)+ 参数面,UI 随后把 freeze 位置 1
+    //    (tab-tracks.js「拖动 = 接管手动」)。
     //
     // 为什么冻结通道必须停手:整表烘焙成「单段全时限常值」之后,解冻回曲线读到的仍是那条常值段,
     // 而再分析按 ADR-008 不覆盖 origin=user 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到
@@ -3279,16 +3280,16 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             if (scvb::state::segmentLocked(s.flags))
                 ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
 
-        // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
-        // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
-        const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
-        applied = isPan ? seg.pan : seg.volDb;
+        // [J131] / SL-180:只改被拖的那一维,另一维**逐段**保留原曲线(段边界不动)。此前压成
+        // 单段常值、另一维从首段继承,拖一下音量卡箍就把整条 pan 曲线压平。构造与钳制口径见
+        // makeManualDimSegments 头注(单测 SERVICE-5..8 直接断言该纯函数,接线格 HOST SL-180)。
+        std::vector<scvb::state::Segment> next = scvb::output::makeManualDimSegments(track.segments, isPan, value);
 
         // 事务名带全局流水号:下面要把参数面与冻结位占位**追加进同一条事务**,UI 的冻结跟进到达时
         // 还要凭名字核对「栈顶仍是这一步」(见 uiEndParamGesture / pendingTakeover_)。
         takeoverTxn = "Track manual ch" + juce::String(ch) + " #" + juce::String(++undoSerial_);
         scvb::output::commitCrvsTransaction(
-            authority_.undoManager(), crvsData_, takeoverTxn, [&] { track.segments.assign(1, seg); },
+            authority_.undoManager(), crvsData_, takeoverTxn, [&] { track.segments = std::move(next); },
             [this] { rebuildAllCurves(); });
     }
 

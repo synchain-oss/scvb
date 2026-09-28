@@ -307,6 +307,7 @@ export {
     curveSegmentAt,
     freezeBits,
     manualConstantOf,
+    manualDimOf,
     readbackSegsOf,
     segmentsOfCh,
 } from "../shared/readback.js";
@@ -446,16 +447,17 @@ export function hasSegmentedMaterial(segments) {
  * 手动首写确认条要不要弹(纯函数,node 侧可直接断言)。
  *
  * **[J85] 用户裁定 2026-08-27(方案 A):冻结通道不弹。** 确认条正文
- * (`tracks.manualOverwriteConfirm`)说的是「将以固定值**替换该轨的全部分段结果**,可撤销」——
+ * (`tracks.manualOverwriteConfirm`)说的是「将以固定值**替换该轨全部分段的这一项**,…可撤销」
+ * ([J131] 起措辞;裁定时是「替换该轨的全部分段结果」)——
  * 冻结通道不成立:它不替换任何段(`replacedSegments` 恒 0)。([J140] 起冻结通道也入撤销栈 ——
- * 「可撤销」那半句如今对它也成立,但确认条要拦的是「替换全部分段」这件破坏性的事,冻结通道
+ * 「可撤销」那半句如今对它也成立,但确认条要拦的是「改写段表」这件破坏性的事,冻结通道
  * 没有它;裁定理由的重心本来就在前半句。)
  * 拿一条关于「替换全部、可撤销」的警告去拦一次「只改了个旋钮值」的操作,是在吓唬用户。
  * 05 §2.2 R3 的「**无条件**」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),
  * 不是「连不会替换段的通道也要弹」—— 本裁定不与之冲突。
  *
- * 未冻结的手动接管通道**照旧弹**:那一路确实会把整条分析曲线整表压成常值段,是真正
- * 需要用户点头的破坏性操作。
+ * 未冻结的手动接管通道**照旧弹**:那一路确实会把该轨每一段的这一维改写成常值(另一维保留,
+ * [J131] / SL-180)、并摘掉锁定段的锁,是真正需要用户点头的破坏性操作。
  *
  * `freeze` = 该轨 freeze 参数当前值(0-3);`dim` = "pan" | "vol";`confirmed` = 该轨本会话是否已确认过。
  */
@@ -558,7 +560,9 @@ export function rowFromStore(store, ch, ctx) {
     //     常值段(`setTrackManual` 的冻结通道不写曲线)。此时段表里若还留着一条**旧的**
     //     常值段(先在未冻结态接管过手动、UI 随即置位冻结),读段表就会把把手弹回那个旧值,
     //     而耳朵听到的是参数面上的新值 —— 「看着没改、听着改了」。
-    //   • 未冻结维度 → 有手动常值段就取该段(05 §2.2「读回值同样取自该段」),否则取参数面。
+    //   • 未冻结维度 → **该维**是手动常值就取它(05 §2.2「读回值同样取自该段」;[J131] 起逐维判定,
+    //     拖过音量卡箍的轨 pan 一般仍按曲线读;pan 各段碰巧全等时例外,见 readback.js `manualDimOf` ⚠),
+    //     否则取参数面。
     //     这一支**必须**先读段表:未冻结轨拖卡箍(05 明确允许,走一次性确认)写的是曲线真身,
     //     25 Hz 的 `scvb.params` 在非 PRINT 态没有新值,改读参数面会让把手在下一帧弹回去。
     //   [SL-211] 未冻结那一支的回落**按输出档分叉**(复审终轮③a 裁定):
@@ -611,7 +615,11 @@ export function rowFromStore(store, ch, ctx) {
         manualConst: seg ? 1 : 0,
         // [SL-230] 手动常值有没有被锁:锁着的话 clearManual 碰不了它(契约 §1.6
         // 「locked 免疫,须先逐段解锁」),「恢复自动」得改说「先解锁」而不是给钮。
-        manualConstLocked: seg && seg.locked ? 1 : 0,
+        // [J131] / SL-180:手动常值不再是单段 —— 任一段上锁,「恢复自动」都清不完这条轨。
+        manualConstLocked:
+            seg && ((segCh && segCh.segments) || []).some((s) => s && s.locked)
+                ? 1
+                : 0,
     };
 }
 
@@ -862,8 +870,8 @@ export function trackRowHtml(t) {
         <button class="sc-btn" data-gb="${gb("manual-overwrite-cancel")}" data-t="common.cancel"></button>
         <button class="sc-btn sc-btn--cta" data-gb="${gb("manual-overwrite-ok")}" data-t="common.continue"></button>
       </div>
-      <!-- R2 语义保留(05 §2.2 冻结行):解冻(该位 1→0)且该轨当前版本曲线为「单段全时限
-           user_edited 常值」时,行内提示 + 单轨重新识别入口。中性玻璃底 + 下划线链接
+      <!-- R2 语义保留(05 §2.2 冻结行):解冻(该位 1→0)且该轨当前版本曲线仍有一维是
+           手动常值(manualConstantOf)时,行内提示 + 单轨重新识别入口。中性玻璃底 + 下划线链接
            (设计稿 641-643;与上面的琥珀确认条刻意区分:提示 ≠ 需要一个决定)。
            链接 → 直接 bridge.analyze({tracksMask:1<<${ch - 1}}, {clearManual:true})(契约 §1.6)。
            **单链一次确认**:本条自身就是那次确认(正文含「已锁定段保持不变」),链接不再另开
@@ -1376,7 +1384,7 @@ export function createTabTracks(opts) {
 
     /**
      * 解冻提示的触发判定(05 §2.2 R2,J65 改触发词):某位 **1→0** 且该轨当前版本曲线
-     * 仍是「单段全时限 user_edited 常值」时挂行内提示 + 单轨重新识别入口。
+     * 仍有一维是手动常值(`manualConstantOf`)时挂行内提示 + 单轨重新识别入口。
      * 本地翻转与宿主回推(`scvb.params`)两条路径都要走这里,否则被 DAW 自动化解冻时不提示。
      *
      * 记的是**触发位**而非一个布尔(位账见 `unfreezeHintBits`):1→0 记上、0→1 抹掉,
@@ -1466,7 +1474,7 @@ export function createTabTracks(opts) {
         // 「未冻结不可拖」,于是能走到这里的 pan 拖拽**必定已冻结**,按方案 A 一条确认条都
         // 不该弹。留裸判定的后果不只是多弹一条:accept 走 `manualConfirmed.add(ch)` 是**按轨**
         // 记额度,误弹一次被点掉之后,该轨真正需要确认的「未冻结 vol 首拖」(那一路才会把整条
-        // 分析曲线整表压成常值段)反而不弹了 —— 等于把确认条从该弹的地方挪到了不该弹的地方。
+        // 分析曲线的音量维改写成常值)反而不弹了 —— 等于把确认条从该弹的地方挪到了不该弹的地方。
         // freeze 值复用上面已读出的 bits,不再读一次参数(同一笔判定绑同一个快照)。
         if (
             needsManualConfirm(
@@ -2335,7 +2343,7 @@ export function createTabTracks(opts) {
             text(n.manualOverwriteOk, t["common.continue"] || "");
             text(n.manualOverwriteCancel, t["common.cancel"] || "");
         }
-        // 解冻提示:该位 1→0 且该轨当前版本曲线仍是单段全时限 user_edited 常值
+        // 解冻提示:该位 1→0 且该轨当前版本曲线仍有一维是手动常值(manualConstantOf)
         const hint = !c && local.unfreezeHint.has(ch) && !!row.manualConst;
         show(n.manualdrivenHint, hint);
         // [SL-230] 常驻「恢复自动」触发钮:只要该轨仍被手动常值驱动就在(行内,不浮)。
