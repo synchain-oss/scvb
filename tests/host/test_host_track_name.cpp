@@ -329,3 +329,24 @@ TEST_CASE("HOST J150:自动填的 label 随工程保存,重开后仍跟随改名
         CHECK(r2.label(kIdx) == "Typed In Old");
     }
 }
+
+TEST_CASE("HOST J150:自动填入不进撤销栈;撤销用户改名 ⇒ 回到跟随轨道名", "[host][j150][undo]")
+{
+    // [SL-536 / J140] 起 setChannelConfig 的 label 进插件撤销栈。「是否跟随」由 label 与上次自动填入值推导,
+    // 撤销只还原 label、不碰 autoLabel —— 两边不需要任何同步,这一格钉的就是这件事。
+    TrackRig r;
+    r.in.updateTrackProperties(named("Vox A"));
+    REQUIRE(TrackRig::pumpUntil([&] { return r.label(kIdx) == "Vox A"; }));
+    CHECK_FALSE(r.out->undo()); // 自动填入不是用户操作:栈里什么都没有
+
+    ScvbOutputAudioProcessor::ChannelConfigPatch p;
+    p.label = juce::String("Mine");
+    REQUIRE(r.out->bridgeApplyChannelConfig(static_cast<int>(kIdx), p));
+    r.in.updateTrackProperties(named("Vox B"));
+    REQUIRE(r.settleWithControl("Ctl U"));
+    REQUIRE(r.label(kIdx) == "Mine"); // 前提:用户命名期间不跟随
+
+    // 撤掉「改成 Mine」⇒ label 回到「Vox A」== 上次自动填入值 ⇒ 重新跟随,随即换成当前轨道名。
+    CHECK(r.out->undo());
+    CHECK(TrackRig::pumpUntil([&] { return r.label(kIdx) == "Vox B"; }));
+}
