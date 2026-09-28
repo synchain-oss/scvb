@@ -753,6 +753,11 @@ export const T = {
         "in.footer.noBackend": "未接后端——请经 web-preview 预览入口打开",
         "in.priority.unassigned": "需先选择通道",
         "ch.occupied.group": "通道已被占用(组 {g})",
+        // [SL-463 / J156] 点卡 / 切组的回执是非冲突失败(契约 §3.2/§3.3 {ok:false, reason})时的一次性 toast。
+        "ch.claimFailed.unavailable":
+            "未能连接:插件间通信用的内存段打不开。请重新选择;仍不行请重启宿主后再试",
+        "ch.claimFailed.abiMismatch":
+            "未能连接:两端 SCVB 版本不匹配——请把两个插件升到同一版本",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1687,6 +1692,10 @@ export const T = {
         "in.footer.noBackend": "No backend attached — open via web-preview",
         "in.priority.unassigned": "Select a channel first",
         "ch.occupied.group": "A channel is already taken (group {g})",
+        "ch.claimFailed.unavailable":
+            "Could not connect: the shared memory the plug-ins communicate through could not be opened. Select again; if it still fails, restart the host and retry.",
+        "ch.claimFailed.abiMismatch":
+            "Could not connect: SCVB version mismatch. Update both plug-ins to the same version.",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -2534,6 +2543,10 @@ export const T = {
         "in.footer.noBackend": "Aucun backend — ouvrez via web-preview",
         "in.priority.unassigned": "Sélectionnez d'abord un canal",
         "ch.occupied.group": "Un canal est déjà occupé (groupe {g})",
+        "ch.claimFailed.unavailable":
+            "Connexion impossible : la mémoire partagée par laquelle les plug-ins communiquent n'a pas pu être ouverte. Sélectionnez à nouveau ; en cas de nouvel échec, redémarrez l'hôte puis réessayez.",
+        "ch.claimFailed.abiMismatch":
+            "Connexion impossible : versions SCVB incompatibles. Mettez les deux plug-ins à la même version.",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;

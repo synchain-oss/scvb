@@ -2,12 +2,16 @@
 // test_input_bridge —— T30 Input 桥 L0 单测:claim 六值映射([R3 收口])/srMismatch 推导/
 // remoteSetPriority 拒绝语义/五个事件与首帧快照的载荷形状(键名逐字对契约 §3/§4/§5)。
 // 只测 InputBridgeLogic 纯函数与 InputBridgeApi 常量表;InputEditor 依赖真 WebView2,留待
-// gate 8 真机 GUI pluginval。
+// gate 8 真机 GUI pluginval —— 例外是 [SL-463] 那一格**源码级**判据:读 InputEditor.cpp 的文本,
+// 钉 setChannelId/setGroupId 两个 handler 确实把请求结果交给 claimRequestResponse()。
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <string>
 
 #include <juce_core/juce_core.h>
 
@@ -29,6 +33,7 @@ using scvb::input::bridge::buildPriorityResponse;
 using scvb::input::bridge::buildStatePayload;
 using scvb::input::bridge::claimEdgeConsumed;
 using scvb::input::bridge::claimErrorEdgeChanged;
+using scvb::input::bridge::claimRequestResponse;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
@@ -406,6 +411,114 @@ TEST_CASE("T30 conflictResponse(§5.6)")
 {
     const auto c = obj(conflictResponse());
     CHECK(static_cast<bool>(c->getProperty("conflict")) == true);
+}
+
+TEST_CASE("SL-463 / J156 claimRequestResponse:非冲突失败不再回成功(§3.2/§3.3 返回并集)", "[input][bridge][sl463]")
+{
+    // 五个请求结果逐个钉形状。全部用 CHECK:每一支是一个独立落点,删除式要能看到「只改一支、其余仍绿」。
+    // 成功两态 ⇒ {ok:true},不带 reason / conflict。kUnassigned = setChannelId(0) 释放、或未选通道时改组。
+    for (const auto st : {InputClaimState::kActive, InputClaimState::kUnassigned})
+    {
+        const auto ok = obj(claimRequestResponse(st));
+        CHECK(static_cast<bool>(ok->getProperty("ok")) == true);
+        CHECK_FALSE(ok->hasProperty("reason"));
+        CHECK_FALSE(ok->hasProperty("conflict"));
+    }
+
+    // 冲突 ⇒ §5.6 的 {conflict:true},形状与改动前逐字相同(不带 ok,UI 只认 conflict === true)。
+    const auto conflict = obj(claimRequestResponse(InputClaimState::kConflict));
+    CHECK(static_cast<bool>(conflict->getProperty("conflict")) == true);
+    CHECK_FALSE(conflict->hasProperty("ok"));
+
+    // 本卡的两支:此前都回 {ok:true}。
+    const auto abi = obj(claimRequestResponse(InputClaimState::kAbiMismatch));
+    CHECK(abi->hasProperty("ok"));
+    CHECK(static_cast<bool>(abi->getProperty("ok")) == false);
+    CHECK(abi->getProperty("reason").toString() == "abiMismatch");
+    CHECK_FALSE(abi->hasProperty("conflict"));
+
+    const auto unavailable = obj(claimRequestResponse(InputClaimState::kUnavailable));
+    CHECK(unavailable->hasProperty("ok"));
+    CHECK(static_cast<bool>(unavailable->getProperty("ok")) == false);
+    CHECK(unavailable->getProperty("reason").toString() == "unavailable");
+    CHECK_FALSE(unavailable->hasProperty("conflict"));
+
+    // 枚举外的值(防御性兜底):不许回成功。
+    const auto unknown = obj(claimRequestResponse(static_cast<InputClaimState>(99)));
+    CHECK(unknown->hasProperty("ok"));
+    CHECK(static_cast<bool>(unknown->getProperty("ok")) == false);
+    CHECK(unknown->getProperty("reason").toString() == "unavailable");
+}
+
+namespace
+{
+// 读源文件 → 剥 // 与 /* */ 注释 → 删掉全部空白(不钉排版:折行、缩进、空格都不影响匹配)。
+// 与 tests/core/test_input_bridge_ipc.cpp 里 [SL-446] 那两格源码级判据同一手法。
+std::string readStrippedSource(const char* relPath)
+{
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/" + relPath;
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::string out;
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            if (raw[i] != ' ' && raw[i] != '\t' && raw[i] != '\n' && raw[i] != '\r')
+            {
+                out.push_back(raw[i]);
+            }
+            ++i;
+        }
+    }
+    return out;
+}
+
+// 取一个 InputEditor 成员函数的函数体:从签名起,到下一个 "InputEditor::" 为止(与成员函数的排列顺序无关)。
+std::string editorMethodBody(const std::string& src, const std::string& signature)
+{
+    const auto begin = src.find(signature);
+    REQUIRE(begin != std::string::npos); // fail-closed:改名/挪走判负,不是跳过
+    const auto end = src.find("InputEditor::", begin + signature.size());
+    return src.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+} // namespace
+
+TEST_CASE("SL-463 / J156 源码级判据:InputEditor 的 setChannelId/setGroupId 回执走 claimRequestResponse()",
+          "[input][bridge][sl463]")
+{
+    // 上一格证明映射表本身对,证明不了 InputEditor.cpp 真的在用它 —— 缺陷原样就是「handler 里自己写了
+    // 一个只认 kConflict 的三元式」,把那一行改回去,映射表的用例照样全绿。InputEditor 依赖真 WebView2,
+    // 不能在这里实例化,所以读源码文本:两个 handler 各自隔离取函数体,各钉一正一反。
+    const std::string src = readStrippedSource("src/input/InputEditor.cpp");
+    const std::string chBody = editorMethodBody(src, "voidInputEditor::handleSetChannelId(");
+    const std::string grBody = editorMethodBody(src, "voidInputEditor::handleSetGroupId(");
+
+    // 正:回执交给映射表。
+    CHECK(chBody.find("complete(bridge::claimRequestResponse(st));") != std::string::npos);
+    CHECK(grBody.find("complete(bridge::claimRequestResponse(st));") != std::string::npos);
+    // 反:这两个 handler 里不再自己拼「成功」形状(旧写法 `st==kConflict?conflictResponse():okResponse()`
+    // 的 okResponse 就是把失败报成成功的那一半;badArg 那一支用的是 badArgResponse,不受影响)。
+    CHECK(chBody.find("okResponse()") == std::string::npos);
+    CHECK(grBody.find("okResponse()") == std::string::npos);
 }
 
 TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")

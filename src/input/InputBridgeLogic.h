@@ -137,6 +137,18 @@ juce::var buildPriorityResponse(bool queued, const juce::String& reason);
 // §5.6 拒绝语义 {conflict:true}(Input setChannelId/setGroupId)。
 juce::var conflictResponse();
 
+// [SL-463 / J156] §3.2 setChannelId / §3.3 setGroupId 的回执:把**这次请求本身**的结果映射成桥面形状。
+//   kConflict             → {conflict:true}(§5.6)
+//   kAbiMismatch          → {ok:false, reason:"abiMismatch"}(registry 或 ctrl 段 abi 不符,拒连)
+//   kUnavailable          → {ok:false, reason:"unavailable"}(段打不开 / 映射失败 / claimInput 非冲突失败 /
+//                           createSegments 失败)
+//   kActive / kUnassigned → {ok:true}
+// 入参是 InputProcessor::setChannelId()/setGroupId() 的**返回值**(请求结果),不是会话此刻的 state():
+// 补偿式回滚成功时 state() 是 kActive(会话回到了旧通道),而这次请求仍然失败 —— 回执要报失败,
+// 与冲突那一支是同一条纪律。
+// 枚举外的值(防御性)按 unavailable 报,**不回 {ok:true}**:本卡要堵的就是「失败被报成成功」。
+juce::var claimRequestResponse(InputClaimState requestResult);
+
 // §3.1 首帧快照 InputSnapshot:{channel_id, group_id, role:"input", conn, config,
 //   ui:{scale, language, guide_seen}, guide_seen_global, version:{plugin, abi}}。
 // claim 不经快照回推(唯一通道 = §4.1 scvb.state,§3.1 无 claim 键)。
