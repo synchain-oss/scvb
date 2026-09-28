@@ -739,7 +739,8 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
 
     // [SL-521] 最后一条轨关掉时 inject == 0 但仍有释放中的轨:照走下面的混音路径,让它的
     // 80ms 逐轨淡出乘在真样本上(与多轨时关掉一轨同一条路径,SL-488),同时总线交叉的目标改为
-    // 直通 —— 交叉的混音侧是本段真实的淡出混音,而不是上一段的旧样本。
+    // 直通 —— 交叉的混音侧是本段真实的淡出混音,而不是上一段的旧样本。两个增益(逐轨 fade 与
+    // 总线交叉的混音侧)同一段起步、各走 80ms,是叠乘的:该轨实际落得比单条 80ms 快,仍在 80ms 内到 0。
     const scvb::u32 live = inject | releasing;
 
     // 读 live channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
