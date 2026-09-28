@@ -103,7 +103,7 @@ Set the DAW's automation mode to **Write** or **Latch** and play through once mo
 | Tab | What it is for |
 |---|---|
 | **Overview** | The capture / analyse / output switches, engine Range, group selection, version chip, global Width and MS Balance, Lead Select, pan and level distribution charts |
-| **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, level exemption, auto-pan participation, freeze, ST marker |
+| **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, volume participation, auto-pan participation, freeze, ST marker |
 | **Waveform** | Timeline lanes: VAD colouring, segments, the segment inspector (edit pan/vol on a selected segment), selections and partial recapture / re-analysis |
 | **Settings** | Usage notes (including the nine hard rules), loudness basis, centre-slot policy, UI scale, language, version number, diagnostics |
 
