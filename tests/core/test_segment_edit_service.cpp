@@ -16,6 +16,7 @@
 #include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
 #include "ParamUndo.h" // [SL-536] 参数撤销动作
 #include "engine/FreezeBits.h"
+#include "output/DistReadback.h" // [SL-548] SERVICE-14:接管产物交给读回判据
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -264,6 +265,33 @@ TEST_CASE("SERVICE-13 makeManualDimSegments:另一维的手动位逐段保留", 
     CHECK((out[1].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualVolBit);
     CHECK((out[2].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualMask);
     CHECK(out[1].pan == -12.0f); // 另一维的值同样逐段保留(SERVICE-6 同款,这里顺带)
+}
+
+// ---------------------------------------------------------------------------
+// [SL-548 / J162] 旧工程兼容形状(单段 user_edited、整表无位 ⇒ 读回两维都算手动)上**再接管另一维**:
+// 按卡上 ①「非空表保留另一维**已有**的位」的原文,旧段上没有位可保留 ⇒ 只置被拖那一维 ⇒ 表上有了位,
+// 兼容规则不再适用,**原先被兼容规则判成手动的那一维随之不算手动**(输出 OFF 时它的读回改走参数面,
+// 与声音同路)。#332 复审【建议】指出变更文档漏登了这一档;按原文落地、在变更文档「兼容性影响」登记,
+// 这一格钉住现行行为。若改为「命中兼容形状就把两位一起置上」,这一格应当翻过来,连同变更文档那条一起改。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-14 makeManualDimSegments:旧工程兼容形状上再接管,只置被拖那一维", "[segedit][service][SL548]")
+{
+    Segment legacy;
+    legacy.t0 = 0;
+    legacy.t1 = static_cast<std::int64_t>(1) << 40;
+    legacy.pan = 0.0f;
+    legacy.volDb = -8.0f;
+    legacy.flags = makeSegmentFlags(SegmentOrigin::UserEdited, false); // 旧构建空表接管 vol 的产物:无位
+    const std::vector<Segment> before = {legacy};
+    REQUIRE(scvb::output::manualDimOf(before, /*isPan=*/false) != nullptr); // 前置:兼容规则两维都算
+    REQUIRE(scvb::output::manualDimOf(before, /*isPan=*/true) != nullptr);
+
+    const std::vector<Segment> after = scvb::output::makeManualDimSegments(before, /*isPan=*/true, 40.0f);
+    REQUIRE(after.size() == 1);
+    CHECK((after[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit);
+    CHECK(after[0].volDb == -8.0f); // vol 的值原样保留
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/true) == &after.front());
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/false) == nullptr); // 兼容规则让位于显式位
 }
 
 // ---------------------------------------------------------------------------

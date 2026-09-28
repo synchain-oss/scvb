@@ -70,6 +70,7 @@
 | 接管后对某段 `set_locked` | 手动(值没变) | 手动(位保留) |
 | 接管后对某段 `set_values` 写**同一个值** | 仍算手动(值还全等) | 不算手动(被编辑段清位) |
 | 旧工程:单段 `user_edited`、无位 | 两维都算 | 两维都算(兼容规则) |
+| 旧工程单段无位上,新构建再拖**另一维**(如 pan) | 两维都算(值全等的单段) | 只有 pan 算;vol 让位于显式位,输出 OFF 读参数面 |
 
 「手动接管」标、「恢复自动」入口、解冻提示、Output 分布图、Tab2 行读回、Monitor `panNow` / `volDb` 都走
 `manualDimOf` / `manualConstantOf` / `readbackSegsOf` 这三个函数,本卡只改了第一个的判据,调用方一行没动。
@@ -84,6 +85,12 @@
   读回值在该维已冻结(UI 接管后会置冻结位,随工程保存)或输出 ON 时不变,输出 OFF 时改为跟参数面 —— 与声音同路;要把这类轨清回自动,用
   波形页的「重新识别(含手动段)」。按卡上 ④ 的原文落地,没有为这一档另加规则(多段无位的表与「检查器里逐段改过、
   碰巧全等」分不开,放宽就会把 #302 那条误判带回来)。
+- **旧工程兼容形状上再接管另一维**(#332 复审【建议】补登):旧构建在空表上拖过 vol 留下「单段 `user_edited`、无位」,
+  按兼容规则两维都算手动;在新构建里再拖一下 **pan**,按卡上 ① 的原文(非空表保留另一维**已有**的位 —— 旧段上没有位可保留)
+  这一段只带 pan 位 ⇒ 表上有了位、兼容规则不再适用 ⇒ **vol 不再算手动**:输出 OFF 时 vol 读回从段值改走参数面(与声音同路;
+  UI 接管后置的冻结位若还在,vol 本来就读参数面),「手动接管」标仍亮(pan 那一维)。反过来先拖 pan 的旧工程同理。
+  另一种做法是「命中兼容形状就把两位一起置上」,保住兼容规则给出的结论;那超出卡上 ① 的原文,本 PR 不做,由
+  SERVICE-14 钉住现行行为,改法若变,那一格与本条一起翻。
 - **新构建里也会落进兼容规则的形状**:单段表上 `set_values`(或 `split` 后再 `merge` 回单段)得到的「单段
   `user_edited`、无位」与旧工程接管的产物同形,两维都算手动 —— 与改造前的判定相同,不是新引入的误判;要区分它得
   给「旧工程」另打标记,那是一次 abi / 迁移级别的改动,不在本卡范围。
@@ -101,7 +108,7 @@
 | 判据 native | `tests/core/test_viz_plane.cpp`「DistReadback:[SL-548] 手动维按显式标记判定,不再按值推断」 | (a) pan 全等 + 只带 vol 位 ⇒ pan 不算手动、OFF 读回回落参数面;空表接管的单段只算被拖那一维;(b) 每段带位才算、缺一段不算、判据不比值、两维都带;(d) 兼容:单段 UE 无位两维都算、单段 auto 不算、多段 UE 无位不算 |
 | 判据 native(既有格改写) | 同文件「DistReadback:段选择口径…」 | `manual` 夹具标明是旧工程形状,优先级链几格照旧 |
 | 段编辑 op | `tests/core/test_segment_edit.cpp` SEGEDIT-MANUAL-1..5 | set_locked 保留(加锁 / 解锁 / 只保留自己有的那一位);set_values / split / move_boundary / merge 只清被编辑段 |
-| 接管写入 | `tests/core/test_segment_edit_service.cpp` SERVICE-5/6/7/8、SERVICE-13 | 非空表只置被拖那一维;空表只置被拖那一维;先 vol 后 pan 两位都在;另一维的位逐段保留 |
+| 接管写入 | `tests/core/test_segment_edit_service.cpp` SERVICE-5/6/7/8、SERVICE-13、SERVICE-14 | 非空表只置被拖那一维;空表只置被拖那一维;先 vol 后 pan 两位都在;另一维的位逐段保留;旧工程兼容形状上再接管只置被拖那一维(SERVICE-14) |
 | CRVS | `tests/core/test_state_codec.cpp` STATE-CRVS-5 | 手动位与 bit9 保留位逐字节往返 |
 | 生产接线 | `tests/host/test_host_harness.cpp` HOST SL-548 | 真 `setTrackManual` → CRVS → viz 段:① 每段只带 vol 位;② 输出 OFF 时 `panNow` 跟参数面、`volDb` 仍是手动常值;③ set_locked 保留;④ 存盘重开位原样;⑤ set_values **同值**清位 ⇒ vol 回落参数面;⑥ 撤销位回来;⑦ 旧工程单段无位两维仍读段 |
 | 生产接线(既有格补) | HOST SL-180 / SL-188 | SL-180 两支各只带被拖那一维的位;SL-188 真分析夹具(各段 pan 相同)拖 vol 后 pan 不算手动、`clearManual` 重分析产出的段无位且标熄灭 |
@@ -136,6 +143,7 @@ native 跑的是定向用例(`scvb_tests "[readback],[viz]"` / `"[segedit]"` / `
 | NE4 | `move_boundary` 保留本段的位 | SEGEDIT-MANUAL-4 `:412` |
 | NE5 | `merge` 结果段继承左段的位 | SEGEDIT-MANUAL-5 `:426` |
 | NS1 | `SegmentEditService.h` 非空表不置被拖那一维的位 | params 4 例红:SERVICE-5 `:177`、SERVICE-6 `:196`、SERVICE-8 `:234`、SERVICE-13 前置 `:252`;host 3 例全红:HOST SL-548 ① `:10138`/`:10141` 起级联、HOST SL-180 `:4092`/`:4106`/`:4107`/`:4146`、HOST SL-188 `:4466` |
+| NS5 | 非空表命中兼容形状(单段、无位、UE)时两位一起置上(复审【建议】的另一种做法;第 2 推补测) | params 1 例红:SERVICE-14 `:291`(位)、`:294`(vol 仍算手动) |
 | NS2 | 非空表不保留另一维已有的位 | SERVICE-8 `:234`、SERVICE-13 `:263`/`:265` |
 | NS3 | 空表不置位 | SERVICE-7 `:211`/`:217`、SERVICE-8 `:234` |
 | NS4 | 空表两位都置 | SERVICE-7 `:211`/`:217` |
