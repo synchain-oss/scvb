@@ -375,6 +375,15 @@
   那条里同样过时的括注与末句(`input.*` / `output.*` 分键、命名空间按侧分)改成与 #301 相同的实现写法
   (同一个文件、两个键;`tour_seen_global` 只有 Output 一个键),行为不变
   (变更文档 `docs/contract-changes/20260928-j160-constitution-guide-keys.md`)(#318)
+- 版本号改为 **0.9.0**(`CMakeLists.txt` 的 `project(SCVB VERSION)`,[J123]):首个公开版本先发预发布
+  `v0.9.0-rc.1`,测过之后发 `v1.0.0`。rc 构建在插件设置页显示的版本号是 `0.9.0`,不带 `-rc.N`(#331)
+- 发版文档写明 `stage` / `prod` 两个分支([J163]):`stage` 跟每一个已发布版本(含 rc),`prod` 只跟正式版。
+  插件里的文档链接固定指向 `prod`([J149]),所以**首个正式版发布之前,rc 版本里点「说明文档」或打开九条规则里
+  的 DAW 兼容表地址都是 404**;正式版发布后这些链接自动恢复,插件不用更新。已登记为已知限制 KI-7,
+  缓解办法是用 Release 正文或 zip 里 `INSTALL.txt` 的文档链接(都固定在本版 tag 上)(#331)
+- 宪法只读副本 `docs/constitution/ADR.md` 的状态行补升为 v2.2:J95 修宪(2026-08-31)已追加 v2.2 修订节,
+  状态行当时没跟着升。正文一字未动(变更文档 `docs/contract-changes/20260928-adr-status-line-v2.2.md`)(#331)
+- README 的 Build / Release badge 链接改为绝对地址(#331)
 
 ### 修复
 
