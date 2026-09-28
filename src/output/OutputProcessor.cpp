@@ -2097,8 +2097,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
-            // [J148] ui.active_tab:缺失(本版之前存的工程)或非四值 ⇒ Tab1。**无条件写回**,不做
-            // 「缺失就保留现值」—— 那样上一个工程停在哪个 tab,载入这份就还停在哪(#96 陈旧值同族)。
+            // [J148] ui.active_tab:PRMS 解得开时,属性缺失(本版之前存的工程)或非四值 ⇒ Tab1,**照样写回**,
+            // 不做「属性缺失就保留现值」—— 那样上一个工程停在哪个 tab,载入这份就还停在哪(#96 陈旧值同族)。
+            // 范围只到这一层:PRMS 整节缺失 / XML 解不开时根本进不来,tab 与同节的 123 个参数、上面三个
+            // 首启位一起保持现值(「没有信息」不读成「回默认」,与 SL-226 同口径)。本插件存的工程恒带 PRMS。
             // 编辑器开着时,下一帧 scvb.state 带着新值到页面,页面按 §1.31 切过去。
             runtime_.activeTab.store(scvb::output::readActiveTab(loaded), std::memory_order_relaxed);
             // [SL-215] 工程里存过合法 GUID 就沿用它 —— 这是「同一工程反复开,sidecar 指向同一份
