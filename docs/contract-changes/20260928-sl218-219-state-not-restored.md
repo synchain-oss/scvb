@@ -51,7 +51,7 @@
 | 落点 | 位置 |
 | --- | --- |
 | 条件源(位图,每次载入整份重算) | `ScvbOutputAudioProcessor::setStateInformation` 三处:两处 CFGS 早退(见下 SL-219②)、CRVS 段;访问器 `stateNotRestoredMask()`(原子,编辑器在消息线程读) |
-| 位定义 + detail 两张表 | `src/output/StateRestoreDiag.h`(JUCE-free)`notRestoredFourccs` |
+| 位定义 + detail 两张表 | `src/core/output/StateRestoreDiag.h`(JUCE-free)`notRestoredFourccs` |
 | 边沿 / 换位图重发 / 撤销 / 不可见不记账 | `src/output/BridgeArgs.h` `planStateNotRestoredEmit`(纯函数) |
 | 上桥 | `OutputEditor::emitStateNotRestoredError`,由 `emitTick` 每拍调 |
 | 横幅 | `web/output/index.html` `banner-stateNotRestored` + `app.js` `renderBanners` ⑪;三语词条 `banner.stateNotRestored` |

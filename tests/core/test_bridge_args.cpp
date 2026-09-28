@@ -14,7 +14,7 @@
 
 #include "BridgeArgs.h"
 #include "OutputParams.h"
-#include "StateRestoreDiag.h"
+#include "output/StateRestoreDiag.h"
 
 using Catch::Approx;
 
