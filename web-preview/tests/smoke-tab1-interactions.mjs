@@ -747,6 +747,53 @@ async function openSession(params) {
         { ok: false, reason: "badArg" },
         "未知 tab ⇒ badArg",
     );
+    // [J148] native 侧 §1.31 的两跳**接线钉子**。为什么落在 web 冒烟里:`OutputEditor.cpp`
+    // 编不进任何 C++ 测试目标(要真 WebView2;host 套件给 createEditor 一个空实现),理由与
+    // smoke-tab2-interactions 的 [SL-199] 那组相同。落盘 / 载入那一半在 scvb_host_tests 的
+    // 「HOST J148」里真跑,这里只守它够不着的两跳:
+    //   ① setActiveTab 把解析出的 tab **写进** runtime().activeTab —— 退化形态是只校验不写,
+    //      回执照样 {ok:true},而工程里永远存 master;
+    //   ② §2.1 快照的 ui.active_tab **读的是同一个** atomic —— 退化形态是写死一个字面量,
+    //      重开工程时 C++ 恢复了 tab、页面却收到 master。
+    // ⚠ 文本级:守的是「这几行还在、还连着那个字段」,不守语义。正则带 `^\s+…$`(m 标志)的
+    // 行形态,注释行(以 `//` 起头)匹配不上 —— 注释里写着这几行的样子也顶替不了真代码。
+    {
+        const oe = readFileSync(
+            join(ROOT, "src/output/OutputEditor.cpp"),
+            "utf8",
+        );
+        // 取**这一个函数自己的**体:从定义处到第一个行首的 `}`(本文件函数体一律在第 0 列收尾)。
+        const fnBody = (sig) => {
+            const start = oe.indexOf(sig);
+            if (start < 0) return "";
+            const end = oe.indexOf("\n}\n", start);
+            return end < 0 ? "" : oe.slice(start, end);
+        };
+        const setTab = fnBody("void OutputEditor::handleSetActiveTab(");
+        const snap = fnBody("juce::var OutputEditor::buildStateSubtree(");
+        check(
+            setTab.length > 0 && snap.length > 0,
+            "[J148] 找到 handleSetActiveTab 与 buildStateSubtree 两个函数体(锚点变了就回来同步)",
+        );
+        check(
+            /^\s+if \(a\.size\(\) < 1 \|\| !scvb::output::parseActiveTab\(a\[0\]\.toString\(\), tab\)\)$/m.test(
+                setTab,
+            ),
+            "[J148] ① setActiveTab 用 parseActiveTab 判四值(与加载侧同一张表)",
+        );
+        check(
+            /^\s+processor_\.runtime\(\)\.activeTab\.store\(tab, std::memory_order_relaxed\);$/m.test(
+                setTab,
+            ),
+            "[J148] ① setActiveTab 把 tab 写进 runtime().activeTab(不写 ⇒ 工程里永远存 master)",
+        );
+        check(
+            /^\s+put\(ui, "active_tab",\s*juce::String\(scvb::output::activeTabName\(rt\.activeTab\.load\(std::memory_order_relaxed\)\)\)\);$/m.test(
+                snap,
+            ),
+            "[J148] ② 快照的 ui.active_tab 读 runtime().activeTab(写死字面量 ⇒ 重开工程页面收不到恢复值)",
+        );
+    }
 
     // 缩放:档位表外 ⇒ badArg(§1.28)
     eq((await bridge.setUiScale(1.25)).ok, true, "setUiScale(1.25) 在档位表内");

@@ -174,3 +174,66 @@ TEST_CASE("PRMS ui 首启已读位:往返 + 新旧构建双向兼容(T37 A-3)", 
     writeUiFlags(stillInvalid, {true, true}); // no-op,不构造节点
     REQUIRE_FALSE(stillInvalid.isValid());
 }
+
+// [J148] ui.active_tab 在 PRMS 根节点上的读写。宿主级往返(真 Processor 的 get/setStateInformation)
+// 在 tests/host/test_host_harness.cpp 的 J148 那一格;这里钉编码本身:名字表、缺失/非法回落、格式。
+// 各断言彼此独立,用 CHECK —— REQUIRE 一红就掐断整格,「另一条仍绿」与「压根没跑」输出同形。
+TEST_CASE("PRMS ui.active_tab:四值往返 + 缺失/非法回落 master + 落盘写名字(J148)", "[output][state][j148]")
+{
+    using namespace scvb::output;
+
+    // ① 四值逐个往返(名字 ⇄ 序号是同一张表的两个方向,各值都要走一遍,不能只测一个)。
+    const OutputActiveTab all[] = {OutputActiveTab::kMaster, OutputActiveTab::kTracks, OutputActiveTab::kWave,
+                                   OutputActiveTab::kSettings};
+    const char* names[] = {"master", "tracks", "wave", "settings"};
+    for (int i = 0; i < 4; ++i)
+    {
+        juce::ValueTree tree("PARAMETERS");
+        writeActiveTab(tree, all[i]);
+        // 格式锁:工程里存的是 §1.31 的枚举**字面量**,不是序号(序号重排不许影响已存工程)。
+        CHECK(tree.getProperty(kUiActiveTabProp).toString() == juce::String(names[i]));
+        CHECK(tree.getProperty(kUiActiveTabProp).isString());
+        const std::unique_ptr<juce::XmlElement> xml(tree.createXml());
+        REQUIRE(xml != nullptr);
+        CHECK(readActiveTab(juce::ValueTree::fromXml(*xml)) == all[i]);
+
+        OutputActiveTab parsed = OutputActiveTab::kMaster;
+        CHECK(parseActiveTab(juce::String(names[i]), parsed));
+        CHECK(parsed == all[i]);
+        CHECK(juce::String(activeTabName(all[i])) == juce::String(names[i]));
+    }
+
+    // ② 属性缺失(本版之前存的工程)⇒ master。
+    juce::ValueTree old("PARAMETERS");
+    CHECK(readActiveTab(old) == OutputActiveTab::kMaster);
+
+    // ③ 取值不在四值里(手改工程 / 不可信字节 / 未来版本多出来的 tab / 大小写不同 / 旧式序号)⇒ master,
+    //    且 parseActiveTab 报 false、不动出参 —— 桥面据此回 badArg。
+    for (const char* bad : {"suggest", "Wave", "", " wave", "2"})
+    {
+        juce::ValueTree t("PARAMETERS");
+        t.setProperty(kUiActiveTabProp, juce::String(bad), nullptr);
+        CHECK(readActiveTab(t) == OutputActiveTab::kMaster);
+        OutputActiveTab untouched = OutputActiveTab::kSettings;
+        CHECK_FALSE(parseActiveTab(juce::String(bad), untouched));
+        CHECK(untouched == OutputActiveTab::kSettings);
+    }
+    // 非字符串类型的属性值(整数)同样回落,不当序号解释。
+    juce::ValueTree numeric("PARAMETERS");
+    numeric.setProperty(kUiActiveTabProp, 2, nullptr);
+    CHECK(readActiveTab(numeric) == OutputActiveTab::kMaster);
+
+    // ④ 与首启已读位共存:写 tab 不挤掉那三位,写那三位也不挤掉 tab(同一个根节点属性面)。
+    juce::ValueTree both("PARAMETERS");
+    writeUiFlags(both, {true, true, true});
+    writeActiveTab(both, OutputActiveTab::kWave);
+    CHECK(readUiFlags(both).guideSeen);
+    CHECK(readUiFlags(both).langChosen);
+    CHECK(readActiveTab(both) == OutputActiveTab::kWave);
+
+    // ⑤ 无效树:读按默认、写是 no-op。
+    CHECK(readActiveTab(juce::ValueTree()) == OutputActiveTab::kMaster);
+    juce::ValueTree invalid;
+    writeActiveTab(invalid, OutputActiveTab::kWave);
+    CHECK_FALSE(invalid.isValid());
+}

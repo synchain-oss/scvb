@@ -22,6 +22,7 @@
 #include "OutputAuthority.h"
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
+#include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
@@ -131,8 +132,13 @@ struct OutputRuntimeState
     std::array<Channel, scvb::engine::kNumTracks> channels;
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)
-    juce::String activeTab = "master";
-    // 首启已读位是本结构里**唯一跨线程**的两个字段:自 T37 起它们随 PRMS 持久化,
+    //
+    // [J148] active_tab 自本版起随 PRMS 持久化(§1.31「重开面板恢复上次 tab」),于是它与下面
+    // 几位一样跨线程:宿主线程的 get/setStateInformation 读写、消息线程的 setActiveTab 桥入口写、
+    // 25Hz 的 buildStateSubtree 读。故存**序号**进 atomic(juce::String 装不进 atomic),名字 ⇄ 序号
+    // 的换算只在 OutputUiState.h 一处。单字段、无跨字段不变式,写方不需要持 lifecycleMutex_。
+    std::atomic<scvb::output::OutputActiveTab> activeTab{scvb::output::OutputActiveTab::kMaster};
+    // 首启已读位同样跨线程:自 T37 起它们随 PRMS 持久化,
     // 于是宿主线程的 setStateInformation 会写、消息线程 25Hz 的 buildStateSubtree 会读。
     // 用 atomic 而不是让读方去抢 lifecycleMutex_ —— 25Hz 的 emit 路径不该为两个 bool
     // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。

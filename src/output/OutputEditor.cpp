@@ -921,7 +921,8 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     juce::var ui = obj();
     put(ui, "scale", static_cast<float>(processor_.uiScalePercent()) / 100.0f);
     put(ui, "language", processor_.uiLanguage());
-    put(ui, "active_tab", rt.activeTab);
+    // [J148] atomic 序号(get/setStateInformation 在宿主线程碰它),换回 §1.31 的枚举字面量再上桥。
+    put(ui, "active_tab", juce::String(scvb::output::activeTabName(rt.activeTab.load(std::memory_order_relaxed))));
     put(ui, "master_chart_mode", processor_.masterChartMode());
     // 两位是 atomic(宿主线程的 setStateInformation 会写,本函数在消息线程 25Hz 读):
     // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
@@ -2401,13 +2402,20 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
 
 void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
 {
-    const juce::String tab = a.size() > 0 ? a[0].toString() : juce::String();
-    if (tab != "master" && tab != "tracks" && tab != "wave" && tab != "settings")
+    // 四值判定与加载侧共用 OutputUiState.h 的 parseActiveTab(同一张表,不在两处各写一份)。
+    scvb::output::OutputActiveTab tab = scvb::output::OutputActiveTab::kMaster;
+    if (a.size() < 1 || !scvb::output::parseActiveTab(a[0].toString(), tab))
     {
         c(badArgResp());
         return;
     }
-    processor_.runtime().activeTab = tab;
+    // [J148] 只改内存(一个 atomic 字节,不分配、不持锁)。落盘发生在宿主调 getStateInformation 时,
+    // 所以连按 ←/→ 扫过四个 tab 也只是四次原子写,不需要另做防抖。
+    // 不向宿主标脏:与 setLang / commitUiScale / setGuideSeen 同口径 —— 切 tab 是导航动作,标脏的话
+    // 用户只是看了一圈页面,DAW 关工程时也会弹「是否保存」。(同族里唯一标脏的是 setMasterChartMode,
+    // 那是 #96 为一个刻意选的视图设置加的,不是这一族的通例。)代价:只切了 tab、没做任何别的改动
+    // 就关工程,DAW 不会提示保存,这一次的 tab 也就不进工程;存过一次工程就一定带上当时的 tab。
+    processor_.runtime().activeTab.store(tab, std::memory_order_relaxed);
     c(okResp());
 }
 
