@@ -688,8 +688,8 @@ log("=== ⑩ 源码不变式 ===");
     );
     eq(
         BR.BRIDGE_FUNCTIONS.output.length,
-        36,
-        "冻结名表 36 个([J81] 修宪:exportSuggestions 转正 +1,契约 §1.36 / §7 manifest / C++ 常量表同批)",
+        37,
+        "冻结名表 37 个([J81] 修宪:exportSuggestions 转正 +1;[J157] previewPanCurve +1,契约 §1.37 / §7 manifest / C++ 常量表同批)",
     );
 
     // 变更文档在库(仓 CLAUDE.md §5:桥面新增必须有它)

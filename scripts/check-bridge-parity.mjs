@@ -53,7 +53,8 @@
  *       ① manifest 可解析;
  *       ② 名字合法(lowerCamelCase / scvb.*)且侧内无重复;
  *       ③ **完备性**:与 05 §1.4 对齐的冻结期望表 EXPECTED 逐项零差异 + 四个计数断言
- *          (Output 35 函数 / 9 事件,Input 7 函数 / 5 事件)——防「契约被误删/误改名而脚本仍绿」;
+ *          (Output 37 函数 / 9 事件,Input 8 函数 / 5 事件;真值以下方 EXPECTED_COUNTS 为准)
+ *          ——防「契约被误删/误改名而脚本仍绿」;
  *       ④ **跨侧同名函数签名一致**(params 顺序敏感);
  *       ⑤ 无禁止复活名单命中,且每个禁止名都在契约 §8.2 名单行内以反引号整词列明
  *          (只在 §8.2 段落内匹配:`curves` / `misalign` 等子串会被 `curves_per_track`、
@@ -62,8 +63,8 @@
  *       ⑦ **manifest 与正文双向可见**:manifest 每项在**对应侧**正文段落内有条目
  *          (正文按 "## 3. Input" 切成 output/input 两段,§5 起截断,避免 side-blind);
  *          反向,正文里定义的每个函数/事件条目也必须被 manifest 收录。
- *       ⑧ 相对 05 §1.4 的授权增量只有 3 项(setAnalysisConfig、Input scvb.error、confirmPrintGuard),
- *          在 EXPECTED 表旁注明来源,使脚本本身成为「对 05 §1.4 零差异 + 3 项显式增量」的断言。
+ *       ⑧ 相对 05 §1.4 的授权增量共 7 项(逐项见下方 EXPECTED 表头注释与契约 §8.4),
+ *          在 EXPECTED 表旁注明来源,使脚本本身成为「对 05 §1.4 零差异 + 显式增量」的断言。
  *
  * 退出码:发现任何差异 / 命中禁止名 / 自检失败 => 1;全部通过 => 0。
  *
@@ -116,7 +117,7 @@ const FORBIDDEN = [
 /**
  * 冻结期望表 —— 「对 05 §1.4 的函数/事件全集零差异」的可执行断言(T25 卡验收原文)。
  * 与 docs/SCVB_CONTRACT.md §7 manifest 同源,**改动必须两处同步**(同 FORBIDDEN 口径)。
- * 相对 05 §1.4 的授权增量共 4 项(契约 §8.4),已在下表就地标注:
+ * 相对 05 §1.4 的授权增量共 7 项(契约 §8.4),已在下表就地标注:
  *   - output.functions 的 `setAnalysisConfig`  —— 授权来源 05 §2.4(J69,函数名有 05 字面出处)
  *   - input.events   的 `scvb.error`          —— 授权来源 01 §6.2 + 裁定记录 A-8
  *   - output.functions 的 `confirmPrintGuard` —— 授权来源 04 §5.3 / 05 §2.0 横幅⑦ + 统筹裁定 A-29
@@ -126,6 +127,8 @@ const FORBIDDEN = [
  *     docs/contract-changes/20260825-export-suggestions.md([J81] 转正)
  *   - input.functions  的 `setGuideSeen`      —— 授权来源 05 §3 文末 J80 节 / T48;变更文档
  *     docs/contract-changes/20260825-input-guide-seen.md([J81] 转正)
+ *   - output.functions 的 `previewPanCurve`   —— 授权来源用户裁定 J157(SL-447 拖动实时生效);变更文档
+ *     docs/contract-changes/20260928-j157-pan-curve-live-preview.md
  * 其余每一项都能在 05 §1.4 的表内逐字找到。
  */
 const EXPECTED = {
@@ -148,6 +151,7 @@ const EXPECTED = {
             "setChannelConfig",
             "setTrackManual",
             "setPanCurve",
+            "previewPanCurve", // ← 授权增量⑦(用户裁定 J157;变更文档 20260928-j157-pan-curve-live-preview)
             "setVadParams",
             "setSegmentation",
             "setTransitionRamp",
@@ -202,7 +206,7 @@ const EXPECTED = {
 };
 /** 计数自检 —— 与契约 §7 文末「计数自检」行同源。 */
 const EXPECTED_COUNTS = {
-    output: { functions: 36, events: 9 },
+    output: { functions: 37, events: 9 },
     input: { functions: 8, events: 5 },
 };
 
@@ -454,7 +458,8 @@ for (const side of sides) {
 }
 if (completenessOk) {
     ok(
-        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 4 项授权增量),四个计数 35/9/7/5 一致",
+        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 7 项授权增量),四个计数 " +
+            `${EXPECTED_COUNTS.output.functions}/${EXPECTED_COUNTS.output.events}/${EXPECTED_COUNTS.input.functions}/${EXPECTED_COUNTS.input.events} 一致`,
     );
 }
 

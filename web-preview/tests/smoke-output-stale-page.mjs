@@ -22,6 +22,8 @@
 //   ③ 各场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
+//   (文件末尾的 [J152] 那一节是借住的:Tab1「当前范围内无采集数据」这句原因句同属
+//    Output 的提示面 —— 停着重开已采未析的工程不许再出现它;停着清光覆盖要让它回来。)
 //
 // 用法:node web-preview/tests/smoke-output-stale-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -1461,6 +1463,149 @@ try {
             "⑧d ✕ 不触发 analyze(调用数仍是 1)",
         );
         assertClean("scenario=connected(J125 toast③)");
+    }
+
+    // =========================================================================
+    // [J152] 停着重开一个「采过、还没分析」的工程:Tab1 的覆盖率行要有数,
+    // 「当前范围内无采集数据」不许出现;停着清光覆盖 ⇒ 数字归零、原因句回来。
+    //
+    // 修复前这一态恒显示原因句:§2.7 的覆盖帧只在播放中发,段表又是空的,分析行
+    // 「覆盖 ∪ 段表」判空两边都空。本格的覆盖只可能来自**就绪首帧那一次全量**——
+    // 场景里走带停着(下面先断这一条),周期帧一帧都不会发。
+    //   ← 删掉 state-driver `firstFrames` 里那行 `scvb.captureProgress` ⇒ J152a 红;
+    //   ← 把 tab-master 的 analyzeNoData 改成只看段表 ⇒ J152a 红(原因句回来);
+    //   ← 把 mock clearCoverage 的全量帧删掉 ⇒ J152b 红(数字不动)。
+    log(
+        "=== [J152] scenario=captured-unanalyzed:停着也有覆盖率;停着清除数字跟着变 ===",
+    );
+    {
+        newBucket("captured-unanalyzed");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=captured-unanalyzed`,
+        });
+        check(
+            await waitFor(READY),
+            "captured-unanalyzed:页面装载并吃到首帧段表",
+        );
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        // 不写死等待时长(SL-357):等到分析行翻成「有数据」那一帧(等不到就超时,下面的断言照样红)。
+        await waitFor(
+            IN(`const f = gb("master-flow");
+                return !!f && f.getAttribute("data-analyze-nodata") === "0";`),
+            5000,
+        );
+        const T1 = IN(`
+            const s = window.__SCVB_PREVIEW__;
+            const m = s && s.ctl && s.ctl.model;
+            const flow = gb("master-flow");
+            const cov = gb("master-analyze-coverage");
+            const reason = gb("master-analyze-preview-nodata");
+            const disp = (el) => (el ? w.getComputedStyle(el).display : "(缺节点)");
+            const pcts = m ? Array.from(m.coveragePct.values()).filter((v) => v > 0) : [];
+            let segs = 0;
+            if (m) for (const e of m.segByCh.values()) segs += (e.segments || []).length;
+            return {
+                playing: m ? m.transport.isPlaying : null,
+                segs,
+                wantP: pcts.length ? Math.round(pcts.reduce((a, v) => a + v, 0) / pcts.length) : null,
+                allP: m && m.coveragePct.size ? Math.round(Array.from(m.coveragePct.values()).reduce((a, v) => a + v, 0) / m.coveragePct.size) : null,
+                nodata: flow ? flow.getAttribute("data-analyze-nodata") : "(缺节点)",
+                covDisplay: disp(cov),
+                covText: cov ? cov.textContent.trim() : null,
+                reasonDisplay: disp(reason),
+            };
+        `);
+        const a = await evaluate(T1);
+        if (check(a !== null, "J152 取到页内 DOM 快照")) {
+            check(a.playing === false, "J152 前置:走带停着(周期帧不会发)");
+            check(a.segs === 0, `J152 前置:段表全空(实得 ${a.segs} 段)`);
+            check(
+                Number.isInteger(a.wantP) && a.wantP > 0,
+                `J152 前置:场景里确有覆盖(实得 ${a.wantP})`,
+            );
+            // J152a 就绪首帧那一次全量到了
+            check(
+                a.nodata === "0",
+                `J152a 分析行不判「无数据」(data-analyze-nodata 实得 ${a.nodata})`,
+            );
+            check(
+                a.reasonDisplay === "none",
+                `J152a 「当前范围内无采集数据」原因句收起(display 实得 ${a.reasonDisplay})`,
+            );
+            const m = /(\d+)\s*%/.exec(a.covText || "");
+            check(
+                a.covDisplay !== "none" && !!m && Number(m[1]) === a.wantP,
+                `J152a 覆盖率行上屏且数字 = 有覆盖轨的均值 ${a.wantP}%(实得 display=${a.covDisplay}、「${a.covText}」)`,
+            );
+        }
+        // J152c 停着只把第 1 轨整轨清光:它**采过**,必须留在分母里 ⇒ 数字 = 15 轨(含这条 0)的均值,
+        // 而不是剩下 14 轨的均值(那样清光一整轨数字反而不动)。
+        //   ← app.js 不记 `coverageSeen`,或 tab-master 调 coveragePercent 时不传它 ⇒ 本格红。
+        const cleared1 = await evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.mock || typeof s.mock.clearCoverage !== "function") return null;
+            return s.mock.clearCoverage(1 << 0, 0, 100000); // tracksMask:bit0 = 第 1 轨
+        })()`);
+        check(
+            !!cleared1 && cleared1.ok === true,
+            `J152c clearCoverage(第 1 轨)受理(实得 ${JSON.stringify(cleared1)})`,
+        );
+        await waitFor(
+            IN(`const m = window.__SCVB_PREVIEW__ && window.__SCVB_PREVIEW__.ctl.model;
+                const cov = gb("master-analyze-coverage");
+                if (!m || !cov) return false;
+                const v = Array.from(m.coveragePct.values());
+                const allP = Math.round(v.reduce((a, x) => a + x, 0) / v.length);
+                const mm = /([0-9]+)%/.exec(cov.textContent);
+                return !!mm && Number(mm[1]) === allP;`),
+            5000,
+        );
+        const c = await evaluate(T1);
+        if (check(c !== null, "J152c 取到页内 DOM 快照")) {
+            const mc = /(\d+)\s*%/.exec(c.covText || "");
+            check(
+                c.allP !== c.wantP,
+                `J152c 前置:两种分母算出来的数不同(15 轨 ${c.allP}% / 14 轨 ${c.wantP}%),否则本格分不出`,
+            );
+            check(
+                c.covDisplay !== "none" && !!mc && Number(mc[1]) === c.allP,
+                `J152c 清光的那一轨仍在分母里:应为 ${c.allP}%(实得 display=${c.covDisplay}、「${c.covText}」)`,
+            );
+        }
+        // J152b 停着清光全部覆盖:受理后那一次全量把 15 轨都报成 0 ⇒ 原因句回来、覆盖率行收起。
+        const cleared = await evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.mock || typeof s.mock.clearCoverage !== "function") return null;
+            return s.mock.clearCoverage(0x7fff, 0, 100000);
+        })()`);
+        check(
+            !!cleared && cleared.ok === true,
+            `J152b clearCoverage 受理(实得 ${JSON.stringify(cleared)})`,
+        );
+        await waitFor(
+            IN(`const f = gb("master-flow");
+                return !!f && f.getAttribute("data-analyze-nodata") === "1";`),
+            5000,
+        );
+        const b = await evaluate(T1);
+        if (check(b !== null, "J152b 取到页内 DOM 快照")) {
+            check(b.playing === false, "J152b 前置:仍然停着");
+            check(
+                b.nodata === "1",
+                `J152b 清光之后分析行判「无数据」(data-analyze-nodata 实得 ${b.nodata})`,
+            );
+            check(
+                b.reasonDisplay !== "none",
+                `J152b 原因句回来了(display 实得 ${b.reasonDisplay})`,
+            );
+            check(
+                b.covDisplay === "none",
+                `J152b 覆盖率行收起(display 实得 ${b.covDisplay})`,
+            );
+        }
+        assertClean("scenario=captured-unanalyzed");
     }
 } catch (e) {
     fail++;

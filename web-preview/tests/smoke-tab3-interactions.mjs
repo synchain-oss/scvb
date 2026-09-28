@@ -945,8 +945,8 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     );
     check(TW.isLanesEmpty({ coverage: {} }), "全轨无 coverage = 空态");
     check(!TW.isLanesEmpty({ coverage: { 3: 1 } }), "任一轨有 coverage 即非空");
-    // 契约 §0.4:captureProgress 只在播放中发,空态由 scvb.state 承载 ——
-    // 停播打开面板(coverage 事件仓恒空)也不得误判空态
+    // 契约 §0.4:空态判定仍以 scvb.state 为准 —— captureProgress 的周期帧只在播放中发,
+    // [J152] 的就绪首帧到达之前 coverage 事件仓也是空的,这一拍不得误判空态
     check(
         !TW.isLanesEmpty({
             coverage: {},

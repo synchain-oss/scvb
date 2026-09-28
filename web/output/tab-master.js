@@ -684,17 +684,9 @@ export function segmentTotals(segments) {
 }
 
 /**
- * 覆盖率 {p}%(05 §2.1 ①「范围内 {p}% 已覆盖」)= 已报到的各轨 `coveragePct` 均值。
- *
- * 分母取**已报到的轨数**而不是恒 15:契约 §2.7 的 `scvb.captureProgress` 是增量事件,
- * 「仅包含本帧有变化的轨」且「非播放不发」—— 拿 15 作分母的话,首帧到齐前这一行会从
- * 0% 一路爬到真值,截图与手测都像坏页。分母取已知轨 = 「在已知的轨上,范围内覆盖了多少」,
- * 首帧即稳定。**一轨都没报到时返回 null**,调用方据此把整行隐掉(不显示假的 0%)。
- */
-/**
  * 分析按钮「无数据」判据 —— 覆盖与段表的**并集**判空(两者都无才算真没数据)。
- * 只看段表会鸡生蛋(首采未析永远禁用);只看覆盖会误伤重开工程
- * (§2.7 captureProgress 非播放不发,覆盖帧未到但段表有货)。
+ * 只看段表会鸡生蛋(首采未析永远禁用);只看覆盖会误伤「覆盖帧还没到、段表已有货」的那一段
+ * (§2.7 周期帧只在播放中发;[J152] 起就绪首帧会补一次全量,但那一帧到达之前覆盖仍是空的)。
  * 此口径两度踩坑(PR #52 首审【重要】+ pr-agent 建议),抽纯函数配 smoke 断言锁死。
  * [SL-535] 第三个量:`previewAnalyze()` 回的 `tracks`(null = 回包没到 / 未取)。分析只认
  * **此刻连着 Input** 的轨,「覆盖 / 段表都有、但那些轨全没连上」时 dry-run 回 0 轨,真跑按
@@ -709,12 +701,34 @@ export function analyzeNoData(coveragePct, segTotalN, previewTracks = null) {
     return !coveragePct && segTotalN === 0;
 }
 
-export function coveragePercent(coverage) {
-    const list = Object.values(coverage || {}).filter((v) =>
-        Number.isFinite(v),
+/**
+ * 覆盖率 {p}%(05 §2.1 ①「范围内 {p}% 已覆盖」)= **采过的轨**的 `coveragePct` 均值。
+ *
+ * 分母不取恒 15,也不取「已报到的轨数」,取**此刻 > 0 或本会话里报过 > 0 的轨**(`seen`):
+ *   · 契约 §2.7 的周期帧「仅包含本帧有变化的轨」—— 拿 15 作分母的话,首帧到齐前这一行会从
+ *     0% 一路爬到真值,截图与手测都像坏页;
+ *   · [J152] 起就绪首帧与 clearCoverage 之后各补一次**全量**帧,15 轨全带、没采过的轨报 0。
+ *     取「已报到的轨」的话分母就成了 15:只用 4 轨、4 轨都采满的工程会显示 27%。
+ *     没采过的轨不该稀释这个数 —— 它问的是「采过的轨,在范围内覆盖了多少」;
+ *   · 但**采过、后来被整轨清光**的轨必须留在分母里(`seen` 记着它),否则 4 轨清光 1 轨
+ *     仍显示 100% —— 例外② 要的正是「清除之后数字跟着动」。
+ *     ⚠ `seen` 是**会话级**记账:store 随插件窗口(页面)重建而清空。重开窗口后,之前被整轨清光的轨
+ *     在首帧里报 0、又不在 `seen` 里,会退出分母 —— 那时的数字按「此刻有覆盖的轨」算。
+ *     native 侧没有「这条轨采过」的持久记录可读,这是本口径钉不住的那一半。
+ * 已报到的轨全是 0 且都不在 `seen` 里时回 0 而不是 null:范围里确实一格覆盖都没有,这是真话。
+ * **一轨都没报到时返回 null**,调用方据此把整行隐掉(不显示假的 0%)。
+ * @param {Object<string, number>} coverage ch → coveragePct(app.js 的 store.coverage)
+ * @param {Object<string, boolean>} [seen] ch → true:本会话里报过 > 0(app.js 的 store.coverageSeen)
+ */
+export function coveragePercent(coverage, seen) {
+    const cov = coverage || {};
+    const reported = Object.keys(cov).filter((ch) => Number.isFinite(cov[ch]));
+    if (reported.length === 0) return null;
+    const denom = reported.filter(
+        (ch) => cov[ch] > 0 || (seen && seen[ch] === true),
     );
-    if (list.length === 0) return null;
-    return Math.round(list.reduce((s, v) => s + v, 0) / list.length);
+    if (denom.length === 0) return 0;
+    return Math.round(denom.reduce((s, ch) => s + cov[ch], 0) / denom.length);
 }
 
 /** 区间并集(升序合并)—— 把 15 轨各自的覆盖并成「已分析区域共 {n} 段 · 合计 {t}」。 */
@@ -1920,9 +1934,9 @@ export function createTabMaster(opts) {
               }
             : segmentTotals(st.segments);
         fill(el.preview, t, "master.step2.desc", totals);
-        // 覆盖率行:一轨都没报到(未播放过 / 首帧未到)就整行隐掉,
-        // 而不是显示一个假的「0% 已覆盖」—— §2.7 非播放不发,这行本来就无数据可依。
-        const p = coveragePercent(st.coverage);
+        // 覆盖率行:一轨都没报到(首帧未到)就整行隐掉,而不是显示一个假的「0% 已覆盖」。
+        // [J152] 起停着打开面板也有数:就绪首帧补一次全量 captureProgress(§2.7 例外)。
+        const p = coveragePercent(st.coverage, st.coverageSeen);
         if (el.coverage) el.coverage.hidden = p === null;
         if (p !== null) fill(el.coverage, t, "master.step2.coverage", { p });
 
@@ -1933,8 +1947,8 @@ export function createTabMaster(opts) {
         // 现在键恒可点,没数据时由影响预览行的空态原因句作答(analyze 本身也会以
         // {ok:false} 拒绝,双保险)。
         // 无数据的判据仍取覆盖与段表的**并集**:只看 totals.n(已分析段数)会鸡生蛋——
-        // 首次采集完还没分析过,段表恒空;只看覆盖率又会误伤重开工程——§2.7 非播放不发,
-        // 覆盖帧未到但段表有货的工程本可再分析。两者都空才是真没数据。
+        // 首次采集完还没分析过,段表恒空;只看覆盖率又会误伤「覆盖帧还没到、段表已有货」
+        // 的那一段(见 analyzeNoData 头注)。两者都空才是真没数据。
         let an = "ready";
         if (s.analysis_run && s.analysis_run.running) {
             local.analyzePending = false; // 状态面已确认,交回 state 驱动
