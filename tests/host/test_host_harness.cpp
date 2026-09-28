@@ -26,6 +26,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array> // [SL-393] segTableOf 的逐字段快照
+#include <atomic> // [加载守卫] HostWriteSpy 计数
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -7154,6 +7155,154 @@ TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToP
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 重开 output_enabled=ON 的工程:确认前打印器止于 ARMED(04 §5.3 / 契约 §1.3、§1.34)。
+//
+// 修前 `printGuardPending` 没有任何写 true 的地方:横幅⑦与「继续写入自动化」钮都在,三态求值
+// 却不看它 —— 工程一重开、一按播放就进 PRINT,把 DAW 车道(常留在 Latch)上已录的自动化盖掉。
+//
+// 两个落点各有一格删除式:
+//   ① setStateInformation 里「恢复 ON ⇒ 置待确认」—— 删掉则 `CHECK(printGuardPending())` 与
+//      「确认前零写入」两格都红;
+//   ② timerCallback 三态求值里的 `!guardPending` —— 删掉则只有「确认前零写入」那几格红,
+//      `CHECK(printGuardPending())` 仍绿(故那一格必须是 CHECK 不是 REQUIRE,否则分不开)。
+// 判据落点 = 挂在真 processor 上的 AudioProcessorListener(宿主替身),不看打印器内部计数。
+// 进 Print 档不走「采集 + 分析」:setTrackManual 写一条覆盖全时间线的常值段(同 SL-489 那格)。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct HostWriteSpy final : juce::AudioProcessorListener
+{
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { ++writes; }
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int) override { ++begins; }
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int) override { ++ends; }
+
+    std::atomic<int> writes{0};
+    std::atomic<int> begins{0};
+    std::atomic<int> ends{0};
+};
+} // namespace
+
+TEST_CASE("HOST 加载守卫:恢复 output=ON 的工程,确认前播放零写入,确认后恢复打印", "[host][loadguard][print]")
+{
+    HostWriteSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(8);
+
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+
+    // 造一份「输出 ON」的工程 blob。先关一次让打印器走 endAllGestures 回到干净起点;
+    // 开 → 存 → 关 三步之间**不泵消息**:25Hz tick 在消息线程,不泵就不会插进来进 PRINT。
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.setOutputEnabled(true);
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(r.out.printGuardPending()); // 前置:本会话里没被恢复过,不该有守卫
+
+    // ★ 宿主重开工程。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.outputEnabled()); // 前置:blob 里确实是 ON
+    CHECK(r.out.printGuardPending()); // ← 落点①删掉即红
+
+    r.out.addListener(&spy);
+
+    // 确认前:播放中 ∧ 播放头在区间内(常值段覆盖全时间线),满足 PRINT 三与条件 —— 仍须零写入。
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() == 0); // ← 落点①或②删掉即红
+    CHECK(spy.writes.load() == 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
+
+    // 确认(契约 §1.34,幂等)⇒ 下一拍起恢复正常 PRINT。这一段同时证明上面的「零写入」
+    // 不是因为区间/走带条件本来就不满足 —— 条件一点没变,只多了这一次确认。
+    r.out.confirmPrintGuard();
+    r.out.confirmPrintGuard();
+    CHECK_FALSE(r.out.printGuardPending());
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() > 0);
+    CHECK(spy.writes.load() > 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 守卫的其余写点:恢复 OFF 不设守卫(且清掉上一个工程残留的);关输出即解除
+// (桥面 OFF 与 [J92a] 手动开采集连带关输出两条路都走 applyOutputEnabled);
+// 守卫在时再发 setOutputEnabled(true) **不算确认**(契约 P-1 候选②「复用 setOutputEnabled(true)
+// 作确认信号」已被 A-29 否决,确认入口只有 §1.34);确认过后宿主再灌 ON ⇒ 重新置位([J154])。
+// 删除式:删掉 applyOutputEnabled 里的清除 ⇒ 「桥面 OFF」与「J92a」两格红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出不算确认", "[host][loadguard]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    juce::MemoryBlock onBlob;
+    juce::MemoryBlock offBlob;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.setOutputEnabled(true);
+        donor.getStateInformation(onBlob);
+        donor.setOutputEnabled(false);
+        donor.getStateInformation(offBlob);
+    }
+
+    ScvbOutputAudioProcessor out;
+    // 新建实例的 outputEnabled_ 初值就是 true,但那不是「随工程恢复」—— 不该有守卫。
+    CHECK(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 恢复 ON ⇒ 待确认;再载一个 OFF 工程 ⇒ 清掉。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending());
+    out.setStateInformation(offBlob.getData(), static_cast<int>(offBlob.getSize()));
+    CHECK_FALSE(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 守卫在时开输出(已经是 ON)不算确认。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setOutputEnabled(true);
+    CHECK(out.printGuardPending());
+
+    // 桥面关输出 ⇒ 解除;再开回来不重新设守卫(走 UI 的 OFF→ON 一次性确认)。
+    out.setOutputEnabled(false);
+    CHECK_FALSE(out.printGuardPending()); // ← applyOutputEnabled 的清除删掉即红
+    out.setOutputEnabled(true);
+    CHECK_FALSE(out.printGuardPending());
+
+    // [J92a] 手动开采集连带关输出 ⇒ 同样解除。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setCaptureEnabled(true);
+    REQUIRE_FALSE(out.outputEnabled()); // 前置:互斥确实把输出关了
+    CHECK_FALSE(out.printGuardPending()); // ← 同上
+
+    out.setCaptureEnabled(false);
+
+    // [J154] 契约 §1.34「本工程会话」的边界:确认过之后,宿主对同一实例再灌一次输出=开的状态
+    // (带插件状态的撤销 / A/B 对比 / 载入预设)算新的一次会话 ⇒ 守卫重新置位。
+    // 放在本用例最后:J154 未取的选项 (b)「同一实例确认过就不再重置」会让这个实例此后每次重灌都
+    // 不再置位,放在前面会连带把后面各段的前置 REQUIRE 一起弄红,分不出是哪一格钉住了它。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.confirmPrintGuard();
+    REQUIRE_FALSE(out.printGuardPending());
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending()); // ← 改成 (b) 即红
 }
 
 // ===========================================================================

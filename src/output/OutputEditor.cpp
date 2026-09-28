@@ -959,7 +959,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
-    put(printGuard, "pending", rt.printGuardPending);
+    put(printGuard, "pending", processor_.printGuardPending());
     put(o, "print_guard", printGuard);
 
     juce::var recapture = obj();
@@ -2502,7 +2502,7 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
 
 void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
 {
-    processor_.runtime().printGuardPending = false; // 幂等(§1.34)
+    processor_.confirmPrintGuard(); // 幂等(§1.34)
     c(okResp());
 }
 

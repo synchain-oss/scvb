@@ -178,7 +178,7 @@ Things worth knowing:
 - The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself; the engine neither prints them nor overwrites them — **those three always follow the value in your DAW**.
 - With the output switch **ON**, the DSP for those 30 takes engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
-- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "continue engine-driven", the plugin is loaded but silent on the automation side — **not a single gesture goes out**.
+- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON and starts writing as soon as playback enters the analyzed range. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
 - Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
 ## Pan curve editor
