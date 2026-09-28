@@ -12555,3 +12555,131 @@ TEST_CASE("HOST SL-216:走带停住时不记录(定位点上的值不代表那�
     r.runBlocks(20);
     CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-216 × SL-535] 主唱是一条没连上 Input 的轨:照样不进分析,主唱记录对其余轨零影响。
+//
+// 两张卡在 startAnalysis 里各管一面:SL-535 定「谁参与」(计算集与写回集都只认此刻已连接的轨),
+// SL-216 定「参与的轨里谁按主唱锁排」(区间多数值选中的轨并入集合 C)。合起来的口径是
+// **参与面先定、主唱后挑**:选中的轨没连上时它不在区间的活跃轨里,主唱锁无处可落,其余轨的解
+// 与主唱记录为 0 时逐字段相同,它自己的段表一个字节不动。反过来(主唱记录把没连上的轨带回
+// 计算集或写回集)就是两条判据打架 —— 一条早已没有 Input 的轨仍在左右其余声部的排布。
+//
+// 判据两格,各钉一个落点(前提另断,前提不成立时两格恒绿、测不到东西):
+//   ① 写回集:受理回执是 2 轨。删除式:预扫那一处让主唱轨绕过连接判据 ⇒ 回执 3 轨,只红这一条。
+//      「主唱轨段表逐字段不动」在这一注入下**仍绿**(没进计算集的轨写回时本来不改写,同上面
+//      SL-535 那条的说明),它钉的是「不清数据」,别把它读成 ① 的判据。干跑那条读的是 previewAnalysis,
+//      不经预扫,同样不是 ① 的判据。
+//   ② 计算集:主唱记录 = 该轨 与 = 0 两次分析,其余两轨的段表逐字段相同。删除式:取样那一处让主唱轨
+//      绕过连接判据 ⇒ 两次的段表不同,只红这一条(实测差在 volDb:平衡把它的旧能量算进去了;
+//      pan 两次都是两侧对称,所以只比 pan 测不到)。
+// 挑主唱轨的办法同上面 SL-216 那条:全连着分析时离开正中的段最多的轨。
+// 断开后不再调它的 processBlock(宿主不会调已卸下的插件),所以重放不用 runBlocks、只推仍连着的两条。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不进分析,其余轨与主唱记录为 0 时同解",
+          "[host][sl216][sl535][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+
+    // 之后推块只为让 Output 记下 lead_select,不许改写采集数据。
+    r.out.setCaptureEnabled(false);
+    MonoMultiRig::pump(100);
+
+    const auto leadBefore = r.segTableOf(leadCh);
+    REQUIRE_FALSE(leadBefore.empty());
+    r.ins[static_cast<std::size_t>(leadCh - 1)]->releaseResources();
+    MonoMultiRig::pump(200);
+
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+    const auto replayWithLead = [&](int lead) {
+        setLeadSelect(r.out, lead);
+        r.ph.timeSamples = s0;
+        const int blocks = static_cast<int>((s1 - s0) / kBlock) + 2;
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            for (int i = 0; i < MonoMultiRig::kCount; ++i)
+            {
+                if (i + 1 == leadCh)
+                {
+                    continue;
+                }
+                Rig::fillSine(r.inBuf, 0.5f * (0.4f + 0.3f * static_cast<float>(i)), r.ph.timeSamples);
+                r.ins[static_cast<std::size_t>(i)]->processBlock(r.inBuf, r.midi);
+            }
+            r.out.processBlock(r.outBuf, r.midi);
+            r.ph.timeSamples += kBlock;
+            if ((b % 4) == 3)
+            {
+                MonoMultiRig::pump(8);
+            }
+        }
+        MonoMultiRig::pump(100);
+    };
+    // 前提:记录真是 lead、主唱轨没连上但旧数据还在、另两条连着。
+    const auto requirePremise = [&](int lead) {
+        REQUIRE(scvb::analysis::majorityLead(r.out.leadTimelineSnapshot(), s0, s1) == lead);
+        const auto snap = r.out.connSnapshot();
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            INFO("ch " << ch);
+            REQUIRE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(ch - 1)]) ==
+                    (ch != leadCh));
+        }
+        REQUIRE(r.out.coverageOf(leadCh, win.startS, win.endS).coveredS > 0.0);
+    };
+    const auto analyzeOthers = [&]() {
+        CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == MonoMultiRig::kCount - 1);
+        const auto accepted = r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false);
+        REQUIRE(accepted.ok);
+        CHECK(accepted.tracks == MonoMultiRig::kCount - 1); // ① 主唱记录没把它带回写回集
+        bool done = false;
+        for (int waited = 0; waited < 20000 && !done; waited += 50)
+        {
+            MonoMultiRig::pump(50);
+            done = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+        }
+        REQUIRE(done);
+        std::vector<std::vector<std::array<double, 5>>> tables;
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            if (ch != leadCh)
+            {
+                tables.push_back(r.segTableOf(ch));
+                REQUIRE_FALSE(tables.back().empty()); // 前提:有段可比,否则「相同」毫无意义
+            }
+        }
+        return tables;
+    };
+
+    replayWithLead(leadCh);
+    requirePremise(leadCh);
+    const auto withLead = analyzeOthers();
+    CHECK(r.segTableOf(leadCh) == leadBefore); // 不清数据、不改写(不是 ① 的判据,见头注)
+
+    replayWithLead(0);
+    requirePremise(0);
+    const auto withoutLead = analyzeOthers();
+    CHECK(withLead == withoutLead); // ② 主唱记录没把它的旧数据带回计算集
+    CHECK(r.segTableOf(leadCh) == leadBefore);
+}
