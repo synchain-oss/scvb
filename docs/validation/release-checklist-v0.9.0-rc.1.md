@@ -101,7 +101,7 @@
 - [ ] **B4 `[reference]` libebur128 对拍在本地跑通**
   - 查什么:K 加权与 libebur128 逐点对拍(KW-3,10 §4.4.2)。
   - **CI 绿不算**:CI 的 cmake 行不开 `SCVB_TESTS_WITH_EBUR128`,此时编进去的是 `#else` 分支里那个 KW-3 用例(`tests/core/test_kweighting.cpp:197`),它只执行一条 `SUCCEED` 占位,**这条在 CI 里是空转的**。目前 `[reference]` 只有 KW-3 一条;10 §4.4.2 表里的 L0-b / L0-c(段响度对拍,`test_loudness_ref.cpp`)仓里没有。
-  - 怎么查:§3 的 U-6。判据:`[reference]` 用例全过,且输出里**没有** `SCVB_TESTS_WITH_EBUR128=OFF` 那句占位文字。
+  - 怎么查:§3 的 U-6。判据:`[reference]` 用例全过,**且**跑到的是开关打开时编进去的那个用例(`KW-3: 粉噪 30s 与 libebur128 M(400ms) 对拍`,`:141`),认用例名。占位用例通过时不打印 `SUCCEED` 里那句文字,所以「输出里没有占位文字」分不出开关开没开,不能当判据。
   - 状态:⏳ 用户上机
 
 - [ ] **B5 IPC 长跑用例(IPC-3 十万块)**
@@ -349,10 +349,10 @@ build-val\tests\tools\Release\scvb_diag.exe --out diag-rc1.csv --group 1
 3. Output 输出开关 **ON**,Cubase 自动化保持 Read —— File → Export → Audio Mixdown,32-bit float,导出 `engine_C.wav`。
 4. 打开 Output 窗口,轨道自动化设 **Write**(或 Latch),从区间起点播到终点,停,切回 **Read**(打印的车道在 Ins 隐藏车道下,见 `docs/DAW_COMPATIBILITY.md` §2.1;若出现加载守卫横幅,先点「继续写入自动化」)。
 5. Output 输出开关 **OFF**,同一区间、同一导出设置导出 `follow_D.wav`。
-6. 比对并自动写日志:
+6. 比对并自动写日志(在仓库根目录跑;两份 wav 写完整路径 —— 脚本一开始就切到仓库根目录,只写文件名时只会在仓库根目录里找,找不到就报「无法打开文件」):
 
    ```powershell
-   pwsh scripts/nulltest.ps1 engine_C.wav follow_D.wav -Align -BuildDir build-val
+   pwsh scripts/nulltest.ps1 "<导出目录>\engine_C.wav" "<导出目录>\follow_D.wav" -Align -BuildDir build-val
    ```
 
 7. 判据:逐声道残差 RMS < −40 dBFS。不过就分开打印(只打印 pan、只打印 vol)各比一次,定位是哪条链(10 §4.2)。
@@ -363,9 +363,9 @@ build-val\tests\tools\Release\scvb_diag.exe --out diag-rc1.csv --group 1
 1. 新建 48 kHz 工程,导入同一组人声(有 stereo 轨的话建议 13 mono + 2 stereo;先只放 mono 跑一遍,再加 stereo 跑完整格),全部 pan 居中、推子 0 dB,送同一条 stereo Group(VOX BUS),总线同样居中、0 dB。Project → Project Setup 里的 Stereo Pan Law **设为 −3 dB Equal Power(Cubase 默认)**:按推导只有这一档 mono 与 stereo 两部分都不用补偿;0 dB 档下 mono 要 +3.01 dB、stereo 要 0 dB,单一增益调不平,**0 dB 档只许用在纯 mono 的定口径跑**。另记下 stereo 轨用的是哪种 panner(Stereo Balance Panner / Stereo Combined Panner)—— Cubase 对居中 stereo 轨是否也施加 pan law 没实测。
 2. **不装 SCVB**,导出区间 → `ref_A.wav`(32-bit float)。
 3. 每条人声轨插件链最后一格插 SCVB Input,总线第一格插 SCVB Output。**不分析、输出开关保持 OFF、不写任何自动化**(此时 pan 0 / vol 0 dB / width 100 / MS Balance 0 / Lead Select 0 都是参数默认值,见 `tests/golden/params_v0.tsv`)。确认各 Input 显示已连接、Output 没有「时间线缺口」横幅,导出同一区间 → `test_B.wav`。
-4. 比对(补偿值以统筹定的为准;下面是按源码推的,没实跑过):
-   - 宿主 −3 dB Equal Power(完整格与纯 mono 都用这档):`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb 0 -Align -BuildDir build-val`
-   - 宿主 0 dB(**只限纯 mono 的定口径跑**):`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb -3.01 -Align -BuildDir build-val`
+4. 比对(补偿值以统筹定的为准;下面是按源码推的,没实跑过。wav 同 U-2 写完整路径):
+   - 宿主 −3 dB Equal Power(完整格与纯 mono 都用这档):`pwsh scripts/nulltest.ps1 "<导出目录>\ref_A.wav" "<导出目录>\test_B.wav" -PanLawDb 0 -Align -BuildDir build-val`
+   - 宿主 0 dB(**只限纯 mono 的定口径跑**):`pwsh scripts/nulltest.ps1 "<导出目录>\ref_A.wav" "<导出目录>\test_B.wav" -PanLawDb -3.01 -Align -BuildDir build-val`
    - ⚠ 成品口径下 `-PanLawDb` 传的是「要施加给 test 的补偿量取反」,**不是宿主设置**;脚本会把这个数原样写进原始记录的「宿主 pan law」那一行(同一行括号里的 `--gain-db` 才是实际施加的补偿)。原始记录不手改,**宿主的真实设置以汇总表「宿主 pan law」一列为准**。
 5. 判据:样本偏移 0,残差峰值 < −120 dBFS(理想为按位相等)。**不过就把工具输出的逐声道残差与偏移原样回报,别凭听感调增益去凑**(10 §4.2 明令禁止)。汇总表的「宿主 pan law」一列写 Cubase 里的真实设置,备注写 stereo 轨的 panner 类型。
 
@@ -397,7 +397,7 @@ U-0 构建时已带 `-DSCVB_TESTS_WITH_EBUR128=ON`:
 build-val\tests\Release\scvb_tests.exe "[reference]" --durations yes
 ```
 
-判据:全过,且输出里**没有** `SCVB_TESTS_WITH_EBUR128=OFF` 字样(有这句 = 构建时没开,跑的是占位)。
+判据:全过,**且**输出里那行用例名带 `M(400ms)`(完整是 `KW-3: 粉噪 30s 与 libebur128 M(400ms) 对拍`;中文在控制台可能乱码,认这段英文就行)。如果用例名里带 `SCVB_TESTS_WITH_EBUR128`,或者末行是 `All tests passed (1 assertion in 1 test case)`,说明构建时没开开关、跑的是占位,**不算**。别拿「输出里没有 `=OFF` 字样」判:占位用例通过时那句文字根本不打印(2026-09-28 在一份开关关闭的构建上按上面这条命令跑过,输出里 0 处 `=OFF`)。
 
 ### U-7 干净 Windows 11 安装(J3)
 
