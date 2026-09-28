@@ -892,9 +892,15 @@ TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变�
 
     // ②b 被限速拦着、还没发出去的那一份也一并作废 —— 否则它会在已提交曲线变了之后才发出去,
     //    把音频拽回拖动中的旧点表,而那时已经没有人在拖。
+    //    ⚠ 夹具要做成「**只有待发、没有在发布中的**」:有在发布中的那份时,作废条件的另一半
+    //    (live)会顺手把待发一起清掉,这一格就分辨不出「待发」那一半在不在(删除式实测过:
+    //    第一版夹具带着 live,去掉「待发」那一半照样全绿)。先撤回再请求,正是这个形态 ——
+    //    上一次手势刚撤回、50 ms 内又按下去。
     preview(-12.0f);
+    f.auth.cancelPanCurvePreview();
     REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-9.0f)) == PreviewReq::accepted);
     REQUIRE(f.auth.pumpPanCurvePreview(t - 990.0)); // 距上一份 10 ms:限速拦住,待发
+    REQUIRE_FALSE(f.auth.panCurvePreviewLive()); // 前提:只有待发
     const auto publishesBefore = f.auth.panCurvePreviewStats().publishes;
     f.auth.setPanCurve(1, bellAt0(-5.0f));
     CHECK_FALSE(f.auth.panCurvePreviewPending());
