@@ -1,7 +1,7 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
-状态:**v2.3**(2026-08-25,J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
+状态:**v2.4**(2026-09-28,J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
 
 ## 一、Output 插件:自动化参数(共 **123** 个,全部 versionHint=1)[J59/J65]
 
@@ -84,7 +84,7 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang
 - **`master_chart_mode`**:Tab1「声像 / 音量分布」卡片的视图态,与 `active_tab` 同族(纯显示偏好,随工程走)。读到没有该键的旧工程、或读到未知取值(手改工程文件 / 跨版本)一律回落 `"distribution"`,**不报错、不提示**。不需要迁移函数,`abi` 不因它递增。
 - **`lang_chosen`**:首启语言选择卡的抑制位。**`ui.language` 本身不能兼任** —— 它默认 `"en"`,「从没选过」与「用户就是选了英文」不可区分。**不新增桥函数**:置位点在既有 `setLang` 桥入口(web 启动时的语言回填走 `setLang(..., {push:false})` 不经桥,所以「桥的 setLang 被调用过」正好等价于「用户显式选过语言」)。
 - **全局镜像位口径(J50a 同款,本次扩用到 lang)**:`guide_seen_global` / `tour_seen_global` / `lang_chosen_global` 均为**系统级用户目录小文件**里的判定位,**只读、不属工程 state、不回写 state**;新工程 `xxx_seen=false` 时先读全局默认决定是否弹出,「已看过 / 已选过」的承诺跨工程成立。落点 = `UiDefaultsStore`(`juce::PropertiesFile`,每次读写现开一份、不驻留进程内状态)。
-- **两侧全局位各存一份**(`input.*` / `output.*` 分键):两侧引导讲的是两个界面、两套内容;共用一个位会让先装 Output 的用户永远看不到 Input 的引导 —— 而 J80 立 T48 的**全部理由**就是「Input 是用户见到的第一个界面却零引导」。`UiDefaultsStore` 的命名空间本来就按侧分(`scvb::output::uidefaults` / `scvb::input::uidefaults`)。
+- **两侧全局位各存一份**(指 `guide_seen` 的全局位):两侧引导讲的是两个界面、两套内容;共用一个位会让先装 Output 的用户永远看不到 Input 的引导 —— 而 J80 立 T48 的**全部理由**就是「Input 是用户见到的第一个界面却零引导」。两侧共用 `UiDefaultsStore` 的**同一个**落盘文件(`ui-defaults.settings`),靠**键名**分开 —— Output 用 `guide_seen_global`、Input 用 `guide_seen_global_input`;`tour_seen_global` 只有 Output 一个键(Input 没有交互式导览)。([J160] 按 J132 口径改写,见文末 v2.4 修订节)
 
 ## 三、Input 插件:state(无自动化参数)
 
@@ -162,3 +162,9 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 - **[J81g→§一]** 追加**自动化参数面 123 个零变动**的显式声明(逐份变更文档核对);J65 的「Live 余 4、绝对禁止再加自动化参数」封顶条款原样成立;`tests/golden/params_v0.tsv` 不受本次修宪影响。
 - **[J81j→§二/§三/§四]** state 容器 `abi` **1 → 2**(#81,已合入 `feature/v1` 的 `69ec45a`):CFGS 尾部追加 `loudness_mode` / `center_slot_policy` 两个 u32 枚举序号 + no-op `migrate_1_to_2` + CFGS 未知尾部保留回写(`unknownTail`)。Input 与 Output 共用容器 abi,故两侧 YAML 的 `abi` 同步升 2(Input CFGS 本身未变)。**与 IPC abi 无关** —— 那是 ipc-contract-v0 §5 的独立计数,本次 ipc v1.6 明确不 +1。
 - **[J81 待办结转]** ①`storage` 组三字段(J79/T47 未开卡),不在本次;②Input 侧 `ui.lang_chosen` **不加**(裁 C5,超授权;挂账 `suggestion-ledger`,标「T48 真机观察后再定」);③geometry 不符与 `kAbiMismatch` 的区分:裁 C11 采 (b),v1 保持同码(理由入 ipc §6.5),`InitResult::kGeometryMismatch` 记入 ipc §5 **abi+1 增补清单**。本次修宪已收掉 adjudications 文末「[修宪待办登记]」块登记的三笔中的两笔(`master_chart_mode`、Input `guide_seen`);第三笔 `storage` 组随 T47 开卡再走。
+
+## v2.4 修订(2026-09-28,J160 说明文字改实)
+
+- **[J160→§二 Output `ui` 组「两侧全局位各存一份」条]** 原括注「`input.*` / `output.*` 分键」与原末句「`UiDefaultsStore` 的命名空间本来就按侧分(`scvb::output::uidefaults` / `scvb::input::uidefaults`)」**与实现不符**:实现里没有 `input.*` / `output.*` 这种键,`UiDefaultsStore` 也只有一个命名空间 `scvb::uidefaults`、一个落盘文件。按 **J132** 口径(仓内 `docs/SCVB_CONTRACT.md` §3.1 与 `docs/STATE_SCHEMA.md` §二 已由 #301 改实)改成实现的实际写法:同一个落盘文件 `ui-defaults.settings`,两个键 —— Output `guide_seen_global`、Input `guide_seen_global_input`;`tour_seen_global` 只有 Output 一个键。「各存一份」的**结论不变**,错的只是描述「怎么分」的那半句;括注改为范围限定「指 `guide_seen` 的全局位」(紧上一条同时列了 `lang_chosen_global`,不限定就会被读成三个全局位都按侧分)。
+- **口径说明**:J132 裁定行的备注写「单键口径」,那是 SL-258(#167)给 Input 另起 `guide_seen_global_input` 之前的事实;#301 已按实现写成两个键,本次与之一致(详见仓内 `docs/contract-changes/20260928-j132-guide-seen-global-keys.md` 的 ⚠ 节)。
+- **零变动面**:字段、类型、默认值、编码落点、首启判据、state 容器 `abi`、自动化参数面(123 个)与 `tests/golden/` 一律不动;实现侧零字节(键名真源 `src/plugin-common/UiDefaultsStore.cpp`)。本文件除本节外只改了两处:状态行(v2.3 → v2.4)与 §二 该条的括注和末句。仓内变更文档 `docs/contract-changes/20260928-j160-constitution-guide-keys.md`。

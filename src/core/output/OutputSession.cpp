@@ -621,6 +621,7 @@ ChannelConnInfo OutputSession::channelConn(u32 channel, u64 nowMs) const
     info.capturing = (slot->flags.load(std::memory_order_acquire) & kFlagCapturing) != 0;
     // 采样率只在槽活跃且两端都已 prepare 时才有可比性(0 = 未知,不报不一致)。
     const u32 slotSr = slot->sample_rate;
+    info.inputSampleRate = slotSr;
     info.srMismatch = info.slotState == kSlotActive && slotSr != 0 && sampleRate_ != 0 && slotSr != sampleRate_;
     // 停流态直接取发作标志(evaluateChannels 每拍维护):写方停着 = 挂起,不是失准。
     info.suspended = stallEpisode_[static_cast<std::size_t>(channel - 1)];

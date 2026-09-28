@@ -155,6 +155,7 @@ Freezing is a **reversible, temporary takeover**: values you adjust while frozen
 The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:
 
 - **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "auto-stop outside the range" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
+  Once the range is disarmed (by you, or by the auto-stop at the right edge), a notice pops up at the bottom right: "Re-captured X.X s; re-analyzing this range is recommended". X.X is **how long the playhead actually travelled inside the selection** while armed (stretches with capture off do not count, and looping the same stretch several times counts it once). "Re-analyze now" jumps to the waveform page and re-runs analysis over **the span from the earliest to the latest re-captured moment x the armed tracks** (if you moved the selection or skipped around while armed, the gaps in between are re-analysed too — their features did not change, and re-analysis only recomputes automatic segments, manual ones stay as they are); the ✕ just closes the notice. Disarming without playing anything shows nothing. The seconds are estimated by the UI from the playhead, so time spent with the editor window closed is not counted.
 - **Re-analysis**: re-runs analysis over the selection only; segments and curves elsewhere are preserved exactly.
 
 ## Versions
@@ -178,7 +179,7 @@ Things worth knowing:
 - The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself; the engine neither prints them nor overwrites them — **those three always follow the value in your DAW**.
 - With the output switch **ON**, the DSP for those 30 takes engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
-- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "continue engine-driven", the plugin is loaded but silent on the automation side — **not a single gesture goes out**.
+- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON and starts writing as soon as playback enters the analyzed range. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
 - Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
 ## Pan curve editor
@@ -200,6 +201,22 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 - Saving the project elsewhere or copying it to another machine carries the features along. A project written by an earlier version that kept its features in an external directory still opens and reads back as before (that read path is retained — opening one still writes an `owner.lock` ownership marker there), and **saving it once pulls the features back into the project and reclaims the external directory** — that step is **irreversible** and the project file grows accordingly; if that external file is gone, the features cannot be recovered (segments and curves are unaffected) — just capture again.
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
 
+## Privacy and files on disk
+
+**SCVB does not use the network.** None of the three plugins sends or downloads anything: there is no update check, no usage statistics, no account and no licence server. The interface is loaded from files built into the plugin, fonts included. Input, Output and Monitor talk to each other only through shared memory on this computer. Two links open a web page, and only when you click them: the documentation link, and the "install WebView2" link that appears when the WebView2 Runtime is missing. Both open in your default browser, not inside the plugin. (The Microsoft Edge WebView2 Runtime that draws the interface is a Windows component kept up to date by Microsoft; SCVB does not change how it behaves.)
+
+**What SCVB writes to disk:**
+
+- **Your project.** Settings, segments, curves and the captured features are saved by your DAW inside the project file, like any other plugin's state.
+- **`%APPDATA%\Synchain\SCVB\ui-defaults.settings`** — a few preferences that apply across projects: the interface language you picked, the interface scale of the Output window, and whether you have already seen the first-run guide and tour.
+- **`%LOCALAPPDATA%\Synchain\SCVB\WebView2\`** — the working folder of the embedded browser that draws the interface (its cache and settings), one subfolder per plugin.
+- **`%APPDATA%\Synchain\SCVB\sessions\`** — only for projects saved by an early version that kept its features outside the project (see "Sessions and files" above). This version does not create new folders there.
+- **An exported suggestions `.csv`** — only when you export one, in the folder you choose.
+
+SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+
+To remove the preferences and the browser cache, close your DAW and delete the two `Synchain\SCVB` folders above. Keep `sessions` if you still have projects from an early version that use it.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
@@ -208,7 +225,7 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 | **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough and recovers in about 5.5 s. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **One vocal track is silent** | That track's Input is connected to a healthy Output, but the Output never received its data (no channel selected / wrong group / channel conflict) | Check that Input's channel and group; check whether the track shows as online on the Output's Tracks page |
 | **Installing Input left the whole track with no sound** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If that track really has no sound, collect the output of "Copy diagnostics" in Settings and open an issue |
-| **"Channel conflict" warning** | Two Inputs in the same group claim the same channel | Change the channel id on one of them, or move it to another group |
+| **"Channel conflict" warning** | Two Inputs in the same group claim the same channel (also shown when a project opens and its channel is already taken) | Change the channel id on one of them, or move it to another group. Once the other Input releases the channel (track deleted or renumbered), the waiting one takes it over by itself within about a second |
 | **"Group X already has a primary Output; this instance is read-only"** | The group already has an active Output | A group may only have one active Output (hard rule 6). Remove the extra one, or move it to another group |
 | **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **The whole image is skewed to one side** | Host pan on a vocal track or on the bus is not centred | Return every host pan to centre (hard rule 4) |
@@ -238,6 +255,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 
 - 15 tracks per group, 2 version slots;
 - one active Output per group at a time;
+- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);

@@ -189,6 +189,8 @@ add_executable(scvb_monitor_tests
   # 覆盖 发布→读到→组切换→退出空态→重连,以及写方停摆判陈旧。
   core/test_monitor_harness.cpp
   ${CMAKE_SOURCE_DIR}/src/monitor/MonitorProcessor.cpp
+  # [rc-misc c] Monitor 构造期读语言/缩放的系统级全局默认(与 Output/Input 同一份存储)。
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/UiDefaultsStore.cpp
 )
 
 target_link_libraries(scvb_monitor_tests PRIVATE
@@ -197,7 +199,11 @@ target_link_libraries(scvb_monitor_tests PRIVATE
   juce::juce_audio_processors
 )
 
-target_include_directories(scvb_monitor_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/monitor ${CMAKE_SOURCE_DIR}/tests)
+target_include_directories(scvb_monitor_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/monitor
+  ${CMAKE_SOURCE_DIR}/src/plugin-common   # UiDefaultsStore.h / BridgeBase.h(缩放档位边界)
+  ${CMAKE_SOURCE_DIR}/tests
+)
 target_compile_definitions(scvb_monitor_tests PRIVATE SCVB_MONITOR_HEADLESS=1)
 
 if(MSVC)
