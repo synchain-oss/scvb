@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 当前阶段(T31 Wave 2「交互接线」):
 //   • 本文件负责**外壳与事件仓**:createBridge → requestInitialState(§0.6 门控由页面
-//     掌握)→ 订阅契约 §2 的九个事件 → 维护一份深合并后的 store → 驱动 header /
+//     掌握)→ 订阅契约 §2 的十个事件([J146] 起含 §2.10 `scvb.vadPreview`,它不进 store)→ 维护一份深合并后的 store → 驱动 header /
 //     横幅区 / footer / 缩放 / 引导页 / tab 路由;Tab1 的全部渲染与上行调用在
 //     web/output/tab-master.js(createTabMaster)。
 //   • **Wave 1 的 WAVE1_NUMBERS 静态填数路径已删除**:所有 {n}/{m}/{k}/{p}/{t}
@@ -2105,7 +2105,7 @@ function syncTourAsk() {
 }
 
 // ============================================================================
-// 事件订阅(契约 §2 九个事件;名字逐字照 BRIDGE_EVENTS.output)
+// 事件订阅(契约 §2 十个事件;名字逐字照 BRIDGE_EVENTS.output)
 // ============================================================================
 if (bridge) {
     bridge.on("scvb.state", (s) => {
@@ -2367,6 +2367,12 @@ if (bridge) {
         // [SL-535] 有覆盖的轨号集合变了(首次采集)⇒ Tab1 重取 dry-run;集合没变在指纹比对处早退。
         tabMaster.refreshPreview();
         requestRender();
+    });
+
+    // [J146] §2.10 拖动档 VAD/边界预览:只归 Tab3(虚影 + 刷 VAD 着色),不进 store ——
+    // 它是瞬态显示件,不是段数据(段数据唯一来源仍是 §2.8)。
+    bridge.on("scvb.vadPreview", (pv) => {
+        tabWave.onVadPreview(pv);
     });
 
     bridge.on("scvb.error", (e) => {

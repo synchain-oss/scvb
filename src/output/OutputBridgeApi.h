@@ -53,7 +53,8 @@ inline constexpr const char* SetMasterChartMode = "setMasterChartMode"; // [J75]
 inline constexpr const char* ExportSuggestions = "exportSuggestions"; // [J81] T41 建议表 CSV 导出
 } // namespace Fn
 
-// C++ -> JS 事件名(契约 §2,共 9 个;由 OutputEditor 在 25Hz timer 内经 diff-then-emit 推送)。
+// C++ -> JS 事件名(契约 §2,共 10 个;由 OutputEditor 在 25Hz timer 内经 diff-then-emit 推送 ——
+// `scvb.vadPreview` 另在 setVadParams / setSegmentation 调用里当场发,见契约 §2.10)。
 namespace Event
 {
 inline constexpr const char* State = "scvb.state";
@@ -65,6 +66,7 @@ inline constexpr const char* Playhead = "scvb.playhead";
 inline constexpr const char* CaptureProgress = "scvb.captureProgress";
 inline constexpr const char* Segments = "scvb.segments";
 inline constexpr const char* Error = "scvb.error";
+inline constexpr const char* VadPreview = "scvb.vadPreview"; // [J146] 拖动档 VAD/边界预览(§2.10)
 } // namespace Event
 
 } // namespace scvb::outputbridge

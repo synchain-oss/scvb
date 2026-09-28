@@ -30,7 +30,7 @@
 ### 0.3 线程模型(01 §6.1/§6.4)
 
 1. **全部 native function 在消息线程 [M] 处理**;音频线程 [A] 永不参与桥面。
-2. **长耗时任务转工作线程 [W]**:native function 只负责**启动并立即 resolve**(返回受理回执),进度与结果一律走事件(`scvb.segments` / `scvb.state`)。适用:`analyze`、`setVadParams`/`setSegmentation` 的松手档流水线。**不新设 `analysisProgress`/`analysisDone` 事件**(§8 禁止复活)。
+2. **长耗时任务转工作线程 [W]**:native function 只负责**启动并立即 resolve**(返回受理回执),进度与结果一律走事件(`scvb.segments` / `scvb.state`)。适用:`analyze`、`setVadParams`/`setSegmentation` 的松手档流水线。**不新设 `analysisProgress`/`analysisDone` 事件**(§8 禁止复活)。`setVadParams`/`setSegmentation` 的**拖动档预览不转 [W]**([J146]):在 [M] 调用内同步做完(与参数无关的那一半按轨缓存,单次调用只跑 O(n) 的状态机与后处理),结果经 §2.10 当场回发。
 3. **拉取式不进事件流**:`requestWaveform` 为 **request/response** 语义——**一次调用一次 resolve**,**绝不作为推送事件**(01 §6.4)。是否把降采样放在 [W] 完成后回 [M] 兑现,由 native 侧决定(桥面不规定同步/异步,见 §1.27;01 §6.4 只要求「按需拉取、不进事件流」)。
 4. gesture 三段式(`beginParamGesture`/`setParam`/`endParamGesture`)一律在 [M] 转发到宿主(ADR-006);音频线程禁止 `beginChangeGesture` 系列(CLAUDE.md §8)。
 5. 跨组在线探测(`scvb.groups` 数据面)在 [M] 持 `lifecycleMutex` 执行,只读、1Hz,绝不映射异组 audio/feat/ctrl 段(01 §4.5)。
@@ -42,7 +42,7 @@
 3. `scvb.groups`、`scvb.config` 为「按频率探测/轮询、**变化才发**」;`mBridgeReady` 后的**首帧必发**按事件类别分三档,保证 UI 不停在空态:
    - **状态类**(`scvb.state` / `scvb.params` / `scvb.conn` / `scvb.config` / `scvb.groups` / `scvb.meters` / `scvb.playhead` / `scvb.segments`)—— **首帧各必发一次**(`scvb.segments` 以 `reason:"snapshot"` 发全部轨全量段表,§2.8);
    - **采集类**(`scvb.captureProgress`)—— **周期帧只在播放中发**(§2.7);**例外([J152])**:`mBridgeReady` 后首帧、`clearCoverage` 受理后(§1.24)**各补发一次全量**(15 轨全带),**不看走带** —— 停着打开面板时覆盖率由首帧这一次承载。空态判定仍以 `scvb.state` 为准(全量帧到达之前那一拍覆盖仍是空的);
-   - **条件类**(`scvb.error`)—— **只在条件成立时发**(§2.9/§4.5),**不发空 error**。
+   - **条件类**(`scvb.error`、**`scvb.vadPreview`**)—— **只在条件成立时发**(§2.9/§4.5/§2.10),**不发空 error**;`scvb.vadPreview` 首帧只在**正处于预览中**时发([J146])。
 4. 波形按视口拉取,LRU 缓存归 UI 侧(05 §6.3),C++ 不为波形维护推送状态。
 
 ### 0.5 防回环(01 §6.4,ADR-006)
@@ -290,10 +290,10 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `p`(全部字段必填):`{ threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int(默认 120), padding_post_ms:int(默认 200) }`(J23) |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 state `analysis.vad`。**两段式(04 §1.2 逐字)**:<br>**拖动档** —— 每次调用只触发**即时重判决**并回发 VAD/边界**预览**(非破坏:不写 `versions` 曲线;目标 <50ms);<br>**松手档** —— UI 停止调用后由 **C++ 侧 300ms 防抖**自动跑完整流水线,**仅改写 `origin=auto` 且未 `locked` 的段**(J34),用户段逐字节不动;完成后回发 `scvb.segments`(`reason:"vad"`,含 diff 摘要)。<br>抑制条件**只有** PRINT 态或分析进行中(J47):抑制时不自动应用,UI 退回显式「应用到分段(重分析)」按钮 = `analyze(scope)`。<br>**丢弃(不是抑制)**([J106] / [SL-531],用户 2026-09-26 裁定):防抖**已排、尚未到点**时发生下列任一事件,这一次松手档重分段直接作废、不再到点 —— **撤销 / 重做真的动了栈**(§1.25/§1.26 返回 `{ok:true}`)、**真切换版本**(§1.9,`v` 与当前不同且未被 PRINT 拒绝)、**宿主读入工程或预设**(`setStateInformation` 接受了这份 state)。不作废的话它会在事件之后到点,把用户在旧状态上拖的那一下落进撤销后 / 新版本 / 新工程(撤销 / 重做的情形下它还会作为新事务入栈、清空重做栈)。实现见 #284。丢弃只撤掉这一次排程,**阈值本身保留新值**(它不入栈,见下「撤销」行),段表不按它重算,要应用得再点一次分析或再动一下滑杆。「抑制」与「丢弃」是两回事,上面「只有」两条仍然成立:抑制看的是**状态**(松手排程时与到点时各判一次 PRINT / 分析进行中,成立即不跑),抑制条件的集合没有变;丢弃看的是**事件**(上述几件事发生的那一刻撤掉已排的那一次),不是新增的抑制条件。 |
+| 语义 | 写 state `analysis.vad`。**两段式(04 §1.2 逐字)**:<br>**拖动档** —— 每次调用只触发**即时重判决**并回发 VAD/边界**预览**(非破坏:不写 `versions` 曲线;目标 <50ms);<br>**拖动档落地([J146],用户 2026-09-29 裁定「现在做功能」)**:每次调用在写完 state、排好松手防抖之后,于 [M] 按**当前**参数、在松手那一趟会用的**同一个窗**(`global.range` 档 × 已采集时间线 → 写回窗,与松手档同一把尺子)上重跑每轨 **S1**(VAD 状态机 + 超长段谷切分,02 §2/§3.2),当场经 **§2.10 `scvb.vadPreview`** 回发每轨预览段;同时 **§1.27 `requestWaveform` 的 `vad` 列在预览期间取这次重判决的后验**(05 §2.3「VAD 着色 · 阈值拖动实时重着色」),UI 重拉瓦片即见绿带变化。预览**不写** CRVS、特征(含 vadP —— 它随工程持久化)与撤销栈,不碰音频线程与播放快照。预览**只到每轨 S1**:松手后的段表还会在**别的轨**的边界处再切开(02 §3.4 全局区间),所以最终段数可以多于预览段数。采集写入进行中时预览用的特征最多滞后 1s(见 §1.27 那条例外)。**长会话自适应合并**:单次重判决太贵时(实测 15 轨 × 60 分钟命中缓存约 42ms;× 4 分钟约 3ms),两次重判决的开始之间至少隔上一次耗时的两倍,期间到达的调用只记最新参数、由 25Hz 定时器补算后回发(占空比 ≤50%,预览仍以最新参数为准);典型会话恒为当场算。预览何时结束见 §2.10。<br>**松手档** —— UI 停止调用后由 **C++ 侧 300ms 防抖**自动跑完整流水线,**仅改写 `origin=auto` 且未 `locked` 的段**(J34),用户段逐字节不动;完成后回发 `scvb.segments`(`reason:"vad"`,含 diff 摘要)。<br>抑制条件**只有** PRINT 态或分析进行中(J47):抑制时不自动应用,UI 退回显式「应用到分段(重分析)」按钮 = `analyze(scope)`。<br>**丢弃(不是抑制)**([J106] / [SL-531],用户 2026-09-26 裁定):防抖**已排、尚未到点**时发生下列任一事件,这一次松手档重分段直接作废、不再到点 —— **撤销 / 重做真的动了栈**(§1.25/§1.26 返回 `{ok:true}`)、**真切换版本**(§1.9,`v` 与当前不同且未被 PRINT 拒绝)、**宿主读入工程或预设**(`setStateInformation` 接受了这份 state)。不作废的话它会在事件之后到点,把用户在旧状态上拖的那一下落进撤销后 / 新版本 / 新工程(撤销 / 重做的情形下它还会作为新事务入栈、清空重做栈)。实现见 #284。丢弃只撤掉这一次排程,**阈值本身保留新值**(它不入栈,见下「撤销」行),段表不按它重算,要应用得再点一次分析或再动一下滑杆。「抑制」与「丢弃」是两回事,上面「只有」两条仍然成立:抑制看的是**状态**(松手排程时与到点时各判一次 PRINT / 分析进行中,成立即不跑),抑制条件的集合没有变;丢弃看的是**事件**(上述几件事发生的那一刻撤掉已排的那一次),不是新增的抑制条件。 |
 | 拒绝态 | 字段缺失/越界 → `{ok:false, reason:"badArg"}` |
 | 撤销 | **是**([J95③a],2026-08-31 用户批准;变更文档 `docs/contract-changes/20260831-j95-3a-release-apply.md`)。阈值本身**仍不入栈**;它在**松手档触发的那一次重分段 = 一条**撤销步 —— 沿 [J89] 与 `analyze` 同栈同口径(提交前把整个 CRVS 快照压进既有 UndoManager)。撤销 = 恢复重分段前的段表,重做 = 重放重分段结果;两者各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8,枚举与行为均不变)。<br>改前为「否(阈值本身不入栈;其触发的段改写属分析产物)」—— 该括注把定性挂在「分析产物」上,而 [J89] 已将分析产物改判为可撤销,遂成同一份产物两套规矩,本次一并修回。 |
-| 线程/频率 | [M] 预览同步;松手档 [M] 防抖计时 → [W] 流水线 |
+| 线程/频率 | [M] 预览同步(调用内即时重判决,经 §2.10 当场回发;长会话自适应合并、由 25Hz 定时器补算,见语义行,[J146]);松手档 [M] 防抖计时 → [W] 流水线 |
 | 真源 | 05 §1.4 / §2.3;两段式 04 §1.2 |
 
 ### 1.19 `setSegmentation(p)`
@@ -302,7 +302,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `p`:`{ mode:string, sensitivity:f32, min_segment_ms:int }` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 state `analysis.segmentation`;**两段式、抑制条件与丢弃条件同 §1.18**(防抖计时与 §1.18 共用一个)(拖动=预览,松手 300ms 防抖跑流水线,仅 `origin=auto` 且未 `locked` 段);完成后 `scvb.segments`(`reason:"segmentation"`)。 |
+| 语义 | 写 state `analysis.segmentation`;**两段式、抑制条件与丢弃条件同 §1.18**(防抖计时与 §1.18 共用一个)(拖动=预览,松手 300ms 防抖跑流水线,仅 `origin=auto` 且未 `locked` 段);拖动档预览同 §1.18(同一个 §2.10 事件,载荷不区分是哪一组滑杆触发 —— 两组参数一起决定 S1,[J146]);完成后 `scvb.segments`(`reason:"segmentation"`)。 |
 | 拒绝态 | 同 §1.18 |
 | 撤销 | **是** —— 同 §1.18([J95③a]:松手档触发的那一次重分段 = 一条撤销步,沿 [J89];灵敏度/最短段长本身不入栈)。改前为「否」。 |
 | 线程/频率 | 同 §1.18 |
@@ -386,7 +386,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `ch: 1..15`;`startS: f64`;`endS: f64`(`startS < endS`);`cols: int`(1..4096,视口像素列数) |
 | 返回 | `{ minDb:f32[cols], maxDb:f32[cols], vad:u8[cols], covered:u8[cols], stale:u8[cols], passId:u32[cols], valleys:f64[] }` 或 `{ok:false, reason:"badArg"}`(无数组字段) |
-| 语义 | 拉取式下采样(canvas 分块渲染)。C++ 从特征流(`kw_ms`/`peak`)降采样出每列 min/max dB 包络、VAD 判决位、覆盖位、stale 位与 passId(不同采集轮次底色微差)。**`valleys[]`(T25 新增字段,见 §9.2)** = 该区间内的**能量谷时间点列表(秒,升序)**,供边界拖拽吸附(05 §6.3 明文「由 C++ 在 `requestWaveform` 附带谷点列表」但未定字段名)。**[J145] 谷点取值口径**:只在该轨**已覆盖**的 hop 上、按覆盖段逐段检测(未覆盖不当静音,不跨空洞连谷);帧响度 ℓ(02 §0.2,与 §3.2 同一口径)经 5 hop 平滑后的局部极小平坦区,**地形 prominence**(向两侧各走到第一个更低的点为止的最大值,取两侧较小者减谷底)**大于 minDepth** 才算一个谷 —— minDepth 与 02 §3.2 候选谷同一条(取**受理这一次调用时**的 `analysis.segmentation.sensitivity`,3–12 dB,默认 6 dB;回包不带灵敏度维度,UI 的块缓存也不按它分键);时刻取谷底 hop 的**中心** `(hop+0.5)·hop_s`;请求窗两侧各带 3 s 上下文参与检测,回包只含落在 `[startS, endS)` 内的;条数上限 = `cols`,超出时留 prominence 最大的那些;该轨在「请求窗 + 上下文」内的已覆盖 hop 超过 360000(1 h)时回空数组。`passId` / `stale` 在 v1 **恒 0**(§9.3 附注允许的首版回退常量;UI 的「不同采集轮次底色微差」因此不出现)。变更记录 `docs/contract-changes/20260929-j145-waveform-valleys.md`。未覆盖列:`covered=0` 且 `minDb=maxDb=-INF 哨兵 -160`。 |
+| 语义 | 拉取式下采样(canvas 分块渲染)。C++ 从特征流(`kw_ms`/`peak`)降采样出每列 min/max dB 包络、VAD 判决位、覆盖位、stale 位与 passId(不同采集轮次底色微差)。**VAD 判决位的后验来源**([J146] 按 05 §2.3「VAD 着色 · 阈值拖动实时重着色 · 数据 `requestWaveform.vad[]`」补写口径,判据不变):拖动档预览期间(§2.10 `active:true`)写回窗内取**当前参数下即时重判决**的后验,其余时候取上一次分析写下的后验;两种情形判据相同 = 该列任一 hop 后验 > 0.5。松手那一趟落地后两者逐位相同(同一组参数、同一份特征、同一个窗)。**例外:采集写入进行中**(边播边采,特征每拍都在变)时,预览里与参数无关的那一半限频 1s 重建一次、期间沿用 ≤1s 前那份特征 —— 这时覆盖层与当下的特征对不上,`vad` 列退回上一次分析写下的后验(VAD 着色暂不随拖动变,§2.10 的虚影照常随拖动变)。**`valleys[]`(T25 新增字段,见 §9.2)** = 该区间内的**能量谷时间点列表(秒,升序)**,供边界拖拽吸附(05 §6.3 明文「由 C++ 在 `requestWaveform` 附带谷点列表」但未定字段名)。**[J145] 谷点取值口径**:只在该轨**已覆盖**的 hop 上、按覆盖段逐段检测(未覆盖不当静音,不跨空洞连谷);帧响度 ℓ(02 §0.2,与 §3.2 同一口径)经 5 hop 平滑后的局部极小平坦区,**地形 prominence**(向两侧各走到第一个更低的点为止的最大值,取两侧较小者减谷底)**大于 minDepth** 才算一个谷 —— minDepth 与 02 §3.2 候选谷同一条(取**受理这一次调用时**的 `analysis.segmentation.sensitivity`,3–12 dB,默认 6 dB;回包不带灵敏度维度,UI 的块缓存也不按它分键);时刻取谷底 hop 的**中心** `(hop+0.5)·hop_s`;请求窗两侧各带 3 s 上下文参与检测,回包只含落在 `[startS, endS)` 内的;条数上限 = `cols`,超出时留 prominence 最大的那些;该轨在「请求窗 + 上下文」内的已覆盖 hop 超过 360000(1 h)时回空数组。`passId` / `stale` 在 v1 **恒 0**(§9.3 附注允许的首版回退常量;UI 的「不同采集轮次底色微差」因此不出现)。变更记录 `docs/contract-changes/20260929-j145-waveform-valleys.md`。未覆盖列:`covered=0` 且 `minDb=maxDb=-INF 哨兵 -160`。 |
 | 拒绝态 | 参数越界(`ch`/`cols` 越界、`startS >= endS`) |
 | 撤销 | 否 |
 | 线程/频率 | **[M] 受理,结果以 Promise 异步 resolve**(降采样可在 [W] 完成后回 [M] 兑现——每次调用要从特征环降采样 6 个 `cols` 长数组 + 谷点检测,视口约 1000 列 × 每可见轨一次,不宜在消息线程同步做完);**一次调用一次 resolve,绝不进事件流**(01 §6.4)。UI 侧按视口变化拉取,静止 120ms 后取新块,块内 LRU 缓存归 UI(05 §6.3)。**定案(DeepSeek native 评审,2026-08-16):异步**——JUCE 8 `withNativeFunction` 的 Promise completion 可任意线程回调,降采样放 [W] 完成后回 [M] 兑现;native 须保证每次调用**恰好一次** completion(含 `badArg`),UI promise 永不悬挂 |
@@ -509,7 +509,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 2. Output —— events(C++ → UI)
 
-共 **9** 个。全部经 `backend.addEventListener(name)` 订阅;推送纪律见 §0.4/§0.6。
+共 **10** 个。全部经 `backend.addEventListener(name)` 订阅;推送纪律见 §0.4/§0.6。
 
 ### 2.1 `scvb.state`
 
@@ -603,6 +603,18 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 载荷 | `{ code:<§5.1 八码之一>, ch?:1..15, detail:object, active?:bool }` |
 | 字段纪律 | `ch` 仅在轨级错误(`srMismatch`/`channelConflict`)出现;`detail` 逐码定义见 §5.1;`active` 缺省视为 `true`,`false` = 该条件已解除(用于持续性横幅的撤下)。**UI 不静默**:未知 code 一律原样显示 code 字符串并入诊断区(ADR-002/ipc §5)。 |
 | 真源 | 05 §1.4 / §2.0 |
+
+### 2.10 `scvb.vadPreview`([J146])
+
+| 项 | 定义 |
+|---|---|
+| 频率 | **拖动档每次重判决当场发**(§1.18/§1.19;调用方已节流,web 侧 ≤50Hz;长会话被自适应合并的那一次由 25Hz 定时器补算后发)+ **预览结束时发一次** `active:false`;按 `seq` 判变化(`seq` 未变不发)。首帧:只在正处于预览中时发(条件类,§0.4 第 3 条) |
+| 载荷 | `{ seq:u32, active:bool, startS?:f64, endS?:f64, channels:[ { ch:1..15, spans:[ {t0S:f64, t1S:f64} ] } ] }` |
+| 字段纪律 | `seq` = 预览修订号,每次重算或结束 +1,UI 忽略不大于已收到值的帧。**`active:true`**:`startS`/`endS` = 本次松手档的**写回窗**(秒,半开;松手那一趟只改写窗内);`channels` 只含**写回集**轨(启用、此刻已连接、写回窗内有采集数据 —— 与松手那一趟同一判据,§1.6 [SL-535]);每轨 `spans` = 该轨在**当前参数**下的 **S1 段**(VAD 段 + 超长段谷切分,与分析流水线同一份实现),已裁到写回窗、按 `t0S` 升序、互不重叠;空数组 = 该轨在当前参数下判为窗内无声。**`active:false`**:`channels` 为空数组、不带 `startS`/`endS`,UI 撤掉虚影并重拉 VAD 列。**这不是段表**:没有 pan/vol/origin/locked,段数据的唯一来源仍是 §2.8(其「契约边界」行不变);最终段表还会在别的轨的边界处再切开(§1.18 拖动档落地那句)。 |
+| 结束时机 | ① 任何一趟分析落地(松手那一趟落地时 vadP 已按同一组参数写好,VAD 列前后逐位相同);② §1.18「丢弃」列出的三件事(撤销 / 重做真的动了栈、真切版本、宿主载入工程);③ 空闲 **1.5s**:没有新的拖动调用、没有已排的松手防抖、没有在跑的分析(即抑制态松手,或松手那一趟没受理)。 |
+| 非破坏 | 不写 CRVS、不写特征(含 vadP)、不压撤销栈、不发布播放快照、不碰音频线程。占用的内存只随「已采集时间线 × 写回集轨数」变化、与拖动时长无关,预览结束即整份释放。 |
+| UI 消费 | Tab3 泳道「预览分段边界虚影」(05 §2.3 VAD 阈值组行);收到后重拉可见泳道的瓦片(§1.27 `vad` 列) |
+| 真源 | 05 §1.4 `setVadParams` 行「拖动档……回发 VAD/边界预览」、05 §2.3 VAD 阈值组行与「VAD 着色」行;[J146];变更文档 `docs/contract-changes/20260929-j146-vad-drag-preview.md` |
 
 ---
 
@@ -833,7 +845,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 
 ## 7. 机器可读清单(manifest)
 
-以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对六个计数(Output **37**/9、Input **8**/5、**Monitor 5/4**)与跨侧同名函数的 `params` 一致性做硬断言。
+以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对六个计数(Output **37**/**10**、Input **8**/5、**Monitor 5/4**)与跨侧同名函数的 `params` 一致性做硬断言。
 **`returns` 登记口径**:按 §0.8 第 5 条写**完整并集**(成功形状 + 全部拒绝态形状,`A | B` 分隔),与正文「返回」行逐字对应;`{ok:false, reason:"…"}` 简写为 `{ok:false,reason:"…"}`。
 
 ```json
@@ -888,7 +900,8 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       "scvb.playhead",
       "scvb.captureProgress",
       "scvb.segments",
-      "scvb.error"
+      "scvb.error",
+      "scvb.vadPreview"
     ]
   },
   "input": {
@@ -938,7 +951,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 }
 ```
 
-**计数自检**:Output 函数 **36→37**([J157] `previewPanCurve`)/ 事件 **9**;Input 函数 **7→8** / 事件 **5**;**Monitor 函数 5 / 事件 4**([J81] 转正,见 §10)。
+**计数自检**:Output 函数 **36→37**([J157] `previewPanCurve`)/ 事件 **9→10**([J146] +`scvb.vadPreview`);Input 函数 **7→8** / 事件 **5**;**Monitor 函数 5 / 事件 4**([J81] 转正,见 §10)。
 
 ---
 
@@ -992,9 +1005,9 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 | 01 §6.2 Input 快照 `channelId`/`groupId`/`uiScale`/`lang`(camelCase) | 统一取宪法拼写 `channel_id`/`group_id`/`ui:{scale, language}`(**A-30**;§0.2 规则①)——同一 state 字段全契约一种键名,mock 与 JuceBackend 不再各实现两套键 |
 | 01 §4.3-i「用 `slot.pid` 反查进程名提示『被 <进程名> 中的另一工程占用』」 | **v1 不实现**:冲突反馈 = `ch.occupied` 词条(05 §5.1,J71② 定稿);`channelConflict` 的 `detail` 仅 `{groupId}`。将来需要时按 §0.1 第 3 条增**可选**字段,零破坏(**A-31**) |
 
-### 8.4 相对 05 §1.4 的授权增量(共 **7** 项)
+### 8.4 相对 05 §1.4 的授权增量(共 **8** 项)
 
-T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下七项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
+T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下八项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
 
 | 增量项 | 授权来源 | 说明 |
 |---|---|---|
@@ -1005,6 +1018,7 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 | Output 函数 `exportSuggestions(scope)` | **07 T41 / 11 §4.2.3 通路 B2**,U12「进 v1 主线」;[J81] 转正;变更文档 `docs/contract-changes/20260825-export-suggestions.md` | 见 §1.36。([J157] 补登:本表此前标题写「共 4 项」,而 `check-bridge-parity.mjs` 的 `EXPECTED` 早已按 6 项断言,这一行与下一行是那时漏回填的) |
 | Input 函数 `setGuideSeen(seen, alsoGlobal)` | **05 §3 文末 J80 节 / T48**;[J81] 转正;变更文档 `docs/contract-changes/20260825-input-guide-seen.md` | 见 §3.8。(同上,[J157] 补登) |
 | Output 函数 `previewPanCurve(v, points)` | **用户裁定 J157**(SL-447:pan 曲线拖动实时生效);变更文档 `docs/contract-changes/20260928-j157-pan-curve-live-preview.md` | 见 §1.37。拖动期间只换音频线程用的 G 表,不写 state、不入撤销栈;撤销步仍由松手那次 §1.17 产生 |
+| Output 事件 `scvb.vadPreview` | **05 §1.4 `setVadParams` 行**(「拖动档……回发 **VAD/边界预览**」,未定事件名)+ 用户裁定 **[J146]**;变更文档 `docs/contract-changes/20260929-j146-vad-drag-preview.md` | 拖动档预览的回发通道(§2.10);05 §1.4 events 表缺位,对 05 的回写要求列入 PR 描述 |
 
 ---
 

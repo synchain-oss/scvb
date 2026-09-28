@@ -31,6 +31,7 @@
 #include "AutomationPrinter.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "analysis/AnalysisPipeline.h"
+#include "analysis/VadPreview.h" // [J146] 拖动档预览的计算核(与流水线 S1 同一份实现)
 #include "output/BusXfade.h"
 #include "output/MeterShot.h"
 #include "output/OutputSession.h"
@@ -589,6 +590,69 @@ public:
     // ([SL-535] 起只数此刻已连接的轨,与 startAnalysis 同一条参与判据)。
     AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
 
+    // ---- [J146] 拖动档预览(契约 §1.18/§1.19 的「拖动档」;事件 §2.10 scvb.vadPreview)--------------
+    //
+    // `setVadParams` / `setSegmentation` 每次调用(web 侧已节流到 ≤50Hz)在写完 runtime、排好松手档
+    // 防抖之后调 `previewVadSegmentation()`:按**当前** runtime 参数、在松手那一趟会用的**同一个窗**
+    // (`analyzeAllRange` + `analysisWindows`,与 `tickResegmentDebounce` 同一把尺子)上即时重判决,
+    // 产出两样东西:
+    //   ① 每条写回集轨的 S1 段(VAD 段 + 超长段谷切分,裁到写回窗,秒)—— editor 经 §2.10 发给 UI
+    //      画「预览分段边界虚影」;
+    //   ② 写回窗内逐 hop 的量化后验(**覆盖层**)—— `waveformOf` 的 vad 列在覆盖层有效时读它、
+    //      不读 FrameStore 的 vadP,于是 UI 重拉瓦片就看到「VAD 着色随阈值实时变化」(05 §2.3)。
+    //
+    // **非破坏**(契约 §1.18「不写 versions 曲线」):不写 CRVS、不写 FrameStore(vadP 也不写 ——
+    // 它随工程持久化)、不压撤销栈、不发布任何播放快照(`OutputAuthority` 的快照池一次都不碰,
+    // 所以与 [SL-445] 的快照回收零交集)、不碰 [A]。全程 [M] 持 `lifecycleMutex_`。
+    //
+    // 代价:每轨把「与参数无关的那一半」(VAD 基准 = 两次整段排序 + ℓ 包络的 log10)缓存住,
+    // 按 `ChannelFrames::mutationSeq()` + 计算窗判有效;命中时单次调用只剩 O(n) 的状态机与后处理。
+    // 边播边采时特征一直在变,重建限频 `kVadPreviewRebuildMinMs`(1s)一次,期间沿用旧缓存按当前参数照跑
+    // (理由与代价见实现处头注「重建限频」)。
+    // 缓存与覆盖层**有界**(≈ 每轨每 hop 8B 缓存 + 1B 覆盖层 + 计算窗 4B 后验暂存;4 分钟 15 轨
+    // ≈ 3.2MB,与拖动时长无关),预览结束即整份释放(见 `dropVadPreviewLocked`)。
+    //
+    // 预览**什么时候结束**(seq +1、active=false,editor 下一拍发一帧收尾):
+    //   · 松手那一趟(或任何一趟)分析落地 —— `finishAnalysis`(此时 vadP 已按同一组参数写好,
+    //     覆盖层与 vadP 逐位相同,撤掉覆盖层不会让泳道跳一下);
+    //   · 丢弃事件(撤销 / 重做真的动了栈、真切版本、宿主载入工程)—— `discardPendingResegment`;
+    //   · 空闲 `kVadPreviewIdleMs`:既没有新的拖动调用,也没有已排的松手防抖、没有在跑的分析
+    //     (抑制态松手 / 重分段没受理)—— `tickVadPreviewExpiry`。
+    struct VadPreviewState
+    {
+        std::uint32_t seq = 0; // 每次重算或结束 +1;editor 按它 diff-then-emit
+        bool active = false;
+        double startS = 0.0; // 写回窗(秒,半开)
+        double endS = 0.0;
+        std::uint16_t tracksMask = 0; // 写回集(bit t = 轨 t+1)
+        std::array<std::vector<std::pair<double, double>>, scvb::engine::kNumTracks> spans{}; // 秒,半开
+    };
+    // [M] 按当前 runtime 参数**当场**重算预览并返回(引用在下一次调用 / 结束前有效)。
+    const VadPreviewState& previewVadSegmentation();
+    // [M] editor 的拖动档入口:到点就当场重算(= 上面那个),没到点只记「有待算」、由 25Hz 定时器按最新
+    // 参数补算 —— 自适应占空比,判据见 `scvb::analysis::vadPreviewComputeDue`(复审②:长会话里单次
+    // 重判决 ~40ms,web ≤50Hz 连发会把消息线程占满)。典型会话恒为当场算。
+    void requestVadPreview();
+    // 用例专用:给占空比判据加一个下限(毫秒),让「合并」这一支在本机的小素材上也能确定性地走到。
+    void setVadPreviewMinGapForTesting(std::int64_t ms) { vadPreviewMinGapForTestMs_ = ms; }
+    // [M] 当前预览状态的**无锁引用** —— 只给单线程场景用(host 用例)。editor 走下面两个加锁版。
+    const VadPreviewState& vadPreview() const { return vadPreview_; }
+    // 加锁版(editor 发 §2.10 用)。为什么要锁:宿主可以在消息线程之外调 setStateInformation,
+    // 它经 discardPendingResegment 结束预览、把 spans 的堆内存 swap 掉 —— editor 在 [M] 上不加锁
+    // 逐段读就会与之竞争。所以 editor 只读这两个:
+    //   · 头(seq + active):每拍比 seq 用,只拷两个标量;
+    //   · 快照:seq 变了才取,整份拷贝(每轨几十到几百对 double,≤50Hz 下可忽略)。
+    struct VadPreviewHead
+    {
+        std::uint32_t seq = 0;
+        bool active = false;
+    };
+    VadPreviewHead vadPreviewHead() const;
+    VadPreviewState vadPreviewSnapshot() const;
+    // [M] 诊断 / 用例:缓存重建次数(命中时不变 —— <50ms 的机制就是它)与当前占用字节。
+    std::uint64_t vadPreviewCacheBuilds() const { return vadPreviewCacheBuilds_; }
+    std::size_t vadPreviewBytes() const;
+
     // ---- CRVS 写事务(全部持 lifecycleMutex_,与 prepareToPlay/setStateInformation 同锁纪律)----
     scvb::engine::SetNameResult setVersionName(int version, const juce::String& name, juce::String& effectiveOut);
     scvb::engine::CopyVersionResult copyVersion(int src, int dst);
@@ -1090,11 +1154,50 @@ private:
     scvb::output::SegmentDiff lastSegmentDiff_;
     void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
     // [SL-531] 撤掉已排未到点的那一次(撤销 / 重做 / 真切版本 / 载入工程时调);调用方已持 lifecycleMutex_。
+    // [J146] 同一批事件也结束拖动档预览:那一趟不会再到点了,留着「将要应用成这样」的虚影是假话。
     void discardPendingResegment() noexcept
     {
         resegmentDueAtMs_ = 0;
         resegmentReason_ = AnalysisDoneReason::None;
+        dropVadPreviewLocked();
     }
+
+    // ---- [J146] 拖动档预览的内部状态(全部 [M]、持 lifecycleMutex_)-------------------------------
+    VadPreviewState vadPreview_;
+    // 覆盖层:写回窗 [vadPreviewApplyFirstHop_, vadPreviewApplyLastHop_) 内逐 hop 的量化后验
+    // (与 `finishAnalysis` 写 vadP 同一个 `quantizeVadPosterior`)。空 = 该轨无覆盖层。
+    std::array<std::vector<std::uint8_t>, scvb::engine::kNumTracks> vadPreviewQ_{};
+    // 覆盖层算出时该轨的 `mutationSeq()`:特征此后被改过(采集写入 / 清除 / 载入)⇒ 覆盖层作废,
+    // `waveformOf` 退回读 vadP。
+    std::array<std::uint64_t, scvb::engine::kNumTracks> vadPreviewQSeq_{};
+    std::uint64_t vadPreviewApplyFirstHop_ = 0;
+    std::uint64_t vadPreviewApplyLastHop_ = 0;
+    // 与参数无关的缓存(见 VadPreview.h),键 = 计算窗 + 该轨 `mutationSeq()`。
+    std::array<scvb::analysis::VadPreviewTrackCache, scvb::engine::kNumTracks> vadPreviewCache_{};
+    std::array<std::uint64_t, scvb::engine::kNumTracks> vadPreviewCacheSeq_{};
+    std::array<bool, scvb::engine::kNumTracks> vadPreviewCacheValid_{};
+    std::uint64_t vadPreviewCacheFirstHop_ = 0;
+    std::uint64_t vadPreviewCacheLastHop_ = 0;
+    std::uint64_t vadPreviewCacheBuilds_ = 0;
+    std::vector<float> vadPreviewPosterior_; // 计算窗长的后验暂存(复用,不每次重分配)
+    std::int64_t vadPreviewLastUseMs_ = 0;
+    static constexpr std::int64_t kVadPreviewIdleMs = 1500;
+    // [J146 复审①] 与参数无关那一半的重建限频(边播边采时特征每 25Hz 都在变,见实现处头注)。
+    std::int64_t vadPreviewLastRebuildMs_ = 0;
+    static constexpr std::int64_t kVadPreviewRebuildMinMs = 1000;
+    // [J146 复审②] 自适应占空比:上一次重判决的起点 / 耗时(juce 高精度毫秒)、是否有合并下来待算的一次。
+    double vadPreviewLastComputeStartMs_ = 0.0;
+    double vadPreviewLastComputeCostMs_ = 0.0;
+    bool vadPreviewPending_ = false;
+    std::int64_t vadPreviewMinGapForTestMs_ = 0;
+    void tickVadPreviewPending(); // [M] 25Hz;调用方已持 lifecycleMutex_(会重算 ⇒ 会分配,不标 noexcept)
+    // 结束预览:清覆盖层 / 段 / 缓存(整份释放内存);原本 active 才 seq +1(让 editor 发收尾帧)。
+    void dropVadPreviewLocked() noexcept;
+    // [M] 25Hz;调用方已持 lifecycleMutex_。空闲结束条件见 previewVadSegmentation 的头注。
+    void tickVadPreviewExpiry(std::int64_t nowMs) noexcept;
+    // 覆盖层有效时返回该 hop 的量化后验,否则返回 fallback(= FrameStore 的 vadP)。
+    std::uint8_t vadPreviewQAt(int track, std::uint64_t hop, std::uint64_t mutationSeq,
+                               std::uint8_t fallback) const noexcept;
     // [SL-532] 撤销 / 重做真的动了栈时作废在途分析([J110]);调用方已持 lifecycleMutex_。
     // 与 setStateInformation 载入时那次作废同形:bump 代号 + 清运行态三件,不碰作业对象、
     // 不 signal 作业线程 —— 它跑完整条 pipeline 后,结果被 handleAsyncUpdate 的代号门丢掉

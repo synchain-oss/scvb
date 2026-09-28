@@ -84,6 +84,7 @@ import {
     makeSegments,
     makeWaveformTile,
     coverageRangesOf,
+    vadPreviewOf,
     CHART_MODES,
     localizeDemoChannels,
 } from "../../web/shared/mock-data.js";
@@ -376,6 +377,12 @@ function makeContext(role, world) {
         // `OutputRuntimeState::recaptureAutoEnabledCapture` 同名同义)。撤防只在这一位为真
         // 且采集仍开着时才关回去 —— 布防前本来就开着的保持开。
         recaptureAutoEnabledCapture: false,
+        // [J146] 当前拖动档预览(null = 不在预览中):{startS, endS, byCh: ch → {mask, spans}}。
+        vadPreview: null,
+        // [J146] 上一次**落地**的分析用的 VAD 参数(null = 还没分析过 ⇒ vad 列取 fixture 原样)。
+        // native 的 vad 列读的是分析写下的 vadP,它随那一趟的参数走;mock 原先恒按 fixture 乐句画,
+        // 于是「松手落地后 VAD 列 = 拖动时预览的那一份」在 preview 里不成立(落地那一下会跳回去)。
+        analyzedVad: null,
     };
 
     if (role === "output") {
@@ -1249,11 +1256,119 @@ function buildOutputBackend(ctx) {
                 reanalysis: true,
             });
             emitRecomputedSegments(reason, allChannels(), frame);
+            model.analyzedVad = clone(model.snapshot.analysis.vad); // [J146] vadP 随这一趟的参数走
+            endVadPreview(); // [J146] 落地即收尾(native:finishAnalysis → dropVadPreviewLocked)
             // [SL-279] 松手档是全轨重算,与 native 的 `tickResegmentDebounce` 对齐:那边传的
             // 是 `r.wholeTimeline`,所以这里也读同款判据 —— follow 档前移,范围档不前移。
             // 漏了前移这一半,mock 里会出现「整表按新档重算完、徽标还亮着」;漏了范围档
             // 这一半,则是范围外还没重算就把徽标灭掉。两个方向都是真桥产不出来的组合。
             if (wholeTimelineNow()) advanceAppliedAnalysis();
+        });
+    }
+
+    // ---- [J146] 拖动档预览(契约 §2.10 `scvb.vadPreview`)---------------------------
+    // 与 native `previewVadSegmentation` 同形的**时序与生命周期**:setVadParams / setSegmentation
+    // 每次调用当场发一帧 active:true;预览在三种时刻结束(发一帧 active:false):
+    //   ① 任何一趟分析落地(松手防抖那一趟 / 点「分析」那一趟);② 丢弃事件(mock 里只有
+    //   「真切版本」这一件 —— undo/redo 恒回 ok:false、栈没动,按 native「动了栈才丢」天然不丢);
+    //   ③ 空闲 1.5s 且没有已排的防抖、没有在跑的分析(抑制态松手)。
+    // 预览**内容**是 mock 近似(`vadPreviewOf`,见其头注),不对拍 native 的 VAD 数值。
+    let vadPreviewSeq = 0;
+    let vadPreviewIdleId = null;
+    const VAD_PREVIEW_IDLE_MS = 1500; // 与 native `kVadPreviewIdleMs` 同值
+
+    /** 写回窗:follow 档 = 已采集时间线;范围档 = 用户设的区间(与松手档那一趟同一把尺子)。 */
+    function vadPreviewWindow() {
+        const range = model.snapshot.global.range;
+        let extent = 0;
+        for (const cov of model.coverageRanges.values()) {
+            for (const r of cov || []) extent = Math.max(extent, r.endS);
+        }
+        if (range.mode !== "follow") {
+            const w =
+                range.mode === "daw_loop"
+                    ? loopWindow()
+                    : { startS: range.start_s, endS: range.end_s };
+            if (w && w.endS > w.startS) {
+                return {
+                    startS: Math.max(0, w.startS),
+                    endS: Math.min(extent, w.endS),
+                };
+            }
+        }
+        return { startS: 0, endS: extent };
+    }
+
+    function emitVadPreview() {
+        const win = vadPreviewWindow();
+        const byCh = new Map();
+        const channels = [];
+        if (win.endS > win.startS) {
+            for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
+                const cfg = model.snapshot.channels[ch - 1] || {};
+                if (cfg.enabled === false) continue;
+                const cov = model.coverageRanges.get(ch) || [];
+                // 写回集 = 启用且写回窗内有采集数据。native 还要「此刻已连接」([SL-535]);这里**不建模**,
+                // 理由与 affectedOf 里 [SL-535] 那条登记相同(mock 默认世界 15 轨全空闲,照搬会让预览恒空)。
+                const inWin = cov.some(
+                    (c) =>
+                        Math.min(c.endS, win.endS) >
+                        Math.max(c.startS, win.startS),
+                );
+                if (!inWin) continue;
+                const pv = vadPreviewOf(
+                    ch,
+                    model.snapshot.analysis.vad,
+                    model.snapshot.analysis.segmentation,
+                    win,
+                    cov,
+                );
+                byCh.set(ch, pv);
+                channels.push({ ch, spans: clone(pv.spans) });
+            }
+        }
+        if (!channels.length) {
+            endVadPreview(); // 写回集为空:没有可预览的东西(若原本在预览中则收尾)
+            return;
+        }
+        model.vadPreview = { startS: win.startS, endS: win.endS, byCh };
+        vadPreviewSeq++;
+        emit("scvb.vadPreview", {
+            seq: vadPreviewSeq,
+            active: true,
+            startS: win.startS,
+            endS: win.endS,
+            channels,
+        });
+        armVadPreviewIdle();
+    }
+
+    function endVadPreview() {
+        if (vadPreviewIdleId !== null) {
+            clearTimeout(vadPreviewIdleId);
+            vadPreviewIdleId = null;
+        }
+        if (!model.vadPreview) return;
+        model.vadPreview = null;
+        vadPreviewSeq++;
+        emit("scvb.vadPreview", {
+            seq: vadPreviewSeq,
+            active: false,
+            channels: [],
+        });
+    }
+
+    function armVadPreviewIdle() {
+        if (vadPreviewIdleId !== null) clearTimeout(vadPreviewIdleId);
+        vadPreviewIdleId = later(VAD_PREVIEW_IDLE_MS, () => {
+            vadPreviewIdleId = null;
+            // 还有人要接手(防抖已排 / 分析在跑):由它落地时收尾;这里再等一拍,与 native
+            // `tickVadPreviewExpiry` 的「有人接手就不收」同口径。
+            if (debounceId !== null || model.snapshot.analysis_run.running) {
+                armVadPreviewIdle();
+                return;
+            }
+            endVadPreview();
         });
     }
 
@@ -1458,6 +1573,8 @@ function buildOutputBackend(ctx) {
                     },
                 );
                 emitRecomputedSegments("analyze", allChannels(), frame);
+                model.analyzedVad = clone(model.snapshot.analysis.vad); // [J146] 同上
+                endVadPreview(); // [J146] 任何一趟分析落地都收尾(与 native 同口径)
                 // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
                 // 「全量」两个维度都要满足,与 native 的 `fullScope` 逐条对应:
                 //   · 轨维:scope 不是对象形 ⇒ 全轨(见下);
@@ -1557,6 +1674,8 @@ function buildOutputBackend(ctx) {
                 clearTimeout(debounceId);
                 debounceId = null;
             }
+            // [J146] 同一件事结束拖动档预览(native:discardPendingResegment → dropVadPreviewLocked)。
+            if (next !== cur) endVadPreview();
             patchState({ global: { version_active: next } });
             // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)。
             // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动
@@ -1871,6 +1990,7 @@ function buildOutputBackend(ctx) {
             }
             patchState({ analysis: { vad: clone(p) } });
             debounceAnalysisPipeline("vad");
+            emitVadPreview(); // [J146] 拖动档:每次调用当场回发预览(§1.18 / §2.10)
             return OK();
         },
 
@@ -1886,6 +2006,7 @@ function buildOutputBackend(ctx) {
             }
             patchState({ analysis: { segmentation: clone(p) } });
             debounceAnalysisPipeline("segmentation");
+            emitVadPreview(); // [J146] 同 setVadParams
             return OK();
         },
 
@@ -2250,6 +2371,44 @@ function buildOutputBackend(ctx) {
                 // clearCoverage 清掉的区域里去(那里根本没有能量谷可言)。
                 tile.valleys = (tile.valleys || []).filter((v) =>
                     overlapsRanges(cov, v, v + 0.01),
+                );
+            }
+            // [J146] vad 列的后验来源(§1.27 口径补写):拖动档预览期间,写回窗内取预览着色罩
+            // (native 读覆盖层);其余时候取**上一次落地的分析**所用参数下的着色罩(native 读 vadP)。
+            // 默认参数下着色罩 = fixture 乐句原样,所以没分析过 / 按默认分析过的 preview 与改动前逐列相同。
+            const pv = model.vadPreview && model.vadPreview.byCh.get(ch);
+            const colW = (endS - startS) / cols;
+            const paintMask = (mask, w0, w1) => {
+                for (let i = 0; i < cols; i++) {
+                    if (!tile.covered[i]) continue;
+                    const tMid = startS + (i + 0.5) * colW;
+                    if (tMid < w0 || tMid >= w1) continue;
+                    tile.vad[i] = mask.some(
+                        (m) => tMid >= m.t0S && tMid < m.t1S,
+                    )
+                        ? 1
+                        : 0;
+                }
+            };
+            if (model.analyzedVad) {
+                const covNow = model.coverageRanges.get(ch) || [];
+                paintMask(
+                    vadPreviewOf(
+                        ch,
+                        model.analyzedVad,
+                        model.snapshot.analysis.segmentation,
+                        { startS: 0, endS: Number.MAX_VALUE }, // 整条时间线(vadPreviewOf 只收有限窗)
+                        covNow,
+                    ).mask,
+                    -Infinity,
+                    Infinity,
+                );
+            }
+            if (pv) {
+                paintMask(
+                    pv.mask,
+                    model.vadPreview.startS,
+                    model.vadPreview.endS,
                 );
             }
             return tile;

@@ -53,11 +53,38 @@ struct VadResult
     const char* warningMessage() const;
 };
 
+// [J146] 自适应基准 —— 02 §2.2 第 1、2 步里**与 VadParams 无关**的那一半:帧响度 ℓ[k]
+// (2-hop 平滑后转 dB)、底噪基准 F(全 hop P10)、活跃基准 A(活跃候选子集 P95,子集空则
+// 退化为全 hop P95)、子集是否为空。它只取决于输入的 kw_ms,拖阈值滑杆时一个字节都不变。
+//
+// 为什么拆出来:拖动档预览(契约 §1.18「每次调用即时重判决」)每次调用都要按新参数重跑,
+// 而整条流程里最贵的正是这一半(两次分位数 = 两次整段排序,外加每 hop 一次 log10)。
+// 算一次缓存住,后面每次只跑与参数有关的那一半(阈值 → 状态机 → 后处理),单次代价从
+// O(n log n) 降到 O(n)。`runEnergyVad` 本身就是「算基准 + 跑那一半」两步,所以预览与
+// 分析流水线**走的是同一份实现**,不是两份「差不多的」。
+struct VadBaseline
+{
+    std::vector<float> l; // ℓ[k](dB),长度 = 输入 hop 数
+    float F = 0.0f; // 底噪基准
+    float A = 0.0f; // 活跃基准
+    bool activeEmpty = true; // 活跃候选子集 S 是否为空(决定是否走 §2.6 守卫)
+};
+
+// 算基准(与参数无关的那一半)。n == 0 时 ℓ 为空。
+VadBaseline computeVadBaseline(const float* kwMs, std::size_t n);
+
+// 在已算好的基准上跑与参数有关的那一半(阈值 → §2.3 状态机 → P1..P4)。语义与 `runEnergyVad`
+// 逐字相同:`runEnergyVad(kw, n, h, p, post)` ≡
+// `runEnergyVadOnBaseline(computeVadBaseline(kw, n), h, p, post)`(后者就是前者的实现)。
+VadResult runEnergyVadOnBaseline(const VadBaseline& base, int64_t firstHop, const VadParams& p,
+                                 float* posteriorOut = nullptr);
+
 // 能量域 VAD v1 全流程(02-dsp-spec §2):前处理与自适应基准 → 双阈值状态机 →
 // 后处理 P1(丢短)→ P2(padding)→ P3(并重叠)→ P4(并间隙)。
 // 输入:某轨某选区的 kw_ms[0..n)(K-weighted mean-square,线性能量;hop=10ms)。
 // firstHop = 选区首 hop 在绝对时间线上的序号。posteriorOut 可 null(写截断后验 p[k],§2.4)。
 // 结果段以绝对 hop 序号表达,截断到选区边界,不产生越界 hop。
+// [J146] 实现 = `computeVadBaseline` + `runEnergyVadOnBaseline` 两步(见上)。
 VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const VadParams& p,
                        float* posteriorOut = nullptr);
 

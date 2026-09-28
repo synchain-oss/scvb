@@ -19,7 +19,8 @@ namespace scvb::output
 // OutputEditor —— Output 插件桥(T29,契约 docs/SCVB_CONTRACT.md §1/§2)。
 // 继承 WebViewHost(T26 装配层):requestInitialState/setLang/setUiScale/commitUiScale 四个通用函数与
 // mBridgeReady 门控 / 25Hz Timer 由基类承载;本类经 augmentOptions 追加其余 30 个 native function,
-// 并在 emitTick 里做 9 个事件的 diff-then-emit(每类独立节流 + 首帧必发)。
+// 并在 emitTick 里做 10 个事件的 diff-then-emit(每类独立节流 + 首帧必发;[J146] 的 scvb.vadPreview
+// 另在拖动调用里当场发,emitTick 只补收尾帧)。
 class OutputEditor final : public scvb::webview::WebViewHost
 {
 public:
@@ -59,6 +60,9 @@ private:
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+    // [J146] §2.10 scvb.vadPreview:按 processor 的预览 seq diff-then-emit(不可见时不推进基线)。
+    // 拖动调用里当场发一次(契约 §1.18「[M] 预览同步」),emitTick 里再补「调用之外结束」的收尾帧。
+    void emitVadPreview();
     // [SL-412] §2.9 的 `newerState` 一档(CLAUDE.md §7.3「拒载**并提示升级**」里那半句提示)。
     // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
     // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
@@ -249,6 +253,11 @@ private:
     // 在 webview 可见、真的出过帧之后才清(不可见时载荷会被丢,闩锁留着下一拍再补)。
     // 与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向,首帧只有一次),复位纪律一并适用。
     bool pendingCoverageFull_ = false;
+    // [J146] §2.10 的基线:最后一次**真的发出去**的预览 seq;`vadPreviewForce_` = 首帧时正处于
+    // 预览中、要补发一次(条件类事件:空闲时首帧不发空帧)。与 `newerStateShown_` 吃同一条前提
+    // (`bridgeReady_` 单向),复位纪律一并适用。
+    std::uint32_t vadPreviewSentSeq_ = 0;
+    bool vadPreviewForce_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputEditor)
 };

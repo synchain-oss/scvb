@@ -13944,6 +13944,462 @@ TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 
 }
 
 // ===========================================================================
+// [J146] 拖动档即时预览(契约 §1.18 / §1.19 拖动档 + §2.10 scvb.vadPreview + §1.27 vad 列)。
+//
+// 这里模拟 `OutputEditor::handleSetVadParams` 的 native 那一半:写 runtime → `armResegment` →
+// `previewVadSegmentation()`(editor 本身编不进 host,它把返回的预览经 §2.10 发出去 —— 那一跳
+// 由 `web-preview/tests/smoke-vad-preview.mjs` 的源码钉子守)。
+//
+// 素材是「两档响度」:4 段响的(0.5)+ 4 段轻的(0.002,低约 48 dB),中间长静音。默认门限下
+// 轻的那几段判成无声;把门限拖到最低(−60)它们就该变有声 —— 阈值于是**有牙**,不会像单档
+// 素材那样「随便拖,VAD 列都不动」而让判据空转。
+//
+// 删除式(每格只动一处落点,见 PR 描述):
+//   D1 editor/processor 不重算预览(`previewVadSegmentation` 早退)⇒ ★P 红;
+//   D2 `waveformOf` 不读覆盖层 ⇒ ★W 红;
+//   D3 `finishAnalysis` 不收尾 ⇒ ★L 红;
+//   D4 `discardPendingResegment` 不收尾 ⇒ ★U / ★V 红;
+//   D5 timerCallback 不跑空闲收尾 ⇒ ★I 红;
+//   D6 缓存命中判据删掉(每次重建)⇒ ★C 红;
+//   D7 段不裁写回窗 ⇒ ★R 红;
+//   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红;
+//   D9 重建不限频 ⇒ ★T 红;
+//   D10 / D11 / D12 / D13 见下方「复审②」那一组的头注(★D / ★A / ★S)。
+// ===========================================================================
+namespace
+{
+constexpr int kJ146Cols = 256;
+
+// 采两档响度的素材 → 按「松手那一趟会用的窗」(已采集时间线全长)分析一次 → 停走带离开 PRINT。
+// 返回已采集时间线右端(秒)。
+double j146Prepare(Rig& r)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int i = 0; i < 4; ++i)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 响
+        r.runBlocks(200, 0.0f, 4, 4);
+        r.runBlocks(60, 0.002f, 4, 4); // 轻(约 −48 dB:默认深度 30 dB 之外、最低门限的深度 52 dB 之内)
+        r.runBlocks(200, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    r.out.setCaptureEnabled(false);
+    const double extentS = r.out.capturedExtentSeconds();
+    REQUIRE(extentS > 10.0);
+    // 与松手档同一个窗分析(计算窗 = 写回窗 = 整条已采集时间线),vadP 于是与「默认参数下的预览」
+    // 同窗同参 —— 下面「拖回默认 ⇒ VAD 列与分析结果逐位相同」那格才成立。
+    REQUIRE(r.out.startAnalysis(0, 0.0, extentS, false, true).ok);
+    waitAnalysis(r);
+    REQUIRE(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+    r.ph.playing = false;
+    r.runBlocks(8, 0.0f);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    return extentS;
+}
+
+int voicedCols(const std::vector<int>& vad)
+{
+    int n = 0;
+    for (const int v : vad)
+        n += v != 0 ? 1 : 0;
+    return n;
+}
+
+// editor 的 handleSetVadParams 在写完 runtime 之后做的两件事(native 那一半)。
+const ScvbOutputAudioProcessor::VadPreviewState& j146Drag(Rig& r, float thresholdDb)
+{
+    r.out.runtime().vadThresholdDb = thresholdDb;
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    return r.out.previewVadSegmentation();
+}
+} // namespace
+
+TEST_CASE("HOST J146:拖动档每次调用当场产出预览,段与 VAD 列随阈值变;存档字节 / CRVS / 撤销栈一个字节不动",
+          "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto vadAnalyzed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const int voicedAnalyzed = voicedCols(vadAnalyzed);
+    REQUIRE(voicedAnalyzed > 0); // 前置:分析确实写了 vadP(响的那几段)
+
+    // 拖到最低门限:轻的那几段也该判成有声。**不排防抖**(这一格只看拖动档本身,不让松手那一趟混进来)。
+    r.out.runtime().vadThresholdDb = -60.0f;
+    juce::MemoryBlock stateBefore;
+    r.out.getStateInformation(stateBefore);
+    const auto revBefore = r.out.crvsRevision();
+    auto& um = r.out.authority().undoManager();
+    const bool canUndo0 = um.canUndo();
+    const bool canRedo0 = um.canRedo();
+    const auto units0 = um.getNumberOfUnitsTakenUpByStoredCommands();
+    const auto desc0 = um.getUndoDescription();
+    const auto seq0 = r.out.vadPreview().seq;
+
+    const auto& pvLow = r.out.previewVadSegmentation();
+    CHECK(pvLow.active); // ★P
+    CHECK(pvLow.seq == seq0 + 1);
+    CHECK((pvLow.tracksMask & (1u << (kTestChannel - 1))) != 0);
+    const auto spansLow = pvLow.spans[kTestChannel - 1];
+    INFO("spans@-60 = " << spansLow.size());
+    // editor 读的是加锁版:头与快照必须与无锁引用同一份。
+    CHECK(r.out.vadPreviewHead().seq == pvLow.seq);
+    CHECK(r.out.vadPreviewHead().active);
+    CHECK(r.out.vadPreviewSnapshot().spans[kTestChannel - 1] == spansLow);
+    CHECK(spansLow.size() >= 8); // 4 响 + 4 轻,各自成段
+    for (const auto& sp : spansLow)
+    {
+        CHECK(sp.second > sp.first);
+        CHECK(sp.first >= pvLow.startS - 1e-9);
+        CHECK(sp.second <= pvLow.endS + 1e-9);
+    }
+
+    const auto vadLow = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    INFO("voiced cols: analyzed=" << voicedAnalyzed << " preview@-60=" << voicedCols(vadLow));
+    CHECK(voicedCols(vadLow) > voicedAnalyzed); // ★W VAD 列跟着即时重判决走(覆盖层)
+
+    // 非破坏:存档字节(CRVS / FEAT 含 vadP / CFGS 全在里面)逐字节不变、修订号不动、撤销栈不动。
+    juce::MemoryBlock stateAfter;
+    r.out.getStateInformation(stateAfter);
+    CHECK(stateAfter == stateBefore);
+    CHECK(r.out.crvsRevision() == revBefore);
+    CHECK(um.canUndo() == canUndo0);
+    CHECK(um.canRedo() == canRedo0);
+    CHECK(um.getNumberOfUnitsTakenUpByStoredCommands() == units0);
+    CHECK(um.getUndoDescription() == desc0);
+
+    // 拖回默认:预览跟着回来,而且这时的覆盖层与分析写下的 vadP 逐位相同(同参数、同特征、同窗)。
+    r.out.runtime().vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    const auto& pvDef = r.out.previewVadSegmentation();
+    CHECK(pvDef.seq == seq0 + 2);
+    CHECK(pvDef.spans[kTestChannel - 1].size() < spansLow.size());
+    CHECK(r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad == vadAnalyzed);
+}
+
+TEST_CASE("HOST J146:松手那一趟落地 ⇒ 预览收尾、内存归零,VAD 列与拖动时看到的逐位相同", "[host][j146][SL255]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto& pv = j146Drag(r, -60.0f);
+    REQUIRE(pv.active);
+    const auto seqDrag = pv.seq;
+    const auto vadPreviewed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    REQUIRE(r.out.vadPreviewBytes() > 0);
+
+    Rig::pumpMessages(600); // 过 300ms 防抖(25Hz tick ⇒ 实际 300~340ms)
+    waitAnalysis(r);
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    CHECK_FALSE(r.out.vadPreview().active); // ★L 落地即收尾(空闲收尾要 1.5s,这里远没到)
+    CHECK(r.out.vadPreview().seq == seqDrag + 1); // 恰好一帧收尾
+    CHECK(r.out.vadPreviewBytes() == 0);
+    // 覆盖层撤了,VAD 列现在读的是松手那一趟写下的 vadP —— 与拖动时预览的逐位相同。
+    CHECK(r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad == vadPreviewed);
+}
+
+TEST_CASE("HOST J146:缓存命中 —— 连拖 40 次只建一次基准、占用不随次数涨;特征一改,限频 1s 后重建", "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto builds0 = r.out.vadPreviewCacheBuilds();
+    std::size_t bytesAfter2 = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        r.out.runtime().vadThresholdDb = (i % 2) == 0 ? -60.0f : -20.0f;
+        REQUIRE(r.out.previewVadSegmentation().active);
+        if (i == 1)
+            bytesAfter2 = r.out.vadPreviewBytes();
+    }
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 1); // ★C
+    INFO("bytes after 2 drags = " << bytesAfter2 << ", after 40 = " << r.out.vadPreviewBytes());
+    CHECK(r.out.vadPreviewBytes() == bytesAfter2); // 占用只随时间线 × 轨数,不随拖动次数
+
+    // 特征变了(清掉一小段覆盖 = 采集面被改,边播边采时每 25Hz 就是这样)。
+    REQUIRE(r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), extentS * 0.5,
+                                extentS * 0.5 + 0.5) > 0.0);
+    // [J146 复审①] 距上次重建不足 1s ⇒ **不重建**,沿用旧缓存按**当前参数**照跑 —— 虚影仍随拖动变。
+    const auto seqBefore = r.out.vadPreview().seq;
+    const auto spansAt20 = r.out.vadPreview().spans[kTestChannel - 1].size(); // 上一拍停在 −20
+    r.out.runtime().vadThresholdDb = -60.0f;
+    const auto& pvT = r.out.previewVadSegmentation();
+    REQUIRE(pvT.active);
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 1); // ★T 限频期不重建
+    CHECK(pvT.seq == seqBefore + 1); // 仍然当场出了一帧
+    CHECK(pvT.spans[kTestChannel - 1].size() > spansAt20); // 而且是按新参数(−60 判得出轻的那几段)
+    // 过了 1s:下一次拖动调用按新特征重建。中间每 400ms 拖一下,别让空闲收尾把预览收掉。
+    for (int i = 0; i < 3; ++i)
+    {
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.previewVadSegmentation().active);
+    }
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 2); // ★C 特征一改就重建(限频之后)
+}
+
+TEST_CASE("HOST J146:丢弃事件(撤销 / 真切版本)收尾预览", "[host][j146][sl531]")
+{
+    SECTION("撤销真的动了栈")
+    {
+        Rig r;
+        j146Prepare(r);
+        REQUIRE(j146Drag(r, -60.0f).active);
+        const auto seq = r.out.vadPreview().seq;
+        REQUIRE(r.out.undo()); // 撤掉那次分析
+        CHECK_FALSE(r.out.vadPreview().active); // ★U
+        CHECK(r.out.vadPreview().seq == seq + 1);
+        CHECK(r.out.vadPreviewBytes() == 0);
+    }
+    SECTION("真切版本")
+    {
+        Rig r;
+        j146Prepare(r);
+        REQUIRE(j146Drag(r, -60.0f).active);
+        REQUIRE(r.out.setVersionActive(2));
+        CHECK_FALSE(r.out.vadPreview().active); // ★V
+    }
+    SECTION("对照:栈空的撤销 / 切到同一版本不收尾")
+    {
+        Rig r;
+        j146Prepare(r);
+        r.out.authority().undoManager().clearUndoHistory();
+        REQUIRE(j146Drag(r, -60.0f).active);
+        CHECK_FALSE(r.out.undo());
+        CHECK(r.out.setVersionActive(r.out.versionActive()));
+        CHECK(r.out.vadPreview().active);
+    }
+}
+
+TEST_CASE("HOST J146:没人接手(抑制态松手)⇒ 空闲 1.5s 后收尾;之前不收", "[host][j146]")
+{
+    Rig r;
+    j146Prepare(r);
+    // 不排防抖 = 抑制态松手(PRINT / 分析中时 armResegment 什么都不排)的同一形态。
+    r.out.runtime().vadThresholdDb = -60.0f;
+    REQUIRE(r.out.previewVadSegmentation().active);
+    Rig::pumpMessages(700);
+    CHECK(r.out.vadPreview().active); // 对照:还没到 1.5s,不许早收
+    Rig::pumpMessages(1300);
+    CHECK_FALSE(r.out.vadPreview().active); // ★I
+    CHECK(r.out.vadPreviewBytes() == 0);
+}
+
+TEST_CASE("HOST J146:范围档 ⇒ 预览只在写回窗内(段裁到窗、窗外 VAD 列不动)", "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto vadAnalyzed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const double a = extentS * 0.25;
+    const double b = extentS * 0.75;
+    r.out.runtime().rangeMode = 2; // manual
+    r.out.runtime().rangeStartS = a;
+    r.out.runtime().rangeEndS = b;
+    const auto& pv = j146Drag(r, -60.0f);
+    REQUIRE(pv.active);
+    CHECK(pv.startS >= a - 0.011);
+    CHECK(pv.endS <= b + 0.011);
+    const auto& spans = pv.spans[kTestChannel - 1];
+    REQUIRE_FALSE(spans.empty());
+    for (const auto& sp : spans)
+    {
+        CHECK(sp.first >= pv.startS - 1e-9); // ★R
+        CHECK(sp.second <= pv.endS + 1e-9);
+    }
+    // 窗外的列:覆盖层不管,仍是分析写下的那一份。
+    const auto vadNow = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const double colS = extentS / kJ146Cols;
+    int outsideSame = 0;
+    int outsideTotal = 0;
+    for (int i = 0; i < kJ146Cols; ++i)
+    {
+        const double c0 = colS * i;
+        const double c1 = c0 + colS;
+        if (c1 <= pv.startS || c0 >= pv.endS)
+        {
+            ++outsideTotal;
+            outsideSame += vadNow[static_cast<std::size_t>(i)] == vadAnalyzed[static_cast<std::size_t>(i)] ? 1 : 0;
+        }
+    }
+    REQUIRE(outsideTotal > 0);
+    CHECK(outsideSame == outsideTotal);
+    // 关掉这条轨 ⇒ 写回集为空 ⇒ 预览结束。
+    r.out.runtime().channels[kTestChannel - 1].enabled = false;
+    CHECK_FALSE(r.out.previewVadSegmentation().active);
+    r.out.runtime().channels[kTestChannel - 1].enabled = true;
+    REQUIRE(r.out.previewVadSegmentation().active); // 对照:开回来就又有了
+
+    // [SL-535] 此刻没连上 Input ⇒ 松手那一趟不计它 ⇒ 预览也不画它(旧采集数据还在)。
+    r.in.releaseResources();
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[kTestChannel - 1]));
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, extentS).coveredS > 0.0);
+    CHECK_FALSE(r.out.previewVadSegmentation().active); // ★N
+    // 接回来:不改 enabled、不清数据,自动回到预览里。
+    r.in.prepareToPlay(kSr, kBlock);
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.out.previewVadSegmentation().active);
+}
+
+// ---------------------------------------------------------------------------
+// [J146 复审②] 调度两格 + 双轨两格。
+//   ★D 自适应占空比:距上次重判决不足「耗时 × 2 / 下限」时,拖动调用只记「有待算」,25Hz 定时器按最新
+//      参数补算(删除式 D10:去掉到点判据 ⇒ 第二发当场算、红;D11:定时器不补算 ⇒ 红)。
+//   ★A 限频只数写回集里的缓存:上一拍唯一有缓存的轨刚出、另一条刚进 ⇒ 按首建,不收尾(删 inSet 条件 ⇒ 红)。
+//   ★S 限频期覆盖层记哨兵:别的轨在采、把时间线延长,这条轨自己没被写过 ⇒ VAD 列也退回 vadP
+//      (删哨兵、照记缓存序号 ⇒ 这条轨读到旧窗算的覆盖层 ⇒ 红)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J146:自适应占空比 —— 没到点的拖动调用只记待算,定时器按最新参数补算", "[host][j146]")
+{
+    Rig r;
+    j146Prepare(r);
+    r.out.setVadPreviewMinGapForTesting(400); // 本机小素材一次只要零点几毫秒,给判据一个确定的下限
+    r.out.runtime().vadThresholdDb = -60.0f;
+    r.out.requestVadPreview();
+    const auto seq1 = r.out.vadPreview().seq;
+    REQUIRE(r.out.vadPreview().active); // 第一发:从没算过 ⇒ 当场算
+    const auto spans60 = r.out.vadPreview().spans[kTestChannel - 1].size();
+
+    r.out.runtime().vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    r.out.requestVadPreview();
+    CHECK(r.out.vadPreview().seq == seq1); // ★D 没到点:这一发不当场算
+    Rig::pumpMessages(700); // 过下限;25Hz 定时器补算
+    CHECK(r.out.vadPreview().seq == seq1 + 1); // ★D 补算了恰好一次
+    CHECK(r.out.vadPreview().spans[kTestChannel - 1].size() < spans60); // 而且按的是最新参数(默认门限)
+}
+
+namespace
+{
+// Rig 之外再挂第二条轨(ch5)的 Input;推块时两条可分别开关(造「只有一条在写」的时刻)。
+struct J146TwoTrack
+{
+    static constexpr int kChB = 5;
+    Rig r;
+    ScvbInputAudioProcessor inB;
+    juce::AudioBuffer<float> bufB{2, kBlock};
+
+    J146TwoTrack()
+    {
+        inB.setGroupId(kTestGroup);
+        inB.setChannelId(kChB);
+        inB.setPlayHead(&r.ph);
+        inB.prepareToPlay(kSr, kBlock);
+    }
+    ~J146TwoTrack() { inB.releaseResources(); }
+
+    void blocks(int n, bool a, bool b, float amp)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (a)
+            {
+                Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
+                r.in.processBlock(r.inBuf, r.midi);
+            }
+            if (b)
+            {
+                Rig::fillSine(bufB, amp, r.ph.timeSamples);
+                inB.processBlock(bufB, r.midi);
+            }
+            r.outBuf.clear();
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+                r.ph.timeSamples += kBlock;
+            if ((i % 4) == 3)
+                Rig::pumpMessages(4);
+        }
+    }
+
+    bool connected(int ch)
+    {
+        return scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[static_cast<std::size_t>(ch - 1)]);
+    }
+
+    // 两条都连上、都采一段(响 / 静交替),停走带。
+    void prepare()
+    {
+        r.ph.playing = true;
+        for (int w = 0; w < 4000 && !(connected(kTestChannel) && connected(kChB)); w += 40)
+        {
+            blocks(2, true, true, 0.25f);
+            Rig::pumpMessages(20);
+        }
+        REQUIRE(connected(kTestChannel));
+        REQUIRE(connected(kChB));
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        for (int i = 0; i < 3; ++i)
+        {
+            blocks(60, true, true, 0.5f);
+            blocks(120, true, true, 0.0f);
+        }
+        Rig::pumpMessages(400);
+        r.out.setCaptureEnabled(false);
+        r.ph.playing = false;
+        blocks(8, true, true, 0.0f);
+        Rig::pumpMessages(200);
+        REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    }
+};
+} // namespace
+
+TEST_CASE("HOST J146:限频只数写回集里的缓存 —— 一条刚出一条刚进,按首建、不收尾", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    auto& rt = t.r.out.runtime();
+    rt.vadThresholdDb = -60.0f;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = false; // 先只有 A
+    const auto& pvA = t.r.out.previewVadSegmentation();
+    REQUIRE(pvA.active);
+    REQUIRE(pvA.tracksMask == (1u << (kTestChannel - 1)));
+    const auto seqA = pvA.seq;
+
+    // 1s 之内:A 出、B 进。
+    rt.channels[static_cast<std::size_t>(kTestChannel - 1)].enabled = false;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = true;
+    const auto& pvB = t.r.out.previewVadSegmentation();
+    CHECK(pvB.active); // ★A 没被收尾(不闪)
+    CHECK(pvB.seq == seqA + 1); // 恰好一帧,中间没有 active:false
+    CHECK(pvB.tracksMask == (1u << (J146TwoTrack::kChB - 1)));
+    CHECK_FALSE(pvB.spans[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].empty());
+}
+
+TEST_CASE("HOST J146:限频期覆盖层记哨兵 —— 别的轨延长了时间线,这条轨的 VAD 列也退回 vadP", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    const double extent0 = t.r.out.capturedExtentSeconds();
+    constexpr int kCols = 128;
+    // 从没分析过 ⇒ vadP 全 0:这就是「退回 vadP」时该看到的那一份。
+    const auto vadP = t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad;
+    // 采集开关先打开、让 Input 经 ctrl 广播(25Hz)看到它 —— 这一步不推块,谁都不写特征。
+    // 放在首建**之前**:下面「B 接着采」必须落在首建后 1s 的限频窗里,不能把这段等待也算进去。
+    t.r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(300);
+    t.r.out.runtime().vadThresholdDb = -60.0f;
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    const auto builds1 = t.r.out.vadPreviewCacheBuilds();
+    REQUIRE(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad != vadP); // 前置:覆盖层在用
+
+    // 只让 B 接着采:A 一个字节都不写,时间线被 B 延长(计算窗变了,A 的修改序号没变)。
+    // 推到时间线真的变长为止(特征经 Output 25Hz 拉取才入库),封顶约 0.8s,仍在限频窗内。
+    t.r.ph.playing = true;
+    for (int k = 0; k < 20 && !(t.r.out.capturedExtentSeconds() > extent0); ++k)
+    {
+        t.blocks(8, false, true, 0.5f);
+        Rig::pumpMessages(30);
+    }
+    t.r.out.setCaptureEnabled(false);
+    t.r.ph.playing = false;
+    REQUIRE(t.r.out.capturedExtentSeconds() > extent0);
+    REQUIRE(t.connected(kTestChannel)); // A 仍连着、仍在写回集里
+
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    REQUIRE(t.r.out.vadPreviewCacheBuilds() == builds1); // 前置:这一拍确实走了限频(没重建)
+    CHECK(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad == vadP); // ★S
+}
+
+// ===========================================================================
 // [SL-216 / J136] 主唱居中进分析计算。
 //
 // 用户裁定(J136):主唱居中由「播放期强制覆盖」改为进入分析引擎的槽位/平衡计算,其余声部据此排布。

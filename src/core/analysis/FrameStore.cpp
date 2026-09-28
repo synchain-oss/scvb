@@ -153,6 +153,7 @@ void ChannelFrames::write(uint64_t hop, float kw_ms, float peak)
     page->kw_dBq[idx] = quantizeKwDbq(kw_ms);
     page->peak_dBq[idx] = quantizePeakDbq(peak);
     coverage_.add(HopRange{hop, hop + 1});
+    ++mutationSeq_; // [J146] 只在真写进去时 +1(上面两道门丢弃的不算)
 }
 
 void ChannelFrames::restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uint8_t vad)
@@ -163,6 +164,7 @@ void ChannelFrames::restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uin
     page->kw_dBq[idx] = kwDbq;
     page->peak_dBq[idx] = peakDbq;
     page->vadP[idx] = vad;
+    ++mutationSeq_; // [J146]
 }
 
 void ChannelFrames::appendRange(HopRange r, std::vector<int16_t>& kw, std::vector<int16_t>& peak,

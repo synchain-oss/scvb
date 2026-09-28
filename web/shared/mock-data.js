@@ -1148,6 +1148,82 @@ export function makeWaveformTile(ch, startS, endS, cols) {
     return { minDb, maxDb, vad, covered, stale, passId, valleys };
 }
 
+/**
+ * [J146] 拖动档预览(契约 §2.10 `scvb.vadPreview`)的 **mock 近似**:由本轨乐句布局按参数推出
+ * 「VAD 着色罩」与「S1 预览段」。native 那一侧是真 VAD(`VadPreview.h`,与分析流水线同一份
+ * 实现);这里只保证**形状同契约、随每根滑杆单调变化、确定性**,数值不对拍 native。
+ *
+ * 近似口径(每一条都只为让 preview 里「拖哪根杆都看得见变化」,不是 DSP 模型):
+ *   · 着色罩 = 乐句两端各**内缩** (threshold_db − (−38))·0.03 s + (hysteresis_db − 6)·0.01 s
+ *     (门限越高越窄;负值即外扩;系数取到「整曲缩放下拖满量程也看得出几像素」)——
+ *     与 native「后验 > 0.5」一样只随阈值 / 滞回变;
+ *   · S1 段 = 着色罩外扩 padding_pre/post → 间隙 < hangover_ms 的并段 → 丢掉短于
+ *     min_segment_ms 的 → 长于 2 + (100 − sensitivity)·0.06 s 的等分切开(灵敏度越高切得越碎);
+ *   · 两者都与 `coverage`(该轨真采到的区间)求交、再裁到 `win`(写回窗)。
+ * @param {number} ch 1..15
+ * @param {{threshold_db:number, hysteresis_db:number, hangover_ms:number,
+ *          padding_pre_ms:number, padding_post_ms:number}} vad
+ * @param {{sensitivity:number, min_segment_ms:number}} seg
+ * @param {{startS:number, endS:number}} win 写回窗
+ * @param {{startS:number, endS:number}[]} coverage 该轨覆盖区间(升序)
+ * @returns {{mask:{t0S:number,t1S:number}[], spans:{t0S:number,t1S:number}[]}}
+ */
+export function vadPreviewOf(ch, vad, seg, win, coverage) {
+    const f = (v, d) => (Number.isFinite(v) ? v : d);
+    const shrink =
+        (f(vad && vad.threshold_db, -38) + 38) * 0.03 +
+        (f(vad && vad.hysteresis_db, 6) - 6) * 0.01;
+    const pre = f(vad && vad.padding_pre_ms, 120) / 1000;
+    const post = f(vad && vad.padding_post_ms, 200) / 1000;
+    const hang = f(vad && vad.hangover_ms, 250) / 1000;
+    const minLen = f(seg && seg.min_segment_ms, 120) / 1000;
+    const splitS =
+        2 + (100 - clamp(f(seg && seg.sensitivity, 50), 0, 100)) * 0.06;
+    const cov = Array.isArray(coverage) ? coverage : [];
+    const w0 = f(win && win.startS, 0);
+    const w1 = f(win && win.endS, 0);
+    // 与覆盖求交并裁到写回窗(未覆盖 = 没有特征 = native 判成静音)
+    const clip = (list) => {
+        const out = [];
+        for (const r of list) {
+            for (const c of cov) {
+                const a = Math.max(r.t0S, c.startS, w0);
+                const b = Math.min(r.t1S, c.endS, w1);
+                if (b > a) out.push({ t0S: round(a, 3), t1S: round(b, 3) });
+            }
+        }
+        out.sort((x, y) => x.t0S - y.t0S);
+        return out;
+    };
+    const mask = [];
+    for (const p of phrasesOf(ch)) {
+        const t0 = p.t0S + shrink;
+        const t1 = p.t1S - shrink;
+        if (t1 > t0) mask.push({ t0S: t0, t1S: t1 });
+    }
+    let spans = mask.map((m) => ({ t0S: m.t0S - pre, t1S: m.t1S + post }));
+    const merged = [];
+    for (const s of spans) {
+        const last = merged[merged.length - 1];
+        if (last && s.t0S - last.t1S < hang)
+            last.t1S = Math.max(last.t1S, s.t1S);
+        else merged.push({ ...s });
+    }
+    spans = [];
+    for (const s of merged) {
+        const len = s.t1S - s.t0S;
+        if (len < minLen) continue;
+        const n = Math.max(1, Math.ceil(len / splitS));
+        for (let i = 0; i < n; i++) {
+            spans.push({
+                t0S: s.t0S + (len * i) / n,
+                t1S: s.t0S + (len * (i + 1)) / n,
+            });
+        }
+    }
+    return { mask: clip(mask), spans: clip(spans) };
+}
+
 // -----------------------------------------------------------------------------
 // 9. tour demo —— 健康满配 15 轨(J62 / 05 §2.6)
 // -----------------------------------------------------------------------------
