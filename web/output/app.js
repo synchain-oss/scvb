@@ -40,6 +40,8 @@ import {
     HISTORY_AVAIL_INIT,
     historyAfterCall,
     historyAfterSegments,
+    historyAfterUndoableWrite,
+    withUndoEvidence,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -431,10 +433,21 @@ document.addEventListener("pointermove", (e) => {
     glowLast = el;
 });
 
+// ------------------------------------------------------------- 撤销证据③(SL-536)
+// [SL-536 / J140] `setChannelConfig`(A1-A7)与 gesture 收尾 `endParamGesture`(冻结 / W /
+// Tab1 三件)自本卡起入插件撤销栈,但它们**没有**段表事件可认(证据②认不到)。两个 tab 的
+// 上行都经各自的 `call()` 直取 `bridge[name]`,所以给它们一份包过回执的**同形**桥
+// (包法与判据见 tab-master.js `withUndoEvidence` / `historyAfterUndoableWrite`)。
+// 包在这里而不是各 tab 里:header 两钮属外壳,可用性 reducer 的全部喂点都在本文件。
+const tabBridge = withUndoEvidence(bridge, () => {
+    store.session.history = historyAfterUndoableWrite(store.session.history);
+    requestRender();
+});
+
 // ------------------------------------------------------------- Tab1(tab-master.js)
 const tabMaster = createTabMaster({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -447,7 +460,7 @@ tabMaster.mount();
 // 全部由事件算出,行内全部上行调用也在该文件(本文件只做订阅转发)。
 const tabTracks = createTabTracks({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -941,6 +954,9 @@ function settlePendingEdits() {
         curveEditor.flushPending(),
         tabTracks.flushPending(),
         tabWave.flushPending(),
+        // [SL-536] Tab1 的 WIDTH / MS BALANCE 滑轨自本卡起入栈:按住拖动中按 Ctrl+Z ⇒ 中止
+        // (回到抓握值并收束 gesture),与上面「指针仍按着 ⇒ 中止」同一条规矩。
+        tabMaster.flushPending(),
     ]);
 }
 

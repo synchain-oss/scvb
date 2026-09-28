@@ -360,6 +360,57 @@ export function historyAfterSegments(prev, seg) {
 }
 
 /**
+ * [SL-536 / J140] 不走段表事件的那两类入栈写面(证据③):`setChannelConfig`(§1.15,A1-A7)与
+ * gesture 三段式的收尾 `endParamGesture`(§1.14:冻结 P/V、每轨 W、Tab1 的 WIDTH / MS BALANCE /
+ * LEAD SELECT)。它们**没有** §2.8 段表事件可认,只能认自己的回执 —— 下面的 `withUndoEvidence` 在这两个
+ * 名字回 `{ok:true}` 时经 app.js 的回调喂进来。
+ *
+ * **只置亮 undo、不碰 redo**,理由与分析那一族同一条(`historyAfterSegments` 函数体内注):
+ * `{ok:true}` 不等于「压了一步」—— native 对「值没变」(同值再下发、拖了又拖回原处)不压步、
+ * 不清重做栈,回执里没有「压没压」的证据;照着清 redo 会在栈还在时把钮灰掉,**不可自愈**。
+ *
+ * @param {{undo:boolean,redo:boolean}|null|undefined} prev
+ */
+export function historyAfterUndoableWrite(prev) {
+    const cur = prev || HISTORY_AVAIL_INIT;
+    return { ...cur, undo: true };
+}
+
+/**
+ * `withUndoEvidence` 认这张表里的名字回执 `{ok:true}` ⇒ `historyAfterUndoableWrite`。
+ * ⚠ 白名单语义,与 `UNDOABLE_REASONS` 同一条纪律:契约 §0.9 左列多一类不走段表事件的写面,
+ * 这里就得多一行。`setParam` / `beginParamGesture` 不在表里 —— 一次 gesture 到 end 才压步。
+ */
+export const UNDOABLE_CALLS = Object.freeze([
+    "setChannelConfig",
+    "endParamGesture",
+]);
+
+/**
+ * 给 tab 用的**同形**桥:只把 `UNDOABLE_CALLS` 里的名字包一层,回执 `{ok:true}` 时调
+ * `onEvidence()`(app.js 在那里喂 `historyAfterUndoableWrite` 并排一次 render)。其余名字
+ * (`on` / `isPreview` / 别的桥函数)经原型链原样落到真桥上 —— tab 的 `call()` 只做
+ * `typeof bridge[name] === "function"` 再调用,原型链上的方法同样满足。
+ * 放本文件是为了 node 侧能**真执行**它(app.js 一 import 就碰 DOM)。
+ *
+ * @param {object|null} b 真桥(createBridge 的产物)
+ * @param {() => void} onEvidence
+ */
+export function withUndoEvidence(b, onEvidence) {
+    if (!b) return b;
+    const wrapped = Object.create(b);
+    for (const name of UNDOABLE_CALLS) {
+        if (typeof b[name] !== "function") continue;
+        wrapped[name] = async (...args) => {
+            const res = await b[name](...args);
+            if (res && res.ok === true && onEvidence) onEvidence();
+            return res;
+        };
+    }
+    return wrapped;
+}
+
+/**
  * `scvb.state` 深合并(契约 §2.1 字段纪律:`full:false` = 增量,只含变化子树,UI 做深合并)。
  * 数组整体替换 —— `channels[15]` / `versions[2]` 是定长表,逐元素合并会把「C++ 只发前两轨」
  * 误解成「后 13 轨保持旧值」以外的东西;契约说的是子树替换语义,数组即叶子。
@@ -1273,6 +1324,8 @@ export function createTabMaster(opts) {
         const rng = PARAM_RANGES[id];
         let dragging = false;
         let lastSent = 0;
+        // [SL-536] 抓握值:按住拖动中按 Ctrl+Z 时回滚到它再收束(见下面 sliderAborts 那一条)。
+        let grabbed = 0;
 
         const valueAt = (clientX) => {
             const r = node.getBoundingClientRect();
@@ -1285,6 +1338,7 @@ export function createTabMaster(opts) {
             if (isParamBlocked()) return;
             dragging = true;
             local.gesture = id;
+            grabbed = readParam(id);
             try {
                 node.setPointerCapture(e.pointerId);
             } catch {
@@ -1313,6 +1367,18 @@ export function createTabMaster(opts) {
         node.addEventListener("pointerup", finish);
         node.addEventListener("pointercancel", finish);
 
+        // [SL-536 / J140] 撤销 / 重做之前由 app.js 的 settlePendingEdits() 经 flushPending 调:
+        // 拖动还按着 ⇒ **中止**(回到抓握值、收束 gesture),与 Tab2 旋钮 / 曲线拖点同一条规矩
+        // (SL-450 ①)。不中止的话 Ctrl+Z 先弹掉上一步,松手那一下再按「按下时的值 → 松手值」
+        // 压一步 —— 撤销被它当场覆盖、重做栈也被清掉。收束后起点 == 末值,native 不压步。
+        sliderAborts.push(() => {
+            if (!dragging) return;
+            dragging = false;
+            local.gesture = null;
+            sendParam(id, grabbed);
+            call("endParamGesture", id);
+        });
+
         node.addEventListener("dblclick", () => {
             if (isParamBlocked()) return;
             oneShotGesture(id, PARAM_DEFAULTS[id]);
@@ -1338,6 +1404,19 @@ export function createTabMaster(opts) {
         call("beginParamGesture", id);
         sendParam(id, value);
         call("endParamGesture", id);
+    }
+
+    /** 各滑轨登记的「按住中 ⇒ 中止」(wireSliderGesture 里 push)。 */
+    const sliderAborts = [];
+
+    /**
+     * [SL-536] 撤销 / 重做 / 切版本之前收掉在飞编辑(app.js `settlePendingEdits()` 的一员)。
+     * Tab1 没有防抖提交,只有「指针仍按着」这一类,一律中止。返回 Promise 与其余三员同形。
+     * @returns {Promise<void>}
+     */
+    function flushPending() {
+        for (const abort of sliderAborts) abort();
+        return Promise.resolve();
     }
 
     function sendParam(id, value) {
@@ -2398,6 +2477,7 @@ export function createTabMaster(opts) {
         onSegments,
         onPlayhead,
         refreshPreview,
+        flushPending,
         // [SL-203] 分布图补间的**只读**诊断面(页面级冒烟用;不暴露任何写入口)。
         // `frames` 是 rAF 循环的帧计数 —— 事件驱动的实现里它恒为 0,这是「rAF 驱动
         // vs 收到事件才画」最干脆的分界,页面级断言据此判,不必去赌某次采样恰好

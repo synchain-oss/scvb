@@ -76,9 +76,17 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**仅未冻结的手动接管通道**,[J85])、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setChannelConfig`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**两条通道都入**:[J85] 起原只有未冻结的手动接管通道,[J140] 起冻结通道也入)、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18)、**`setChannelConfig`**([J140]:A1-A7,见 §1.15)、**`beginParamGesture`/`setParam`/`endParamGesture`**([J140]:一次 gesture = 一步,见 §1.12-§1.14) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
+
+**[J140] 自动化参数与通道配置入栈**(用户 2026-09-28 裁定;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。以下五条对左列新增的三类(`setChannelConfig`、gesture 三段式、`setTrackManual` 冻结通道)一体适用:
+
+1. **单栈**:与 CRVS 事务同一个 UndoManager,`undo()` 按时间倒序弹最近一步,不论那一步是段表类、参数类还是配置类。
+2. **撤销经宿主参数通路写回**:参数类的撤销 / 重做一律 `beginChangeGesture` → `setValueNotifyingHost` → `endChangeGesture`,与用户拖旋钮是同一条通路 —— 宿主看到的是一次正常的用户编辑,插件不做任何绕过宿主的静默写。由此:宿主在 Read 档且该参数有自动化数据时,撤销后的值会在播放 / 定位时被宿主按自动化顶回(与用户拖完旋钮被顶回是同一个结局);宿主在 Write / Touch / Latch 档且在走带时,撤销会被宿主录成自动化(与用户编辑同);宿主没有该参数的自动化时,插件撤销是唯一的回退途径。打印车道参数(每轨 pan/vol)的撤销带打印器自写位(§3.5 层 2),不被记成 `hostEcho`;宿主随后的回写(ARMED / PRINT 下)照常记 —— UI 的「宿主正在写」如实亮起,而 UI 收到 `scvb.params` 只更新显示、从不回写(§0.5),不会与宿主来回拉扯。
+3. **PRINT / ARMED 与用户编辑同规矩**:这三类的用户编辑在 PRINT / ARMED 下都不拒绝(§1.12-§1.16 拒绝态行),撤销 / 重做同样受理。只读观察态下 UI 不发 `undo()`/`redo()`(`web/output/app.js` `runHistory` 的只读闸),native 侧同样不动栈。
+4. **一步的粒度与合并**:一次 gesture(`begin` 到 `end`)= 一步,起点 == 末值不压步;通道配置值没变不压步。同键、相邻两次提交相距 ≤300ms(与 UI 侧 `MANUAL_COMMIT_MS` 同值)且其间栈顶未变时并成一步 —— 适用于连续量 / 步进量(全局 `width` / `ms_balance` / `lead_select`、每轨 `width`、`priority`、`pair_id`);开关类(`freeze`、`setChannelConfig` 的四个布尔、`label`)每次一步。
+5. **记的是绝对值**:一步记「改前值 → 改后值」;若其间宿主自动化或宿主自己的撤销改动过同一参数,插件撤销写回的仍是记下的改前值(后写者生效,不会产生插件与宿主不同步的状态 —— 参数值始终只有 APVTS 一份)。插件撤销栈与宿主撤销栈互不感知:会把插件参数改动记进自己撤销历史的宿主,也会把插件的撤销当成一次新的参数改动记下。
 
 ---
 
@@ -235,7 +243,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}`(`id` 不在上表时,**不得静默忽略**) |
 | 语义 | 三段式转发到 [M] gesture(ADR-006):`beginParamGesture` → 若干次 `setParam` → `endParamGesture`;可被 DAW 录制。写入的一律是**当前激活版本**对应参数。`freeze` 的两枚 UI 开关**写同一参数**的两个位(J65);mock 后端须有对应参数状态(§0.7)。 |
 | 拒绝态 | 无(PRINT/ARMED 下照常允许——这是宿主可录的用户操作面) |
-| 撤销 | 否(自动化参数不入插件 UndoManager) |
+| 撤销 | **是**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。**一次 gesture = 一步**:`beginParamGesture` 记起点、`setParam` 记末值、`endParamGesture` 时起点 ≠ 末值才压步(拖了又拖回原处、`pointercancel` 回滚到抓握值都不压)。撤销写回起点、重做写回末值,都经宿主 gesture 通路(§0.9 第 2 条)。合并与 PRINT 口径见 §0.9 第 3、4 条;`freeze` 不合并。每轨参数按压步时的 ParamID 记账:切版本后撤销写回的仍是原版本那一个参数。改前为「否(自动化参数不入插件 UndoManager)」 |
 | 线程/频率 | [M];拖动期间 `setParam` 由 UI 侧节流(建议 ≤50Hz),`begin`/`end` 各一次 |
 | 真源 | 05 §1.4(v2.1/J65 全集);01 §6.3「仅全局三件」为 J65 之前的旧文,不采纳(§8.3) |
 
@@ -248,7 +256,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:**未显式设置一律 true**(J83 取代 J60 的按源声道推导 —— `source_channels` 来自轨道总线布局而非素材声道数,mono 素材放在 stereo 轨上就报 2;排除权在轨道页每轨的开关)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。 |
 | **不可写字段** | `source_channels`(1\|2)为 **Input 实测检测值**,只读、经 `scvb.state.channels[].source_channels` 下推;**`auto_pan`/`auto_vol` 已删除**(J65,改由每轨 `freeze` 自动化参数承载)。patch 含上述键 → `{ok:false, reason:"badArg"}` |
 | 拒绝态 | 只读观察态(`outputReadOnly=true`)下全 UI 写控件 disabled;C++ 侧收到写入返回 `{observer:true}` 且不改 state |
-| 撤销 | 否 |
+| 撤销 | **是**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。一次调用 = 一步,**只记 `patch` 里给了的字段**的前后值(不整行快照:Input 远程改优先级 §3.4 不入栈,整行还原会把它一并撤掉);`participate_in_auto_pan` 连「是否显式设置过」一起还原([J83] 的未设置态)。生效配置没变不压步。撤销 / 重做后 `config_seq+1` 并经 `scvb.state` 回推、ctrl 广播区刷新,与写入同一条路。`priority` / `pair_id` 的单字段连按按 §0.9 第 4 条合并。改前为「否」 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §2.2;字段集 params-v0 §二 `channels[15]` |
 
@@ -260,8 +268,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true, replacedSegments:int, replacedLocked:int}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}`(`ch`/`panOrVol` 非法,或 `value` **非有限**——NaN/±Inf 一律拒绝,不得静默夹取:冻结维度上这个数就是 DSP 的音频目标值)。**`replacedSegments`/`replacedLocked` 只对手动接管通道有意义;冻结通道恒 0**(确实没替换任何段,如实统计,[J85] 变更文档裁定②) |
 | 语义 | 轨 `pan`/`vol` 的手动静态值。**[J85] 按调用时该维度的 `freeze` 位分成两条通道,写入面不同**(变更文档 `20260826-j85-freeze-param-plane.md`,PR #106):<br>**① 冻结通道**(该维度 `freeze` 对应位 = **1**)—— 静态值**只**写**当前激活版本**对应的 `v{v}_t{t:02d}_pan` / `_vol` 参数,**曲线真身一个字节都不动**、不产生任何段。**为什么不许写曲线**:整表烘焙成全时限常值之后,解冻回读曲线读到的仍是那条常值段,而重分析按 ADR-008 v1.1 不覆盖 `origin=user` 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到引擎分析曲线上(v5.3 A2 实测)。冻结按定义是**可逆的临时接管**,「解冻即回引擎分析曲线继续运动」是它的语义本身。<br>**② 手动接管通道**(该维度 `freeze` 对应位 = **0**)—— 用户主动「设为手动」。**编码 = 04 §1.5 方案 A**:向**当前激活版本**该轨曲线写入**覆盖全时间线的单段常值**,段标 `origin=user_edited`(J34),**不新增任何 state 字段**;写入常值段之后**追加**把同一个值写进同一对参数。重分析按 ADR-008 v1.1 不覆盖这条常值段(**只有本通道**会产生它);**会连 `locked` 段一并替换** —— J34 的 locked 保护只约束重分析。<br>**两条通道都落参数面、都包 `beginChangeGesture()` / `endChangeGesture()`**(变更文档 `20260825-t37-r3-track-manual-param-plane.md`,PR #87)。**为什么必须落参数面**:`DspArbiter` 对**冻结**维度读的是 host 参数而**不读曲线**,打印器对冻结车道也只把参数当前值重写成平直线(#68/J78)—— 冻结维度上没有任何读者会去看曲线。**为什么必须包 gesture**:裸 `setValueNotifyingHost` 在宿主看来是一次没有起止的孤立写入,Cubase 这类宿主要么记成孤立自动化点、要么在 Read 档下当场把值顶回去(那样这条写入根本不生效)。原文「零 gesture」以本条为准作废 —— 其原意「不要为手动值制造一串连续写入」仍然满足:UI 侧松手才发一次(`MANUAL_COMMIT_MS` 300ms 防抖),一次编辑 = 一对 begin/end。<br>**两条通道都按 §2.8 回推**:写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨**当前**段表 —— 冻结通道段表没变也照发(reason 枚举闭合不受影响;UI 用这一帧作为「已落地」信号清本地乐观值,不发会让乐观值挂死)。回推**之前**同步补一帧 `scvb.params`,两帧同拍到达 —— 冻结通道的新值只在参数面上,晚一拍会让 UI 先丢乐观值再读到旧参数值(旋钮回弹)。`value` 越界按 §1.16 的 `value` 域夹取,**非有限值不夹取、直接 badArg**。版本切换会换出另一版本的手动值。 |
 | 拒绝态 | 只读观察态 → `{observer:true}` |
-| 撤销 | **按通道分叉([J85])**。<br>**冻结通道:否** —— 它不产生任何 CRVS 变更,**一步都不往插件 UndoManager 里压**。⚠ 代价记在此处,不静默:用户在冻结态调了 pan 再按 Ctrl+Z,弹掉的是**上一笔不相干的 CRVS 事务**,看到的变化与刚做的操作无关。不压「空事务」是刻意的 —— 那只会让 Ctrl+Z 变成「按一下没反应、再按一下跳掉一笔旧编辑」。冻结通道唯一改的是自动化参数,而 §0.9 已明确「自动化参数不入插件 UndoManager」。<br>**手动接管通道:是**(仅回滚曲线真身)。⚠ 撤销事务(`commitCrvsTransaction`)只快照/还原 CRVS 段表,**参数面不回滚**。这是有意的:参数面是宿主的自动化面,插件自己的 UndoManager 去回滚它会与宿主撤销栈打架。<br>若将来要让冻结中调整也可撤销,唯一正路是走**宿主 gesture**,不是插件 undo |
-| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」两句对**冻结通道**都不成立(不替换任何段、不入撤销栈),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。i18n 文案未改(未冻结通道的语义原样成立)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
+| 撤销 | **两条通道都入栈**([J140],2026-09-28 用户批准;变更文档 `docs/contract-changes/20260928-j140-undo-coverage.md`)。<br>**冻结通道:是**(一次调用 = 一步)—— 只回滚参数面那一下(`v{v}_t{t:02d}_pan` / `_vol` 的改前值),经宿主 gesture 通路写回(§0.9 第 2 条),段表不动。不合并(UI 已按 `MANUAL_COMMIT_MS` 把连按防抖成一次提交)。<br>**手动接管通道:是**(一次调用 = 一步,**连冻结位一起**)—— 这一步含三样:CRVS 段表快照(`commitCrvsTransaction`)、参数面那一下、以及 UI 随后把该维度冻结位置 1 的那次 gesture(`web/output/tab-tracks.js` `sendManual` 的跟进)。native 在接管时先压一个冻结位占位,跟进的 `endParamGesture` 满足「同一个 `v{v}_t{t:02d}_freeze`、栈顶仍是接管那一步、起点 = 接管时的冻结值、末值 = 起点 \| 该维度位」时并进这一步;任何一条不符则按普通参数步另起一步。于是一次 Ctrl+Z 让段表、旋钮 / 卡箍的值与冻结开关一起回到拖之前。<br>改前为「按通道分叉([J85]):冻结通道否;手动接管通道是(仅回滚曲线真身,参数面不回滚)」,其理由「插件 UndoManager 回滚参数面会与宿主撤销栈打架」已按 [J140] 核实并改判:回滚走的是宿主 gesture 通路,对宿主而言与一次用户编辑无异,见 §0.9 第 2、5 条 |
+| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」的前半句对**冻结通道**不成立(不替换任何段;后半句「可撤销」自 [J140] 起对它也成立,但确认条要拦的是整表替换这件破坏性的事),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。i18n 文案未改(未冻结通道的语义原样成立)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
 | 真源 | 05 §1.4 / §2.2;编码 04 §1.5 |
 
 ### 1.17 `setPanCurve(points)`
@@ -366,7 +374,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的**全部**操作(单栈,按时间倒序;[J140] 前此处写「四类」,自 [J82] 起即已过期)。执行后受影响面回推:参数面经 `scvb.params`、通道配置与 `pan_curve` 等其余 state 面经 `scvb.state`,两者**先于**段表同拍补发([J140]:接管一步的撤销同时改段表与冻结位,晚一拍会让冻结开关 / 旋钮先弹一下),段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8)。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |

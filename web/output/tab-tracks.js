@@ -66,9 +66,10 @@ export const KNOB_DRAG_PX = 150;
 
 /**
  * 手动常值的**延迟提交**窗口(ms)。pan 旋钮滚轮一格一格、方向键按住不放(OS 自动重复 ~30 Hz)
- * 都会连出一串值,而 `setTrackManual` 的**手动接管通道**入撤销栈(契约 §0.9;[J85] 冻结通道
- * 不产生 CRVS 事务、不入栈),逐次发会把宿主 UndoManager 灌满 —— 故「回声即时、提交防抖」:
- * 停手 300 ms 才落一次。防抖对两条通道一视同仁(冻结通道逐帧发同样是白费的宿主往返)。
+ * 都会连出一串值,而 `setTrackManual` 的两条通道都入插件撤销栈(契约 §0.9;冻结通道自
+ * [J140] 起也入 —— 撤的是参数面那一下),逐次发会把撤销栈灌满 —— 故「回声即时、提交防抖」:
+ * 停手 300 ms 才落一次,一串连按 = 一步撤销。native 侧参数 / 配置步的合并窗
+ * (`ScvbOutputAudioProcessor::kUndoCoalesceMs`)取的是同一个数。
  * 拖拽走的是松手提交,不用它。
  */
 export const MANUAL_COMMIT_MS = 300;
@@ -446,7 +447,9 @@ export function hasSegmentedMaterial(segments) {
  *
  * **[J85] 用户裁定 2026-08-27(方案 A):冻结通道不弹。** 确认条正文
  * (`tracks.manualOverwriteConfirm`)说的是「将以固定值**替换该轨的全部分段结果**,可撤销」——
- * 冻结通道两句都不成立:它不替换任何段(`replacedSegments` 恒 0)、也不入撤销栈(无 CRVS 事务)。
+ * 冻结通道不成立:它不替换任何段(`replacedSegments` 恒 0)。([J140] 起冻结通道也入撤销栈 ——
+ * 「可撤销」那半句如今对它也成立,但确认条要拦的是「替换全部分段」这件破坏性的事,冻结通道
+ * 没有它;裁定理由的重心本来就在前半句。)
  * 拿一条关于「替换全部、可撤销」的警告去拦一次「只改了个旋钮值」的操作,是在吓唬用户。
  * 05 §2.2 R3 的「**无条件**」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),
  * 不是「连不会替换段的通道也要弹」—— 本裁定不与之冲突。
@@ -933,7 +936,7 @@ export function createTabTracks(opts) {
      *     **每轨每会话一次,无条件** —— 纯 user_edited 轨同样弹);
      *   • `manualEcho` —— 拖动/键盘期间的本地乐观值(松手才发一次 `setTrackManual`:
      *     手动接管通道入撤销栈,逐帧发会把撤销栈灌满,口径同 §1.22「边界拖拽释放才发」;
-     *     [J85] 冻结通道虽不入栈,松手才发这一条同样适用 —— 逐帧写参数面是白费的宿主往返);
+     *     冻结通道同样入栈([J140]),同一条理由);
      *   • `paramEcho` —— width/freeze 的 gesture 乐观值(由 `scvb.params` 逐帧失效);
      *   • `unfreezeHint` —— 解冻(freeze 某位 1→0)且仍由手动常值驱动的轨(05 §2.2 R2);
      *     存的是**触发位**(bit0=pan / bit1=vol),该位重新冻回 0→1 时逐位撤销。
@@ -1117,7 +1120,7 @@ export function createTabTracks(opts) {
     /**
      * 手动常值写入的**唯一入口**。**未冻结**维度首次(每轨每会话)先弹行内确认,确认后才落;
      * **冻结**维度直接落([J85] 用户裁定 2026-08-27 方案 A,判定见 `needsManualConfirm` 头注:
-     * 冻结通道不替换任何段、也不入撤销栈,确认条正文的两句话都不成立)。
+     * 冻结通道不替换任何段,确认条要拦的那件事不存在)。
      * `defer=true` 时走延迟提交(滚轮档 / 键盘连按:回声即时、提交防抖),见 `queueManual`。
      * 返回 true = 已下发或已排程;false = 已改为弹确认条(值挂在 local.confirm 上待提交)。
      */
@@ -1172,8 +1175,10 @@ export function createTabTracks(opts) {
      *     「方向键调音量 → 300ms 内 Ctrl+Z」会让 undo 先弹掉一件不相干的旧编辑、这一发
      *     随后作为新事务入栈并清空 redo 栈;切版本时则会落进新版本。
      *   · pan/vol 旋钮 / 卡箍**按住拖动中**:中止(cancelDrag,丢弃乐观值)—— 松手才发的
-     *     那一发在切版本后会写进新版本,撤销后会抹掉撤销。width 走宿主 gesture、不入插件
-     *     撤销栈、参数 id 在按下时已按版本捕获,不在此列。
+     *     那一发在切版本后会写进新版本,撤销后会抹掉撤销。
+     *   · **width 旋钮按住拖动中**:[SL-536 / J140] 起 width 也入插件撤销栈,同样**中止**
+     *     (cancelDrag 回到抓握值并收束 gesture,native 见起点 == 末值不压步)—— 不中止的话
+     *     Ctrl+Z 先弹掉上一步,松手那一下再压一步把撤销覆盖掉、并清空重做栈。
      * @returns {Promise<void>}
      */
     function flushPending() {
@@ -1184,7 +1189,7 @@ export function createTabTracks(opts) {
             local.manualTimers.delete(k);
             if (q) landed.push(fireQueued(q.ch, q.dim, q.v));
         }
-        if (local.drag && local.drag.kind !== "width") cancelDrag();
+        if (local.drag) cancelDrag();
         return Promise.all(landed).then(() => undefined);
     }
 
@@ -1208,9 +1213,11 @@ export function createTabTracks(opts) {
             local.manualTimers.delete(manualKey(ch, dim));
         }
         local.manualEcho.set(manualKey(ch, dim), v);
-        // 契约 §1.16 撤销:**只有未冻结的手动接管通道入撤销栈**(Ctrl+Z 由 app.js 的全局键盘
-        // 钩子映射到 undo())。[J85] 之后冻结通道不产生 CRVS 事务,压根不入栈 —— 那一路的写入
-        // 落在宿主自动化面上,回滚归宿主的撤销栈管,插件 UndoManager 不碰自动化参数(§0.9)。
+        // 契约 §1.16 撤销:两条通道都入插件撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到
+        // undo())。[J140] 起冻结通道也入(撤的是参数面那一下,经宿主 gesture 写回);接管通道
+        // 那一步连下面回执里跟进置的冻结位一起回滚 —— native 把这次 freeze gesture 并进接管
+        // 那一步(`uiEndParamGesture` / `pendingTakeover_`),所以这里**必须**仍用请求时捕获的
+        // freezeId、且只置本维度那一位:换了 id 或多置一位,native 就认不出它是跟进、会另起一步。
         const echoKey = manualKey(ch, dim);
         // 请求前捕获:冻结参数 id **连同版本上下文**一起定格(在途切版本时,
         // 回调若重算 activeVersion 会把置位落到新版本的参数上——整笔判定
@@ -1584,8 +1591,7 @@ export function createTabTracks(opts) {
             call("endParamGesture", d.id);
             return;
         }
-        // pan / vol:**松手才发一次** setTrackManual(手动接管通道入撤销栈,逐帧发会灌满撤销栈;
-        // [J85] 冻结通道不入栈,但逐帧写参数面同样是白费的宿主往返,一并适用;
+        // pan / vol:**松手才发一次** setTrackManual(两条通道都入撤销栈,逐帧发会灌满撤销栈;
         // 口径同契约 §1.22 段边界「拖拽释放才发」)。
         // **零位移不发**:manualEcho 有意留到 §2.8 回推才清,原地单击会把留存的乐观值
         // 原样再写一遍 —— 同值重写段表 + 撤销栈白多一步。

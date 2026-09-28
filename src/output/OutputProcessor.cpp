@@ -2282,7 +2282,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // **两类动作写的面都刚被 setStateInformation 从新 blob 里整体覆盖过** ——
     // CRVS 整体替换、applied.* 也刚从 CFGS 读回,留着旧动作只会把它们撤回加载前。
     // 再加新动作类时按这条判:它写的面是不是也被本函数覆盖了。
+    //   · [SL-536] `ChannelConfigAction`(写 `runtime_.channels`,CFGS 刚读回)与
+    //     `ParamWriteAction`(写 APVTS 参数,PRMS 刚读回)—— 同样都在被覆盖的面上。
     authority_.undoManager().clearUndoHistory();
+    resetUndoTracking();
+    uiGestures_.clear(); // 载入前开的 gesture 起点属于旧工程,收尾时不许按它压步
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     if (prepared_)
@@ -2676,6 +2680,234 @@ void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
     uiScale_ = scvb::bridge::clampUiScalePercent(percent);
 }
 
+// ============================================================================
+// [SL-536 / J140] 通道配置(§1.15)与自动化参数(§1.12-§1.14 / §1.16 冻结通道)进插件撤销栈。
+// ============================================================================
+
+// 通道配置的一步:只记 patch 里**给了的那几个字段**的前后值(mask 用 ChannelConfigPatch 的
+// 有值与否表示)。不整行快照:Input 远程改优先级(applyRemotePriorities)不进撤销栈,整行还原
+// 会把那次远程改动一并撤掉。
+class ScvbOutputAudioProcessor::ChannelConfigAction final : public scvb::output::CoalescibleUndoAction
+{
+public:
+    ChannelConfigAction(ScvbOutputAudioProcessor& owner, int index, ChannelConfigPatch mask,
+                        OutputRuntimeState::Channel before, OutputRuntimeState::Channel after)
+        : owner_(owner), index_(index), mask_(std::move(mask)), before_(std::move(before)), after_(std::move(after))
+    {
+    }
+
+    // 压栈时新值已经由 bridgeApplyChannelConfig 写进去了,第一次 perform 不再写(同 ParamWriteAction)。
+    bool perform() override
+    {
+        if (skipNextPerform_)
+        {
+            skipNextPerform_ = false;
+            return true;
+        }
+        owner_.applyChannelFields(index_, mask_, after_);
+        return true;
+    }
+
+    bool undo() override
+    {
+        owner_.applyChannelFields(index_, mask_, before_);
+        return true; // 恒 true 的理由见 ParamWriteAction::undo
+    }
+
+    int getSizeInUnits() override { return static_cast<int>(sizeof(ChannelConfigAction)); }
+
+    bool absorb(const scvb::output::CoalescibleUndoAction& newer) override
+    {
+        const auto* c = dynamic_cast<const ChannelConfigAction*>(&newer);
+        if (c == nullptr || c->index_ != index_)
+            return false;
+        after_ = c->after_;
+        return true;
+    }
+
+private:
+    ScvbOutputAudioProcessor& owner_;
+    int index_;
+    ChannelConfigPatch mask_;
+    OutputRuntimeState::Channel before_;
+    OutputRuntimeState::Channel after_;
+    bool skipNextPerform_ = true;
+};
+
+void ScvbOutputAudioProcessor::applyChannelFields(int index, const ChannelConfigPatch& mask,
+                                                  const OutputRuntimeState::Channel& src)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    if (index < 0 || index >= scvb::engine::kNumTracks)
+        return;
+    auto& channel = runtime_.channels[static_cast<std::size_t>(index)];
+    bool changed = false;
+    if (mask.enabled)
+    {
+        changed |= channel.enabled != src.enabled;
+        channel.enabled = src.enabled;
+    }
+    if (mask.label)
+    {
+        changed |= channel.label != src.label;
+        channel.label = src.label;
+    }
+    if (mask.priority)
+    {
+        changed |= channel.priority != src.priority;
+        channel.priority = src.priority;
+    }
+    if (mask.leadLock)
+    {
+        changed |= channel.leadLock != src.leadLock;
+        channel.leadLock = src.leadLock;
+    }
+    if (mask.leadVolExempt)
+    {
+        changed |= channel.leadVolExempt != src.leadVolExempt;
+        channel.leadVolExempt = src.leadVolExempt;
+    }
+    if (mask.participate)
+    {
+        // 「显式设置过没有」一起还原:撤掉一次对从没动过的轨的设置,要回到的是「未设置 = 按默认参与」
+        // 那一态([J83]),不是「显式 = 某值」。比的是生效值,口径同 bridgeApplyChannelConfig([SL-472 R2])。
+        const bool before = channel.participatesInAutoPan();
+        channel.participateAutoPan = src.participateAutoPan;
+        channel.participateAutoPanSet = src.participateAutoPanSet;
+        changed |= before != channel.participatesInAutoPan();
+    }
+    if (mask.pairId)
+    {
+        changed |= channel.pairId != src.pairId;
+        channel.pairId = src.pairId;
+    }
+    if (changed)
+        ++runtime_.configSeq; // 与桥面写入同一条推送路径:广播区 / scvb.state 都按 configSeq 变化门刷新
+}
+
+scvb::output::ParamWriteAction::Writer ScvbOutputAudioProcessor::paramWriter(const juce::String& id)
+{
+    return [this, id](float normalised) {
+        auto* p = apvts.getParameter(id);
+        if (p == nullptr)
+            return;
+        // 与 setTrackManual 那段逐字同形(理由见那里):包 gesture,宿主才把它当一次完整的用户编辑
+        // (Read 档有车道数据时照样被宿主顶回去 —— 与用户拖旋钮同一个结局,这正是 J140 核过的前提);
+        // 自写位只裹 setValueNotifyingHost(begin/end 不触发 listener)。
+        p->beginChangeGesture();
+        {
+            const scvb::output::AutomationPrinter::ScopedSelfWriteFlag selfWrite(printer_);
+            p->setValueNotifyingHost(normalised);
+        }
+        p->endChangeGesture();
+    };
+}
+
+void ScvbOutputAudioProcessor::pushUndoStep(std::unique_ptr<scvb::output::CoalescibleUndoAction> action,
+                                            const juce::String& name, const juce::String& coalesceKey)
+{
+    auto& um = authority_.undoManager();
+    const std::uint32_t now = juce::Time::getMillisecondCounter();
+    // 并进上一步的四个条件缺一不可。「栈顶还是上一步」按**事务名**判:名字带全局流水号,
+    // 中间插进任何别的事务(段编辑 / 分析 / 别的参数)或撤销过,栈顶的名字就变了 ——
+    // 于是 lastUndoStep_.action 只在确认它仍在栈顶时才解引用(UndoManager 持有它)。
+    if (coalesceKey.isNotEmpty() && coalesceKey == lastUndoStep_.key && lastUndoStep_.action != nullptr &&
+        (now - lastUndoStep_.atMs) <= kUndoCoalesceMs && !um.canRedo() &&
+        um.getUndoDescription() == lastUndoStep_.txn && lastUndoStep_.action->absorb(*action))
+    {
+        lastUndoStep_.atMs = now;
+        return;
+    }
+    const juce::String txn = name + " #" + juce::String(++undoSerial_);
+    auto* raw = action.get();
+    um.beginNewTransaction(txn);
+    if (um.perform(action.release()))
+        lastUndoStep_ = {coalesceKey, txn, now, raw};
+    else
+        lastUndoStep_ = {};
+}
+
+void ScvbOutputAudioProcessor::resetUndoTracking()
+{
+    lastUndoStep_ = {};
+    pendingTakeover_ = {};
+}
+
+bool ScvbOutputAudioProcessor::uiBeginParamGesture(const juce::String& id)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    auto* p = apvts.getParameter(id);
+    if (p == nullptr)
+        return false;
+    p->beginChangeGesture();
+    UiGesture g;
+    g.startNorm = p->getValue();
+    g.lastNorm = g.startNorm;
+    uiGestures_[id] = g;
+    return true;
+}
+
+bool ScvbOutputAudioProcessor::uiSetParam(const juce::String& id, float engineeringValue)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    auto* p = apvts.getParameter(id);
+    if (p == nullptr)
+        return false;
+    // 与此前桥面就地写的逐字同款:**不**置自写位 —— 这里写的是 width / freeze / 全局三件,
+    // 都不是打印车道,HostEchoListener 层 1a 本来就短路(见 AutomationPrinter.h)。
+    p->setValueNotifyingHost(p->convertTo0to1(engineeringValue));
+    auto it = uiGestures_.find(id);
+    if (it != uiGestures_.end())
+    {
+        it->second.lastNorm = p->getValue();
+        it->second.set = true;
+    }
+    return true;
+}
+
+bool ScvbOutputAudioProcessor::uiEndParamGesture(const juce::String& id)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    auto* p = apvts.getParameter(id);
+    if (p == nullptr)
+        return false;
+    p->endChangeGesture();
+
+    auto it = uiGestures_.find(id);
+    if (it == uiGestures_.end())
+        return true; // 没见过 begin(载入工程时清过 / 调用方不配对):不压步
+    const UiGesture g = it->second;
+    uiGestures_.erase(it);
+    // 拖了又拖回原处(含 pointercancel 回滚到抓握值)、或整次 gesture 没有 setParam:不压步。
+    if (!g.set || g.lastNorm == g.startNorm)
+        return true;
+
+    auto& um = authority_.undoManager();
+    // [SL-536 ③] 首次接管后 UI 跟进的那一下「把该维度冻结位置 1」—— 并进接管那一步。
+    // 判据逐项:同一个 freeze id;栈顶仍是接管那一步(事务名核对,理由同 pushUndoStep);
+    // 起点就是接管时记下的冻结值;终点**恰好**是「起点 | 该维度位」。任何一条不符都按普通一步压。
+    if (pendingTakeover_.action != nullptr && id == pendingTakeover_.freezeId && !um.canRedo() &&
+        um.getUndoDescription() == pendingTakeover_.txn)
+    {
+        const int startFrz = juce::roundToInt(p->convertFrom0to1(g.startNorm));
+        const int endFrz = juce::roundToInt(p->convertFrom0to1(g.lastNorm));
+        if (startFrz == pendingTakeover_.oldFreeze && endFrz == (pendingTakeover_.oldFreeze | pendingTakeover_.dimBit))
+        {
+            pendingTakeover_.action->setNewValue(g.lastNorm);
+            pendingTakeover_ = {};
+            return true;
+        }
+    }
+
+    // 冻结是开关:两下在窗内连点会并成「什么都没变」的一步,Ctrl+Z 看着像没反应 —— 不并。
+    // 其余(全局 width / ms_balance / lead_select、每轨 width)是连续量 / 步进量:并。
+    const bool isToggle = id.endsWith("_freeze");
+    pushUndoStep(std::make_unique<scvb::output::ParamWriteAction>(paramWriter(id), g.startNorm, g.lastNorm,
+                                                                  /*alreadyApplied=*/true),
+                 "Param " + id, isToggle ? juce::String() : "param:" + id);
+    return true;
+}
+
 bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const ChannelConfigPatch& patch)
 {
     if (channelIndex < 0 || channelIndex >= scvb::engine::kNumTracks)
@@ -2684,6 +2916,7 @@ bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const 
     }
     const juce::ScopedLock lock(lifecycleMutex_); // [SL-472 R1] 与 get/setStateInformation 串行(label 是 juce::String)
     auto& channel = runtime_.channels[static_cast<std::size_t>(channelIndex)];
+    const OutputRuntimeState::Channel before = channel; // [SL-536] 撤销步的旧值
     bool changed = false;
     if (patch.enabled)
     {
@@ -2728,6 +2961,20 @@ bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const 
     if (changed)
     {
         ++runtime_.configSeq; // 广播区整体版本号,值变化才 bump(PR#55 缺陷4)
+
+        // [SL-536 / J140] A1-A7 进撤销栈(契约 §1.15 撤销行)。值没变不压步(同改名的「未变不产生
+        // 空事务」)。合并只给两个步进量:优先级 ± 与配对 ↑/↓ 连按并成一步;开关与名字每次一步
+        // (开关两下并成一步 = 「什么都没变」的一步,Ctrl+Z 看着像没反应)。
+        const int fields = (patch.enabled ? 1 : 0) + (patch.label ? 1 : 0) + (patch.priority ? 1 : 0) +
+                           (patch.leadLock ? 1 : 0) + (patch.leadVolExempt ? 1 : 0) + (patch.participate ? 1 : 0) +
+                           (patch.pairId ? 1 : 0);
+        juce::String key;
+        if (fields == 1 && patch.priority)
+            key = "cfg:" + juce::String(channelIndex) + ":priority";
+        else if (fields == 1 && patch.pairId)
+            key = "cfg:" + juce::String(channelIndex) + ":pair";
+        pushUndoStep(std::make_unique<ChannelConfigAction>(*this, channelIndex, patch, before, channel),
+                     "Channel config ch" + juce::String(channelIndex + 1), key);
     }
     return changed;
 }
@@ -2944,6 +3191,13 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     replacedLocked = 0;
     float applied = scvb::output::clampManualValue(isPan, value);
 
+    // [SL-536 / J140] 两条通道都进撤销栈,都要知道参数面写之前是多少。
+    const juce::String laneId = isPan ? scvb::params::panId(v, ch) : scvb::params::volId(v, ch);
+    auto* laneParam = apvts.getParameter(laneId);
+    const float laneOldNorm = laneParam != nullptr ? laneParam->getValue() : 0.0f;
+    const juce::String freezeId = scvb::params::freezeId(v, ch);
+    juce::String takeoverTxn; // 非空 = 本次走了接管通道,事务名(带流水号)
+
     if (!dimFrozen)
     {
         replacedSegments = static_cast<int>(track.segments.size());
@@ -2956,9 +3210,12 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
         applied = isPan ? seg.pan : seg.volDb;
 
+        // 事务名带全局流水号:下面要把参数面与冻结位占位**追加进同一条事务**,UI 的冻结跟进到达时
+        // 还要凭名字核对「栈顶仍是这一步」(见 uiEndParamGesture / pendingTakeover_)。
+        takeoverTxn = "Track manual ch" + juce::String(ch) + " #" + juce::String(++undoSerial_);
         scvb::output::commitCrvsTransaction(
-            authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
-            [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+            authority_.undoManager(), crvsData_, takeoverTxn, [&] { track.segments.assign(1, seg); },
+            [this] { rebuildAllCurves(); });
     }
 
     // 手动值还必须落到**参数面**,否则冻结维度上它根本驱动不了声音。
@@ -2998,6 +3255,37 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             }
             p->endChangeGesture();
         }
+    }
+
+    // [SL-536 / J140] 撤销步。参数面上面已经写过了(写法原样不动),这里只记账:动作一律
+    // alreadyApplied,压栈不再写第二次。撤销 / 重做经 paramWriter 写回 —— 与上面同一条宿主通路。
+    auto& um = authority_.undoManager();
+    const float laneNewNorm = laneParam != nullptr ? laneParam->getValue() : laneOldNorm;
+    if (takeoverTxn.isNotEmpty())
+    {
+        // ③ 接管通道:追加进 commitCrvsTransaction 刚开的那条事务(它 beginNewTransaction 之后
+        // 的每一次 perform 都归这一条,SegmentEditService.h 的 AppliedAnalysisAction 同款)。
+        // 一次 Ctrl+Z = 段表 + 参数面 + 冻结位一起回到拖之前(§1.16 撤销行)。
+        if (laneParam != nullptr)
+            um.perform(new scvb::output::ParamWriteAction(paramWriter(laneId), laneOldNorm, laneNewNorm,
+                                                          /*alreadyApplied=*/true));
+        if (auto* frzParam = apvts.getParameter(freezeId))
+        {
+            // 冻结位占位:此刻 UI 还没把位置上(它在收到本次回执后才发,tab-tracks.js sendManual),
+            // 先压「旧 == 新」的空动作,UI 那一下到了由 uiEndParamGesture 把新值填进来。
+            auto* placeholder = new scvb::output::ParamWriteAction(paramWriter(freezeId), frzParam->getValue(),
+                                                                   frzParam->getValue(), /*alreadyApplied=*/true);
+            um.perform(placeholder);
+            pendingTakeover_ = {freezeId, frz, isPan ? 1 : 2, takeoverTxn, placeholder};
+        }
+        lastUndoStep_ = {};
+    }
+    else if (laneParam != nullptr && laneNewNorm != laneOldNorm)
+    {
+        // ① 冻结通道:只改了参数面,压一步参数改动。不并(UI 已按 MANUAL_COMMIT_MS 防抖成一次提交)。
+        pushUndoStep(std::make_unique<scvb::output::ParamWriteAction>(paramWriter(laneId), laneOldNorm, laneNewNorm,
+                                                                      /*alreadyApplied=*/true),
+                     "Track manual (frozen) ch" + juce::String(ch), juce::String());
     }
     return true;
 }
@@ -3078,6 +3366,7 @@ bool ScvbOutputAudioProcessor::undo()
     const bool ok = authority_.undoManager().undo();
     if (ok)
     {
+        resetUndoTracking(); // [SL-536] 栈顶换了:合并窗与接管占位都不再指向栈顶
         discardPendingResegment();
         abandonAnalysisInFlight(); // [SL-532] undo
     }
@@ -3090,6 +3379,7 @@ bool ScvbOutputAudioProcessor::redo()
     const bool ok = authority_.undoManager().redo(); // 同 undo():重做后落地同样会清掉剩下的重做栈
     if (ok)
     {
+        resetUndoTracking(); // [SL-536] 同 undo()
         discardPendingResegment();
         abandonAnalysisInFlight(); // [SL-532] redo
     }

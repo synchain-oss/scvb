@@ -224,6 +224,97 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
 }
 
 // =============================================================================
+log("=== ①b [SL-536 / J140] 证据③:配置 / 参数 gesture 的回执置亮 undo ===");
+{
+    const { historyAfterUndoableWrite, withUndoEvidence, UNDOABLE_CALLS } = TM;
+    // reducer:只置亮 undo、不碰 redo(回执里没有「压没压步」的证据,见其头注)。
+    eq(
+        historyAfterUndoableWrite({ undo: false, redo: true }),
+        { undo: true, redo: true },
+        "(u1)栈空后改一次配置 ⇒ undo 置亮、redo 原样",
+    );
+    eq(
+        historyAfterUndoableWrite({ undo: false, redo: false }),
+        { undo: true, redo: false },
+        "(u2)redo 灰着的保持灰(不凭空点亮)",
+    );
+    eq(
+        historyAfterUndoableWrite(null),
+        { ...TM.HISTORY_AVAIL_INIT },
+        "(u3)null ⇒ 起手值",
+    );
+    eq(
+        [...UNDOABLE_CALLS].sort(),
+        ["endParamGesture", "setChannelConfig"],
+        "(u4)白名单 = 契约 §0.9 左列里不走段表事件的两类收尾名",
+    );
+
+    // 包装**真执行**:假桥记录调用,按名字给不同回执。
+    const calls = [];
+    const fake = {
+        on() {
+            return "on-ok";
+        },
+        async setChannelConfig(...a) {
+            calls.push(["setChannelConfig", a]);
+            return { ok: true };
+        },
+        async endParamGesture(id) {
+            calls.push(["endParamGesture", [id]]);
+            return id === "bad"
+                ? { ok: false, reason: "badArg" }
+                : { ok: true };
+        },
+        async setParam(...a) {
+            calls.push(["setParam", a]);
+            return { ok: true };
+        },
+        async beginParamGesture(id) {
+            calls.push(["beginParamGesture", [id]]);
+            return { ok: true };
+        },
+    };
+    let evidence = 0;
+    const w = withUndoEvidence(fake, () => {
+        evidence++;
+    });
+    check(w.on() === "on-ok", "(u5)未包的成员经原型链原样可用(on)");
+    const r1 = await w.setChannelConfig(3, { enabled: false });
+    eq(r1, { ok: true }, "(u6)回执原样返回");
+    eq(evidence, 1, "(u7)setChannelConfig ok ⇒ 喂一次证据");
+    await w.beginParamGesture("width");
+    await w.setParam("width", 90);
+    eq(evidence, 1, "(u8)begin / setParam 不喂(一次 gesture 到 end 才压步)");
+    await w.endParamGesture("width");
+    eq(evidence, 2, "(u9)endParamGesture ok ⇒ 喂一次");
+    await w.endParamGesture("bad");
+    eq(evidence, 2, "(u10)回执不是 ok:true ⇒ 不喂");
+    eq(
+        calls.map((c) => c[0]),
+        [
+            "setChannelConfig",
+            "beginParamGesture",
+            "setParam",
+            "endParamGesture",
+            "endParamGesture",
+        ],
+        "(u11)每一发都真的落到了底层桥(包装不吞调用)",
+    );
+    check(withUndoEvidence(null, () => {}) === null, "(u12)桥缺席 ⇒ 原样返回");
+
+    // 接线:两个 tab 拿到的是包过的桥(app.js 源码不变式;行为面在 smoke-undo-scope-page ⑨)。
+    const appSrc = src("web/output/app.js");
+    check(
+        /const tabBridge = withUndoEvidence\(bridge,/.test(appSrc),
+        "(u13)app.js 用 withUndoEvidence 包出 tabBridge",
+    );
+    check(
+        (appSrc.match(/bridge: tabBridge,/g) || []).length === 2,
+        "(u14)Tab1 与 Tab2 两处装配都传 tabBridge",
+    );
+}
+
+// =============================================================================
 log("=== ② mock 端到端:桥回执 → 置灰 ===");
 
 {
