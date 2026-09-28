@@ -4329,8 +4329,7 @@ std::vector<std::uint8_t> rejectedCrvsPayload(const juce::MemoryBlock& base, int
     const auto flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
     v.tracks[0].segments = {scvb::state::Segment{0, 480000, 30.0f, -6.0f, flags},
                             scvb::state::Segment{480000, 960000, -40.0f, -3.0f, flags}};
-    v.tracks[1].segments = {
-        scvb::state::Segment{0, 480000, std::numeric_limits<float>::quiet_NaN(), -6.0f, flags}};
+    v.tracks[1].segments = {scvb::state::Segment{0, 480000, std::numeric_limits<float>::quiet_NaN(), -6.0f, flags}};
     std::vector<std::uint8_t> payload;
     REQUIRE(scvb::state::encodeCrvs(d, payload));
     return payload;
@@ -4387,8 +4386,42 @@ TEST_CASE("HOST SL-524:CRVS 拒载后保存原样写回原字节,改段后写新
     }
 }
 
-TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设不解除保留;成功载入解除",
-          "[host][sl524]")
+TEST_CASE("HOST SL-524:CRVS minor 更高(新版本写的段表)拒载后保存原样写回", "[host][sl524]")
+{
+    // 不能让旧插件抹掉新版曲线(StateCodec.h 挂账第 2 条)。载荷首 2 字节是 u16 小端 minor。
+    Rig r;
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    // 一份合法 CRVS(ch1 一段),之后只改 minor —— 确保拒收只因 minor 更高。
+    std::vector<std::uint8_t> newer;
+    {
+        scvb::state::CrvsData d;
+        const auto basePayload = crvsPayloadOf(base);
+        REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+        d.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments = {scvb::state::Segment{
+            0, 480000, 30.0f, -6.0f, scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false)}};
+        REQUIRE(scvb::state::encodeCrvs(d, newer));
+        scvb::state::CrvsData check;
+        REQUIRE(scvb::state::decodeCrvs(newer.data(), newer.size(), check)); // 前提:只改 minor 之前是合法的
+    }
+    REQUIRE(newer.size() >= 2u);
+    const std::uint16_t minor = static_cast<std::uint16_t>(scvb::state::kCrvsMinorVersion + 1u);
+    newer[0] = static_cast<std::uint8_t>(minor & 0xFFu);
+    newer[1] = static_cast<std::uint8_t>(minor >> 8);
+    const auto blob = blobWithCrvsPayload(base, newer);
+
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored()); // 前提:因 minor 更高被拒
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == newer); // ★ 新版本的字节逐字节带回去
+}
+
+TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设不解除保留;成功载入解除", "[host][sl524]")
 {
     Rig r;
 

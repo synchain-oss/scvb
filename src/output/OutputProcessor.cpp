@@ -1501,27 +1501,30 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 不拿保留下来的旧表(新开实例 = 空表)去覆盖它。判据与理由见 crvsPreserved_ 的声明处。
     std::vector<std::uint8_t> crvs;
     const bool crvsEncoded = scvb::state::encodeCrvs(crvsData_, crvs);
+    bool liftCrvsPreserve = false;
     if (crvsPreserved_ && (!crvsEncoded || crvs == crvsAtRejectEncoded_))
     {
         chunks.set(scvb::state::kFourccCrvs, preservedCrvsChunk_);
     }
     else
     {
-        if (crvsPreserved_)
-        {
-            // 用户改过段表/版本:从这一次起写新表,保留态解除且不再恢复。
-            crvsPreserved_ = false;
-            preservedCrvsChunk_.clear();
-            crvsAtRejectEncoded_.clear();
-        }
+        // 用户改过段表/版本:从这一次起写新表。保留态等容器编码成功、确实写出去之后再解除。
+        liftCrvsPreserve = crvsPreserved_;
         if (crvsEncoded)
             chunks.set(scvb::state::kFourccCrvs, std::move(crvs));
+        // 编码失败且不在保留态:沿用 loadedChunks_ 里那份 CRVS(与本卡之前同一行为)。
     }
 
     std::vector<std::uint8_t> blob;
     if (!scvb::state::encodeContainer(chunks, blob))
     {
         return;
+    }
+    if (liftCrvsPreserve)
+    {
+        crvsPreserved_ = false; // 解除后不再恢复
+        preservedCrvsChunk_.clear();
+        crvsAtRejectEncoded_.clear();
     }
     destData.append(blob.data(), blob.size());
 }
@@ -2303,7 +2306,9 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         crvsPreserved_ = true;
         preservedCrvsChunk_ = std::move(rejectedCrvs);
         crvsAtRejectEncoded_.clear();
-        (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_); // 失败 = 留空:之后保存时 live 编码成功即判「改过」
+        // 编码失败 = 留空。encodeCrvs 是确定性的:同一张表此刻编不出、之后也编不出(保存时走
+        // `!crvsEncoded` 那一支,照样写原字节);之后能编出来,说明表已经变了,判「改过」正是本意。
+        (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_);
     }
     crvsRevision_.fetch_add(1, std::memory_order_release);
 
