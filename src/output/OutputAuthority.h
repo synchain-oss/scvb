@@ -2,6 +2,9 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,13 +33,14 @@
 //
 // 曲线不可变契约(PR #43 终审,硬前置):
 //   setCurve 注入后的曲线对象必须不可变;重分析 = 新建 CurveEvaluator 对象再 setCurve 发布,
-//   禁止对已注入对象调用 build()。曲线生命周期须 ≥ OutputAuthority/音频线程寿命 —— VersionStore
+//   禁止对已注入对象调用 build()。曲线生命周期须覆盖音频线程可能读它的全部时段 —— VersionStore
 //   与本类发布出的快照均以 std::shared_ptr<const CurveEvaluator> 持有曲线,旧曲线对象由引用它的
 //   快照保活,音频线程绝不读悬垂/被原地改写的对象。
 // 线程契约:setVersionActive/setCurve/setVersionName 均只可在消息线程调用 —— 它们只写
 // 本类消息线程独占的配置并重建「不可变快照」,经 DspArbiter::publish 原子发布(release-store);
 // 音频线程 processBlock 每 block acquire-load 一次、整 block 用同一份快照。旧快照由本类快照池
-// 进程寿命保活,绝不释放。prepare 应在音频启动前调用(它触碰 m_handles 配置,不参与快照发布;
+// 保活,直到音频线程经 DspArbiter::oldestHeldSeq 确认不再碰它,才在消息线程上释放([SL-445])。
+// prepare 应在音频启动前调用(它触碰 m_handles 配置,不参与快照发布;
 // 若必须与 setCurve/setVersionActive 并发,由调用方串行化)。
 namespace scvb::output
 {
@@ -101,6 +105,9 @@ public:
     // 活动版本的 G 查表(消息线程;供单测与 UI 对拍「画的 == 听的」)。从没设过 → null。
     std::shared_ptr<const scvb::PanCurveLut> activePanCurveLut() const;
 
+    // 快照池当前条数(消息线程;单测钉「池有上界」用)。
+    std::size_t snapshotPoolSize() const { return m_snapshotPool.size(); }
+
     int warningCount() const;
     bool isPrepared() const { return m_prepared; }
 
@@ -120,16 +127,18 @@ private:
     scvb::engine::VersionStore m_versions;
     juce::UndoManager m_undoManager;
     bool m_prepared = false;
-    // 快照池:进程寿命保活已发布的快照,绝不释放(音频线程可能仍在读旧快照)。
+    // 快照池:保活已发布、音频线程可能仍在读的快照。按发布顺序排列(seq 严格递增)。
     //
-    // ⚠ [SL-442 → SL-445] 自 SL-442 起每条快照多钉住一份 `PanCurveLut`。实测 `sizeof`:
-    //   Snapshot = 744 B、PanCurveLut = 131,076 B(128.0 KiB),比值 176×。
-    //   LUT 是**每张不同曲线一份**(快照持 shared_ptr,复制只加引用计数);池不回收
-    //   ⇒ 每次「真编辑」(点列表确有变化)留下的那 128 KiB 此后一直在。
-    //   产出速率实测:拖点松手 1 份;Q 滑杆 140 ms 防抖 ⇒ 约 7 份/秒;撤销、重做各 1 份。
-    //   池本身在 SL-442 之前就不回收(`rebuildAllCurves` 一次经 setCurve 发 15 条 = 11,160 B)。
-    //   回收机制转 SL-445。
-    std::vector<std::unique_ptr<scvb::engine::DspArbiter::Snapshot>> m_snapshotPool;
+    // [SL-445] 此前是「进程寿命保活,绝不释放」,而自 SL-442 起每条快照多钉住一份 128 KiB 的
+    // `PanCurveLut`(每张不同曲线一份)—— Q 滑杆断续拖 10 分钟约 500 MB 只增不减。现在每次发布
+    // 之后在消息线程上释放 seq < DspArbiter::oldestHeldSeq() 的快照(判据与安全性论证见该函数)。
+    // 旧 LUT / 旧曲线只由快照的 shared_ptr 持有时随之释放,析构全在消息线程,音频线程零分配零释放。
+    // ⚠ 已知局限:只有 **authority 的 processBlock 在跑**时确认才前进。宿主不调音频、或走直通分支
+    //   (只读观察 / 无时间线 / 负 t0 / 无注入轨,见 OutputProcessor::renderSpan)期间,池照旧只增;
+    //   一旦再跑过一块,下次发布就把积压一次放掉。回收只挂在发布上,不另起定时器:停手时
+    //   最后一次发布那一刻尚未确认的几条,要等下一次发布才放。
+    std::deque<std::unique_ptr<scvb::engine::DspArbiter::Snapshot>> m_snapshotPool;
+    std::uint64_t m_nextSnapshotSeq = 0; // 最近一次发布的 seq;首份为 1(0 留给「不记账」)
     // 每版本一张 G 查表(pan_curve 是 per-version,不是 per-track)+ 烘它时用的点列表。
     // 留着点列表是为了 setPanCurve 的 no-op 判定 —— 见该函数注释。
     std::array<std::shared_ptr<const scvb::PanCurveLut>, kNumVersions> m_panCurveLut{};

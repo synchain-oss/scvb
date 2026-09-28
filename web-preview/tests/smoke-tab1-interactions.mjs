@@ -399,6 +399,83 @@ log("=== ① 契约映射的纯函数 ===");
         "重开工程未播放(§2.7 无覆盖帧,段表有货)⇒ 可分析",
     );
     check(TM.analyzeNoData(null, 0), "双空 ⇒ 禁用(真无数据)");
+    // [SL-535] 第三参 = dry-run 轨数(只数已连接的轨)。删掉 analyzeNoData 里那一行,第一格红。
+    check(
+        TM.analyzeNoData(84, 327, 0),
+        "SL-535 覆盖与段表都有、dry-run 0 轨(有数据的轨都没连上)⇒ 出原因句",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, 2),
+        "SL-535 dry-run 有轨 ⇒ 可分析(第三参不把首采未析判成无数据)",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, null) && !TM.analyzeNoData(84, 0),
+        "SL-535 dry-run 回包未到(null / 缺省)⇒ 维持原判据",
+    );
+
+    // [SL-535 #292 复审②] dry-run 的 tracks 进了判据,重取指纹就得盖住它依赖的两样:
+    // 连接集合与「有覆盖的轨号」。删掉指纹里任一样,对应那一格红。
+    const st0 = { global: { range: { mode: "follow" } }, channels: [] };
+    const connOf = (chs) => ({
+        channels: Array.from({ length: 15 }, (_, i) =>
+            chs.includes(i + 1)
+                ? { slotState: 2, heartbeatFresh: true }
+                : { slotState: 0, heartbeatFresh: false },
+        ),
+    });
+    const fpBase = TM.previewFingerprint(st0, connOf([1, 2]), {});
+    check(
+        TM.previewFingerprint(st0, connOf([1, 2]), { 1: 84 }) !== fpBase,
+        "SL-535 首次采集(覆盖从无到有)⇒ 指纹变,重取 dry-run",
+    );
+    check(
+        TM.previewFingerprint(st0, connOf([1, 2]), { 1: 84 }) ===
+            TM.previewFingerprint(st0, connOf([1, 2]), { 1: 90 }),
+        "SL-535 覆盖百分比涨但轨号集合不变 ⇒ 指纹不变(不每帧问)",
+    );
+    check(
+        TM.previewFingerprint(st0, connOf([1]), {}) !== fpBase,
+        "SL-535 连接集合变 ⇒ 指纹变,重取 dry-run",
+    );
+    check(
+        TM.previewFingerprint(
+            {
+                global: { range: { mode: "follow" } },
+                channels: [{ enabled: true }, { enabled: false }],
+            },
+            connOf([1, 2]),
+            {},
+        ) !==
+            TM.previewFingerprint(
+                {
+                    global: { range: { mode: "follow" } },
+                    channels: [{ enabled: true }, { enabled: true }],
+                },
+                connOf([1, 2]),
+                {},
+            ),
+        "SL-535 follow 档拨「参与」开关 ⇒ 指纹变(scope 是字面 all,掩码只在指纹里)",
+    );
+    // 接线:两条订阅都要调 refreshPreview(纯函数对了、没人调也等于没修)。
+    {
+        const app = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+        const handler = (ev) => {
+            const at = app.indexOf(`bridge.on("${ev}"`);
+            const next = app.indexOf("bridge.on(", at + 1);
+            return at < 0 ? "" : app.slice(at, next < 0 ? undefined : next);
+        };
+        check(
+            handler("scvb.captureProgress").includes(
+                "tabMaster.refreshPreview();",
+            ),
+            "SL-535 scvb.captureProgress 订阅调 tabMaster.refreshPreview",
+        );
+        check(
+            handler("scvb.conn").includes("tabMaster.refreshPreview();") &&
+                handler("scvb.conn").includes("tabWave.onConn(c);"),
+            "SL-535 scvb.conn 订阅调两页的预览重取",
+        );
+    }
     check(
         TM.analyzeNoData(0, 0),
         "覆盖 0%(range ∩ coverage = ∅)且段表空 ⇒ 禁用",
@@ -1135,6 +1212,41 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
             "★ toast② 的 show() 已摘掉:sidecarSwitched 到达也不再把它翻上来(SL-415;" +
                 "接回那一行 ⇒ 页面级 G 节红)",
         );
+        // [SL-94 / J133] toast② 文案:zh 逐字 = 契约 §5.1 `sidecarSwitched` 行的 toast② 引文
+        // (从契约现读,不在这里抄第二份);三语都带「发给他人需重新采集」这层意思,
+        // 且不再有内部排期词、不再指路设置页(v1 那一行已收起,SL-415)。
+        const contractRow = readFileSync(
+            join(ROOT, "docs/SCVB_CONTRACT.md"),
+            "utf8",
+        )
+            .split("\n")
+            .find((l) => l.startsWith("| `sidecarSwitched` |"));
+        const quoted = contractRow && /toast②「([^」]+)」/.exec(contractRow);
+        eq(
+            T.zh["toast.sidecarSwitched"],
+            quoted && quoted[1],
+            "[J133] zh toast.sidecarSwitched = 契约 §5.1 逐字栏",
+        );
+        // prettier 会把长内联折行,HTML 渲染时空白折叠成一个空格 —— 比对前同样折叠。
+        const inlineToast =
+            /data-t="toast\.sidecarSwitched"\s*>([^<]*)<\/span/.exec(html);
+        eq(
+            inlineToast && inlineToast[1].replace(/\s+/g, " ").trim(),
+            T.zh["toast.sidecarSwitched"],
+            "[J133] index.html 内联 = zh 词条",
+        );
+        check(
+            /capture again/.test(T.en["toast.sidecarSwitched"]) &&
+                /refaire la capture/.test(T.fr["toast.sidecarSwitched"]),
+            "[J133] en/fr 都带「发给他人需重新采集」",
+        );
+        for (const lang of ["zh", "en", "fr"])
+            check(
+                !/功能卡|设置页|future work|Settings|à venir|réglages/.test(
+                    T[lang]["toast.sidecarSwitched"],
+                ),
+                `[J133] ${lang} toast.sidecarSwitched 无排期词、不指路设置页`,
+            );
     }
     // 从 DOM 那一处起算(CSS 里也有 [data-gb="scale-confirm"] 选择器,不能作锚点)
     const scaleBlock =

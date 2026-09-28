@@ -3140,7 +3140,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         "P2-9 disabled 只表示写权限缺失",
     );
     check(
-        /"data-analyze-nodata",\s*\n?\s*analyzeNoData\(p, totals\.n\) \? "1" : "0",/.test(
+        /"data-analyze-nodata",\s*\n?\s*analyzeNoData\(p, totals\.n, previewTracks\) \? "1" : "0",/.test(
             master,
         ),
         "P2-9 无数据改由独立属性承载(空态原因句照旧出)",

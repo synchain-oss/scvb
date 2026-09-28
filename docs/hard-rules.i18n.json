@@ -6,13 +6,14 @@
     "zh 改了而译文没跟上时,scripts/gen-hard-rules.mjs 会指名道姓报「译文已过期」并非零退出 ——",
     "这就是防止一条旧英文安全警告被静默发到用户手册的那道闸。",
     "改译文的流程:改 en/fr → 把 zhSha256 更新为脚本报出的「实际」值 → 重跑 gen-hard-rules.mjs →",
-    "fr 重新交人工审校并更新 frReview。译文里的 **加重** 与 `反引号` 与 zh 对齐:markdown 落地面原样保留,",
+    "fr 重新审校(人工,或经用户授权的 AI 三语交叉核对,见 J127)并更新 frReview。译文里的 **加重** 与 `反引号` 与 zh 对齐:markdown 落地面原样保留,",
     "i18n 落地面由生成器剥除(UI 的加重靠样式做)。"
   ],
   "frReview": {
-    "status": "pending",
-    "reviewer": "U17 待用户指派",
-    "note": "rule7 的 zh 真源 2026-08-26 随 J83 改写(立体声轨默认参与,排除权移到轨道页开关),en/fr 已同步重译并更新 zhSha256,**fr 未经人工审校**。05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,不得随安全类文案发布;审校人归属 U17,状态转 reviewed 前保留本警告。(前一条 note 关于 rule3 的记录已并入本轮:两条都待同一次审校。)"
+    "status": "reviewed",
+    "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127)",
+    "date": "2026-09-28",
+    "note": "以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
