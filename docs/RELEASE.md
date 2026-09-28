@@ -64,7 +64,7 @@ semver 语义(音频插件特化):
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号(该步当前解析错行,见上方现状表第 2 条)。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
-9. **发布后**:把**同一份** zip 与 `.sha256` 上传到官网下载页,并逐字核对官网哈希与 Release 正文里的 SHA-256 一致(README 向用户承诺了这一点);同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
+9. **发布后**:**若官网下载页已上线**(是否上线待定,见下「分发渠道」),把**同一份** zip 与 `.sha256` 上传过去,逐字核对官网哈希与 Release 正文里的 SHA-256 一致,并同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
 
 ## zip 内必须携带的合规文件组
 
