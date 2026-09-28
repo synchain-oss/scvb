@@ -890,6 +890,19 @@ TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变�
     CHECK(f.auth.arbiter().panCurveLut() == f.auth.activePanCurveLut().get());
     CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-6.0f).margin(0.03));
 
+    // ②b 被限速拦着、还没发出去的那一份也一并作废 —— 否则它会在已提交曲线变了之后才发出去,
+    //    把音频拽回拖动中的旧点表,而那时已经没有人在拖。
+    preview(-12.0f);
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-9.0f)) == PreviewReq::accepted);
+    REQUIRE(f.auth.pumpPanCurvePreview(t - 990.0)); // 距上一份 10 ms:限速拦住,待发
+    const auto publishesBefore = f.auth.panCurvePreviewStats().publishes;
+    f.auth.setPanCurve(1, bellAt0(-5.0f));
+    CHECK_FALSE(f.auth.panCurvePreviewPending());
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(t)); // 到点也不再发
+    CHECK(f.auth.panCurvePreviewStats().publishes == publishesBefore);
+    t += 1000.0;
+    ackAudio(f);
+
     // ③ 换版本 ⇒ 作废;切回来不复活(只靠 rebindSources 按版本挑表的话,切回 V1 那一刻它会复活)。
     preview(-12.0f);
     f.auth.setVersionActive(2);
@@ -897,7 +910,7 @@ TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变�
     f.auth.setVersionActive(1);
     runAudio(f, 4096);
     CHECK(f.auth.arbiter().panCurveLut() == f.auth.activePanCurveLut().get());
-    CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-6.0f).margin(0.03));
+    CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-5.0f).margin(0.03));
 
     // ④ 旧版本号(UI 在「切版本已发出、回声未到」窗口里捕获的)⇒ staleVersion,什么都不记。
     CHECK(f.auth.requestPanCurvePreview(2, bellAt0(-9.0f)) == PreviewReq::staleVersion);
@@ -910,8 +923,16 @@ TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变�
 
     // ⑤ 拖回已提交的样子 ⇒ 借用已提交那张,不烘。
     const auto bakes = f.auth.panCurvePreviewStats().bakes;
-    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-6.0f)) == PreviewReq::accepted);
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-5.0f)) == PreviewReq::accepted);
     REQUIRE_FALSE(f.auth.pumpPanCurvePreview(t));
     CHECK(f.auth.panCurvePreviewStats().bakes == bakes);
     CHECK(f.auth.panCurvePreviewLut() == f.auth.activePanCurveLut());
+
+    // ⑥ 版本层 state 往返(T18 `fromState`)改了激活版本 ⇒ 同 ③ 作废。
+    REQUIRE(f.auth.panCurvePreviewLive());
+    juce::ValueTree st = f.auth.toState();
+    st.setProperty("active", 2, nullptr);
+    f.auth.fromState(st);
+    CHECK(f.auth.versionActive() == 2);
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
 }
