@@ -181,6 +181,21 @@ public:
     scvb::engine::AuthorityMode mode() const noexcept { return m_mode.load(std::memory_order_relaxed); }
     const std::array<Lane, kNumLanes>& lanes() const noexcept { return m_lanes; }
 
+    // [SL-536] 这个参数此刻是否正被打印器的 gesture 包着(消息线程)。PRINT 区间内车道 gesture
+    // 常开(tick 里「冻结 / 未冻结车道在区间内都保持打开」),别处要在同一参数上写宿主时,
+    // 开着就只写值、不再自己 begin/end —— 否则 begin 嵌套(JUCE debug jassert),自己那一下
+    // end 还会替打印器把宿主那边的 endEdit 提前发掉,此后的打印写入落在 gesture 之外。
+    bool laneGestureOpen(const juce::AudioProcessorParameter* param) const noexcept
+    {
+        for (const auto& lane : m_lanes)
+        {
+            if (lane.gestureOpen && lane.param != nullptr &&
+                static_cast<const juce::AudioProcessorParameter*>(lane.param) == param)
+                return true;
+        }
+        return false;
+    }
+
     // 直接推进一帧打印(等价一次打印 timerCallback)。供测试驱动,消息线程调用。
     void tick();
 

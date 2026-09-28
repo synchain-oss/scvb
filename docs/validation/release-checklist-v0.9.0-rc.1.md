@@ -272,7 +272,7 @@
   - 状态:⏳ CI(依赖 #297)
 
 - [ ] **J2 zip 内合规文件组断言通过**
-  - 查什么:zip 根目录有 `LICENSE.txt`(GPLv3 全文)、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、`INSTALL.txt`(含精确到 tag 的源码 URL);`LICENSE-EXCEPTION.md` 按 U2 **不附**。
+  - 查什么:zip 根目录有 `LICENSE.txt`(GPLv3 全文)、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、`third_party/notices/`(上游声明原文,HarfBuzz 的逐行版权只在其中的 `harfbuzz.COPYING`)、`INSTALL.txt`(含精确到 tag 的源码 URL);`LICENSE-EXCEPTION.md` 按 U2 **不附**。
   - 实况:#297 的 `package.ps1` 在 `verify-tag` 阶段做许可证全文覆盖检查,BSD-3-Clause 全文补上(#314)之前 rc tag 会停在 preflight。
   - 状态:⏳ CI(依赖 #297、#314)
 
