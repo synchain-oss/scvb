@@ -17,6 +17,8 @@
 //   UNDO-S   单栈:段表类 / 参数类 / 配置类交错,Ctrl+Z 按时间倒序弹;
 //   UNDO-PRINT PRINT 态:用户编辑照常受理 ⇒ 撤销也照常受理(同一条规矩);车道参数的撤销
 //            不被记成 hostEcho;宿主随后按自动化顶回来的那一下照常记 hostEcho、不进插件撤销栈。
+//   UNDO-L   载入 state 清栈:按 blob 形态分格,每格对应 setStateInformation 里的一个清栈落点
+//            (只带 PRMS 的预设走 CFGS 缺失早退,到不了函数末尾 —— #311 第 7 轮复审【重要】)。
 //
 // 为什么在 host 套件而不是 params 套件:要断的是**真 Processor + 真 APVTS + 真宿主通知通路**
 // (AudioProcessorListener 收到的 begin/end/value),ParamWriteAction 那个零件本身另有
@@ -29,7 +31,9 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -37,6 +41,8 @@
 
 #include "OutputProcessor.h"
 #include "engine/AuthorityMode.h"
+#include "state/StateCodec.h"
+#include "state/StateMigration.h"
 
 namespace
 {
@@ -142,6 +148,26 @@ void checkHostSaw(HostSpy& spy, juce::RangedAudioParameter& p, float wantEng)
     CHECK(spy.orphanEnd == 0);
     REQUIRE(spy.last.count(idx) == 1);
     CHECK(closeTo(p.convertFrom0to1(spy.last[idx]), wantEng));
+}
+
+// 在 base 的容器上只留 keep 认的 chunk;cfgsPayload 非空 = 把 CFGS 的载荷换成它。
+std::vector<std::uint8_t> reshapeBlob(const juce::MemoryBlock& base, const std::function<bool(std::uint32_t)>& keep,
+                                      const std::vector<std::uint8_t>& cfgsPayload = {})
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                                       [&keep](const scvb::state::Chunk& c) { return !keep(c.fourcc); }),
+                        chunks.chunks.end());
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCfgs && !cfgsPayload.empty())
+            c.payload = cfgsPayload;
+    }
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
 }
 
 } // namespace
@@ -573,4 +599,99 @@ TEST_CASE("SL-536 UNDO-PRINT:PRINT 态下撤销与用户编辑同规矩;撤销�
 
     r.out.getPrinter().setMode(scvb::engine::AuthorityMode::Follow);
     r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// UNDO-L:载入 state 后撤销 / 重做两边都空(#311 第 7 轮复审【重要】)。setStateInformation 有两个
+// 清栈落点,按 blob 形态分格,每格只靠其中一处:
+//   · 只带 PRMS(轨道 / 参数预设,CFGS 缺失早退)、PRMS + 解不开的 CFGS(解不开早退)—— 都走不到
+//     函数末尾,靠 PRMS 读回处那一处;拖动中途载入那格另钉同一处里的 `uiGestures_.clear()`;
+//   · 带 CFGS、不带 PRMS —— PRMS 那处不执行,靠末尾那一处。
+// 清栈三行里 `resetUndoTracking()` 本格**钉不住**(单删全绿):合并与接管占位都先核「栈顶事务名」,
+// 清栈后恒不中,它是纵深防御。
+// 栈里压的是参数步:撤销时写回的正是被 PRMS 覆盖的那个参数,所以除了「撤销 / 重做都返回 false」,
+// 还断 width 仍是预设值(改前:撤销把它写回载入前的出厂值,预设里的值被悄悄撤掉)。
+// ---------------------------------------------------------------------------
+TEST_CASE("SL-536 UNDO-L:载入 state 清空撤销 / 重做栈(含只带 PRMS 的预设)", "[host][sl536][undo]")
+{
+    UndoRig r;
+    auto& width = r.param("width");
+    const float w0 = r.eng("width"); // 出厂值
+    constexpr float kPresetW = 70.0f;
+    REQUIRE_FALSE(closeTo(w0, kPresetW));
+    REQUIRE_FALSE(closeTo(w0, 40.0f));
+
+    // 预设里 width = 70。经宿主通路写(不进插件撤销栈,见 UNDO-PRINT),存下后写回出厂值。
+    width.setValueNotifyingHost(width.convertTo0to1(kPresetW));
+    juce::MemoryBlock snap;
+    r.out.getStateInformation(snap);
+    width.setValueNotifyingHost(width.convertTo0to1(w0));
+    REQUIRE(closeTo(r.eng("width"), w0));
+    REQUIRE(closeTo(r.eng("ms_balance"), 0.0f));
+    REQUIRE_FALSE(r.out.undo()); // 前提:到这里栈是空的(宿主写不压步)
+
+    const auto isPrms = [](std::uint32_t f) { return f == scvb::state::kFourccPrms; };
+    const auto load = [&r](const std::vector<std::uint8_t>& blob) {
+        r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    };
+    // 载入前的栈:可撤销一步(width 出厂值 → 40)+ 可重做一步(ms_balance 0 → -30)。
+    const auto seedStack = [&r] {
+        r.uiEdit("width", 40.0f);
+        r.uiEdit("ms_balance", -30.0f);
+        REQUIRE(r.out.undo());
+        REQUIRE(closeTo(r.eng("ms_balance"), 0.0f));
+    };
+
+    SECTION("只带 PRMS 的预设(CFGS 缺失早退)")
+    {
+        seedStack();
+        load(reshapeBlob(snap, isPrms));
+        REQUIRE((r.out.stateNotRestoredMask() & scvb::output::kNotRestoredCfgsMissing) != 0); // 前提:走的是缺失那支
+        REQUIRE(closeTo(r.eng("width"), kPresetW)); // 前提:PRMS 确实被采用
+
+        CHECK_FALSE(r.out.undo());
+        CHECK(closeTo(r.eng("width"), kPresetW)); // ★ 改前:回到出厂值
+        CHECK_FALSE(r.out.redo());
+        CHECK(closeTo(r.eng("ms_balance"), 0.0f));
+    }
+
+    SECTION("PRMS + 解不开的 CFGS(解不开早退)")
+    {
+        seedStack();
+        const std::vector<std::uint8_t> badCfgs(12, std::uint8_t{0xEE});
+        load(reshapeBlob(snap, [](std::uint32_t) { return true; }, badCfgs));
+        REQUIRE((r.out.stateNotRestoredMask() & scvb::output::kNotRestoredCfgsRejected) != 0); // 前提:走的是解不开那支
+        REQUIRE(closeTo(r.eng("width"), kPresetW));
+
+        CHECK_FALSE(r.out.undo());
+        CHECK(closeTo(r.eng("width"), kPresetW));
+        CHECK_FALSE(r.out.redo());
+        CHECK(closeTo(r.eng("ms_balance"), 0.0f));
+    }
+
+    SECTION("拖动中途载入只带 PRMS 的预设:松手不按载入前的起点压步")
+    {
+        REQUIRE(r.out.uiBeginParamGesture("width"));
+        REQUIRE(r.out.uiSetParam("width", 40.0f));
+        load(reshapeBlob(snap, isPrms));
+        REQUIRE(closeTo(r.eng("width"), kPresetW));
+        REQUIRE(r.out.uiEndParamGesture("width"));
+
+        CHECK_FALSE(r.out.undo()); // ★ 不清 uiGestures_ ⇒ 松手按「出厂值 → 40」压一步
+        CHECK(closeTo(r.eng("width"), kPresetW));
+    }
+
+    SECTION("带 CFGS、不带 PRMS(走到末尾那处)")
+    {
+        seedStack();
+        load(reshapeBlob(snap, [isPrms](std::uint32_t f) { return !isPrms(f); }));
+        REQUIRE((r.out.stateNotRestoredMask() &
+                 (scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCfgsRejected)) == 0);
+        REQUIRE(closeTo(r.eng("width"), 40.0f)); // 前提:PRMS 不在,参数没被覆盖
+
+        CHECK_FALSE(r.out.undo());
+        CHECK(closeTo(r.eng("width"), 40.0f));
+        CHECK_FALSE(r.out.redo());
+        CHECK(closeTo(r.eng("ms_balance"), 0.0f));
+    }
 }

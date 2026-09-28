@@ -2108,6 +2108,14 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
 
+    // 载入覆盖了撤销步所写的面 ⇒ 整栈清空。两个调用点:PRMS 读回处(下面)与函数末尾(CFGS / CRVS);
+    // 为什么清、按什么判见末尾那段注释。
+    const auto clearUndoForLoad = [this] {
+        authority_.undoManager().clearUndoHistory();
+        resetUndoTracking();
+        uiGestures_.clear(); // 载入前开的 gesture 起点属于旧工程,收尾时不许按它压步
+    };
+
     // PRMS:123 参数(宿主自动化面)。
     if (const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms); prms != nullptr)
     {
@@ -2131,6 +2139,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             }
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
+            // [SL-536] 参数刚被覆盖 ⇒ 就地清栈,不等末尾那处:下面 CFGS 缺失 / 解不开的两处早退走不到
+            // 末尾,而只带 PRMS 的轨道 / 参数预设走的正是缺失那一支(#311 复审【重要】)。栈里的
+            // `ParamWriteAction` 写的正是这些参数,留着它,Ctrl+Z 会把预设里的值撤回载入前。
+            // 代价:同一条栈里的段表 / 配置步一并清掉(JUCE UndoManager 不能按类筛),与载入整份工程同口径。
+            clearUndoForLoad();
         }
     }
 
@@ -2400,12 +2413,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 安全性的理由因此**不是**「都写 crvsData_」(那句话随本卡失效),而是:
     // **两类动作写的面都刚被 setStateInformation 从新 blob 里整体覆盖过** ——
     // CRVS 整体替换、applied.* 也刚从 CFGS 读回,留着旧动作只会把它们撤回加载前。
-    // 再加新动作类时按这条判:它写的面是不是也被本函数覆盖了。
-    //   · [SL-536] `ChannelConfigAction`(写 `runtime_.channels`,CFGS 刚读回)与
-    //     `ParamWriteAction`(写 APVTS 参数,PRMS 刚读回)—— 同样都在被覆盖的面上。
-    authority_.undoManager().clearUndoHistory();
-    resetUndoTracking();
-    uiGestures_.clear(); // 载入前开的 gesture 起点属于旧工程,收尾时不许按它压步
+    // 再加新动作类时按这条判:它写的面是不是也被本函数覆盖了;覆盖处与这里之间若有早退,
+    // 就得在覆盖处就地清(PRMS 就是这种)。
+    //   · [SL-536] `ChannelConfigAction`(写 `runtime_.channels`,CFGS 刚读回)—— 在被覆盖的面上,归这里清;
+    //   · [SL-536] `ParamWriteAction`(写 APVTS 参数)—— PRMS 读回处已就地清过(见那里),因为 CFGS 的
+    //     两处早退走不到这里。带 PRMS 的整份工程在这里再清一次(幂等);不带 PRMS、CFGS 解码成功的
+    //     blob 只靠这一处。
+    clearUndoForLoad();
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     if (prepared_)
