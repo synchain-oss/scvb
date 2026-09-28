@@ -294,6 +294,37 @@ juce::var conflictResponse()
     return juce::var(o);
 }
 
+namespace
+{
+juce::var claimFailedResponse(const char* reason)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("ok", false);
+    o->setProperty("reason", juce::String(reason));
+    return juce::var(o);
+}
+} // namespace
+
+juce::var claimRequestResponse(InputClaimState requestResult)
+{
+    switch (requestResult)
+    {
+    case InputClaimState::kActive:
+    case InputClaimState::kUnassigned: {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("ok", true);
+        return juce::var(o);
+    }
+    case InputClaimState::kConflict:
+        return conflictResponse();
+    case InputClaimState::kAbiMismatch:
+        return claimFailedResponse("abiMismatch");
+    case InputClaimState::kUnavailable:
+        return claimFailedResponse("unavailable");
+    }
+    return claimFailedResponse("unavailable"); // 防御性:未知结果不报成功(见头文件声明处)
+}
+
 juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot& conn, const ConfigSnapshot& config,
                              float uiScale, const juce::String& lang, bool guideSeen, bool guideSeenGlobal,
                              const juce::String& pluginVersion, u32 abi)

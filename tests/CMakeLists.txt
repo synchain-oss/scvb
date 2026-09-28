@@ -53,6 +53,7 @@ add_executable(scvb_tests
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp
   core/test_features_snapshot.cpp
+  core/test_wave_valleys.cpp
   core/test_segment_edit.cpp
   core/test_audio_ring.cpp
   core/test_output_stage.cpp
@@ -283,6 +284,8 @@ target_include_directories(scvb_input_bridge_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/src/plugin-common
   ${CMAKE_SOURCE_DIR}/src/core
 )
+# [SL-463] 源码级判据读 src/input/InputEditor.cpp 的文本(InputEditor 本身不编入,理由见上)。
+target_compile_definitions(scvb_input_bridge_tests PRIVATE SCVB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 if(MSVC)
   target_compile_options(scvb_input_bridge_tests PRIVATE /W4 /utf-8 /EHsc)

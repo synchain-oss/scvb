@@ -98,13 +98,8 @@ public:
     // `createSegments()` 里 `allowOverwrite=true` ⇒ `write_head_samples` 清零、`epoch.fetch_add(1)`
     // ——下游(01 §4.1)据 epoch 变化判定"这是一份新数据、旧代数据作废",回滚成功那一刻会有一次
     // 可观测的 epoch 跳变,不是"什么都没发生过"。复审 4057661696。
-    // ⚠ [SL-463 已知留白] 返回值里的**非冲突失败**(`kAbiMismatch` / `kUnavailable`)到了桥面
-    // 会被回成 `{ok:true}`:契约 §3.2/§3.3 的返回并集只有 `{ok:true}` | `{conflict:true}`,
-    // 失败原因只经 `scvb.state.claim` 回推。`kAbiMismatch` 在界面上有红 pill + 横幅;
-    // `kUnavailable`(段打不开 / 映射失败 / `claimInput` 非冲突失败 / `createSegments` 失败)
-    // 对应 `claim="idle"` + `channel_id=0`,界面只是灰 pill「未选择通道」,**没有专门提示**。
-    // 两者在点击路径上都可达(abi 不符的对端建了 registry;段创建失败)。要给第三种回执得改
-    // 冻结契约的返回并集,未获批,故只在这里与 InputEditor::handleSetChannelId() 写明。
+    // 返回值到桥面回执的映射(冲突 / abi 不符 / 段不可用各有失败形状,契约 §3.2/§3.3,[SL-463] J156)
+    // 见 src/input/InputBridgeLogic.h 的 claimRequestResponse()。
     InputClaimState prepare(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
 
     // [M] 4Hz 心跳(kActive 才写)。

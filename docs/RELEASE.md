@@ -54,13 +54,14 @@ semver 语义(音频插件特化):
 
 | job | 做什么 | 失败时 |
 |---|---|---|
-| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
+| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
 | `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
 | `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
 
 - 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
 - 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
 - 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。这项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
+- 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
 - **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
 
@@ -96,12 +97,14 @@ SCVB-vX.Y.Z-win64.zip
 ├── LICENSE.txt                 GPLv3 全文(= 仓库根 LICENSE)
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
 ├── LICENSES/                   仓库 LICENSES/ 下的全部许可证全文(应有哪些由 THIRD-PARTY-NOTICES.md 的「随二进制分发」表决定)
+├── third_party/notices/        仓库同名目录的全部文件:JUCE 内置库与 WebView2 loader 的上游版权 / 许可声明原文
+│                               (NOTICES 对 HarfBuzz 只写了首行版权,其余各行见这里的 harfbuzz.COPYING)
 └── INSTALL.txt                 安装步骤 + 未签名插件的「解除锁定」与 SmartScreen 说明 + 九条规则前 3 条
                                 + 精确到 tag 的源码获取地址(GPLv3 §6 的书面声明)
 ```
 
 U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认解释,见 `THIRD-PARTY-NOTICES.md`),所以 zip 里没有它。
-以上每一项都由 `scripts/package.ps1` 在打包后重新打开 zip 断言(三个 bundle 的 DLL 条目、每个合规文件、`INSTALL.txt` 的源码声明行、逐条目与源文件字节一致、根目录无清单外条目);`INSTALL.txt` 里的九条规则原文从用户手册的生成区读取,不另存副本。
+以上每一项都由 `scripts/package.ps1` 在打包后重新打开 zip 断言(三个 bundle 的 DLL 条目、每个合规文件、`THIRD-PARTY-NOTICES.md` 点名的每个声明文件路径、`INSTALL.txt` 的源码声明行、逐条目与源文件字节一致、根目录无清单外条目且 `third_party/` 下只有 `notices/`);`INSTALL.txt` 里的九条规则原文从用户手册的生成区读取,不另存副本。
 
 ## 发布说明模板
 
@@ -131,7 +134,7 @@ U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认
 ## 下载与安装
 | 资产 | 说明 |
 |---|---|
-| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3`、`SCVB Output.vst3`(必装)与 `SCVB Monitor.vst3`(可选),都是完整 bundle 目录;解压前先解除锁定(见下),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/`、`INSTALL.txt` |
+| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3`、`SCVB Output.vst3`(必装)与 `SCVB Monitor.vst3`(可选),都是完整 bundle 目录;解压前先解除锁定(见下),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/`、`third_party/notices/`、`INSTALL.txt` |
 | `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(`sha256sum -c` 可直接用) |
 | `package-summary.md` | 版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / zip 内逐条目哈希 |
 

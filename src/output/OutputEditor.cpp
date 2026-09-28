@@ -205,7 +205,8 @@ juce::var OutputEditor::buildSnapshot()
 {
     juce::var o = buildStateSubtree(true);
 
-    // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global / conn。
+    // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global /
+    // lang_chosen_global / host / conn。
     // [SL-215] 此前这里是一串写死的全零字面量,于是设置页恒显示
     // 「session 00000000-0000-0000-0000-000000000000」。真源在 processor(构造期生成、随 PRMS
     // 持久化、加载时沿用工程里的那一个)。
@@ -221,6 +222,12 @@ juce::var OutputEditor::buildSnapshot()
     put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
     // §1.1 附加位:用户显式选过语言的系统级全局默认(新工程不再重复问语言)。
     put(o, "lang_chosen_global", uidefaults::langChosenGlobal());
+    // [J150] 宿主标识(闭集,口径见 HostId.h):页面据此只在 REAPER / Live 上出宿主专属提示
+    // (03 §4.2 / §4.4)。宿主在实例寿命内不变,所以只进快照、不进 §2.1 增量事件;
+    // 编辑器每次重建都会重新调 requestInitialState()(§0.6),拿得到。
+    // ⚠ 这一行的接线由 web-preview/tests/smoke-host-hints.mjs 的源码钉子锁住
+    // (本 TU 编不进任何单测目标,见 emitTick 头注)。
+    put(o, "host", juce::var(processor_.hostId()));
     put(o, "conn", buildConnPayload());
     return o;
 }
@@ -265,8 +272,13 @@ void OutputEditor::emitTick()
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
-    if (tickCount_ % 12 == 0)
-        emitCaptureProgress(); // ~2Hz(25Hz 12 分频);内部再判「仅播放中发」(§2.7)
+    // [J152] 例外①:mBridgeReady 后首帧补发一次全量 captureProgress,不看走带 —— 否则停着打开一个
+    // 已采未析的工程,Tab1 拿不到覆盖率,一直显示「当前范围内无采集数据」。例外② 在 handleClearCoverage。
+    // 两个例外共用 `pendingCoverageFull_` 这一个闩锁;清位只在 emitCaptureProgress 真的出过帧之后。
+    if (first)
+        pendingCoverageFull_ = true;
+    if (pendingCoverageFull_ || (tickCount_ % 12 == 0))
+        emitCaptureProgress(pendingCoverageFull_); // 周期 ~2Hz(25Hz 12 分频,仅播放中,§2.7)+ 例外帧
 
     // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)或 CRVS 修订号变化(加载工程/
     // 预设后 setStateInformation 替换段真身)必重发 —— 否则旧时间/旧段表残留到下一次段编辑/undo/切版本
@@ -627,62 +639,27 @@ void OutputEditor::emitPlayhead()
     emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
 }
 
-void OutputEditor::emitCaptureProgress()
+void OutputEditor::emitCaptureProgress(bool forceFull)
 {
-    // §2.7:播放中 2Hz;非播放不发。数据源 = FrameStore 的 coverage 记账
-    // (Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
-    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
-    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
-    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
-    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
-    if ((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0)
-    {
+    // 帧内容(带哪些轨、分母窗口、增量差集、基线推进)在 processor 的 captureProgressFrame 里,
+    // host harness 直接断言它;这里只管可见性、闩锁与序列化。
+    //
+    // 不可见时载荷会被丢:**先判、不算** —— 算了就推进了基线,这一帧的增量被永久吞掉;
+    // 例外帧的闩锁也就在没人看见的时候被清掉了(与 emitIfChanged 同一条纪律)。
+    if (!webView().isVisible())
         return;
-    }
+    const auto frame = processor_.captureProgressFrame(coverageBaseline_, forceFull);
+    // 例外帧总会出帧(15 轨全带,见 captureProgressFrame 头注),到这里就算兑现了。
+    pendingCoverageFull_ = false;
+    if (frame.empty())
+        return; // 周期帧:没在播放 / 无变化 / 窗口为空 —— 不发(§0.4 值未变不发)
 
-    // 覆盖率的分母(§2.7 字段纪律):global.range;follow 档取「全时间线已分析域」——
-    // 用当前播放位置作为已知时间线末端,否则分母是无穷大、覆盖率恒 0。
-    const auto& rt = processor_.runtime();
-    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
-    double startS = 0.0;
-    double endS = timeS;
-    if (rt.rangeMode != 0)
-    {
-        startS = rt.rangeStartS;
-        endS = rt.rangeEndS;
-    }
-    if (!(endS > startS))
-    {
-        return; // 时间线还没走出一个 hop:没有可报的覆盖
-    }
-
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
     juce::var channels = mkArray();
-    bool any = false;
-    for (int t = 0; t < 15; ++t)
+    for (const auto& track : frame)
     {
-        const int ch = t + 1;
-        const auto info = processor_.coverageOf(ch, startS, endS);
-        const std::size_t idx = static_cast<std::size_t>(t);
-
-        // addedRanges = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
-        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
-        scvb::analysis::CoverageMap added;
-        for (const auto& r : info.ranges)
-            added.add(r);
-        for (const auto& r : lastCoverageRanges_[idx])
-            added.punch(r);
-
-        const bool pctChanged = !juce::approximatelyEqual(info.pct, lastCoveragePct_[idx]);
-        if (added.empty() && !pctChanged)
-        {
-            continue; // §2.7:仅包含本帧有变化的轨
-        }
-        lastCoverageRanges_[idx] = info.ranges;
-        lastCoveragePct_[idx] = info.pct;
-
-        const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
         juce::var addedArr = mkArray();
-        for (const auto& r : added.ranges())
+        for (const auto& r : track.added)
         {
             juce::var seg = obj();
             put(seg, "startS", static_cast<double>(r.begin) * hopS);
@@ -691,16 +668,10 @@ void OutputEditor::emitCaptureProgress()
         }
 
         juce::var c = obj();
-        put(c, "ch", ch);
+        put(c, "ch", track.ch);
         put(c, "addedRanges", addedArr);
-        put(c, "coveragePct", static_cast<double>(info.pct));
+        put(c, "coveragePct", static_cast<double>(track.pct));
         push(channels, c);
-        any = true;
-    }
-
-    if (!any)
-    {
-        return; // 无变化不发(§0.4 值未变不发)
     }
 
     juce::var payload = obj();
@@ -976,7 +947,8 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     juce::var ui = obj();
     put(ui, "scale", static_cast<float>(processor_.uiScalePercent()) / 100.0f);
     put(ui, "language", processor_.uiLanguage());
-    put(ui, "active_tab", rt.activeTab);
+    // [J148] atomic 序号(get/setStateInformation 在宿主线程碰它),换回 §1.31 的枚举字面量再上桥。
+    put(ui, "active_tab", juce::String(scvb::output::activeTabName(rt.activeTab.load(std::memory_order_relaxed))));
     put(ui, "master_chart_mode", processor_.masterChartMode());
     // 两位是 atomic(宿主线程的 setStateInformation 会写,本函数在消息线程 25Hz 读):
     // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
@@ -2343,9 +2315,10 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
     const double clearedS = processor_.clearCoverage(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS);
     // 覆盖变了就重置 captureProgress 的增量基线,否则下一帧的差集会把「已被清掉的区间」
     // 当成仍然存在,覆盖条撤不下去。
-    for (auto& r : lastCoverageRanges_)
-        r.clear();
-    lastCoveragePct_.fill(-1.0f); // 哨兵:与任何真实百分比都不等 → 下一帧必报
+    coverageBaseline_.reset();
+    // [J152] 例外②:受理后补发一次全量 captureProgress,不看走带(§1.24 许诺的「回推覆盖率变化」
+    // 此前要等下一次播放才兑现,停着清完数字不动)。下一拍 emitTick 出帧,闩锁语义见那里。
+    pendingCoverageFull_ = true;
 
     juce::var o = obj();
     put(o, "ok", true);
@@ -2419,46 +2392,28 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    const auto tile = processor_.waveformOf(ch, startS, endS, cols);
-    juce::var minDb = mkArray();
-    juce::var maxDb = mkArray();
-    juce::var vad = mkArray();
-    juce::var covered = mkArray();
-    juce::var stale = mkArray();
-    juce::var passId = mkArray();
-    for (int i = 0; i < cols; ++i)
-    {
-        const auto k = static_cast<std::size_t>(i);
-        push(minDb, tile.minDb[k]);
-        push(maxDb, tile.maxDb[k]);
-        push(vad, tile.vad[k]);
-        push(covered, tile.covered[k]);
-        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
-        push(stale, 0);
-        push(passId, 0);
-    }
-    juce::var valleys = mkArray();
-
-    juce::var o = obj();
-    put(o, "minDb", minDb);
-    put(o, "maxDb", maxDb);
-    put(o, "vad", vad);
-    put(o, "covered", covered);
-    put(o, "stale", stale);
-    put(o, "passId", passId);
-    put(o, "valleys", valleys);
-    c(o);
+    // [J145] 瓦片 → §1.27 回包的拼装挪到了 `ScvbOutputAudioProcessor::waveformResponse`:此前这里
+    // 回的 `valleys` 是一个**从不填**的空数组,而本 TU 依赖 WebView2、不在 host 套件的 TU 清单里 ——
+    // 拼装留在这里,「谷点有没有真的进回包」这一跳离线就永远测不到(HOST J145 那格钉的就是它)。
+    c(ScvbOutputAudioProcessor::waveformResponse(processor_.waveformOf(ch, startS, endS, cols)));
 }
 
 void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
 {
-    const juce::String tab = a.size() > 0 ? a[0].toString() : juce::String();
-    if (tab != "master" && tab != "tracks" && tab != "wave" && tab != "settings")
+    // 四值判定与加载侧共用 OutputUiState.h 的 parseActiveTab(同一张表,不在两处各写一份)。
+    scvb::output::OutputActiveTab tab = scvb::output::OutputActiveTab::kMaster;
+    if (a.size() < 1 || !scvb::output::parseActiveTab(a[0].toString(), tab))
     {
         c(badArgResp());
         return;
     }
-    processor_.runtime().activeTab = tab;
+    // [J148] 只改内存(一个 atomic 字节,不分配、不持锁)。落盘发生在宿主调 getStateInformation 时,
+    // 所以连按 ←/→ 扫过四个 tab 也只是四次原子写,不需要另做防抖。
+    // 不向宿主标脏:与 setLang / commitUiScale / setGuideSeen 同口径 —— 切 tab 是导航动作,标脏的话
+    // 用户只是看了一圈页面,DAW 关工程时也会弹「是否保存」。(同族里唯一标脏的是 setMasterChartMode,
+    // 那是 #96 为一个刻意选的视图设置加的,不是这一族的通例。)代价:只切了 tab、没做任何别的改动
+    // 就关工程,DAW 不会提示保存,这一次的 tab 也就不进工程;存过一次工程就一定带上当时的 tab。
+    processor_.runtime().activeTab.store(tab, std::memory_order_relaxed);
     c(okResp());
 }
 

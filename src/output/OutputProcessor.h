@@ -24,6 +24,7 @@
 #include "output/StateRestoreDiag.h" // [SL-218] 未恢复节位图(JUCE-free)
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
+#include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
@@ -142,8 +143,13 @@ struct OutputRuntimeState
     std::array<Channel, scvb::engine::kNumTracks> channels;
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)
-    juce::String activeTab = "master";
-    // 首启已读位是本结构里**唯一跨线程**的两个字段:自 T37 起它们随 PRMS 持久化,
+    //
+    // [J148] active_tab 自本版起随 PRMS 持久化(§1.31「重开面板恢复上次 tab」),于是它与下面
+    // 几位一样跨线程:宿主线程的 get/setStateInformation 读写、消息线程的 setActiveTab 桥入口写、
+    // 25Hz 的 buildStateSubtree 读。故存**序号**进 atomic(juce::String 装不进 atomic),名字 ⇄ 序号
+    // 的换算只在 OutputUiState.h 一处。单字段、无跨字段不变式,写方不需要持 lifecycleMutex_。
+    std::atomic<scvb::output::OutputActiveTab> activeTab{scvb::output::OutputActiveTab::kMaster};
+    // 首启已读位同样跨线程:自 T37 起它们随 PRMS 持久化,
     // 于是宿主线程的 setStateInformation 会写、消息线程 25Hz 的 buildStateSubtree 会读。
     // 用 atomic 而不是让读方去抢 lifecycleMutex_ —— 25Hz 的 emit 路径不该为两个 bool
     // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。
@@ -263,6 +269,14 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
+    // [J150] 宿主标识(闭集 "reaper" / "live" / "cubase" / "other",取值口径见 HostId.h)。
+    // 桥面 §1.1 快照的 `host` 取这里;构造期判定一次,实例寿命内不变。
+    const char* hostId() const { return hostId_; }
+    // [J150] **仅供测试**:让**之后构造**的实例按指定宿主类型判定;传 std::nullopt 恢复按真实宿主判定。
+    // 为什么需要它:harness 进程本身不是任何 DAW,不注入就只测得到 "other" 那一支 ——
+    // 把构造函数里那一行判定换成常量 "other",用例照样全绿。生产代码不得调用。
+    // 与 setSidecarBaseDirForTesting 同款(进程级静态、单测线程写)。
+    static void setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type);
     // [SL-233] **仅供测试**:把 sidecar 落盘根目录改到临时目录,避免单测写真实用户会话目录
     // (崩溃即残留、并行 worktree 互相串扰)。传空 path 恢复默认位置。生产代码不得调用。
     // 与 uidefaults::setStorageDirForTesting 同款(那处的理由逐条适用)。
@@ -426,6 +440,39 @@ public:
     };
     CoverageInfo coverageOf(int channel, double startS, double endS);
 
+    // [M] §2.7 `scvb.captureProgress` 的一帧(这一帧该带哪些轨、各带什么)。
+    //
+    // 放在 processor 而不是 editor:editor 编不进任何 C++ 测试目标(要真 WebView2),
+    // 放这里 host harness 才能拿真采集、真存盘重开的数据直接断言帧内容([J152])。
+    // editor 只管「什么时候要一帧」(周期 / 两个例外)与序列化。
+    //
+    // 增量基线归调用方持有(editor 一份;测试自己一份),本函数按本帧结果推进它。
+    struct CaptureProgressBaseline
+    {
+        std::array<std::vector<scvb::analysis::HopRange>, 15> ranges{}; // 上一帧已报过的覆盖区间
+        std::array<float, 15> pct{}; // 上一帧已报过的覆盖率
+        // clearCoverage 之后作废:否则下一帧的差集会把已被清掉的区间当成仍在,覆盖条撤不下去。
+        // pct 落哨兵 −1:与任何真实百分比都不等。
+        void reset()
+        {
+            for (auto& r : ranges)
+                r.clear();
+            pct.fill(-1.0f);
+        }
+    };
+    struct CaptureProgressTrack
+    {
+        int ch = 0; // 1..15
+        std::vector<scvb::analysis::HopRange> added; // 相对基线新增的区间(hop 域)
+        float pct = 0.0f; // 0..100
+    };
+    // forceFull=false:周期帧 —— **只在播放中**出帧,且只带本帧有变化的轨(§2.7)。
+    // forceFull=true :[J152] 两个例外帧(mBridgeReady 后首帧 / clearCoverage 受理后)——
+    //   **不看走带**,15 轨全带;分母窗口为空(follow 档、从未采集、播放头在 0)时各轨 0% 照发,
+    //   否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    // 返回空 = 这一拍不发。分母窗口见 `AnalyzeScopeMath.h` 的 `captureProgressWindow`。
+    std::vector<CaptureProgressTrack> captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull);
+
     // [SL-252 / SL-257] 某段的**上报响度** L_seg(§2.8 `loudnessLufs`),emit 时按 FEAT 重算。
     // 此前上桥恒为 `0.0`:`applyAnalysisSegments` 把 `AnalysisSegment` 抄进 `state::Segment`
     // 时丢掉了它,而 `state::Segment` 没有响度字段(宪法 params-v0 定死持久化段字段),
@@ -459,8 +506,17 @@ public:
         std::vector<double> maxDb;
         std::vector<int> vad;
         std::vector<int> covered;
+        // [J145] §1.27 `valleys[]`:[startS,endS) 内的吸附谷时刻(秒,升序,至多 cols 个)。
+        // 算法与口径见 `analysis/WaveValleys.h`;门槛取当前 `runtime_.segmentationSensitivity`
+        // (与 S1 谷切分候选同一条 minDepth)。未覆盖 / 已覆盖跨度超上限 ⇒ 空。
+        std::vector<double> valleys;
     };
     WaveformTile waveformOf(int channel, double startS, double endS, int cols);
+    // [J145] 瓦片 → §1.27 回包 `{minDb,maxDb,vad,covered,stale,passId,valleys}`(字段序与契约一致)。
+    // 放在 processor 而不是 OutputEditor:编辑器依赖 WebView2、不在 host 套件的 TU 清单里,
+    // 拼装留在那边的话「谷点有没有真的进回包」离线永远测不到 —— 而此前坏的恰恰是这一跳。
+    // stale / passId 这一版恒 0(见实现处注释)。纯函数,不取锁。
+    static juce::var waveformResponse(const WaveformTile& tile);
 
     // [M] 已采集内容的时间线右端(秒)= 全轨 coverage 的最大终点;无采集数据回 0。
     // follow 档下「分析全部」的终点取它,而不是当前播放头 —— 见 parseAnalyzeScope 的头注。
@@ -788,6 +844,8 @@ private:
     // 存取口径与相邻的 uiLanguage_ / masterChartMode_ 逐字相同(同样由 setStateInformation 写、
     // 桥面按值读),不另立一套同步纪律。
     juce::String sessionGuid_;
+    // [J150] 宿主标识:构造期写一次、之后只读;指向 HostId.h 里的字符串字面量(静态寿命)。
+    const char* hostId_ = "other";
 
     // T29:桥面运行时 state + CRVS 段真身(消息线程独占)。
     OutputRuntimeState runtime_;
