@@ -255,7 +255,12 @@ void OutputEditor::emitTick()
     emitState(first);
     scvb::output::settleResendLatch(emitParams(first || pendingParamsFull_), pendingParamsFull_);
     if (first || (tickCount_ % 6 == 0))
+    {
         emitConn(); // ~4Hz(25Hz 6 分频)
+        // [rc-misc a] 横幅③:与 conn 同一数据源(connSnapshot)、同一节拍;两者各取一次快照,
+        // 中间隔一次取锁,极端情况下行灯与横幅会差一拍(下一拍即对齐)。
+        emitSrMismatchError();
+    }
     if (first || (tickCount_ % 25 == 0))
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
@@ -796,6 +801,28 @@ void OutputEditor::emitNoTimelineError()
         return;
     emitError("noTimeline", 0, obj(), plan.active);
     noTimelineShown_ = plan.nextShown;
+}
+
+// [rc-misc a] §2.9 `scvb.error` 的 `srMismatch` 一档(§5.1 红横幅③)。
+// envelope:code + ch(轨级,§5.1 该行 ch 必填)+ `detail:{inputSr, outputSr}` + active。
+// 此前本码在 Output 侧零生产者,横幅③永远不亮(Tab2 行灯读的是 scvb.conn,不受影响)。
+// 判定/记账见 `BridgeArgs.h` 的 `planSrMismatchEmit`;记账口径与 `emitNewerStateError` 同款。
+void OutputEditor::emitSrMismatchError()
+{
+    const auto snap = processor_.connSnapshot();
+    const auto outputSr = static_cast<std::uint32_t>(juce::jmax(0, juce::roundToInt(processor_.sampleRate())));
+    const scvb::output::SrMismatchTarget shown{srMismatchShownCh_, srMismatchShownInSr_, srMismatchShownOutSr_};
+    const auto plan = scvb::output::planSrMismatchEmit(scvb::output::firstSrMismatchOf(snap.channels, outputSr),
+                                                       webView().isVisible(), shown);
+    if (!plan.send)
+        return;
+    juce::var detail = obj();
+    put(detail, "inputSr", static_cast<juce::int64>(plan.payload.inputSr));
+    put(detail, "outputSr", static_cast<juce::int64>(plan.payload.outputSr));
+    emitError("srMismatch", plan.payload.ch, detail, plan.active);
+    srMismatchShownCh_ = plan.nextShown.ch;
+    srMismatchShownInSr_ = plan.nextShown.inputSr;
+    srMismatchShownOutSr_ = plan.nextShown.outputSr;
 }
 
 // ============================================================================
@@ -1345,6 +1372,8 @@ void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
         else
         {
             // §1.6 拒绝态行:range ∩ coverage = ∅ → {ok:false, affected:{0,0,0}},**不带 reason**。
+            // [SL-535] 「范围内有采集数据,但那些轨此刻都没连上 Input」也落这一行:分析只认已连接的轨,
+            // 对它而言那份覆盖不存在。复用既有拒绝态,不新增 reason(§7 manifest 给 analyze 只登记了 busy)。
             juce::var affected = obj();
             put(affected, "intervals", 0);
             put(affected, "tracks", 0);
