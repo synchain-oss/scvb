@@ -66,6 +66,39 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
   「这条轨已不全是手动值」。
 - **锁**:与改前同一口径 —— 被写的段一律摘锁(J34 的 locked 保护只约束重分析;确认条如实报「含 N 个锁定段」)。
   这样「恢复自动」(`clearManual`)仍能把整条轨清回 `auto`,与改前一致。
+- **「哪一维是手动」是按值推断的,碰巧全等的另一维会被误判**(#302 复审【重要】):读回链判「某一维是手动常值」
+  只能看「每段都是 `user_edited` ∧ 该维各段值相等」—— 段上没有记录「哪一维被接管」的字段(flags 只有 origin 与
+  locked)。于是拖过音量卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段都居中),pan 也被判成手动常值。
+  这不是只在构造夹具里才有的形态:本仓 `HOST SL-188` 用单声源分析出的多段 auto 表,各段 pan 就是相同的
+  (见下「删除式」ND5)。后果:
+  - 输出 OFF(跟随宿主)时 pan 读回停在段值、不跟参数面。宿主自动化把 pan 拉到别处时,Output 分布图与 Monitor
+    `panNow` 仍显示段值,与 J78「显示的是该维度的权威」不符。只影响显示:OFF 下 DSP 两维都读参数面
+    (`DspArbiter::processBlock` 的 follow 分支),声音本来就跟着宿主。
+  - 检查器里逐段改过、某一维碰巧全等的轨,同样亮「手动接管」标、出「恢复自动」入口与解冻提示。
+
+  改前「单段 `user_edited`」也有同类误判,但只落在单段轨上,范围窄得多。
+  **本 PR 为什么不做显式标记**:不升 abi 的前提下,唯一能放标记的地方是段 flags 的空闲位(bit3 起;CRVS 原样读写
+  这个 u32,旧插件只取 bit0-2,盘上布局不变)。但是 ① `STATE_SCHEMA.md` §一 `segments[]` 的字段清单要加一项;
+  ② JS 读回链要看得到它,`SCVB_CONTRACT.md` §2.8 `scvb.segments` 载荷要加字段(连带 mock 与 parity 检查);
+  ③ 分段编辑五个 op、`clearManual`、重分析各自怎么维护这两位,要先定语义;④ 旧构建存下的手动常值段没有这两位,
+  要定兼容规则。四件都超出 J131 的范围,需另裁。
+  **可选方案(交统筹)**:(A) 按上面做显式标记,走一次冻结契约变更;(B) 读回链让手动维也受输出档约束(OFF 一律读
+  参数面)—— 手动接管本来就同时写了参数面,OFF 下声音也走参数面,改后显示与声音一致;要改 §1.16 与
+  `IPC_CONTRACT.md` §6.1 ② 的「不看输出档」一句(那是 SL-211 复审定下的口径),而且「手动接管」标误亮的问题 B 解决
+  不了;(C) 维持现状,也就是本 PR 的做法。
+  现行行为由 `tests/core/test_viz_plane.cpp`(`DistReadback` 用例的「已知近似」块)与
+  `web-preview/tests/smoke-tab1-interactions.mjs` (a10) 钉住。改成 A 或 B 时这两格应当翻过来,连同本条一起改。
+- **保留下来的另一维曲线不再随重分析更新**(#302 复审):origin 是整段一个值、没法逐维标,手动接管把每段都标成
+  `user_edited`,而重分析按 ADR-008 v1.1 不覆盖 user 段。所以拖过音量卡箍之后,这条轨保留下来的 pan 曲线停在拖的
+  那一刻:之后调 VAD / 分段参数、局部重新采集,都不会再改它。要让它重新跟着分析走只能「恢复自动」,而那会连手动音量
+  一起清掉。改前整条轨是一段常值,同样不随重分析更新(pan 还被压平了),所以这一点不是新引入的;新情况是用户看到 pan
+  「还在动」,容易以为它仍是自动的。另外,原本 `origin=user_created` 的段也会被改写成 `user_edited`,波形页该段的
+  「C」标记随之变成「E」(改前整表被替换,同样没有 C 了)。要不要在确认条或解冻提示里说明这一点,交统筹。
+- **段表为空的那一支,确认条那句「另一项保留原曲线」不成立**(#302 复审):段表为空(还没分析过)时,手动接管照旧写
+  一段全时限常值,另一维落默认值(pan 0 / vol 0 dB),而这一段在读回链上两维都算手动 —— 另一维的读回从参数面换成
+  这个默认值。行为与改前相同(见上表「段表为空时:不变」),但确认条文案是本 PR 改的,在这一支上「保留原曲线」没有
+  对象。可选:① 确认条按段表空 / 非空分成两句(新增 key,三语 + 字体子集);② 空表那一支的另一维改取参数面当前值
+  (行为变更)。两者都需另裁,本 PR 不动。
 
 ## 兼容性影响
 
@@ -77,7 +110,7 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
   这个值不与任何一侧对拍(见 `20260921-sl464-channel-id-zero-semantics.md` 的核查);若统筹认为「改既有语义」
   须升主版本,请另行裁定,本 PR 不自行升。
 
-## 判据与机检(删除式见 PR 描述)
+## 判据与机检
 
 | 层 | 位置 | 钉什么 |
 |---|---|---|
@@ -86,6 +119,24 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
 | 生产接线 | `tests/host/test_host_harness.cpp` `HOST SL-180` | 真 `setTrackManual`:两段曲线拖 vol ⇒ 段数 2、逐段 pan 不变、vol 常值、参数面;读回;**听感**(总线 L/R 在前段偏左、后段偏右);撤销/重做逐字节;镜像拖 pan ⇒ 逐段 vol 保留 |
 | 读回 JS | `web-preview/tests/smoke-tab1-interactions.mjs` (a9) | 同 native 读回格 |
 | mock 对拍 | `web-preview/tests/smoke-tab2-interactions.mjs` §1.16 段 | mock 桥拖 vol ⇒ 回推段表逐段 pan / 边界与拖前一致、每段 vol = 写入值、pan 维不算手动常值 |
+| 已知近似(钉**现行**行为) | `test_viz_plane.cpp` `DistReadback` 用例「已知近似」块;`smoke-tab1-interactions.mjs` (a10) | vol 接管 + pan 各段碰巧全等 ⇒ pan 也判成手动、输出 OFF 读回停在段值(见上「已知连带」;改成方案 A / B 时应当翻) |
+
+### 删除式(本机实测,#302 第 2 轮)
+
+每条只动一处代码;跑完即复原(sha256 回到原值),复原后整套重编重跑全绿。结果栏是**实得**,不是预期。
+native 用 `scvb_tests "[viz]"`(15 例)、`scvb_params_tests` / `scvb_host_tests`;JS 用 `node` 直接跑两份冒烟。
+
+| 编号 | 注入 | 实得 |
+|---|---|---|
+| ND1 | `DistReadback.h` `readbackSegsOf`:两维改回共用 `out.manual`(撤掉逐维) | 1 例红:`test_viz_plane.cpp:723`(输出 ON 下 pan 读成首段)、`:727`(输出 OFF 下 pan 没回落参数面) |
+| ND2 | 同处只改 pan 那一行:手动维受输出档约束(方案 B 的形态) | 2 例红:`:749`(「已知近似」格翻过来)、`:764`(单段手动常值 OFF 读回;REQUIRE 截断本例)、VizPublisher 用例 `:878`(手动段的 `panNow`)。即改成方案 B 时这两格要一起改 |
+| ND3 | `manualDimOf` 加一行「多段轨上 pan 不再按值推断」 | 1 例红,只红「已知近似」两格 `:747`、`:749` |
+| ND4 | `SegmentEditService.h` `makeManualDimSegments` 非空表那一支改回「压成单段、另一维取首段」 | `scvb_params_tests "[service]"` 12 例红 2:SERVICE-5 `test_segment_edit_service.cpp:165`、SERVICE-6 `:182`;`scvb_host_tests "[SL180]"` 2 例全红:HOST SL-180 `test_host_harness.cpp:3477`、HOST SL-188 `:3846`。四处都是开头那条段数 REQUIRE,其后的逐段断言被截断、没跑到 —— 所以另做 ND5 |
+| ND5 | 同一函数:段边界保留,但另一维逐段改成首段的值(只压平另一维) | SERVICE-5 `:169`、SERVICE-6 `:186` 红;HOST SL-180 红 5 处:`:3480`(逐段 pan)、`:3497`(读回取后段)、`:3501`(pan 不算手动)、`:3522`(**听感**:后段偏右)、`:3538`(镜像:逐段 vol)。**HOST SL-188 不红** —— 它的多段 auto 夹具来自单声源分析,每段 pan 本来就相同,压平前后一样;这一格只守段数与边界(ND4 红在它的段数 REQUIRE 上),「另一维逐段保留」由 HOST SL-180 守,用例头注已照实写明 |
+| JD1 | `readback.js` `readbackSegsOf`:两维共用手动判定 | tab1 只红 (a9) 两格;tab2 全绿 |
+| JD2 | `readback.js` 只改 pan 那一处:手动维受输出档约束(方案 B 的形态) | tab1 在 (a6) 抛 TypeError(单段手动常值 OFF 读回变成 null),(a10) 没跑到;tab2 红 1 条「未冻结 + 常值段 ⇒ 仍读常值段(pan)」。即改成方案 B 时 (a6) 与这一条要一起改 |
+| JD3 | `readback.js` `manualDimOf` 加一行「多段轨上 pan 不再按值推断」 | tab1 只红 (a10) 两格;tab2 全绿 |
+| JD4 | mock `setTrackManual` 非空表那一支改回压成单段 | tab2 只红 2 条 `[SL-180]`(逐段 pan 保留 / pan 维不算手动);tab1 全绿 |
 
 ## 变更文件
 
@@ -94,6 +145,7 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
 - `src/core/output/DistReadback.h`(`manualDimOf`,读回逐维)
 - `src/output/BridgeArgs.h`(注释:无末端哨兵只来自空表)
 - `web/shared/readback.js`、`web/output/tab-tracks.js`(读回逐维、锁定判定、注释)、`web/shared/i18n.js`(三语确认条)
+- `web/output/tab-wave.js`(注释:无末端段只来自空段表上的手动接管)
 - `web-preview/mock/juce-bridge-mock.js`(mock 同款)
 - `docs/SCVB_CONTRACT.md`、`docs/IPC_CONTRACT.md`、`CHANGELOG.md`
 - 测试:见上表

@@ -3840,6 +3840,8 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 不再压平 pan([J131
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -6.0f, replaced, replacedLocked));
 
     // ★ [J131] 起的语义:只有 vol 那一维被固定,**pan 那一维的分析曲线逐段保留**(段数、边界、每段 pan)。
+    // ⚠ 本夹具来自单声源分析,各段 pan 实际相同(#302 第 2 轮删除式 ND5:「保留边界、另一维压成首段值」
+    // 注入下本例不红)。所以本例守的是段数与边界;「另一维逐段保留」由 `HOST SL-180`(两段 pan 相反)守。
     const auto after = segmentsOfTrack(r.out, kTestChannel);
     REQUIRE(after.size() == before.size()); // ← 改前 1(整表换成单段)
     for (std::size_t i = 0; i < after.size(); ++i)
@@ -4271,7 +4273,7 @@ TEST_CASE("HOST SL-217:正常往返仍照常恢复段表且不置诊断位", "[h
     const auto analysed = segmentsOfTrack(r.out, 1);
     REQUIRE_FALSE(analysed.empty());
 
-    // 把段表改掉(手动接管通道 → 单段常值),再灌回那份 blob:必须被换回分析结果。
+    // 把段表改掉(手动接管通道改写每段的 pan),再灌回那份 blob:必须被换回分析结果。
     int replaced = 0;
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));

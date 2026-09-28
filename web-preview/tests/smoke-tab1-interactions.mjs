@@ -1373,6 +1373,26 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         RB.readbackSegsOf(volManual, NONE, true, 15).manual !== null,
         "(a9) 任一维手动 ⇒ 行上的「手动接管」标仍亮",
     );
+    // ⚠ **已知近似 —— (a10) 钉的是现行行为,不是期望行为**(#302 复审【重要】,登记于变更文档
+    // `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。拖过音量卡箍、pan 各段**碰巧全等**的轨:
+    // 判据只能从「值全等」推断,pan 也被判成手动常值,输出 OFF 时 pan 读回停在段值、不回落参数面。
+    // 将来改成显式标记、或让手动维也受输出档约束时,这两格**应当翻过来**,连同变更文档那条一起改。
+    // native 同款格:`tests/core/test_viz_plane.cpp` `DistReadback` 用例「已知近似」块。
+    const panFlat = {
+        ch: 1,
+        segments: [
+            { t0S: 0, t1S: 10, pan: 0, volDb: -9, origin: "user_edited" },
+            { t0S: 10, t1S: 20, pan: 0, volDb: -9, origin: "user_edited" },
+        ],
+    };
+    check(
+        RB.manualDimOf(panFlat, "pan") === panFlat.segments[0],
+        "(a10) ⚠ 已知近似(钉现行行为):pan 各段碰巧全等 ⇒ pan 也被判成手动常值",
+    );
+    check(
+        RB.readbackSegsOf(panFlat, NONE, false, 15).pan === panFlat.segments[0],
+        "(a10) ⚠ 已知近似(钉现行行为):输出 OFF 时 pan 读回停在段值(期望行为应是 null = 回落参数面)",
+    );
 
     // ---- (b) mock/native 对拍:复制版本 → 切过去,参数面必须是**出厂默认**
     const sl241 = await openSession("fixture=fifteen-tracks");

@@ -1690,10 +1690,8 @@ function buildOutputBackend(ctx) {
             }
             // 空表:没有曲线可保留,照旧落单段全时限常值。
             // 段对象形状取生成器产物为原型(不自造字段),只改该改的几个键。
-            const seed =
-                old[0] ||
-                makeSegments(model.segVersion, "snapshot", [ch]).channels[0]
-                    .segments[0];
+            const seed = makeSegments(model.segVersion, "snapshot", [ch])
+                .channels[0].segments[0];
             if (!seed) {
                 return { ok: true, replacedSegments, replacedLocked };
             }

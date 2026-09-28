@@ -733,6 +733,23 @@ TEST_CASE("DistReadback:段选择口径逐条对齐 web/shared/readback.js", "[v
         CHECK(scvb::output::manualDimOf(mixed, /*isPan=*/false) == nullptr);
     }
 
+    // ⚠ **已知近似 —— 这一格钉的是现行行为,不是期望行为**(#302 复审【重要】,登记于变更文档
+    // `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。拖过音量卡箍、pan 各段**碰巧全等**
+    // (例如主唱分析出来每段都居中)的轨:判据只能从「值全等」推断,pan 也被判成手动常值,于是输出
+    // OFF 时 pan 读回停在段值、不回落参数面。段上没有「哪一维是手动」的记录,不改 state schema /
+    // §2.8 载荷就分不出来。将来改成显式标记、或让手动维也受输出档约束时,这一格**应当翻过来**——
+    // 翻的时候连同变更文档那一条一起改。JS 同款格:`smoke-tab1-interactions.mjs` (a10)。
+    {
+        const std::vector<scvb::state::Segment> panFlat = {
+            makeSegV(0.0, 10.0, 0.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited),
+            makeSegV(20.0, 30.0, 0.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
+        CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/false) == &panFlat.front()); // vol 真是手动
+        CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/true) == &panFlat.front()); // pan 被误判
+        const auto offFlat = scvb::output::readbackSegsOf(panFlat, 0, /*outputOn=*/false, atSec(25.0));
+        CHECK(offFlat.pan == &panFlat.front()); // 期望行为应是 nullptr(回落参数面);现行是段值
+        CHECK(offFlat.vol == &panFlat.front());
+    }
+
     // 优先级链四档。
     const auto onNoFreeze = scvb::output::readbackSegsOf(gap, 0, /*outputOn=*/true, atSec(16.0));
     REQUIRE(onNoFreeze.pan != nullptr);

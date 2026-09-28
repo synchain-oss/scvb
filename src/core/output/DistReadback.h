@@ -38,8 +38,14 @@ namespace scvb::output
 //   段表非空 ∧ **每一段** origin == `UserEdited` ∧ **每一段**这一维的值都相等。
 // [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留,于是「段数 == 1」
 // 不再是产物特征:拖过音量卡箍的轨是 N 段 user_edited、vol 全等、pan 仍是原曲线 ——
-// 那条轨的 **vol** 是手动常值,**pan** 不是(pan 仍按曲线读)。空表上的手动接管仍产出
-// 单段全时限,落在本判据的 N=1 特例里,两维同时命中(与改造前同形)。
+// 那条轨的 **vol** 是手动常值,**pan** 一般不是(pan 仍按曲线读;例外见下 ⚠)。空表上的手动
+// 接管仍产出单段全时限,落在本判据的 N=1 特例里,两维同时命中(与改造前同形)。
+// ⚠ **已知近似**(变更文档 `20260928-j131-sl180-manual-one-dim.md`「已知连带」,#302 复审):
+// 本判据是从「值全等」**推断**哪一维被接管,不是读一个记录 —— 段上没有「哪一维是手动」的标记
+// (flags 只有 origin + locked),要加就得改 state schema 与 §2.8 载荷,超出 [J131]。于是拖过音量
+// 卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段 pan 都一样),pan 也会命中:输出 OFF 时
+// pan 读回停在段值、不跟参数面(与 J78 不符);检查器里逐段改过、某一维碰巧全等的轨同样算手动。
+// 现行行为由 `tests/core/test_viz_plane.cpp` `DistReadback` 用例的「已知近似」格钉住。
 // 不看 t1 是不是那个 `1<<40` 哨兵 —— 哨兵在上桥时会被降级成「已知时间线末端」
 // (`BridgeArgs.h` 的 `effectiveT1Samples`),JS 那侧根本看不到它,拿它当判据两侧必然分叉。
 inline const scvb::state::Segment* manualDimOf(const std::vector<scvb::state::Segment>& segs, bool isPan)

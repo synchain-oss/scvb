@@ -54,9 +54,16 @@ export function segmentsOfCh(segments, ch) {
  * 这一维的值都相等。命中返回首段(调用方读该维的值),否则 null。
  *
  * [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留 —— 拖过音量卡箍的轨
- * 是 N 段 user_edited、vol 全等、pan 仍是原曲线:那条轨的 **vol** 是手动常值、**pan** 不是。
- * 「段数 == 1」因此不再是产物特征;空表上的手动接管仍产出单段全时限,落在 N=1 特例里,
- * 两维同时命中(与改造前同形)。
+ * 是 N 段 user_edited、vol 全等、pan 仍是原曲线:那条轨的 **vol** 是手动常值、**pan** 一般不是
+ * (例外见下 ⚠)。「段数 == 1」因此不再是产物特征;空表上的手动接管仍产出单段全时限,落在
+ * N=1 特例里,两维同时命中(与改造前同形)。
+ *
+ * ⚠ **已知近似**(变更文档 `20260928-j131-sl180-manual-one-dim.md`「已知连带」,#302 复审):
+ * 本判据是从「值全等」**推断**哪一维被接管,不是读一个记录 —— 段上没有「哪一维是手动」的
+ * 标记(只有 origin + locked),要加就得改 state schema 与 §2.8 载荷,超出 [J131]。于是拖过音量
+ * 卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段 pan 都一样),pan 也会命中:输出 OFF
+ * 时 pan 读回停在段值、不跟参数面(与 J78 不符);检查器里逐段改过、某一维碰巧全等的轨同样算手动。
+ * 现行行为由 `smoke-tab1-interactions.mjs` 的 (a10) 钉住(native 同款格在 `test_viz_plane.cpp`)。
  * **判据逐字对齐 native 的 `manualDimOf`(`src/core/output/DistReadback.h`)**,改一侧必须同改另一侧。
  */
 export function manualDimOf(segChannel, dim) {
@@ -161,10 +168,7 @@ export function curveSegmentAt(segChannel, tS) {
 export function readbackSegsOf(segChannel, bits, outputOn, timeS) {
     const manPan = manualDimOf(segChannel, "pan");
     const manVol = manualDimOf(segChannel, "vol");
-    const curve =
-        outputOn && !(manPan && manVol)
-            ? curveSegmentAt(segChannel, timeS)
-            : null;
+    const curve = outputOn ? curveSegmentAt(segChannel, timeS) : null;
     const frozen = bits || {};
     return {
         pan: frozen.pan ? null : manPan || curve,
