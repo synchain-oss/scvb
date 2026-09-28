@@ -326,6 +326,11 @@
   后者含精确到 tag 的源码地址与未签名插件的解除锁定 / SmartScreen 步骤)、独立 `.sha256` 与
   `package-summary.md`,最后建**草稿** Release,发布仍由维护者手动。`THIRD-PARTY-NOTICES.md` 点名的许可证在
   `LICENSES/` 里缺全文时,正式版与 rc tag 在构建之前就会停下。`v0.0.0-test` 可用来演练整条链路(#297)
+- **发版 zip 带上 `third_party/notices/`**:`THIRD-PARTY-NOTICES.md` 把 HarfBuzz 的逐行版权与 VST3 SDK 的
+  许可原文指向这个目录下的文件,此前它不进 zip,用户包里这两条指引会落空。现在整个目录按仓库同一相对路径
+  进 zip(NOTICES 里的路径解压后原样可查,`INSTALL.txt` 的内容清单同步);`scripts/package.ps1` 另外核对
+  NOTICES 点名的每个 `third_party/notices/` / `LICENSES/` 文件:打包前须在打包范围内(构建前的 preflight
+  就判,演练 tag 也不放行),打包后须在 zip 里,缺一个就红(#330)
 - 轨道页那枚「音量」开关统一叫「**参与音量调节**」:首启导览第 24 步(原标题「音量豁免」,
   正文按「开 = 不参与」写,与开关实际极性相反)、设置页中心槽策略下的说明、用户手册轨道页
   一行,三语都改成与轨道页列头说明同一个说法(开 = 参与,默认全开)。开关行为不变(#301)
