@@ -9,6 +9,7 @@
 // 跑什么:
 //   ① J69 两设置块常量:三档 value/key 单一真源 + 默认档(契约 §1.21 桥面枚举字符串);
 //   ② 纯函数:heartbeatAgeText / formatMegabytes / versionString / storageOf /
+//     docsUrl(另在 R3 增补段真跑,[SL-220]) /
 //     analysisConfigOf / diagRowsOf / diagText;
 //   ③ mock 端到端:setAnalysisConfig 写入 + badArg(含 02/03 拼写不互认)+ save/load 往返不丢;
 //   ④ 词条:T35 新增 set.* key 三语齐、占位符三语一致、05 §5 禁词零命中;
@@ -863,10 +864,68 @@ log(
         /window\.open\(url, "_blank", "noopener"\)/.test(app),
         "SL-214 走 window.open(→ WebView2 NewWindowRequested → JUCE 外链通道)",
     );
-    check(
-        /USER_GUIDE\.zh-CN\.md/.test(app) && /USER_GUIDE\.md/.test(app),
-        "SL-214 中英两份手册地址都在(按界面语言选)",
-    );
+    // ---- SL-220:手册地址 pin 到与插件同号的 tag(纯函数真跑,不看字面)----
+    // 版本号用合成值,不与仓库当前版本挂钩(版本唯一真源在 CMakeLists.txt)。
+    {
+        const snap = (plugin) => ({ version: { plugin, abi: 1 } });
+        const B = "https://github.com/synchain-oss/scvb/blob/";
+        eq(
+            TS.docsUrl("zh", snap("9.8.7")),
+            B + "v9.8.7/docs/USER_GUIDE.zh-CN.md",
+            "SL-220 中文界面 → 同号 tag 下的中文手册",
+        );
+        eq(
+            TS.docsUrl("en", snap("9.8.7")),
+            B + "v9.8.7/docs/USER_GUIDE.md",
+            "SL-220 英文界面 → 同号 tag 下的英文手册",
+        );
+        eq(
+            TS.docsUrl("fr", snap("9.8.7")),
+            B + "v9.8.7/docs/USER_GUIDE.md",
+            "SL-220 法文界面 → 英文手册(无法文手册)",
+        );
+        eq(
+            TS.docsUrl("en", snap("9.8.7-rc.2")),
+            B + "v9.8.7-rc.2/docs/USER_GUIDE.md",
+            "SL-220 带预发布后缀的版本串原样拼进 tag",
+        );
+        // 回退:快照没到 / 缺 version / 版本串不合形态 ⇒ 默认分支,绝不拼出 `vundefined` 这类死链
+        for (const [label, s] of [
+            ["无快照", null],
+            ["快照缺 version", {}],
+            ["plugin 非字符串", snap(7)],
+            ["plugin 空串", snap("")],
+            ["plugin 不是 X.Y.Z", snap("dev-build")],
+            ["plugin 夹路径字符", snap("1.2.3/../x")],
+        ]) {
+            eq(
+                TS.docsUrl("zh", s),
+                B + "dev/docs/USER_GUIDE.zh-CN.md",
+                `SL-220 回退默认分支:${label}`,
+            );
+        }
+        // 接线:openDocsInBrowser 真的用快照版本号去算地址(剥注释后看代码)。
+        // 纯函数全绿而这一跳没接上 = 按钮仍开旧地址,所以接线单独钉。
+        const appCode = stripComments(app);
+        const body = (appCode.match(
+            /function openDocsInBrowser\(\)\s*\{([\s\S]*?)\n\}/,
+        ) || [, ""])[1];
+        check(
+            /const url = docsUrl\(lang, store\.snapshot\);/.test(body) &&
+                /window\.open\(url, "_blank", "noopener"\)/.test(body),
+            "SL-220 openDocsInBrowser 用 docsUrl(lang, store.snapshot) 算地址再 window.open",
+        );
+        check(
+            /import \{[^}]*\bdocsUrl\b[^}]*\} from "\.\/tab-settings\.js"/.test(
+                appCode,
+            ),
+            "SL-220 app.js 从 tab-settings.js 引入 docsUrl",
+        );
+        check(
+            !/blob\/dev\/docs\/USER_GUIDE/.test(appCode),
+            "SL-220 app.js 不再写死 blob/dev 手册地址",
+        );
+    }
     {
         // C++ 侧:JUCE 没暴露 WebView2 的 AreDefaultContextMenusEnabled,但**暴露了**
         // newWindowAttemptingToLoad —— 不重写它外链就是死的(JUCE 默认实现什么都不做)。
