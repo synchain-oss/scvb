@@ -1211,7 +1211,8 @@ function buildOutputBackend(ctx) {
                 const cfg = model.snapshot.channels[ch - 1] || {};
                 if (cfg.enabled === false) continue;
                 const cov = model.coverageRanges.get(ch) || [];
-                // 写回集 = 启用且写回窗内有采集数据(与 native 预扫同口径)
+                // 写回集 = 启用且写回窗内有采集数据。native 还要「此刻已连接」([SL-535]);这里**不建模**,
+                // 理由与 affectedOf 里 [SL-535] 那条登记相同(mock 默认世界 15 轨全空闲,照搬会让预览恒空)。
                 const inWin = cov.some(
                     (c) =>
                         Math.min(c.endS, win.endS) >

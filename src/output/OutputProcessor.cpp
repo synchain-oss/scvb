@@ -3595,6 +3595,10 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
     const scvb::analysis::HopRange computeHops{firstHop, lastHop};
 
     vadPreviewPosterior_.resize(numHops);
+    // [SL-535] 与 `startAnalysis` 同一条参与判据:此刻没连上 Input 的轨不进写回集(它的段表松手后
+    // 一个字节不动,预览也就不画它)。与 `previewAnalysis` 一样各自采一次时钟 —— 其间连接态变了,
+    // 后果只是这一帧预览与松手那一趟差一条轨,下一次拖动调用即对齐。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
     std::uint16_t mask = 0;
     for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
@@ -3602,9 +3606,9 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
         auto& spans = vadPreview_.spans[ti];
         spans.clear();
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
-        // 写回集判据与 `startAnalysis` 的预扫逐字同款(enabled ∧ 写回窗内有覆盖;松手档 tracksMask=0)。
-        // 不在写回集里的轨:松手那一趟不会改它,预览也不画它 —— 覆盖层与缓存一并释放。
-        if (!runtime_.channels[ti].enabled || frames.coveredHops(applyHops) == 0)
+        // 写回集判据与 `startAnalysis` 的预扫逐字同款(enabled ∧ 此刻已连接 ∧ 写回窗内有覆盖;松手档
+        // tracksMask=0)。不在写回集里的轨:松手那一趟不会改它,预览也不画它 —— 覆盖层与缓存一并释放。
+        if (!runtime_.channels[ti].enabled || (connMask & (1u << t)) == 0 || frames.coveredHops(applyHops) == 0)
         {
             std::vector<std::uint8_t>().swap(vadPreviewQ_[ti]);
             vadPreviewCache_[ti] = scvb::analysis::VadPreviewTrackCache{};

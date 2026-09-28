@@ -12774,7 +12774,8 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
 //   D4 `discardPendingResegment` 不收尾 ⇒ ★U / ★V 红;
 //   D5 timerCallback 不跑空闲收尾 ⇒ ★I 红;
 //   D6 缓存命中判据删掉(每次重建)⇒ ★C 红;
-//   D7 段不裁写回窗 ⇒ ★R 红。
+//   D7 段不裁写回窗 ⇒ ★R 红;
+//   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红。
 // ===========================================================================
 namespace
 {
@@ -13017,4 +13018,17 @@ TEST_CASE("HOST J146:范围档 ⇒ 预览只在写回窗内(段裁到窗、窗�
     // 关掉这条轨 ⇒ 写回集为空 ⇒ 预览结束。
     r.out.runtime().channels[kTestChannel - 1].enabled = false;
     CHECK_FALSE(r.out.previewVadSegmentation().active);
+    r.out.runtime().channels[kTestChannel - 1].enabled = true;
+    REQUIRE(r.out.previewVadSegmentation().active); // 对照:开回来就又有了
+
+    // [SL-535] 此刻没连上 Input ⇒ 松手那一趟不计它 ⇒ 预览也不画它(旧采集数据还在)。
+    r.in.releaseResources();
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[kTestChannel - 1]));
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, extentS).coveredS > 0.0);
+    CHECK_FALSE(r.out.previewVadSegmentation().active); // ★N
+    // 接回来:不改 enabled、不清数据,自动回到预览里。
+    r.in.prepareToPlay(kSr, kBlock);
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.out.previewVadSegmentation().active);
 }
