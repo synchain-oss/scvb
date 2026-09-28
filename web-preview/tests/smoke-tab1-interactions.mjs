@@ -437,6 +437,25 @@ log("=== ① 契约映射的纯函数 ===");
         TM.previewFingerprint(st0, connOf([1]), {}) !== fpBase,
         "SL-535 连接集合变 ⇒ 指纹变,重取 dry-run",
     );
+    check(
+        TM.previewFingerprint(
+            {
+                global: { range: { mode: "follow" } },
+                channels: [{ enabled: true }, { enabled: false }],
+            },
+            connOf([1, 2]),
+            {},
+        ) !==
+            TM.previewFingerprint(
+                {
+                    global: { range: { mode: "follow" } },
+                    channels: [{ enabled: true }, { enabled: true }],
+                },
+                connOf([1, 2]),
+                {},
+            ),
+        "SL-535 follow 档拨「参与」开关 ⇒ 指纹变(scope 是字面 all,掩码只在指纹里)",
+    );
     // 接线:两条订阅都要调 refreshPreview(纯函数对了、没人调也等于没修)。
     {
         const app = readFileSync(join(ROOT, "web/output/app.js"), "utf8");

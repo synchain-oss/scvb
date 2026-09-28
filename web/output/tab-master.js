@@ -667,7 +667,10 @@ export function analyzeScope(state) {
  *   · scope —— 范围档 / 范围 / 启用轨(原有);
  *   · 已连接轨号 —— dry-run 只数已连接的轨,Input 连上 / 断开后旧数不再成立;
  *   · 有覆盖的轨号(`coverage[ch] > 0`)—— 首次采集时覆盖从无到有,旧的 `tracks: 0` 不再成立。
- *     只看「有没有」、不看百分比:百分比每帧都涨,拼进去就等于每帧问一次。
+ *     只看「有没有」、不看百分比:百分比每帧都涨,拼进去就等于每帧问一次;
+ *   · 启用轨掩码 —— dry-run 无条件按 `enabled` 筛,而 follow 档的 scope 是字面 `"all"`,
+ *     不含掩码;轨道页拨「参与」开关后不重取,原因句就按旧轨数判(#292 复审③)。
+ *     scope 形状不动(`"all"` 是 §1.5 契约面),掩码只拼进指纹。
  * 后两样是 #292 复审加的:dry-run 的 `tracks` 进了「无数据」判据(`analyzeNoData` 第三参),
  * 指纹少一样,那一样变了之后原因句就会按陈旧的 0 继续亮着。
  */
@@ -678,6 +681,8 @@ export function previewFingerprint(state, conn, coverage) {
         .sort((a, b) => a - b);
     return (
         JSON.stringify(analyzeScope(state)) +
+        "|" +
+        tracksMaskOf(state && state.channels) +
         "|" +
         connectedChannels(conn).join(",") +
         "|" +
@@ -2424,6 +2429,8 @@ export function createTabMaster(opts) {
         if (local.previewTimer) clearTimeout(local.previewTimer);
         local.previewTimer = setTimeout(async () => {
             const res = await call("previewAnalyze", scope);
+            // 已有更新的指纹在途 / 已落地:这份是旧回包,别盖掉新的(#292 复审③)。
+            if (key !== local.previewKey) return;
             if (res && Number.isFinite(res.intervals)) {
                 local.preview = res;
                 local.previewFor = key; // 这份回包属于哪个指纹(render 据此判陈旧)
