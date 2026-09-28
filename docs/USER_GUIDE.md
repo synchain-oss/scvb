@@ -251,7 +251,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 
 - 15 tracks per group, 2 version slots;
 - one active Output per group at a time;
-- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md`;
+- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
