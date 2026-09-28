@@ -18,15 +18,11 @@ SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码�
 
 SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集每一条人声轨,放在一起分析,再给每轨一条声像位置曲线和一条音量曲线,让各声部彼此错开而不是挤在同一个位置互相打架,并确保段落之间的响度接近一致。
 
-**两个插件,一套系统。** **SCVB Input** 插在每条人声轨上负责采集;**SCVB Output** 插在人声总线上,负责分析、平衡、求和,并替换总线输入。
+**两个插件,一套系统。** **SCVB Input** 插在每条人声轨上负责采集;**SCVB Output** 插在人声总线上,负责分析、平衡、求和,并替换总线输入。另有一个可选的第三件 **SCVB Monitor**:只读窗口,用来看整组的声像与音量变化。界面逐 tab 的说明见[用户手册](docs/USER_GUIDE.zh-CN.md)。
 
 觉得引擎分析的效果一般、跟你想象中的安排不符,想要微调?没问题!你可以参考 Waves 的 Vocal Rider 那种「先打印自动化、再手工微调」的工作流,使用自动化写入功能把引擎的分析结果写成自动化记录到宿主中,再在宿主里基于这些结果微调 —— 相信这能省下你不少时间。
 
 每组最多 15 轨人声,8 个互相独立的组(A–H),2 个版本槽。自动化参数面冻结在 123 个(宿主可见 124),其余一切走 state。
-
-## 截图
-
-截图随首个正式发布版一并提供。在此之前,界面逐 tab 的说明见[用户手册](docs/USER_GUIDE.zh-CN.md)。
 
 ## 系统要求
 
@@ -39,30 +35,30 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 <!-- 本表转贴自 docs/DAW_COMPATIBILITY.md §4(该节标题即「README 支持等级表(供 T39b 转贴)」)。
      真源在那一节:改等级只改那里,再同步回本表与 README.md 的对等表。 -->
 
-转贴自 [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4,该节始终是本表的真源。Tier 1 = 完全支持 / Tier 2 = 有限制 / Tier 3 = 不支持。
+转贴自 [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4,该节始终是本表的真源。Tier 1 = 完全支持 / Tier 2 = 有限制(有你自己能做的规避办法)/ Tier 3 = 未验证或不支持。
 
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
-| Cubase | 14 / 15 | **Tier 1(主测)** | S1 路由(实时/离线/state)已实测通过;自动化写入待 S2 上机(RD-01 已知风险);自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7(建议装) | **Tier 1(附条件)** | S1 路由(实时/离线)已实测通过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
-| Ableton Live | 12 | **Tier 1(附条件)** | 128 参数上限(124 口径,余 4);Re-Enable Automation 需点击;S1/S2 待上机 |
-| Studio One | 6 | **Tier 1(附条件)** | 自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 异 block size;S1/S2 待上机 |
+| Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
+| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
+| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击;停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
+| Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 
-> **支持等级说明**:v1 首发前「Tier 1(附条件)」中的「附条件」将在 S2 自动化上机回填后收敛为定版(可能降 Tier 2);FL Studio 不在 v1 支持矩阵内。
+> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio 不在 v1 支持矩阵内。
 
 ## 安装
 
-SCVB 尚未发布正式版本。发布之后,安装步骤是:
+正式版本发布在本仓库的 [Releases 页](../../releases)。如果那里还没有任何版本,请从源码构建(见下)。
 
-1. **推荐**:到官网 **[synchain.ca](https://synchain.ca)** 的下载页取 `SCVB-vX.Y.Z-win64.zip`。那里同时能看到安装说明、更新提示与我们其他工具的介绍;顺手逛一圈,说不定还有别的能帮上忙的东西。
-   也可以从本仓库的 Releases 页下载。
-2. 用随附的 `.sha256` 校验下载到的 zip。**权威校验值以 GitHub Release 正文里的 SHA-256 为准**(它由 CI 在构建时产出),两处应当一致;**对不上就不要安装,并告诉我们**;
-3. 解压,把 `SCVB Input.vst3` 与 `SCVB Output.vst3` **两个完整的 bundle 文件夹**都复制到 `C:\Program Files\Common Files\VST3\`;
-4. 在 DAW 里重新扫描插件。
+1. 从 Releases 页下载 `SCVB-v<版本号>-win64.zip` 与对应的 `.sha256`;
+2. 用 `.sha256` 校验下载到的 zip。**权威校验值以 GitHub Release 正文里的 SHA-256 为准**(它由 CI 在构建时产出),两处应当一致;**对不上就不要安装,并告诉我们**;
+3. **SCVB 没有做代码签名。** 浏览器或 Windows 可能提示「未知发布者」;解压之前,右键 zip → **属性** → 勾选 **解除锁定** → **确定**。分步说明见[用户手册](docs/USER_GUIDE.zh-CN.md#安装);
+4. 解压,把 `SCVB Input.vst3`、`SCVB Output.vst3` 与(可选的)`SCVB Monitor.vst3` **整个 bundle 文件夹**复制到 `C:\Program Files\Common Files\VST3\`;
+5. 在 DAW 里重新扫描插件。
 
-**两个都要装。** 这两个插件是一对,共用同一个版本号;版本不匹配时它们会**拒绝连接**,这是刻意的。
+**Input 与 Output 都要装。** 这两个插件是一对,共用同一个版本号。**升级时所有 SCVB 插件一起升**:两侧的共享内存协议版本不同时,它们会**拒绝连接**,这是刻意的;即便能连上,混装不同版本也不受支持(新 Output 配旧 Input 时,离线渲染的人声可能被叠加两次)。
 
-在有正式发布之前,请从源码构建(见下)。
+**SCVB Monitor 是可选的。** 它是一个只读的旁观窗口,用来看整组的声像运动与分布。它原样直通音频,**没有任何自动化参数**,只读共享数据 —— 从不占用 slot、从不写任何共享段,所以装不装它都不会改变 Input 与 Output 的行为。
 
 ## 快速上手
 

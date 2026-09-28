@@ -74,6 +74,7 @@ GPLv3 §4/§5 要求分发时保留法律声明,§6 要求目标码分发伴随�
 SCVB-vX.Y.Z-win64.zip
 ├── SCVB Input.vst3/            完整 bundle 目录层级
 ├── SCVB Output.vst3/
+├── SCVB Monitor.vst3/          可选插件(只读旁观窗口),与另两个同版本同一次发布
 ├── LICENSE.txt                 GPLv3 全文
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
 ├── LICENSES/OFL-1.1.txt        字体许可证
@@ -88,13 +89,16 @@ SCVB-vX.Y.Z-win64.zip
 ```markdown
 # Synchain Vocal Balancer v{X.Y.Z} (Windows x64)
 
-> SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**。
+> SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**;zip 里的第三个插件 SCVB Monitor 是**可选**的只读旁观窗口。
 
 ## ⚠️ 升级须知
-<!-- 有则填,无则整节删除 -->
-- state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}
+<!-- 「三个插件一起升级」与「文档链接」两条每次都留;其余有则填,无则删 -->
+- **Input、Output、Monitor 三个一起升级,不要混装。** IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然能连上,但新 Output 配旧 Input 做离线渲染,两侧的交接方式不同,人声可能被**双路叠加**(不升 IPC abi 的有意取舍,见 `docs/contract-changes/` 相应变更文档)—— 所以升级一律三个一起换。
+- state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}。**用本版保存的工程,拿到 state abi 更低的旧版本(含此前的内部测试包)里打开时会被拒载**:Output 显示「工程来自较新版本」横幅,Input 以默认值运行(没有横幅)。建议不要在旧版本里打开并保存这类工程。
+  <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
+- 本说明里的文档链接都固定在 `v{X.Y.Z}` 这个 tag 上;插件设置页「说明文档」按钮打开的也是与插件版本同号 tag 下的手册。
 
 ## 本次更新
 ### ⚠️ 契约变更
@@ -106,7 +110,7 @@ SCVB-vX.Y.Z-win64.zip
 ## 下载与安装
 | 资产 | 说明 |
 |---|---|
-| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3` 与 `SCVB Output.vst3`(完整 bundle 目录),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、(若 U2 采纳)`LICENSE-EXCEPTION.md`、`INSTALL.txt` |
+| `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3`、`SCVB Output.vst3` 与可选的 `SCVB Monitor.vst3`(完整 bundle 目录),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、(若 U2 采纳)`LICENSE-EXCEPTION.md`、`INSTALL.txt` |
 | `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(由 `scripts/package.ps1` 生成 —— 该脚本尚未落地,见发版清单开头的现状说明) |
 
 SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手抄):
@@ -116,7 +120,7 @@ SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手�
 系统要求:Windows 10 1809+ / WebView2 Evergreen Runtime(通常已随 Windows 预装)
 
 <!-- 未签名时必填 -->
-> 首次运行 Windows SmartScreen 可能提示「未知发布者」,点「更多信息 → 仍要运行」。本项目当前未做代码签名,你可以自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)。
+> 本项目当前未做代码签名,浏览器或 Windows 可能提示「未知发布者」。校验 SHA-256 一致后:**解压前**右键 zip → 属性 → 勾选「解除锁定」→ 确定。分步说明见[用户手册 · 安装](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#安装)。你也可以自行从源码构建校验(见 [CONTRIBUTOR_ONBOARDING.md](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/CONTRIBUTOR_ONBOARDING.md))。
 
 ## 首次使用?
 先读 **[九条使用规则](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#硬约束)** —— 路由摆错会直接出静音。
@@ -137,7 +141,7 @@ SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手�
 
 ## 分发渠道
 
-- **权威产物来源**:GitHub Releases —— 单个 zip(两个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256`。zip 与 SHA-256 都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。
-- **面向用户的推荐入口**:官网下载页(README 把它排在第一位)。官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 这条不成立时,README 里「两处应当一致」的说法就是空头承诺,用户会被引到一条只验传输、不验来源的弱路径上。
+- **权威产物来源**:GitHub Releases —— 单个 zip(三个 `.vst3`:Input / Output / 可选的 Monitor + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256`。zip 与 SHA-256 都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。README 与用户手册目前只把用户指向 GitHub Releases。
+- **官网下载页**:是否作为用户入口**待定**。若上线,官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 否则用户会被引到一条只验传输、不验来源的弱路径上;上线时同步改 README 的安装小节。
 
-**为什么合并成一个 zip**:两个插件本来就配对使用,分开下载最常见的用户故障就是「只装了一个」。
+**为什么合并成一个 zip**:Input 与 Output 本来就配对使用,分开下载最常见的用户故障就是「只装了一个」;Monitor 跟它们同版本同一次发布,放进同一个 zip 也免得版本对不上。

@@ -18,15 +18,11 @@ Mixing engineers routinely spend hours drawing volume and pan automation across 
 
 SCVB exists to solve exactly that and give you those hours back: it captures every vocal track, analyses them together, and gives each one a pan curve and a level curve, so the parts sit apart from one another instead of competing for the same spot, and so loudness stays close to consistent from passage to passage.
 
-**Two plugins, one system.** **SCVB Input** sits on each vocal track and captures it; **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and replaces the bus input.
+**Two plugins, one system.** **SCVB Input** sits on each vocal track and captures it; **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and replaces the bus input. A third, optional plugin, **SCVB Monitor**, is a read-only window for watching a whole group's pan and level movement. The interface is described tab by tab in the [User Guide](docs/USER_GUIDE.md).
 
 Not sold on what the engine came up with, or want it arranged differently? No problem. Much like the workflow around Waves' Vocal Rider — print first, then tune by hand — you can use the automation-write feature to print the engine's analysis into your host as automation, then fine-tune from there by hand — starting from a finished pass rather than a blank one should still save you a lot of time.
 
 Up to 15 vocal tracks per group, 8 independent groups (A–H), 2 version slots. The automation parameter surface is frozen at 123 declared (124 host-visible); everything else lives in state.
-
-## Screenshots
-
-Screenshots ship with the first tagged release. Until then, the interface is described tab by tab in the [User Guide](docs/USER_GUIDE.md).
 
 ## Requirements
 
@@ -39,32 +35,30 @@ Screenshots ship with the first tagged release. Until then, the interface is des
 <!-- 本表转贴自 docs/DAW_COMPATIBILITY.md §4(该节标题即「README 支持等级表(供 T39b 转贴)」)。
      真源在那一节:改等级只改那里,再同步回本表与 README.zh-CN.md 的对等表。 -->
 
-Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, which stays the source of truth for this table. Tier 1 = fully supported, Tier 2 = supported with limitations, Tier 3 = not supported.
+Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, which stays the source of truth for this table. Tier 1 = fully supported, Tier 2 = supported with limitations (with a workaround you can apply yourself), Tier 3 = untested or not supported.
 
 | DAW | Version | Support tier | Status and known limits |
 |---|---|---|---|
-| Cubase | 14 / 15 | **Tier 1 (primary test host)** | S1 routing (realtime / offline / state) verified; automation write pending S2 on real hardware (known risk RD-01); automation hides in the Ins hidden lane; Input must sit in the last slot of the pre-fader section |
-| REAPER | 7 (recommended) | **Tier 1 (conditional)** | S1 routing (realtime / offline) verified; may not write automation with the GUI closed (needs "process all notifications"); one project per machine |
-| Ableton Live | 12 | **Tier 1 (conditional)** | 128-parameter ceiling (124 as counted here, 4 spare); Re-Enable Automation has to be clicked; S1/S2 pending |
-| Studio One | 6 | **Tier 1 (conditional)** | Automation mode must be set to Write/Latch inside the plugin window; Dropout Protection changes the block size; S1/S2 pending |
+| Cubase | 14 / 15 | **Tier 1 (primary test host)** | Routing (realtime / offline), project save and reopen, and automation write verified on real hardware with the finished plugins (Cubase 15 Pro); routing also verified on Cubase 14 during the routing spike; automation hides in the Ins hidden lane; Input must sit in the last slot of the pre-fader section |
+| REAPER | 7 | **Tier 2 (partly verified)** | Routing (realtime / offline) verified during the routing spike only; the finished plugins and automation write have not been tested in REAPER; may not write automation with the GUI closed (needs "process all notifications"); one project per machine |
+| Ableton Live | 12 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: 128-parameter ceiling (124 used here, 4 spare); Re-Enable Automation has to be clicked; deactivating the Output device gives about 5.5 s of silence before the vocals fall back to passthrough |
+| Studio One | 6 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: automation mode must be set to Write/Latch inside the plugin window; Dropout Protection changes the block size |
 
-> The "conditional" attached to Tier 1 will be resolved into a final tier once S2 automation testing runs on real hardware; some rows may drop to Tier 2. FL Studio is not in the v1 support matrix.
+> Untested hosts may well work — the plugins are standard VST3 — but nobody has confirmed it on a real machine yet. Tiers move up only after a real-hardware test. FL Studio is not in the v1 support matrix.
 
 ## Install
 
-SCVB has no tagged release yet. Once it does, installing is:
+Releases are published on this repository's [Releases page](../../releases). If no release is listed there yet, build from source (below).
 
-1. **Recommended**: get `SCVB-vX.Y.Z-win64.zip` from the download page at **[synchain.ca](https://synchain.ca)**. You will find the install notes, update announcements, and the rest of our tools there too — have a wander, there may be something else that helps.
-   You can also download it from this repository's Releases page.
-2. verify the downloaded zip against the accompanying `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
-3. unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and `SCVB Monitor.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
-4. rescan plugins in your DAW.
+1. From the Releases page, download `SCVB-v<version>-win64.zip` and the matching `.sha256`;
+2. verify the zip against the `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
+3. **SCVB is not code-signed.** Your browser or Windows may warn that the file comes from an unknown publisher; before unzipping, right-click the zip → **Properties** → tick **Unblock** → **OK**. The [User Guide](docs/USER_GUIDE.md#install) has the step-by-step version;
+4. unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and (optionally) `SCVB Monitor.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
+5. rescan plugins in your DAW.
 
-**Install both Input and Output.** Those two are a pair and share one version number; a mismatched pair refuses to connect, on purpose.
+**Install both Input and Output.** Those two are a pair and share one version number. **When you upgrade, upgrade every SCVB plugin together**: if the two sides speak different versions of the shared-memory protocol they refuse to connect, on purpose; and even when they do connect, mixing versions is not supported (with a new Output and an old Input, an offline render can sum the vocals twice).
 
 **SCVB Monitor is optional.** It is a read-only side window for watching pan movement and distribution across a whole group. It passes audio through untouched, exposes **no automation parameters at all**, and only ever reads the shared data — it never claims a slot and never writes to any shared segment, so adding or removing it cannot change what Input and Output do.
-
-Until there is a release, build from source (below).
 
 ## Quick start
 

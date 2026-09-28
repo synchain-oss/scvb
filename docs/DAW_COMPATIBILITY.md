@@ -1,5 +1,5 @@
 > 状态: 演进中
-> 最后更新: 2026-08-24(对应版本 v0.1.0)
+> 最后更新: 2026-09-28(首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
 > 真源: 本文件
 
 # SCVB DAW 兼容矩阵与支持等级表
@@ -7,28 +7,30 @@
 本文是 SCVB 的 DAW 兼容性唯一文档(真源 = masterPlan 12 §3.3)。结构 = 一张总矩阵 + 每 DAW 一节 + 通用坑清单;末尾附「README 支持等级表(供 T39b 转贴)」小节,与总矩阵严格一致。
 
 > **口径说明(务必先读)**:
-> - **已验证**的格子来自 **S1 路由可靠性 spike(T02)** 2026-08-16/17 的周日真机实测(主测 Cubase 15,REAPER 7 兜底;证据见 [S1-daw-checklist.md](spikes/S1-daw-checklist.md) 完成列与 [S1-routing.md](spikes/S1-routing.md) §6 收口报告)。
-> - **自动化 Write 录制**列的实证来自 **S2 自动化写入 spike(T03)**:实现侧已合并(123 参数布局 + AutomationPrinter),但 **DAW 真机落点回填尚未完成**(见 [S2-automation.md](spikes/S2-automation.md) §6 结果回填、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格),因此该列当前全部为「未验证」,并标注已知风险(RD-01/RD-04/RD-02)。
-> - 最终成品(Input/Output 插件)的全矩阵复测由 **T37** 的 DAW 真机执行清单承载(见 T37 旅程文档 §3,当前为「待用户上机」)。S1/S2 的 spike 结论为架构级验证,不替代成品复测。
+> - 证据分两层。**spike 层**:**S1 路由可靠性 spike(T02)** 2026-08-16/17 的真机实测(Cubase 14 / 15,REAPER 7 兜底;证据见 [S1-daw-checklist.md](spikes/S1-daw-checklist.md) 完成列与 [S1-routing.md](spikes/S1-routing.md) §6 收口报告)。**成品层**:**T37 成品测试包**(Input / Output / Monitor 成品插件)在 **Cubase 15 Pro** 上的多轮真机实测,2026-08 下旬的 v5.6 测试包起,到 2026-09-28 的 v5.6.19 测试包(测试包编号是内部轮次号,不是发布版本号)。
+> - **自动化 Write 录制**列:**S2 自动化写入 spike(T03)** 的逐宿主落点回填**没有做**([S2-automation.md](spikes/S2-automation.md) §6、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格仍空);**Cubase 这一格的证据来自成品测试包**(见矩阵脚注 7),其余宿主仍为「未验证」,并标注已知风险(RD-04/RD-02)。
+> - **成品层只覆盖 Cubase 15。** REAPER 只有 spike 层证据;Ableton Live 与 Studio One 两层都没有(U27)。spike 结论是架构级验证,不替代成品复测。
 > - 状态图例:✅ 已验证 / ⚠️ 未验证(原因见单元格)/ ➖ 不适用。
 
 ## 1. 总矩阵
 
 | DAW | 版本 | 路由(实时) | 路由(离线渲染) | 自动化 Write 录制 | state 往返 | 验证日期/SCVB 版本 |
 |---|---|---|---|---|---|---|
-| **Cubase(主测)** | 14 / 15 | ✅ 已验证 | ✅ 已验证 | ⚠️ 未验证(S2 待上机;RD-01 已知风险) | ✅ 已验证 | 2026-08-16/17(S1 spike v8/v10) |
-| **REAPER(建议装)** | 7 | ✅ 已验证(anticipative 三档 + dedicated process) | ✅ 已验证 | ⚠️ 未验证(S2 待上机;RD-04 已知风险) | ⚠️ 未验证(S1 未单跑 state 往返) | 2026-08-16(S1 spike v8) |
+| **Cubase(主测)** | 14 / 15 | ✅ 已验证 | ✅ 已验证 | ✅ 已验证(Cubase 15 成品;见脚注 7) | ✅ 已验证 | 2026-08-16/17(S1 spike v8/v10);2026-08 下旬 – 2026-09-28(Cubase 15 Pro 成品测试包 v5.6 – v5.6.19) |
+| **REAPER** | 7 | ✅ 已验证(anticipative 三档 + dedicated process) | ✅ 已验证 | ⚠️ 未验证(S2 待上机;RD-04 已知风险) | ⚠️ 未验证(S1 未单跑 state 往返) | 2026-08-16(S1 spike v8) |
 | **Ableton Live** | 12 | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(S2 可选未做;RD-02 已知风险) | ⚠️ 未验证(未上机) | — |
 | **Studio One** | 6 | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(S2 可选未做) | ⚠️ 未验证(未上机) | — |
 
 **矩阵脚注**:
 
 1. **Cubase「路由(实时/离线)」** :S1 的 C-3(Real-Time / Export Mixdown 双 null)、C-4(ASIO-Guard)、C-5(实时全曲)、C-6(loop×100)、C-7(定位×20)、C-8(buffer 四档)、C-9(采样率切换)、C-10(solo/mute)全部 ✅;上游高延迟插件(PDC)下 rt/offline 零错位(offset 0)。
-2. **Cubase「state 往返」** :C-12(强杀宿主重开工程自动重连)+ G-3(存工程关 DAW 重开时间线锚定恒等)实测通过。
+2. **Cubase「state 往返」** :C-12(强杀宿主重开工程自动重连)+ G-3(存工程关 DAW 重开时间线锚定恒等)实测通过;成品层:v5.6.19 测试包 A1–A7(各项设置存工程、完全关掉 Cubase 重开后保留)通过。
 3. **REAPER「路由(实时)」** :R-2/R-3/R-4(anticipative FX 开/最大/关)+ R-12(插件 Run as dedicated process)实测通过;基础实时播放并入 Cubase C-5 口径,未在 REAPER 单独重跑。
 4. **REAPER「路由(离线渲染)」** :R-5(File→Render 1× 与 Full-speed Offline 各一次,与 ref_A null)实测通过。
 5. **版本口径** :Studio One 6 为 U9(用户 2026-08-11 决定)的权威版本;S1/S2 的 spike 清单曾把 Studio One 标为「7(可选对照)」且未执行,以 U9 的「6」为准。
-6. **Live / Studio One 的「未验证」原因** :U27(用户 2026-08-14 决定)S1 跳过 Live、Studio One 仅作可选对照;Live 的设备停用问题(L-5)已挂 T24,属发布期矩阵兜底项。
+6. **Live / Studio One 的「未验证」原因** :U27(用户 2026-08-14 决定)S1 跳过 Live、Studio One 仅作可选对照;此后的成品测试包也只在 Cubase 15 上跑。Live 的设备停用行为(L-5)是按设计推出来的,没有在 Live 上实测过。
+7. **Cubase「自动化 Write 录制」** :成品层证据,Cubase 15 Pro。① 2026-08 下旬 v5.6 测试包的完整功能测试清单第 32–34 条通过(宿主自动化 Read 档优先;开 Write → 播放 → 车道真被写入、冻结维度写成平直线;打印密度/平滑合理、关掉 write 后手绘车道可覆盖),此后各版全量清单把这三条归入「已过存档」;② v5.6.19 测试包 B51(写自动化中停用 Output、再启用后照常写自动化)通过。**RD-01**(Cubase 录不进插件自发的参数变化)在 Cubase 15 上**没有复现**;Cubase 14 没有用成品复测过。
+8. **Cubase「路由(离线渲染)」成品层** :v5.6.19 测试包 B53,同一工程的实时导出与离线导出逐样本对齐(互相关最小在 lag 0),两份都没有断音;差异只在开头与段切换处的过渡段。
 
 ## 2. 每 DAW 一节
 
@@ -62,16 +64,16 @@ Cubase 的 Insert 架有**可移动的 pre/post 分隔线**——「最后一格
 #### 离线渲染注意事项
 
 - Export → Audio Mixdown 是正确导出路径(S1 C-3 已验)。
-- Direct Offline Processing / Render in Place 会**静音替换**含 Input 的轨道产物;替换式渲染会覆盖原素材(⚠ 用户数据)。请对**总线整体导出**,或先打印自动化再关 Output 输出开关后渲染。
+- Direct Offline Processing / Render in Place 对含 Input 的单条轨会得到**静音**产物;若渲染结果替换原素材,原素材就被静音替换了(⚠ 用户数据,见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-4)。请对**总线整体导出**。
 
 #### 已知坑
 
-- **RD-01 · 插件自发参数变化录不进**(待 S2 验证):有 JUCE 开发者报告 Cubase 12+ 下 setValueNotifyingHost 发起的自动化录不进,REAPER/Live/Studio One 均正常,**无公开确定解**。兜底 = 建议表 + CSV 导出(T41)。出处:masterPlan 11-risks RD-01、[S2-automation.md](spikes/S2-automation.md)。
+- **RD-01 · 插件自发参数变化录不进**(Cubase 15 成品实测未复现,见 §1 脚注 7;Cubase 14 未用成品复测):有 JUCE 开发者报告 Cubase 12+ 下 setValueNotifyingHost 发起的自动化录不进,**无公开确定解**。万一在你的环境里遇到,兜底 = 建议表 + CSV 导出(T41)。出处:masterPlan 11-risks RD-01、[S2-automation.md](spikes/S2-automation.md)。
 - **Ins 隐藏车道**(R3):自动化写进隐藏车道,用户误以为没写成功。见上文「录自动化」。
 - **pre/post 分隔线**(J45):Input 误入 post 区会把推子带进采集通路。
 - **Render in Place + Ctrl-Z 复制体卡死**:已修复(v7)。见 [S1-routing.md](spikes/S1-routing.md) §6.1 与本文 §3.1。
 
-### 2.2 REAPER(建议安装)
+### 2.2 REAPER
 
 #### 建总线
 
@@ -194,11 +196,11 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 
 ### 3.2 宿主侧已知开放问题(未修复,按操作/兜底)
 
-7. **RD-01 · Cubase 录不进插件自发参数变化**(未修复,宿主侧开放问题):Cubase 12+ 下 setValueNotifyingHost 发起的自动化可能录不进,无公开确定解。**兜底 = 建议表 + CSV 导出(T41)**,并保留「Cubase 降 Tier 2」的取舍选项。出处:masterPlan 11-risks RD-01。
+7. **RD-01 · Cubase 录不进插件自发参数变化**(宿主侧开放问题;**Cubase 15 成品实测未复现**,见 §1 脚注 7):Cubase 12+ 下 setValueNotifyingHost 发起的自动化可能录不进,无公开确定解。万一遇到,**兜底 = 建议表 + CSV 导出(T41)**。出处:masterPlan 11-risks RD-01。
 8. **RD-04 · REAPER 关 GUI 不写自动化**(未修复,宿主端设置兜底):打印期间保持插件窗口打开,或把 Parameter automation notifications 设为 process all notifications。出处:masterPlan 11-risks RD-04。
 9. **RD-02 · Live 128 参数上限**(未修复,预算封顶):123 声明 + bypass = 124 宿主可见,余 4;任何加自动化参数的 PR 必须先改宪法。出处:masterPlan 11-risks RD-02。
-10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声 ~5.5s 内转直通恢复(未经平衡),FL 用户请对总线关 smart disable。
-11. **同机双工程限制**(未修复,v1 明示限制):registry 段名不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 后开者抢 channel)。v2 走 documentToken 隔离。
+10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声 ~5.5s 内转直通恢复(未经平衡),FL 用户请对总线关 smart disable。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6。
+11. **同机双工程限制**(未修复,v1 明示限制):共享内存段名只按组号区分、不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 用同一个组时后开者抢 channel)。v2 走 documentToken 隔离。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-5。
 
 ### 3.3 环境依赖与通用路由坑
 
@@ -206,17 +208,17 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 13. **采样率切换**(已修复 v2):切换采样率后同 pid 重认领曾致永久静音,v2 已修(心跳跨宿主挂起存活)。语义:SR 不符时该轨禁用(CH_SR_MISMATCH),**v1 不做重采样**。出处:[S1-routing.md](spikes/S1-routing.md) §6.1、masterPlan 01 §4.3-f。
 14. **#68 冻结平直线 write 语义**(已修复 #68):冻结(PAN/VOL)维度在 write 时以**平直线(冻结时的手动静态值)写入自动化**,不再停写该车道;优先级链 = 宿主自动化 > 冻结手动值 > 手动微调 > 引擎曲线。出处:masterPlan 03 §J78、T37 旅程文档 §3.3。
 15. **通用路由坑(12 §3.3 六条)**:①改人声轨路由 → Output 报时间线缺口;②宿主 pan 不居中 → equal-power pan 结果偏移;③依赖 PDC 对齐 → SCVB 不报告额外延迟,不要用 PDC「修正」;④同一 channel id 被两个 Input 抢占(后到者冲突不生效);⑤第二个 Output 实例进只读;⑥采样率不一致 → 该轨禁用。
-16. **单轨 Freeze / 部分 stem 导出得静音文件(⚠ 用户数据)**:替换式渲染会覆盖原素材;请对总线整体导出。
+16. **单轨 Freeze / 部分 stem 导出得静音文件(⚠ 用户数据)**:替换式渲染会覆盖原素材;请对总线整体导出。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-4。
 
 ## 4. README 支持等级表(供 T39b 转贴)
 
-> 本节与 §1 总矩阵严格一致,可直接复制进 README 的「Supported DAWs」小节。Tier 定义同 [S2-automation.md](spikes/S2-automation.md) §4:Tier 1 = 完全支持 / Tier 2 = 有限制 / Tier 3 = 不支持。
+> 本节与 §1 总矩阵严格一致,可直接复制进 README 的「Supported DAWs」小节。Tier 定义(masterPlan 10 §3.4):Tier 1 = 完全支持 / Tier 2 = 有限制(有可执行的用户侧规避)/ Tier 3 = 未验证或不支持。
 
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
-| Cubase | 14 / 15 | **Tier 1(主测)** | S1 路由(实时/离线/state)已实测通过;自动化写入待 S2 上机(RD-01 已知风险);自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7(建议装) | **Tier 1(附条件)** | S1 路由(实时/离线)已实测通过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
-| Ableton Live | 12 | **Tier 1(附条件)** | 128 参数上限(124 口径,余 4);Re-Enable Automation 需点击;S1/S2 待上机 |
-| Studio One | 6 | **Tier 1(附条件)** | 自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 异 block size;S1/S2 待上机 |
+| Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
+| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
+| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击;停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
+| Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 
-> **支持等级说明**:v1 首发前「Tier 1(附条件)」中的「附条件」将在 S2 自动化上机回填后收敛为定版(可能降 Tier 2,触发条件 = 11-risks RD-01 的 Cubase 取舍决策);FL Studio(03 §4.7)不在 v1 支持矩阵内。
+> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。
