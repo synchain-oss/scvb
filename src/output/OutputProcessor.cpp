@@ -456,8 +456,7 @@ ScvbOutputAudioProcessor::captureProgressFrame(CaptureProgressBaseline& baseline
     }
 
     const double sr = sampleRate();
-    const double playheadS =
-        (pod.timeSamples >= 0 && sr > 0.0) ? static_cast<double>(pod.timeSamples) / sr : 0.0;
+    const double playheadS = (pod.timeSamples >= 0 && sr > 0.0) ? static_cast<double>(pod.timeSamples) / sr : 0.0;
     // 已采集末端只有「停着」那一支用得上(见 captureProgressWindow),播放中不必扫全轨。
     const double extentS = playing ? 0.0 : capturedExtentSeconds();
     const auto window = scvb::output::captureProgressWindow(playing, runtime_.rangeMode, runtime_.rangeStartS,

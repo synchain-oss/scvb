@@ -1185,7 +1185,9 @@ try {
     //   ← 删掉 state-driver `firstFrames` 里那行 `scvb.captureProgress` ⇒ ⑧a 红;
     //   ← 把 tab-master 的 analyzeNoData 改成只看段表 ⇒ ⑧a 红(原因句回来);
     //   ← 把 mock clearCoverage 的全量帧删掉 ⇒ ⑧b 红(数字不动)。
-    log("=== ⑧ [J152] scenario=captured-unanalyzed:停着也有覆盖率;停着清除数字跟着变 ===");
+    log(
+        "=== ⑧ [J152] scenario=captured-unanalyzed:停着也有覆盖率;停着清除数字跟着变 ===",
+    );
     {
         newBucket("captured-unanalyzed");
         await cdp.send("Page.navigate", {
