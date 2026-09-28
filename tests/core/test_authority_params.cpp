@@ -600,3 +600,345 @@ TEST_CASE("AUTH-PARAMS-14 压力:消息线程连发、音频线程并发读,读�
     CHECK(maxPool < 200);
     CHECK(f.auth.snapshotPoolSize() <= 2);
 }
+
+// ---------------------------------------------------------------------------
+// [J157 / SL-447] pan 曲线拖动预览(契约 §1.37 `previewPanCurve`)。
+// 这一组钉:① 预览只换音频线程那张表,已提交那张不动;松手提交同一组点沿用预览那张(不开淡入窗口);
+// ② 限速 ≤ 20 Hz 且被拦下的那份留着待发;③ 回收闸 —— 音频线程停着时拖多久池里也只多一份;
+// ④ 音频在跑时连续拖 10 秒(200 份)池有上界;⑤ 占空比:烘表贵时把间隔拉长;⑥ 实测烘表耗时(只报告);
+// ⑦ 作废规则(撤回 / 已提交曲线变了 / 换版本 / 旧版本号 / 坏点)。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+using PreviewReq = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+
+// 音频线程跑一块:processBlock(吃到最新快照)+ samples 次 nextSample。
+void runAudio(AuthorityParamsFixture& f, int samples)
+{
+    (void)f.auth.processBlock(true, 0.0);
+    for (int n = 0; n < samples; ++n)
+        (void)f.auth.nextSample();
+}
+
+// 让音频线程「越过」最新发布:跑一块吃到它、走完 30 ms 淡入窗口(48 kHz 下 1440 样本),
+// 再跑一块把确认值推到它身上(窗口在 nextSample 里关上,下一块才报新值)。
+void ackAudio(AuthorityParamsFixture& f)
+{
+    runAudio(f, 4096);
+    (void)f.auth.processBlock(true, 0.0);
+}
+
+// 烘表耗时恒报 0 ms:把「限速」「回收闸」两格与机器快慢解耦(否则慢机上的真实烘表耗时会经
+// 占空比把间隔拉长,红在与被测无关的地方)。占空比那一半另有专格(AUTH-PARAMS-19)。
+void zeroBakeClock(AuthorityParamsFixture& f)
+{
+    f.auth.setPanCurvePreviewBakeClock([] { return 0.0; });
+}
+
+} // namespace
+
+TEST_CASE("AUTH-PARAMS-15 [J157] 预览只换音频线程那张表,已提交那张不动;松手提交同一组点沿用预览那张",
+          "[authority][params][pancurve][j157]")
+{
+    AuthorityParamsFixture f;
+    zeroBakeClock(f);
+    const auto flat = constCurve(0.0, 0.0);
+    f.auth.setPanCurve(1, bellAt0(-3.0f));
+    const auto committed = f.auth.activePanCurveLut();
+    ackAudio(f);
+    REQUIRE(f.auth.arbiter().panCurveLut() == committed.get());
+
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-12.0f)) == PreviewReq::accepted);
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(0.0)); // 闸门开着:就地发出,没有待发
+    CHECK(f.auth.panCurvePreviewLive());
+    const auto preview = f.auth.panCurvePreviewLut();
+    REQUIRE(preview != nullptr);
+    REQUIRE(preview.get() != committed.get());
+
+    // ① 已提交那张没换:存盘 / 回推 / 分析读的都是已提交的点表,这里是它在 authority 侧的那一份。
+    CHECK(f.auth.activePanCurveLut() == committed);
+
+    // ② 音频线程听的是预览那张,而且就是预览点表烘出来的值。
+    runAudio(f, 4096);
+    CHECK(f.auth.arbiter().panCurveLut() == preview.get());
+    CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-12.0f).margin(0.03));
+
+    // ③ 拖动途中别的东西触发重发(段编辑形态:setCurve → rebindSources),预览照样在;
+    //    段编辑顺带跑的 rebuildAllCurves → setPanCurve(已提交的点)走 no-op,不许撤预览。
+    f.auth.setCurve(1, 0, &flat);
+    runAudio(f, 64);
+    CHECK(f.auth.arbiter().panCurveLut() == preview.get());
+    f.auth.setPanCurve(1, bellAt0(-3.0f));
+    CHECK(f.auth.panCurvePreviewLive());
+    runAudio(f, 64);
+    CHECK(f.auth.arbiter().panCurveLut() == preview.get());
+
+    // ④ 松手提交同一组点 ⇒ 沿用预览那张(指针相同)、预览收掉、音频线程不开淡入窗口 ⇒ 输出逐位不变。
+    runAudio(f, 4096);
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+    f.auth.setPanCurve(1, bellAt0(-12.0f));
+    CHECK(f.auth.activePanCurveLut() == preview);
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
+    (void)f.auth.processBlock(true, 0.0);
+    CHECK(f.auth.arbiter().panCurveLut() == preview.get());
+    CHECK(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+}
+
+TEST_CASE("AUTH-PARAMS-16 [J157] 预览限速 ≤ 20 Hz:50 ms 内再来的留着待发,到点发最后一份(不丢)",
+          "[authority][params][pancurve][j157]")
+{
+    AuthorityParamsFixture f;
+    zeroBakeClock(f);
+    ackAudio(f);
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-2.0f)) == PreviewReq::accepted);
+    REQUIRE_FALSE(f.auth.pumpPanCurvePreview(1000.0));
+    REQUIRE(f.auth.panCurvePreviewStats().publishes == 1);
+    ackAudio(f); // 回收闸开着:下面拦住后几份的只可能是限速
+
+    // 一拍里连来三份 ⇒ 合并成最后一份(桥调用只记点表,不烘)。
+    for (const float db : {-4.0f, -5.0f, -6.0f})
+        REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(db)) == PreviewReq::accepted);
+    CHECK(f.auth.pumpPanCurvePreview(1010.0)); // 10 ms 后:拦住、仍待发
+    CHECK(f.auth.pumpPanCurvePreview(1049.0)); // 49 ms:仍拦
+    CHECK(f.auth.panCurvePreviewStats().publishes == 1);
+    CHECK(f.auth.panCurvePreviewPending());
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(1050.0)); // 50 ms:发出
+    CHECK(f.auth.panCurvePreviewStats().publishes == 2);
+    CHECK(f.auth.panCurvePreviewLut()->gainDb(0.0f) == Approx(-6.0f).margin(0.03)); // 发的是最后一份
+    CHECK(f.auth.panCurvePreviewStats().bakes == 2); // 中间两份没烘
+}
+
+TEST_CASE("AUTH-PARAMS-17 [J157] 音频线程停着时连拖 10 秒(200 份):至多一份预览未确认,池不随拖动增长",
+          "[authority][params][pancurve][j157][sl445]")
+{
+    AuthorityParamsFixture f;
+    zeroBakeClock(f);
+    f.auth.setPanCurve(1, bellAt0(-1.0f));
+    ackAudio(f);
+    const std::size_t poolBefore = f.auth.snapshotPoolSize();
+
+    // 间隔 50 ms(= 20 Hz)的 200 份请求 = 10 s;期间音频线程一块都不跑(只读观察 / 无时间线 /
+    // 无注入轨 / 宿主停了音频 —— SL-445 写明的那几种「不回收」都是这个形态)。
+    for (int i = 0; i < 200; ++i)
+    {
+        REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-2.0f - static_cast<float>(i % 10))) == PreviewReq::accepted);
+        (void)f.auth.pumpPanCurvePreview(static_cast<double>(i) * 50.0);
+    }
+    // 回收闸没开过 ⇒ 只有第一份发出去了。没有这道闸就是 200 份快照、200 张 128 KiB 的表(约 25 MB)
+    // 钉到音频再跑起来 —— 比「只在松手时提交」糟得多。
+    CHECK(f.auth.panCurvePreviewStats().publishes == 1);
+    CHECK(f.auth.panCurvePreviewStats().bakes == 1);
+    CHECK(f.auth.snapshotPoolSize() <= poolBefore + 1);
+    CHECK(f.auth.panCurvePreviewPending()); // 最后一份没丢,等着
+
+    // 活性对照:音频线程一跑起来,下一拍就把最后那份发出去(少了它,「什么都不发」的实现也全绿)。
+    ackAudio(f);
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(200.0 * 50.0));
+    CHECK(f.auth.panCurvePreviewStats().publishes == 2);
+    CHECK(f.auth.panCurvePreviewLut()->gainDb(0.0f) == Approx(-11.0f).margin(0.03)); // i=199 ⇒ -2-9
+}
+
+TEST_CASE("AUTH-PARAMS-18 [J157] 音频在跑时连续拖 10 秒(200 份预览):每份都发、池有上界、旧预览表逐张释放",
+          "[authority][params][pancurve][j157][sl445]")
+{
+    AuthorityParamsFixture f;
+    zeroBakeClock(f);
+    f.auth.setPanCurve(1, bellAt0(-1.0f));
+    ackAudio(f);
+
+    std::vector<std::weak_ptr<const scvb::PanCurveLut>> seen;
+    std::size_t maxPool = 0;
+    for (int i = 0; i < 200; ++i)
+    {
+        REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-2.0f - static_cast<float>(i % 10))) == PreviewReq::accepted);
+        (void)f.auth.pumpPanCurvePreview(static_cast<double>(i) * 50.0);
+        seen.push_back(f.auth.panCurvePreviewLut());
+        maxPool = std::max(maxPool, f.auth.snapshotPoolSize());
+        // 两份之间的 50 ms 音频(48 kHz × 0.05 = 2400 样本):5 块 × 480。
+        for (int b = 0; b < 5; ++b)
+            runAudio(f, 480);
+    }
+    // 每 50 ms 一份都发出去了 —— 音频在跑时回收闸每一拍都开着,没把预览饿死。
+    CHECK(f.auth.panCurvePreviewStats().publishes == 200);
+    // 池上界 = 音频线程手上那份 + 刚发的那份。
+    CHECK(maxPool <= 2);
+    std::size_t alive = 0;
+    for (const auto& w : seen)
+        alive += w.expired() ? 0u : 1u;
+    // 活着的预览表 = 发布中的那张 + 池里上一份钉着的那张;其余 198 张(约 25 MB)已放掉。
+    CHECK(alive <= 2);
+    CHECK(seen.front().expired());
+}
+
+TEST_CASE("AUTH-PARAMS-19 [J157] 占空比:烘一张表要 20 ms ⇒ 下一份最早 200 ms 后(消息线程 ≤ 10%)",
+          "[authority][params][pancurve][j157]")
+{
+    AuthorityParamsFixture f;
+    ackAudio(f);
+    // 注入的烘表计时:每次烘表前后各读一次,差 = bakeCost。
+    double bakeCost = 20.0;
+    int reads = 0;
+    f.auth.setPanCurvePreviewBakeClock([&] { return (reads++ % 2 == 0) ? 0.0 : bakeCost; });
+
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-2.0f)) == PreviewReq::accepted);
+    REQUIRE_FALSE(f.auth.pumpPanCurvePreview(0.0));
+    CHECK(f.auth.panCurvePreviewStats().lastBakeMs == Approx(20.0));
+    CHECK(f.auth.panCurvePreviewStats().intervalMs == Approx(200.0));
+    ackAudio(f);
+
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-3.0f)) == PreviewReq::accepted);
+    CHECK(f.auth.pumpPanCurvePreview(199.0)); // 50 ms 的底线早过了,但占空比还没到
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(200.0));
+    CHECK(f.auth.panCurvePreviewStats().publishes == 2);
+    ackAudio(f);
+
+    // 便宜的表(1 ms)⇒ 间隔回到 50 ms 底线,不是一直停在 200。
+    bakeCost = 1.0;
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-4.0f)) == PreviewReq::accepted);
+    CHECK(f.auth.pumpPanCurvePreview(399.0));
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(400.0));
+    CHECK(f.auth.panCurvePreviewStats().intervalMs == Approx(50.0));
+    CHECK(f.auth.panCurvePreviewStats().maxBakeMs == Approx(20.0));
+}
+
+TEST_CASE("AUTH-PARAMS-20 [J157] 预览烘表的实测耗时(只报告,不判快慢)与由它推出的限速",
+          "[authority][params][pancurve][j157][bench]")
+{
+    // 真计时源。数字随机器与构建档变,**不做快慢断言**(那会在慢机上红在与代码无关的地方);
+    // 断的是「限速间隔确实由实测耗时推出、占空比不超过 10%」。读数见 WARN 输出与 PR 描述。
+    AuthorityParamsFixture f;
+    ackAudio(f);
+
+    const auto mk = [](scvb::PanCurveShape shape, float angle, float q) {
+        scvb::PanCurvePoint p;
+        p.angle = angle;
+        p.gainDb = -6.0f;
+        p.shape = shape;
+        p.q = q;
+        if (shape == scvb::PanCurveShape::bell)
+            p.side = scvb::PanCurveSide::out;
+        else
+            p.side = (angle >= 0.0f) ? scvb::PanCurveSide::right : scvb::PanCurveSide::left;
+        return p;
+    };
+    struct Case
+    {
+        const char* name;
+        std::vector<scvb::PanCurvePoint> points;
+    };
+    std::vector<Case> cases;
+    cases.push_back({"1 bell", {mk(scvb::PanCurveShape::bell, 0.0f, 2.0f)}});
+    cases.push_back({"4 mixed",
+                     {mk(scvb::PanCurveShape::bell, -60.0f, 2.0f), mk(scvb::PanCurveShape::shelf, -20.0f, 2.0f),
+                      mk(scvb::PanCurveShape::cut, 20.0f, 12.0f), mk(scvb::PanCurveShape::bell, 60.0f, 2.0f)}});
+    {
+        std::vector<scvb::PanCurvePoint> worst; // 已知上限:点数接近 16 **且**多数为 bell
+        for (int i = 0; i < 16; ++i)
+            worst.push_back(mk(scvb::PanCurveShape::bell, -90.0f + 12.0f * static_cast<float>(i), 2.0f));
+        cases.push_back({"16 bell (worst)", worst});
+    }
+
+    double t = 0.0;
+    for (const auto& c : cases)
+    {
+        REQUIRE(f.auth.requestPanCurvePreview(1, c.points) == PreviewReq::accepted);
+        REQUIRE_FALSE(f.auth.pumpPanCurvePreview(t));
+        const auto s = f.auth.panCurvePreviewStats();
+        WARN("[J157 bake] " << c.name << ": " << s.lastBakeMs << " ms/preview, interval " << s.intervalMs << " ms ("
+                            << 1000.0 / s.intervalMs << " Hz), message-thread duty "
+                            << 100.0 * s.lastBakeMs / s.intervalMs << "%");
+        CHECK(s.intervalMs == Approx(std::max(50.0, s.lastBakeMs / 0.10)));
+        CHECK(s.lastBakeMs / s.intervalMs <= 0.10 + 1e-9);
+        ackAudio(f);
+        t += 10000.0;
+    }
+}
+
+TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变了 / 换版本 / 旧版本号 / 坏点",
+          "[authority][params][pancurve][j157]")
+{
+    AuthorityParamsFixture f;
+    zeroBakeClock(f);
+    f.auth.setPanCurve(1, bellAt0(-3.0f));
+    ackAudio(f);
+    const auto committed = f.auth.activePanCurveLut();
+    double t = 0.0;
+    const auto preview = [&](float db) {
+        REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(db)) == PreviewReq::accepted);
+        REQUIRE_FALSE(f.auth.pumpPanCurvePreview(t));
+        REQUIRE(f.auth.panCurvePreviewLive());
+        t += 1000.0;
+        ackAudio(f);
+    };
+
+    // ① 撤回 ⇒ 音频回到已提交那张。
+    preview(-12.0f);
+    REQUIRE(f.auth.arbiter().panCurveLut() == f.auth.panCurvePreviewLut().get());
+    f.auth.cancelPanCurvePreview();
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
+    CHECK_FALSE(f.auth.panCurvePreviewPending());
+    runAudio(f, 64);
+    CHECK(f.auth.arbiter().panCurveLut() == committed.get());
+
+    // ② 拖动途中已提交曲线变了(撤销 / 重做 / 载入工程的形态)⇒ 这一版的预览作废,音频跟新的已提交曲线。
+    preview(-12.0f);
+    f.auth.setPanCurve(1, bellAt0(-6.0f));
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
+    runAudio(f, 4096);
+    CHECK(f.auth.arbiter().panCurveLut() == f.auth.activePanCurveLut().get());
+    CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-6.0f).margin(0.03));
+
+    // ②b 被限速拦着、还没发出去的那一份也一并作废 —— 否则它会在已提交曲线变了之后才发出去,
+    //    把音频拽回拖动中的旧点表,而那时已经没有人在拖。
+    //    ⚠ 夹具要做成「**只有待发、没有在发布中的**」:有在发布中的那份时,作废条件的另一半
+    //    (live)会顺手把待发一起清掉,这一格就分辨不出「待发」那一半在不在(删除式实测过:
+    //    第一版夹具带着 live,去掉「待发」那一半照样全绿)。先撤回再请求,正是这个形态 ——
+    //    上一次手势刚撤回、50 ms 内又按下去。
+    preview(-12.0f);
+    f.auth.cancelPanCurvePreview();
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-9.0f)) == PreviewReq::accepted);
+    REQUIRE(f.auth.pumpPanCurvePreview(t - 990.0)); // 距上一份 10 ms:限速拦住,待发
+    REQUIRE_FALSE(f.auth.panCurvePreviewLive()); // 前提:只有待发
+    const auto publishesBefore = f.auth.panCurvePreviewStats().publishes;
+    f.auth.setPanCurve(1, bellAt0(-5.0f));
+    CHECK_FALSE(f.auth.panCurvePreviewPending());
+    CHECK_FALSE(f.auth.pumpPanCurvePreview(t)); // 到点也不再发
+    CHECK(f.auth.panCurvePreviewStats().publishes == publishesBefore);
+    t += 1000.0;
+    ackAudio(f);
+
+    // ③ 换版本 ⇒ 作废;切回来不复活(只靠 rebindSources 按版本挑表的话,切回 V1 那一刻它会复活)。
+    preview(-12.0f);
+    f.auth.setVersionActive(2);
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
+    f.auth.setVersionActive(1);
+    runAudio(f, 4096);
+    CHECK(f.auth.arbiter().panCurveLut() == f.auth.activePanCurveLut().get());
+    CHECK(f.auth.arbiter().panCurveLut()->gainDb(0.0f) == Approx(-5.0f).margin(0.03));
+
+    // ④ 旧版本号(UI 在「切版本已发出、回声未到」窗口里捕获的)⇒ staleVersion,什么都不记。
+    CHECK(f.auth.requestPanCurvePreview(2, bellAt0(-9.0f)) == PreviewReq::staleVersion);
+    CHECK_FALSE(f.auth.panCurvePreviewPending());
+    // 坏点 ⇒ badPoints(与 setPanCurve 同一道闸),同样什么都不记。
+    auto bad = bellAt0(-3.0f);
+    bad[0].gainDb = std::numeric_limits<float>::quiet_NaN();
+    CHECK(f.auth.requestPanCurvePreview(1, bad) == PreviewReq::badPoints);
+    CHECK_FALSE(f.auth.panCurvePreviewPending());
+
+    // ⑤ 拖回已提交的样子 ⇒ 借用已提交那张,不烘。
+    const auto bakes = f.auth.panCurvePreviewStats().bakes;
+    REQUIRE(f.auth.requestPanCurvePreview(1, bellAt0(-5.0f)) == PreviewReq::accepted);
+    REQUIRE_FALSE(f.auth.pumpPanCurvePreview(t));
+    CHECK(f.auth.panCurvePreviewStats().bakes == bakes);
+    CHECK(f.auth.panCurvePreviewLut() == f.auth.activePanCurveLut());
+
+    // ⑥ 版本层 state 往返(T18 `fromState`)改了激活版本 ⇒ 同 ③ 作废。
+    REQUIRE(f.auth.panCurvePreviewLive());
+    juce::ValueTree st = f.auth.toState();
+    st.setProperty("active", 2, nullptr);
+    f.auth.fromState(st);
+    CHECK(f.auth.versionActive() == 2);
+    CHECK_FALSE(f.auth.panCurvePreviewLive());
+}

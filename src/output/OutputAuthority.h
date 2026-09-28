@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -81,6 +82,57 @@ public:
     // 点列表为空 → LUT 全 0 dB → 增益恒 1(从没画过曲线的工程声音一个字节不变)。
     void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
 
+    // ---- [J157 / SL-447] pan 曲线拖动预览(消息线程;契约 §1.37 `previewPanCurve`)----
+    // 预览只换**音频线程用的那张 G 表**:不写 m_panCurvePoints / m_panCurveLut(已提交的那张)、
+    // 不碰 VersionStore、不进撤销栈、不落盘。打印器与 viz 根本不读 G(它们读的是各轨 pan/vol
+    // 曲线),分析读的是 processor 的 crvsData_ —— 三者都只见到已提交的曲线。
+    //
+    // 发不发由 pump 决定,三道闸按顺序:
+    //   ① 限速:距上一次预览发布 ≥ 当前间隔(≥ 50 ms ⇒ ≤ 20 Hz,J157 约束①);烘表贵时按
+    //      实测耗时把间隔拉长,让烘表占消息线程 ≤ 10%(kPanCurvePreviewMaxDuty);
+    //   ② 回收闸([SL-445] 之上):上一份预览快照音频线程还没越过(oldestHeldSeq < 它的 seq)
+    //      ⇒ 不发新的。于是任何时刻**至多一份**预览快照未被确认 —— 音频线程停着(只读观察 /
+    //      无时间线 / 无注入轨 / 宿主不调音频)时,拖多久池里也只多这一份,不比「只在松手时
+    //      提交」更糟;音频在跑时每份在下一次发布时照 SL-445 的规则放掉;
+    //   ③ 发不出去就**留着**(pending),调用方的定时器下一拍再来 —— 手指停在半路不再有
+    //      pointermove,不重试的话停手前最后那一下永远听不到。
+    static constexpr double kPanCurvePreviewMinIntervalMs = 50.0;
+    static constexpr double kPanCurvePreviewMaxDuty = 0.10;
+
+    // 记下「最新一份点表」并置待发,**不烘表**(桥调用几乎免费;一拍里多次请求合并成最后一份)。
+    // version 不是当前激活版本 ⇒ staleVersion:UI 传的是**点表捕获时**的版本号,在「切版本已
+    // 发出、回声未到」的窗口里它与引擎已不一致 —— 这份点表属于旧版本,落到新版本上就是跨版本串写。
+    // 坏点(非有限 / 越界)⇒ badPoints:与 setPanCurve 同一道 arePanCurvePointsUsable。
+    enum class PanCurvePreviewRequest
+    {
+        accepted,
+        staleVersion,
+        badPoints
+    };
+    PanCurvePreviewRequest requestPanCurvePreview(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // 撤掉预览:丢掉待发的那份;预览表若正在发布,按已提交那张重发一次(音频线程照常 30 ms 淡回)。
+    void cancelPanCurvePreview();
+    // 按上面三道闸尝试发一次。nowMs = 单调时钟毫秒(只用来限速)。返回 true = 仍有待发
+    // (调用方保持重试定时器),false = 没有待发了。
+    bool pumpPanCurvePreview(double nowMs);
+
+    bool panCurvePreviewPending() const { return m_preview.pending; }
+    // 预览表此刻是否在发布出去的快照里(音频线程听的是它,不是已提交那张)。
+    bool panCurvePreviewLive() const { return m_preview.live; }
+    std::shared_ptr<const scvb::PanCurveLut> panCurvePreviewLut() const { return m_preview.lut; }
+    // 诊断 / 单测:烘过几次、发过几次、最近与最大一次烘表耗时、当前生效的限速间隔。
+    struct PanCurvePreviewStats
+    {
+        std::uint64_t bakes = 0;
+        std::uint64_t publishes = 0;
+        double lastBakeMs = 0.0;
+        double maxBakeMs = 0.0;
+        double intervalMs = kPanCurvePreviewMinIntervalMs;
+    };
+    PanCurvePreviewStats panCurvePreviewStats() const { return m_preview.stats; }
+    // 单测注入:烘表耗时的计时源(默认 steady_clock,毫秒)。只影响①里「按耗时拉长间隔」那一半。
+    void setPanCurvePreviewBakeClock(std::function<double()> clock) { m_preview.bakeClock = std::move(clock); }
+
     // ---- 版本复制 §5.3 的判据(执行在 processor 的 CRVS 事务里)----
     // [SL-484] 只校验不执行:生产路径(processor 的 CRVS 复制)借这一份判据,不另写 PRINT 判断。
     scvb::engine::CopyVersionResult validateCopy(int src, int dst, scvb::engine::AuthorityMode mode) const
@@ -102,7 +154,8 @@ public:
     // 活动版本各轨曲线裸指针(消息线程;供 T29 打印器重绑,曲线对象由 VersionStore 保活)。
     std::array<const scvb::CurveEvaluator*, kNumTracks> activeCurves() const;
 
-    // 活动版本的 G 查表(消息线程;供单测与 UI 对拍「画的 == 听的」)。从没设过 → null。
+    // 活动版本**已提交**的 G 查表(消息线程;供单测对拍)。从没设过 → null。
+    // [J157] 拖动预览在发布中时,音频线程用的是 panCurvePreviewLut(),不是这一张。
     std::shared_ptr<const scvb::PanCurveLut> activePanCurveLut() const;
 
     // 快照池当前条数(消息线程;单测钉「池有上界」用)。
@@ -121,6 +174,9 @@ public:
 
 private:
     void rebindSources();
+    // [J157] 丢掉预览(待发 + 在发布中的那张),**不**重发快照;调用方随后自己 rebind。
+    // 返回:预览表此前是否在发布中(调用方据此决定要不要重发)。
+    bool dropPanCurvePreview();
 
     scvb::params::ParamHandles m_handles;
     scvb::engine::DspArbiter m_arbiter;
@@ -143,6 +199,29 @@ private:
     // 留着点列表是为了 setPanCurve 的 no-op 判定 —— 见该函数注释。
     std::array<std::shared_ptr<const scvb::PanCurveLut>, kNumVersions> m_panCurveLut{};
     std::array<std::vector<scvb::PanCurvePoint>, kNumVersions> m_panCurvePoints{};
+
+    // [J157 / SL-447] 拖动预览(消息线程独占;语义见 requestPanCurvePreview 一组的注释)。
+    struct PanCurvePreview
+    {
+        // 待发的那份(pending=true 时有效)。
+        bool pending = false;
+        int pendingVersion = 0;
+        std::vector<scvb::PanCurvePoint> pendingPoints;
+        // 在发布中的那张(live=true 时 rebindSources 用它替掉已提交那张)。lut 可为 null:
+        // 点表与已提交的相同 ⇒ 直接借用已提交那张(从没画过曲线时那张就是 null ⇒ G≡0)。
+        bool live = false;
+        int liveVersion = 0;
+        std::vector<scvb::PanCurvePoint> livePoints;
+        std::shared_ptr<const scvb::PanCurveLut> lut;
+        // 限速与回收闸的记账。**跨手势保留**(cancel / 提交都不清):
+        // lastSeq 清零会让下一次手势的首份预览绕过回收闸 —— 音频线程停着时每个手势就多留
+        // 一份,「至多一份」退化成「每手势一份」。
+        std::uint64_t lastSeq = 0; // 最近一次预览发布的快照 seq;0 = 从没发过
+        double lastPublishMs = 0.0;
+        PanCurvePreviewStats stats;
+        std::function<double()> bakeClock; // 空 ⇒ steady_clock
+    };
+    PanCurvePreview m_preview;
 };
 
 } // namespace scvb::output

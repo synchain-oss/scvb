@@ -595,7 +595,19 @@ public:
     scvb::state::SegmentEditResult editSegment(int track, const scvb::state::SegmentEditArgs& args);
     // 成功返回 true;replacedSegments/replacedLocked = 替换前的段数 / 锁定段数(供确认条计数)。
     bool setTrackManual(int ch, bool isPan, float value, int& replacedSegments, int& replacedLocked);
+    // 松手提交(§1.17):一次调用 = 一条撤销步。[J157] 顺带撤掉拖动预览(提交的点表与最后一份
+    // 预览相同时 authority 沿用那张表,音频不开淡入窗口;不同就烘新表、照常淡入)。
     void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // [J157 / SL-447] 拖动预览(契约 §1.37 `previewPanCurve`;消息线程)。**不是** CRVS 事务:
+    // 不写 crvsData_、不进撤销栈、不落盘、不回推 scvb.state。受理但这一拍没发出去(限速 / 回收闸,
+    // 见 OutputAuthority::pumpPanCurvePreview)⇒ 起一个 kPanPreviewRetryMs 的重试定时器,
+    // 直到发出去或被撤掉 —— 手指停在半路就不会再有新请求,不重试的话最后那一下永远听不到。
+    scvb::output::OutputAuthority::PanCurvePreviewRequest
+    previewPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // 撤掉拖动预览,音频回到已提交那张(§1.37 的 `points = null`;编辑器关掉时也调)。
+    void cancelPanCurvePreview();
+    // 单测 / 诊断:还有没有待发的预览(重试定时器在不在转,看的就是它)。
+    bool panCurvePreviewPending();
     // 设置过渡 ramp(ms):值变化才重建全部曲线并重新发布(transitionRampSec 烘焙进 CurveEvaluator)。
     // 返回 true = 值已变化并重建(PR#55 第5轮缺陷2)。
     bool setTransitionRamp(float ms);
@@ -810,6 +822,11 @@ private:
     // 的 kVizPollHz 注释),不能在写方这边再犯一次。60Hz 驱动 33ms 闸门 = 稳定每两拍一帧 = 30.0Hz。
     // 未到闸门的那一拍在 `publishVizFrame` 的 `due()` 处早退:不采输入、不构造任何东西。
     std::unique_ptr<juce::TimedCallback> vizTimer_;
+    // [J157] 拖动预览的重试定时器:**只在有待发预览时转**,发出去 / 被撤掉即自停。
+    // 10 ms 而不是 50 ms:限速闸门本身是 50 ms,重试若也按 50 ms 走就会与闸门同频不同相
+    // (上面 vizTimer_ 那条注释讲的同一个坑),某拍差 1 ms 没够着就要多等一整拍。
+    std::unique_ptr<juce::TimedCallback> panPreviewTimer_;
+    static constexpr int kPanPreviewRetryMs = 10;
 
     // 取值仲裁 + 平滑(T16/DspArbiter + T18 版本层)。
     scvb::output::OutputAuthority authority_;

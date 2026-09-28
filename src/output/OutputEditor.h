@@ -24,7 +24,9 @@ class OutputEditor final : public scvb::webview::WebViewHost
 {
 public:
     explicit OutputEditor(ScvbOutputAudioProcessor& processor);
-    ~OutputEditor() override = default;
+    // [J157] 关窗时撤掉拖动预览:拖到一半关掉编辑器就不会再有松手那一下,不撤的话那份预览
+    // 会一直留在音频里(而界面、存盘都是已提交的曲线)。
+    ~OutputEditor() override;
 
 protected:
     // 首帧全量快照(契约 §1.1)。
@@ -119,6 +121,7 @@ private:
     void handleSetChannelConfig(const ArgList& a, Completion c);
     void handleSetTrackManual(const ArgList& a, Completion c);
     void handleSetPanCurve(const ArgList& a, Completion c);
+    void handlePreviewPanCurve(const ArgList& a, Completion c); // [J157] §1.37
     void handleSetVadParams(const ArgList& a, Completion c);
     void handleSetSegmentation(const ArgList& a, Completion c);
     void handleSetTransitionRamp(const ArgList& a, Completion c);

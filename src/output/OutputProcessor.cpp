@@ -94,6 +94,7 @@ ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
 {
     stopTimer();
     vizTimer_.reset(); // [SL-192] viz 独立定时器:先拆,免得析构过程中还有一拍打进来
+    panPreviewTimer_.reset(); // [J157] 同上:它的回调要取 lifecycleMutex_、碰 authority_
     // 顺序不可倒:先 cancelAnalysis() 把工作线程 signal + join 掉 —— join 返回即保证 run() 已经
     // 结束,此后不会再有人调 triggerAsyncUpdate();再 cancelPendingUpdate() 撤掉可能已经入队的
     // 那一次派发。两步做完,消息队列里不可能再有指向本对象的回调。
@@ -3726,6 +3727,61 @@ void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::
         // 走这个回调而不是直接调 setPanCurve,是为了**撤销/重做**也走同一条路 ——
         // commitCrvsTransaction 的 onChanged 在 undo/redo 时同样会被调用。
         [this] { rebuildAllCurves(); });
+    // [J157] 松手即收掉拖动预览。点表真的变了时,上面 rebuild 里 authority_.setPanCurve 已经撤过
+    // (并在点表与最后一份预览相同时沿用了那张表);这一行管的是**点表没变**的那一种 —— 拖出去又
+    // 拖回原处松手:已提交曲线一个字节没动、no-op 路不碰预览,不在这里撤的话最后那份预览会一直
+    // 留在音频里,而松手之后再也没有人会撤它。
+    authority_.cancelPanCurvePreview();
+}
+
+scvb::output::OutputAuthority::PanCurvePreviewRequest
+ScvbOutputAudioProcessor::previewPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Req r = Req::accepted;
+    bool pending = false;
+    {
+        const juce::ScopedLock lock(lifecycleMutex_);
+        r = authority_.requestPanCurvePreview(version, points);
+        if (r != Req::accepted)
+            return r;
+        // 先就地试一次:闸门开着的话这一拍就发出去,不必等定时器(拖动的第一下零额外延迟)。
+        pending = authority_.pumpPanCurvePreview(static_cast<double>(scvb::steadyNowMs()));
+    }
+    if (pending)
+    {
+        if (panPreviewTimer_ == nullptr)
+        {
+            panPreviewTimer_ = std::make_unique<juce::TimedCallback>([this] {
+                bool stillPending = false;
+                {
+                    const juce::ScopedLock lock(lifecycleMutex_);
+                    stillPending = authority_.pumpPanCurvePreview(static_cast<double>(scvb::steadyNowMs()));
+                }
+                // 自停放在锁外:stopTimer 与 releaseResources 那条「先停定时器再取锁」同一纪律。
+                // 没有待发了(发出去 / 被提交或 cancel 撤掉 / 换了版本)就停;否则下一拍再试 ——
+                // **这一条是「手指停在半路也听得到最后那一下」的全部依据**。
+                if (!stillPending)
+                    panPreviewTimer_->stopTimer();
+            });
+        }
+        if (!panPreviewTimer_->isTimerRunning())
+            panPreviewTimer_->startTimer(kPanPreviewRetryMs);
+    }
+    return r;
+}
+
+void ScvbOutputAudioProcessor::cancelPanCurvePreview()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    authority_.cancelPanCurvePreview();
+    // 定时器不在这里停:下一拍它看到没有待发就自停(与上面同一处判据,不另写一份)。
+}
+
+bool ScvbOutputAudioProcessor::panCurvePreviewPending()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return authority_.panCurvePreviewPending();
 }
 
 bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)

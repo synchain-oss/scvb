@@ -190,6 +190,8 @@ Things worth knowing:
 
 The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
 
+As with an EQ, you hear the change while you drag: moving a point, the Q slider, or the mouse wheel applies the curve live (at most 20 updates per second, each crossfaded over 30 ms). Dragging is only a preview until you let go (for the Q slider and the wheel: until you pause for a moment) — that is what gets saved to the project and what becomes **one** undo step. The preview does not affect printed automation, the Monitor display or the analysis balance.
+
 ## Target width
 
 Width is a **geometric angle scaling**: the assigned angle is multiplied by a coefficient, and the readout is shown as an angle (`+/-{θ}°`, where `θ = round(width% x 0.6)`, so 0 / 100 / 150% map to 0° / 60° / 90°).
