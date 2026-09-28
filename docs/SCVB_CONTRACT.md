@@ -561,7 +561,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 载荷 | `{ channels:[ { ch:1..15, addedRanges:[{startS:f64, endS:f64}], coveragePct:f32 } ] }` |
 | 字段纪律 | **增量**:**`addedRanges`**(**T25 定名**,§9.2)= 自上一帧新增覆盖的区间(合并后)——它是宪法字段 `features.per_channel[].coverage_ranges[]`(params-v0 §二)的**增量投影**,与 state 真身**语义不同故不同名**(真身是全量区间表,本字段是本帧增量),按 §0.2 规则②取 lowerCamelCase;05 §1.4 该行原文为「每轨 `coverage_ranges` 增量」。`coveragePct` = 该轨在 `global.range` 内的覆盖百分比 0..100(**T25 定名**,§9.2,供 Tab3 轨头「覆盖率」显示);follow 态没有显式范围,取已知时间线:**播放中** = [0, 播放头),**停着**(只会是例外帧)= [0, max(播放头, 已采集时间线末端))(已采集末端 = 全轨覆盖的最大终点,与 §1.6 follow 档「分析全部」的终点同一个量)。周期帧仅包含**本帧有变化**的轨。<br>**例外帧**([J152]):`channels` 含**全部 15 轨**(本帧无变化、从未采集的轨也在,报 `coveragePct:0`);`addedRanges` 仍是相对上一帧的增量 —— 首帧与 `clearCoverage` 之后增量基线为空,故为窗口内的全部覆盖区间;分母窗口为空时(follow 态、从未采集、播放头在 0)各轨照发 `coveragePct:0`、`addedRanges:[]`。 |
 | UI 消费 | 泳道底部 2px 覆盖条实时延伸、Tab3 轨头覆盖率、Tab1 分析行「范围内 {p}% 已覆盖」 |
-| 真源 | 05 §1.4 / §2.3;[J152](例外帧) |
+| 真源 | 05 §1.4 / §2.3;例外帧:[J152] |
 
 ### 2.8 `scvb.segments`
 

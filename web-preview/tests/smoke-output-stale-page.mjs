@@ -1505,6 +1505,7 @@ try {
                 playing: m ? m.transport.isPlaying : null,
                 segs,
                 wantP: pcts.length ? Math.round(pcts.reduce((a, v) => a + v, 0) / pcts.length) : null,
+                allP: m && m.coveragePct.size ? Math.round(Array.from(m.coveragePct.values()).reduce((a, v) => a + v, 0) / m.coveragePct.size) : null,
                 nodata: flow ? flow.getAttribute("data-analyze-nodata") : "(缺节点)",
                 covDisplay: disp(cov),
                 covText: cov ? cov.textContent.trim() : null,
@@ -1532,6 +1533,31 @@ try {
             check(
                 a.covDisplay !== "none" && !!m && Number(m[1]) === a.wantP,
                 `J152a 覆盖率行上屏且数字 = 有覆盖轨的均值 ${a.wantP}%(实得 display=${a.covDisplay}、「${a.covText}」)`,
+            );
+        }
+        // J152c 停着只把第 1 轨整轨清光:它**采过**,必须留在分母里 ⇒ 数字 = 15 轨(含这条 0)的均值,
+        // 而不是剩下 14 轨的均值(那样清光一整轨数字反而不动)。
+        //   ← app.js 不记 `coverageSeen`,或 tab-master 调 coveragePercent 时不传它 ⇒ 本格红。
+        const cleared1 = await evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.mock || typeof s.mock.clearCoverage !== "function") return null;
+            return s.mock.clearCoverage(1, 0, 100000);
+        })()`);
+        check(
+            !!cleared1 && cleared1.ok === true,
+            `J152c clearCoverage(第 1 轨)受理(实得 ${JSON.stringify(cleared1)})`,
+        );
+        await sleep(400);
+        const c = await evaluate(T1);
+        if (check(c !== null, "J152c 取到页内 DOM 快照")) {
+            const mc = /(\d+)\s*%/.exec(c.covText || "");
+            check(
+                c.allP !== c.wantP,
+                `J152c 前置:两种分母算出来的数不同(15 轨 ${c.allP}% / 14 轨 ${c.wantP}%),否则本格分不出`,
+            );
+            check(
+                c.covDisplay !== "none" && !!mc && Number(mc[1]) === c.allP,
+                `J152c 清光的那一轨仍在分母里:应为 ${c.allP}%(实得 display=${c.covDisplay}、「${c.covText}」)`,
             );
         }
         // J152b 停着清光全部覆盖:受理后那一次全量把 15 轨都报成 0 ⇒ 原因句回来、覆盖率行收起。

@@ -6198,6 +6198,24 @@ TEST_CASE("HOST J152:停着重开已采未析的工程 —— 就绪首帧补一
     // ⑥ 又只补一次。
     CHECK(r2.out.captureProgressFrame(base, false).empty());
 
+    // ⑥b 清掉本轨覆盖的**尾部**:已采集末端跟着缩短,停着的分母 = [0, 新末端) —— 与 §1.6 follow 档
+    //     「分析全部」的范围是同一个量,数字答的是「分析会作用的那段里有多少已采」。所以只剩一段、
+    //     清掉它后半的工程可能仍显示 100%(#322 第 1 轮复审【建议】2 举的例子),这是有意的口径。
+    //     钉在这里,免得被当成回归去「修」成别的分母。
+    {
+        const tailFromS = (midS + extent) * 0.5;
+        REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), tailFromS, extent + 1.0) > 0.0);
+        const double newExtent = r2.out.capturedExtentSeconds();
+        REQUIRE(newExtent > 0.0);
+        REQUIRE(newExtent < extent);
+        base.reset();
+        const auto tail = r2.out.captureProgressFrame(base, true);
+        REQUIRE(tail.size() == 15u);
+        CHECK(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, newExtent).pct));
+        // 对照:分母若停在旧末端,会是另一个数 —— 这一格分得出两种口径。
+        CHECK_FALSE(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    }
+
     // ⑦ 清光全部覆盖:已采集末端归 0、播放头在 0 ⇒ 分母窗口为空。例外帧**照发**,各轨报 0 ——
     //    否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
     REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, extent + 1.0) > 0.0);
