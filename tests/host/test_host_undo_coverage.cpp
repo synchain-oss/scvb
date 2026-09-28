@@ -88,7 +88,7 @@ struct UndoRig
 
 // 工程值比较的容差:工程值 ↔ 归一化往返不保证逐位复原(CI 实测 width 40.0f 差 1 ulp)。
 // 1e-3 远小于任何参数的一步(最细的 ms_balance 一步 = 1,freeze / lead_select 为整数)。
-bool near(float a, float b)
+bool closeTo(float a, float b)
 {
     return std::abs(a - b) < 1.0e-3f;
 }
@@ -141,7 +141,7 @@ void checkHostSaw(HostSpy& spy, juce::RangedAudioParameter& p, float wantEng)
     CHECK(spy.doubleBegin == 0);
     CHECK(spy.orphanEnd == 0);
     REQUIRE(spy.last.count(idx) == 1);
-    CHECK(near(p.convertFrom0to1(spy.last[idx]), wantEng));
+    CHECK(closeTo(p.convertFrom0to1(spy.last[idx]), wantEng));
 }
 
 } // namespace
@@ -269,16 +269,16 @@ TEST_CASE("SL-536 UNDO-P:自动化参数每类一格,撤销 / 重做经宿主 ge
             const float before = r.eng(c.id);
             REQUIRE(before != c.target);
             r.uiEdit(c.id, c.target);
-            REQUIRE(near(r.eng(c.id), c.target));
+            REQUIRE(closeTo(r.eng(c.id), c.target));
 
             spy.reset();
             CHECK(r.out.undo());
-            CHECK(near(r.eng(c.id), before));
+            CHECK(closeTo(r.eng(c.id), before));
             checkHostSaw(spy, p, before);
 
             spy.reset();
             CHECK(r.out.redo());
-            CHECK(near(r.eng(c.id), c.target));
+            CHECK(closeTo(r.eng(c.id), c.target));
             checkHostSaw(spy, p, c.target);
         }
     }
@@ -301,7 +301,7 @@ TEST_CASE("SL-536 UNDO-P:自动化参数每类一格,撤销 / 重做经宿主 ge
             REQUIRE(r.out.uiSetParam("width", x));
         REQUIRE(r.out.uiEndParamGesture("width"));
         CHECK(r.out.undo());
-        CHECK(near(r.eng("width"), before));
+        CHECK(closeTo(r.eng("width"), before));
         CHECK_FALSE(r.out.undo());
     }
 
@@ -332,18 +332,18 @@ TEST_CASE("SL-536 UNDO-F:冻结通道 PAN / VOL 的手动值进撤销栈", "[hos
             int locked = -1;
             REQUIRE(r.out.setTrackManual(kCh, isPan, target, replaced, locked));
             REQUIRE(replaced == 0); // 冻结通道:一段都不替换
-            REQUIRE(near(r.eng(id), target));
+            REQUIRE(closeTo(r.eng(id), target));
 
             spy.reset();
             CHECK(r.out.undo());
-            CHECK(near(r.eng(id), before));
+            CHECK(closeTo(r.eng(id), before));
             checkHostSaw(spy, r.param(id), before);
             CHECK(r.segCount(kCh) == segsBefore); // 段表没动过,撤销也不碰
-            CHECK(near(r.eng(scvb::params::freezeId(v, kCh)), 3.0f)); // 只撤这一步,冻结那一步还在
+            CHECK(closeTo(r.eng(scvb::params::freezeId(v, kCh)), 3.0f)); // 只撤这一步,冻结那一步还在
 
             spy.reset();
             CHECK(r.out.redo());
-            CHECK(near(r.eng(id), target));
+            CHECK(closeTo(r.eng(id), target));
             checkHostSaw(spy, r.param(id), target);
         }
     }
@@ -362,7 +362,7 @@ TEST_CASE("SL-536 UNDO-T:首次接管的撤销连段表、参数面、冻结位�
     const juce::String volId = scvb::params::volId(v, kCh);
     const juce::String frzId = scvb::params::freezeId(v, kCh);
     const float volBefore = r.eng(volId);
-    REQUIRE(near(r.eng(frzId), 0.0f));
+    REQUIRE(closeTo(r.eng(frzId), 0.0f));
     REQUIRE(r.segCount(kCh) == 0); // 从没分析过:接管前段表为空
 
     int replaced = 0;
@@ -373,29 +373,29 @@ TEST_CASE("SL-536 UNDO-T:首次接管的撤销连段表、参数面、冻结位�
     SECTION("UI 跟进置 vol 位 ⇒ 并进接管那一步")
     {
         r.uiEdit(frzId, 2.0f); // bit1 = vol
-        REQUIRE(near(r.eng(frzId), 2.0f));
+        REQUIRE(closeTo(r.eng(frzId), 2.0f));
 
         CHECK(r.out.undo()); // **一次**
         CHECK(r.segCount(kCh) == 0);
-        CHECK(near(r.eng(volId), volBefore));
-        CHECK(near(r.eng(frzId), 0.0f)); // 冻结位跟着回去 —— 旋钮与声音回到拖之前
+        CHECK(closeTo(r.eng(volId), volBefore));
+        CHECK(closeTo(r.eng(frzId), 0.0f)); // 冻结位跟着回去 —— 旋钮与声音回到拖之前
         CHECK_FALSE(r.out.undo()); // 跟进没有另起一步
 
         CHECK(r.out.redo());
         CHECK(r.segCount(kCh) == 1);
-        CHECK(near(r.eng(volId), -6.0f));
-        CHECK(near(r.eng(frzId), 2.0f));
+        CHECK(closeTo(r.eng(volId), -6.0f));
+        CHECK(closeTo(r.eng(frzId), 2.0f));
     }
 
     SECTION("对照臂:跟进置的不是本维度那一位 ⇒ 另起一步(判据真的在看位)")
     {
         r.uiEdit(frzId, 3.0f); // 两位都置 —— 不是「起点 | vol 位」
         CHECK(r.out.undo());
-        CHECK(near(r.eng(frzId), 0.0f));
+        CHECK(closeTo(r.eng(frzId), 0.0f));
         CHECK(r.segCount(kCh) == 1); // 接管那一步还在
         CHECK(r.out.undo());
         CHECK(r.segCount(kCh) == 0);
-        CHECK(near(r.eng(volId), volBefore));
+        CHECK(closeTo(r.eng(volId), volBefore));
     }
 
     SECTION("对照臂:跟进之前插进了别的一步 ⇒ 不并(栈顶已不是接管那一步)")
@@ -403,12 +403,12 @@ TEST_CASE("SL-536 UNDO-T:首次接管的撤销连段表、参数面、冻结位�
         r.uiEdit("ms_balance", 10.0f);
         r.uiEdit(frzId, 2.0f);
         CHECK(r.out.undo()); // 冻结
-        CHECK(near(r.eng(frzId), 0.0f));
-        CHECK(near(r.eng("ms_balance"), 10.0f));
+        CHECK(closeTo(r.eng(frzId), 0.0f));
+        CHECK(closeTo(r.eng("ms_balance"), 10.0f));
         CHECK(r.out.undo()); // ms
         CHECK(r.out.undo()); // 接管(段表 + vol;冻结占位没被填,不写)
         CHECK(r.segCount(kCh) == 0);
-        CHECK(near(r.eng(volId), volBefore));
+        CHECK(closeTo(r.eng(volId), volBefore));
     }
 }
 
@@ -427,10 +427,10 @@ TEST_CASE("SL-536 UNDO-C:键盘 / 滚轮连按合并成一步,开关不合并", 
         r.uiEdit("ms_balance", 2.0f);
         r.uiEdit("ms_balance", 3.0f);
         CHECK(r.out.undo());
-        CHECK(near(r.eng("ms_balance"), before));
+        CHECK(closeTo(r.eng("ms_balance"), before));
         CHECK_FALSE(r.out.undo());
         CHECK(r.out.redo());
-        CHECK(near(r.eng("ms_balance"), 3.0f)); // 重做到这一串的末值
+        CHECK(closeTo(r.eng("ms_balance"), 3.0f)); // 重做到这一串的末值
     }
 
     SECTION("出窗 = 两步")
@@ -440,9 +440,9 @@ TEST_CASE("SL-536 UNDO-C:键盘 / 滚轮连按合并成一步,开关不合并", 
         juce::Thread::sleep(static_cast<int>(ScvbOutputAudioProcessor::kUndoCoalesceMs) + 150);
         r.uiEdit("ms_balance", 2.0f);
         CHECK(r.out.undo());
-        CHECK(near(r.eng("ms_balance"), 1.0f));
+        CHECK(closeTo(r.eng("ms_balance"), 1.0f));
         CHECK(r.out.undo());
-        CHECK(near(r.eng("ms_balance"), before));
+        CHECK(closeTo(r.eng("ms_balance"), before));
     }
 
     SECTION("冻结开关两下(窗内)= 两步")
@@ -451,9 +451,9 @@ TEST_CASE("SL-536 UNDO-C:键盘 / 滚轮连按合并成一步,开关不合并", 
         r.uiEdit(id, 1.0f);
         r.uiEdit(id, 0.0f);
         CHECK(r.out.undo());
-        CHECK(near(r.eng(id), 1.0f));
+        CHECK(closeTo(r.eng(id), 1.0f));
         CHECK(r.out.undo());
-        CHECK(near(r.eng(id), 0.0f));
+        CHECK(closeTo(r.eng(id), 0.0f));
     }
 
     SECTION("优先级 ± 连点(窗内)= 一步;开关连点 = 两步")
@@ -485,8 +485,8 @@ TEST_CASE("SL-536 UNDO-C:键盘 / 滚轮连按合并成一步,开关不合并", 
         r.uiEdit("width", 90.0f);
         r.uiEdit("ms_balance", 5.0f);
         CHECK(r.out.undo());
-        CHECK(near(r.eng("ms_balance"), 0.0f));
-        CHECK(near(r.eng("width"), 90.0f));
+        CHECK(closeTo(r.eng("ms_balance"), 0.0f));
+        CHECK(closeTo(r.eng("width"), 90.0f));
     }
 }
 
@@ -507,11 +507,11 @@ TEST_CASE("SL-536 UNDO-S:段表 / 参数 / 配置同一条撤销栈,按时间倒
 
     CHECK(r.out.undo());
     CHECK(r.out.channelsSnapshot()[0].label.isEmpty());
-    CHECK(near(r.eng("lead_select"), 2.0f));
+    CHECK(closeTo(r.eng("lead_select"), 2.0f));
     CHECK(r.segCount(kCh) == 1);
 
     CHECK(r.out.undo());
-    CHECK(near(r.eng("lead_select"), 0.0f));
+    CHECK(closeTo(r.eng("lead_select"), 0.0f));
     CHECK(r.segCount(kCh) == 1);
 
     CHECK(r.out.undo());
@@ -550,12 +550,12 @@ TEST_CASE("SL-536 UNDO-PRINT:PRINT 态下撤销与用户编辑同规矩;撤销�
     int replaced = 0;
     int locked = 0;
     REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, 55.0f, replaced, locked));
-    REQUIRE(near(r.eng(panId), 55.0f));
+    REQUIRE(closeTo(r.eng(panId), 55.0f));
 
     const int echoBefore = r.out.getPrinter().hostEchoCount();
     spy.reset();
     CHECK(r.out.undo()); // 受理
-    CHECK(near(r.eng(panId), panBefore));
+    CHECK(closeTo(r.eng(panId), panBefore));
     checkHostSaw(spy, r.param(panId), panBefore);
     CHECK(r.out.getPrinter().hostEchoCount() == echoBefore); // 撤销不是宿主回吐
 
@@ -566,9 +566,9 @@ TEST_CASE("SL-536 UNDO-PRINT:PRINT 态下撤销与用户编辑同规矩;撤销�
     pan.setValueNotifyingHost(pan.convertTo0to1(-20.0f));
     pan.endChangeGesture();
     CHECK(r.out.getPrinter().hostEchoCount() == echoBefore + 1);
-    CHECK(near(r.eng(panId), -20.0f)); // 宿主赢(与用户拖旋钮之后被顶回去是同一个结局)
+    CHECK(closeTo(r.eng(panId), -20.0f)); // 宿主赢(与用户拖旋钮之后被顶回去是同一个结局)
     CHECK(r.out.redo());
-    CHECK(near(r.eng(panId), 55.0f));
+    CHECK(closeTo(r.eng(panId), 55.0f));
     CHECK(r.out.getPrinter().hostEchoCount() == echoBefore + 1); // 重做同样不冒充
 
     r.out.getPrinter().setMode(scvb::engine::AuthorityMode::Follow);
