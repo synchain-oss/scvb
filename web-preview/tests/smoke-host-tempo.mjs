@@ -17,7 +17,10 @@
 //   D8b readTempoFields 不查拍号分母         ⇒ ①「分母 0」「缺分母」红
 //   D9  stepByBars 不按拍号折(恒按 4/4)     ⇒ ② 的 3/4、6/8 两格红
 //   D10 校准窗不设上界(最近锚点就算)        ⇒ ③「离锚点 0.3 s ⇒ 仍是估算」红
-//   D11 不认「改了速度表」(判定恒假)          ⇒ ⑧ ①②③ 各格红
+//   D11 不认「改了速度表」(判定恒假)          ⇒ ⑧ ①–⑤ 各格红
+//   D13 只删判据②(拍位置没动、秒位置变了)    ⇒ ⑧④ 红
+//   D14 只删判据③(旁边旧锚点推不出)          ⇒ ⑧②⑤ 红
+//   D15 只删判据①(同一时刻速度变了)          ⇒ ⑧③ 红
 //   D12 外推基点用 latest 而不是 latestPpq     ⇒ ⑨ 红(12 s 退回 7.1)
 //
 // 用法:node web-preview/tests/smoke-host-tempo.mjs [仓库根绝对路径]
@@ -265,6 +268,23 @@ log("=== ⑧ 停着时宿主改了速度表 ⇒ 旧锚点与旧判断整份作�
     eq(m3.anchors.size, 1, "③ 只有速度变了也算改过 ⇒ 旧锚点清空");
     eq(HT.barBeatAt(m3, 10).exact, false, "③ 10 s 不再被旧锚点判成已校准");
 
+    // ④ 按拍钉住播放头的宿主(复审第 2 轮):停在 40 拍处全曲改成 100 BPM,
+    //    宿主报的是 24 s / 40 拍 —— 拍位置没动、秒位置变了
+    const m4 = HT.observeTempo(played(), frame(24, 100, 4, 4, 40));
+    eq(m4.anchors.size, 1, "④ 拍位置不变、秒位置变了 ⇒ 旧锚点清空");
+    eq(bb(m4, 10), "5.1", "④ 10 s 按新速度换算 = 5.1(旧锚点会给 6.1)");
+    eq(HT.barBeatAt(m4, 10).exact, true, "④ 改完恒速 100 ⇒ 精确");
+
+    // ⑤ 改动在停着那一点之后:播完 0–20 s 后停到 5 s,把 15 s 起改成 100 BPM(5 s 处
+    //    拍位置 / 速度都没变 ⇒ 此刻认不出),再停到 18 s —— 旁边 18 s 的旧锚点推出 36 拍,
+    //    宿主报 30 + 3 × 100 / 60 = 35 拍 ⇒ 认出改过
+    let m5 = played();
+    for (let i = 0; i < 3; i++) m5 = HT.observeTempo(m5, steady(5));
+    eq(m5.anchors.size, 81, "⑤ 前提:停在 5 s 不清锚点");
+    m5 = HT.observeTempo(m5, frame(18, 100, 4, 4, 35));
+    eq(m5.anchors.size, 1, "⑤ 旁边旧锚点推不出此刻的拍位置 ⇒ 旧锚点清空");
+    eq(HT.barBeatAt(m5, 10).exact, false, "⑤ 10 s 不再被旧锚点判成已校准");
+
     // 对照:播放中穿过变速点(每帧时刻都在走)不算改速度表 —— 锚点保留
     let c = HT.emptyTempo();
     for (let t = 0; t <= 10; t += 0.033) c = HT.observeTempo(c, steady(t));
@@ -275,6 +295,18 @@ log("=== ⑧ 停着时宿主改了速度表 ⇒ 旧锚点与旧判断整份作�
         `对照:播放中变速不清锚点(实得 ${c.anchors.size} 个)`,
     );
     eq(HT.barBeatAt(c, 5).exact, true, "对照:5 s 仍是已校准");
+    // 对照:同一张速度表再播一遍(跳回 9.5 s,帧的时刻与第一遍错开),穿过 10 s 处的突变 ——
+    // 旁边的旧锚点与新帧之间夹着一次变速,差值在 edgeTolQn 之内,不算改过
+    const nAnchors = c.anchors.size;
+    const mapAt = (t) =>
+        t < 10 ? steady(t) : frame(t, 100, 4, 4, 20 + ((t - 10) * 100) / 60);
+    for (let t = 9.5 + 0.017; t <= 12; t += 0.033)
+        c = HT.observeTempo(c, mapAt(t));
+    check(
+        c.anchors.size >= nAnchors,
+        `对照:同一张表重播穿过突变不清锚点(前 ${nAnchors} 个、后 ${c.anchors.size} 个)`,
+    );
+    eq(HT.barBeatAt(c, 5).exact, true, "对照:重播之后 5 s 仍是已校准");
     // 对照:停着、同一帧重复到来(宿主停带时逐帧重发)不算改
     // (0–20 s、0.25 s 一桶 ⇒ 81 个锚点)
     const same = HT.observeTempo(played(), steady(20));

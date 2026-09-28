@@ -134,7 +134,7 @@ In Manual mode:
   - **Time signature changes**: bar numbers depend on the whole meter history, which the plugin cannot read. The note says "Time signature changed — bar numbers are estimates"; playing does not calibrate them — go by the DAW ruler;
   - **The host reports no tempo** (or the plugin window has only just opened and nothing has arrived yet): the range is shown in seconds only, with a note, and −4 / +4 move by 4 seconds.
 - The plugin only knows about a tempo change once it has **seen** it: the playhead passing the change, or being parked somewhere after it, both count. Until then it converts the whole range as if the tempo were constant, without a note.
-- When you **edit the tempo** in the DAW (so the tempo or position at the parked playhead changes), the plugin discards everything it had recorded and starts observing again; an edit that lies entirely after the playhead, leaving the parked point unaffected, is only noticed once the playhead passes it.
+- After you **edit the tempo** in the DAW, as soon as the point under the playhead (or a previously played spot the playhead then passes or is parked on) no longer matches, the plugin discards everything it had recorded and starts observing again; an edit that falls where you have not played yet in this session only affects values that were already extrapolated from the most recent tempo.
 - While the transport is stopped the last tempo read is kept. This tempo information lives in memory only while the plugin window is open and is not saved with the project; close and reopen the window and it starts observing again.
 
 ## Capture

@@ -17,12 +17,18 @@
 //     之内的端点按那个锚点换算,算「已校准」—— 这就是「播放该区域后校准」。
 //   · **本次会话见过拍号变化** ⇒ 小节号取决于整段拍号历史,插件读不到,**播放也校准不了**,
 //     一律按估算显示,提示换成 `master.barsMeterNote`(不说「播放后校准」,那句话此时不成立)。
-//   · **用户在宿主里改了速度表**(PR #325 复审①):停在同一个时刻,宿主却报出了不同的拍位置或
-//     速度 ⇒ 此前的锚点与「变没变过」的判断都是对着旧速度表攒的,**整份作废、从这一帧重新观察**
-//     (拍号变化那一位除外:它说的是小节号的历史,改完速度表也不会因此变准)。不作废的话,
-//     落在旧锚点旁边的端点会被判「已校准」,显示的却是按旧速度算的小节号 —— 标成精确的错值。
-//     看不到的一类照实说:改动只发生在播放头**之后**、停着那一点的拍位置与速度都没变时,
-//     插件无从得知,要等播放头经过那里。
+//   · **用户在宿主里改了速度表**(PR #325 复审①②):此前的锚点与「变没变过」的判断都是对着
+//     旧速度表攒的,**整份作废、从这一帧重新观察**(拍号变化那一位除外:它说的是小节号的历史,
+//     改完速度表也不会因此变准)。不作废的话,落在旧锚点旁边的端点会被判「已校准」,显示的却是
+//     按旧速度算的小节号 —— 标成精确的错值。认「改过」的三条(`tempoMapEdited`):
+//       ① 停在同一个时刻,宿主却报出了不同的速度(按秒钉住播放头的宿主;同一时刻拍位置变了
+//          的那一半由 ③ 认出);
+//       ② 拍位置没动、秒位置变了(按拍钉住播放头的宿主:改速度后同一拍落到了别的秒上);
+//       ③ 新帧落在某个旧锚点 `CALIBRATE_WINDOW_S` 之内,按那个锚点推出的拍位置与宿主报的对不上,
+//          且差值超出「两点之间至多一次变速」能解释的范围(见 `edgeTolQn`)—— 改动在播放头之后、
+//          播放头随后经过或停到那里时由这一条认出。
+//     看不到的一类照实说:改动落在本次会话**没留下锚点**的地方、而停着那一点的拍位置与速度都
+//     没变时,插件无从得知 —— 那里本来也只有按最近速度的外推。
 //
 // 锚点表只在内存里(不进 state、不过桥),上限 `MAX_ANCHORS` 个,超了先丢最久没更新的。
 // 关掉插件窗口再打开 = 新页面 = 从头观察(与 04 §2.3「仅内存缓存」同口径)。
@@ -43,6 +49,8 @@ export const OFFSET_TOL_QN = 0.01;
 export const SNAP_S = 0.001;
 /** 「停在同一个时刻」的判定宽度(秒):停带时宿主逐帧报的是同一个样本位置,秒值逐位相同。 */
 export const SAME_SPOT_S = 1e-6;
+/** 「拍位置没动」的判定宽度(四分音符):按拍钉住播放头的宿主改速度后报的是同一个拍位置。 */
+export const SAME_PPQ_QN = 1e-6;
 
 /** 空模型(页面启动时、以及测试里用)。 */
 export function emptyTempo() {
@@ -83,12 +91,39 @@ function bpmDiffers(a, b) {
     return Math.abs(a - b) > b * 1e-9;
 }
 
-/** 停在同一个时刻,宿主却报出了不同的拍位置或速度 ⇒ 速度表被改过(见文件头)。 */
+/**
+ * 锚点 a 推到新帧 f 的时刻,容许的最大偏差(四分音符):两点之间至多一次变速时,按两端速度的
+ * 平均斜率外推,误差不超过 `|Δt| × |两端斜率差| / 2`;这里取整倍作余量,再加上 `OFFSET_TOL_QN`。
+ * 真实工程里两次锚点之间(≤ 0.25 s)夹两次以上变速的情形不在它的保证范围内 —— 那时会多作废一次
+ * (退回估算),方向是保守的。
+ */
+function edgeTolQn(a, f) {
+    return (
+        OFFSET_TOL_QN +
+        (Math.abs(f.timeS - a.timeS) * Math.abs(f.bpm - a.bpm)) / 60
+    );
+}
+
+/** 速度表被改过吗(三条判据见文件头)。 */
 function tempoMapEdited(m, f) {
-    const a = m.latestPpq;
-    if (!a || f.ppq === null) return false;
-    if (Math.abs(f.timeS - a.timeS) > SAME_SPOT_S) return false;
-    return Math.abs(f.ppq - a.ppq) > OFFSET_TOL_QN || bpmDiffers(f.bpm, a.bpm);
+    if (f.ppq === null) return false;
+    const last = m.latestPpq;
+    if (last) {
+        const sameTime = Math.abs(f.timeS - last.timeS) <= SAME_SPOT_S;
+        const samePpq = Math.abs(f.ppq - last.ppq) <= SAME_PPQ_QN;
+        // ① 按秒钉住:同一时刻,速度变了(同一时刻拍位置变了的那一半归 ③ —— 上一帧本身
+        //    就是离它最近的锚点,③ 用 0 时差一推就对不上)
+        if (sameTime && bpmDiffers(f.bpm, last.bpm)) return true;
+        // ② 按拍钉住:同一拍位置,秒位置变了
+        if (samePpq && !sameTime) return true;
+    }
+    // ③ 旁边的旧锚点推不出宿主此刻报的拍位置
+    const a = nearestAnchor(m, f.timeS);
+    if (a) {
+        const pred = a.ppq + ((f.timeS - a.timeS) * (a.bpm + f.bpm)) / 2 / 60;
+        if (Math.abs(f.ppq - pred) > edgeTolQn(a, f)) return true;
+    }
+    return false;
 }
 
 /**
