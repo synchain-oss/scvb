@@ -5,6 +5,7 @@
 #include "MonitorProcessor.h"
 
 #include "BridgeBase.h"
+#include "UiDefaultsStore.h" // [rc-misc c] setLang / commitUiScale 写系统级全局默认
 
 #include <ScvbMonitorWebData.h> // juce_add_binary_data 生成:嵌入的 web/monitor UI 资源
 
@@ -393,11 +394,19 @@ void MonitorEditor::handleSetLang(const juce::Array<juce::var>& args, WBC::Nativ
 {
     WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执
     processor_.setUiLanguage(lang());
+    // [rc-misc c] 与 Output/Input 同一份系统级全局默认(§10.1「形制同 §1.30」):
+    // 在 Monitor 里选的语言,新插的 Output/Input/Monitor 都沿用。此前只写本实例 state。
+    scvb::uidefaults::setLangChosenGlobal(true);
+    scvb::uidefaults::setLangGlobal(lang());
 }
 
 void MonitorEditor::persistUiScaleAsDefault()
 {
-    processor_.setUiScalePercent(juce::roundToInt(uiScale() * 100.0f));
+    // §10.1 commitUiScale「保持」= 落本实例 state + 系统级全局默认(形制同 §1.29)。
+    // [rc-misc c] 此前只写实例 state,新插的 Monitor 永远从 100% 起步。
+    const int percent = juce::roundToInt(uiScale() * 100.0f);
+    processor_.setUiScalePercent(percent);
+    scvb::uidefaults::setUiScalePercentMonitor(percent);
 }
 
 } // namespace scvb::monitor
