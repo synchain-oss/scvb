@@ -1900,6 +1900,8 @@ function buildOutputBackend(ctx) {
             // (真桥 `scvb::output::makeManualDimSegments` 同款)。此前压成单段、另一维取首段,
             // 拖一下音量卡箍整条 pan 曲线就被压平。每段 origin=user_edited、locked=false
             // (理由见下面空表那一支的 [SL-230] 注释,两支同口径)。
+            // [SL-548 / J162] 同时给每段置上**被拖那一维**的标记(§2.8 `manualPan` / `manualVol`),
+            // 另一维的标记逐段原样保留(真桥 `makeManualDimSegments` 的 flags bit3/bit4 同款)。
             if (old.length) {
                 const next = old.map((s) => {
                     const n = clone(s);
@@ -1907,6 +1909,8 @@ function buildOutputBackend(ctx) {
                     else n.volDb = applied;
                     n.origin = "user_edited";
                     n.locked = false;
+                    n.manualPan = n.manualPan === true || panOrVol === "pan";
+                    n.manualVol = n.manualVol === true || panOrVol === "vol";
                     return n;
                 });
                 model.segByCh.set(ch, { ch, segments: next, stale: false });
@@ -1936,6 +1940,9 @@ function buildOutputBackend(ctx) {
             proto.locked = false;
             if (panOrVol === "pan") proto.pan = applied;
             else proto.volDb = applied;
+            // [SL-548 / J162] 空表只标被拖的那一维(另一维不是用户固定的值)。
+            proto.manualPan = panOrVol === "pan";
+            proto.manualVol = panOrVol === "vol";
             model.segByCh.set(ch, { ch, segments: [proto], stale: false });
             setParamPlane();
             pushSegments("trackManual", [ch]);
@@ -2112,6 +2119,12 @@ function buildOutputBackend(ctx) {
             const list = segmentsOf(ch);
             const inBounds = (i) =>
                 Number.isInteger(i) && i >= 0 && i < list.length;
+            // [SL-548 / J162] 值 / 边界编辑清掉**被编辑段**的手动标记(真桥 `SegmentEdit.cpp` 整字
+            // 改写 flags 同款);`set_locked` 不清(锁不改段值,固定的那一维仍是常值)。
+            const unmark = (s) => {
+                s.manualPan = false;
+                s.manualVol = false;
+            };
 
             if (op === "move_boundary") {
                 const { segIdx, edge, tS } = payload;
@@ -2135,6 +2148,7 @@ function buildOutputBackend(ctx) {
                 }
                 seg.origin = "user_edited";
                 seg.locked = true;
+                unmark(seg); // 只清 segIdx 那一段,随之收缩的邻段不动(真桥同款)
             } else if (op === "split") {
                 const { segIdx, tS } = payload;
                 if (!inBounds(segIdx) || !isFiniteNumber(tS)) return BAD_ARG();
@@ -2147,6 +2161,7 @@ function buildOutputBackend(ctx) {
                 for (const s of [seg, right]) {
                     s.origin = "user_edited";
                     s.locked = true;
+                    unmark(s);
                 }
                 list.splice(segIdx + 1, 0, right);
             } else if (op === "merge") {
@@ -2170,6 +2185,7 @@ function buildOutputBackend(ctx) {
                 a.t1S = b.t1S;
                 a.origin = "user_edited";
                 a.locked = true;
+                unmark(a);
                 list.splice(list.indexOf(b), 1);
             } else if (op === "set_values") {
                 const { segIdx, pan, volDb } = payload;
@@ -2186,8 +2202,9 @@ function buildOutputBackend(ctx) {
                 }
                 seg.origin = "user_edited";
                 seg.locked = true;
+                unmark(seg);
             } else {
-                // set_locked:单纯切 locked,**不改 origin**(§5.4)
+                // set_locked:单纯切 locked,**不改 origin**(§5.4),也不动手动标记([SL-548])
                 const { segIdx, locked } = payload;
                 if (!inBounds(segIdx) || typeof locked !== "boolean") {
                     return BAD_ARG();

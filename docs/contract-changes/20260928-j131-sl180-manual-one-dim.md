@@ -66,7 +66,13 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
   「这条轨已不全是手动值」。
 - **锁**:与改前同一口径 —— 被写的段一律摘锁(J34 的 locked 保护只约束重分析;确认条如实报「含 N 个锁定段」)。
   这样「恢复自动」(`clearManual`)仍能把整条轨清回 `auto`,与改前一致。
-- **「哪一维是手动」是按值推断的,碰巧全等的另一维会被误判**(#302 复审【重要】):读回链判「某一维是手动常值」
+- **「哪一维是手动」是按值推断的,碰巧全等的另一维会被误判**(#302 复审【重要】)。
+  > **【已落地,本条改为历史记录】** 统筹选了方案 (A),用户 2026-09-28 批([J162],「18批」),由 SL-548 实装:
+  > 段 flags 的 bit3 / bit4 记录「哪一维被接管」,§2.8 `scvb.segments` 每段加可选字段 `manualPan` / `manualVol`,
+  > 读回判据改成只看这两位(另有一条旧工程兼容规则)。语义、兼容与删除式见
+  > `docs/contract-changes/20260928-sl548-manual-dim-marker.md`。下面这段描述的是 #302 合并时的状态。
+
+  读回链判「某一维是手动常值」
   只能看「每段都是 `user_edited` ∧ 该维各段值相等」—— 段上没有记录「哪一维被接管」的字段(flags 只有 origin 与
   locked)。于是拖过音量卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段都居中),pan 也被判成手动常值。
   这不是只在构造夹具里才有的形态:本仓 `HOST SL-188` 用单声源分析出的多段 auto 表,各段 pan 就是相同的
@@ -86,8 +92,9 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
   参数面)—— 手动接管本来就同时写了参数面,OFF 下声音也走参数面,改后显示与声音一致;要改 §1.16 与
   `IPC_CONTRACT.md` §6.1 ② 的「不看输出档」一句(那是 SL-211 复审定下的口径),而且「手动接管」标误亮的问题 B 解决
   不了;(C) 维持现状,也就是本 PR 的做法。
-  现行行为由 `tests/core/test_viz_plane.cpp`(`DistReadback` 用例的「已知近似」块)与
-  `web-preview/tests/smoke-tab1-interactions.mjs` (a10) 钉住。改成 A 或 B 时这两格应当翻过来,连同本条一起改。
+  #302 合并时的行为由 `tests/core/test_viz_plane.cpp`(`DistReadback` 用例的「已知近似」块)与
+  `web-preview/tests/smoke-tab1-interactions.mjs` (a10) 钉住。**SL-548 已按方案 A 把这两格翻过来**(「已知近似」块
+  移除,换成 `DistReadback:[SL-548] …` 用例与 tab1 ⑦ 组 (a10)-(a13))。
 - **保留下来的另一维曲线不再随重分析更新**(#302 复审):origin 是整段一个值、没法逐维标,手动接管把每段都标成
   `user_edited`,而重分析按 ADR-008 v1.1 不覆盖 user 段。所以拖过音量卡箍之后,这条轨保留下来的 pan 曲线停在拖的
   那一刻:之后调 VAD / 分段参数、局部重新采集,都不会再改它。要让它重新跟着分析走只能「恢复自动」,而那会连手动音量
@@ -119,7 +126,7 @@ pan 曲线原样保留**;拖声像卡箍镜像同款(只固定 pan,音量曲线�
 | 生产接线 | `tests/host/test_host_harness.cpp` `HOST SL-180` | 真 `setTrackManual`:两段曲线拖 vol ⇒ 段数 2、逐段 pan 不变、vol 常值、参数面;读回;**听感**(总线 L/R 在前段偏左、后段偏右);撤销/重做逐字节;镜像拖 pan ⇒ 逐段 vol 保留 |
 | 读回 JS | `web-preview/tests/smoke-tab1-interactions.mjs` (a9) | 同 native 读回格 |
 | mock 对拍 | `web-preview/tests/smoke-tab2-interactions.mjs` §1.16 段 | mock 桥拖 vol ⇒ 回推段表逐段 pan / 边界与拖前一致、每段 vol = 写入值、pan 维不算手动常值 |
-| 已知近似(钉**现行**行为) | `test_viz_plane.cpp` `DistReadback` 用例「已知近似」块;`smoke-tab1-interactions.mjs` (a10) | vol 接管 + pan 各段碰巧全等 ⇒ pan 也判成手动、输出 OFF 读回停在段值(见上「已知连带」;改成方案 A / B 时应当翻) |
+| 已知近似(钉 #302 合并时的行为;**已由 SL-548 翻过来**,见 `20260928-sl548-manual-dim-marker.md`) | `test_viz_plane.cpp` `DistReadback` 用例「已知近似」块;`smoke-tab1-interactions.mjs` (a10) | vol 接管 + pan 各段碰巧全等 ⇒ pan 也判成手动、输出 OFF 读回停在段值(见上「已知连带」;改成方案 A / B 时应当翻) |
 
 ### 删除式(本机实测,#302 第 2 轮)
 

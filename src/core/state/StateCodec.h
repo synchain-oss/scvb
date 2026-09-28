@@ -83,6 +83,24 @@ enum class SegmentOrigin : std::uint32_t
 inline constexpr std::uint32_t kSegmentOriginMask = 0x3u; // bit0-1 = origin
 inline constexpr std::uint32_t kSegmentLockedBit = 1u << 2; // bit2 = locked
 
+// [SL-548 / J162] 「手动接管固定了哪一维」—— 段 flags 的两个空闲位。CRVS 按 u32 原样读写这个字,
+// 所以段记录布局、CRVS minor、容器 abi 一个都不动;旧构建只取 bit0-2,读到这两位不参与任何判定。
+// 语义(变更文档 `20260928-sl548-manual-dim-marker.md`):
+//   · 只由 `setTrackManual` 的手动接管通道置位,且只置**被拖的那一维**(`makeManualDimSegments`);
+//   · `set_locked` 保留;`set_values` / `split` / `move_boundary` / `merge` 重写被编辑段的 flags,
+//     这两位随之清掉(`SegmentEdit.cpp`);重分析 / clearManual 新产出的段不带;
+//   · 撤销 / 重做 / 复制版本整段拷贝,原样带着。
+// 判据(「某一维是手动常值」)在 `src/core/output/DistReadback.h` 的 `manualDimOf`。
+inline constexpr std::uint32_t kSegmentManualPanBit = 1u << 3; // bit3 = 手动接管固定了 pan
+inline constexpr std::uint32_t kSegmentManualVolBit = 1u << 4; // bit4 = 手动接管固定了 vol
+inline constexpr std::uint32_t kSegmentManualMask = kSegmentManualPanBit | kSegmentManualVolBit;
+
+// 某一维的手动位(调用方拿它去置 / 判)。
+inline constexpr std::uint32_t segmentManualBit(bool isPan) noexcept
+{
+    return isPan ? kSegmentManualPanBit : kSegmentManualVolBit;
+}
+
 SegmentOrigin segmentOrigin(std::uint32_t flags) noexcept;
 bool segmentLocked(std::uint32_t flags) noexcept;
 std::uint32_t makeSegmentFlags(SegmentOrigin origin, bool locked) noexcept;
@@ -94,7 +112,7 @@ struct Segment
     std::int64_t t1 = 0; // samples
     float pan = 0.0f; // f32
     float volDb = 0.0f; // f32
-    std::uint32_t flags = 0; // bit0-1 origin,bit2 locked
+    std::uint32_t flags = 0; // bit0-1 origin,bit2 locked,bit3 manual pan,bit4 manual vol([J162])
 };
 
 struct ExcludedRange

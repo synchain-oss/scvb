@@ -16,6 +16,7 @@
 #include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
 #include "ParamUndo.h" // [SL-536] 参数撤销动作
 #include "engine/FreezeBits.h"
+#include "output/DistReadback.h" // [SL-548] SERVICE-14:接管产物交给读回判据
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -173,6 +174,8 @@ TEST_CASE("SERVICE-5 makeManualDimSegments:写 pan 逐段保留 vol 曲线", "[s
         CHECK(out[i].t1 == existing[i].t1);
         CHECK(scvb::state::segmentOrigin(out[i].flags) == SegmentOrigin::UserEdited);
         CHECK_FALSE(scvb::state::segmentLocked(out[i].flags)); // 与改造前那条常值段同口径:不上锁
+        // [SL-548 / J162] 只给被拖的 pan 置位;夹具原本一个位都没有 ⇒ vol 位不会被顺手补上。
+        CHECK((out[i].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit);
     }
 }
 
@@ -190,6 +193,8 @@ TEST_CASE("SERVICE-6 makeManualDimSegments:写 vol 逐段保留 pan 曲线", "[s
         CHECK(out[i].t1 == existing[i].t1);
         CHECK(scvb::state::segmentOrigin(out[i].flags) == SegmentOrigin::UserEdited);
         CHECK_FALSE(scvb::state::segmentLocked(out[i].flags));
+        // [SL-548 / J162] 只给 vol 置位 —— pan 各段值不同,但判据不再看值,只看这一位。
+        CHECK((out[i].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualVolBit);
     }
 }
 
@@ -203,11 +208,14 @@ TEST_CASE("SERVICE-7 makeManualDimSegments:空表落单段全时限 + 默认 + �
     CHECK(a[0].t1 == (static_cast<std::int64_t>(1) << 40)); // 无末端哨兵(§2.8 openEnded)
     CHECK(a[0].pan == 100.0f); // 钳到 +100
     CHECK(a[0].volDb == 0.0f); // 空表 → vol 默认 0dB
+    // [SL-548 / J162] 空表只标被拖的那一维:另一维是默认值,不是用户固定的值。
+    CHECK((a[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit);
 
     const std::vector<Segment> b = scvb::output::makeManualDimSegments(empty, /*isPan=*/false, -999.0f);
     REQUIRE(b.size() == 1);
     CHECK(b[0].volDb == -24.0f); // 钳到 -24dB
     CHECK(b[0].pan == 0.0f); // 空表 → pan 默认居中
+    CHECK((b[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualVolBit);
 }
 
 TEST_CASE("SERVICE-8 makeManualDimSegments:交替写两维互不干扰(真机复现序列)", "[segedit][service][t37]")
@@ -223,11 +231,67 @@ TEST_CASE("SERVICE-8 makeManualDimSegments:交替写两维互不干扰(真机复
     REQUIRE(segs.size() == 1);
     CHECK(segs[0].pan == 55.0f);
     CHECK(segs[0].volDb == -8.0f); // 音量没被 pan 冲掉
+    // [SL-548 / J162] 非空表保留另一维已有的位:先接管 vol、再接管 pan ⇒ 两位都在。
+    CHECK((segs[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualMask);
 
     segs = scvb::output::makeManualDimSegments(segs, /*isPan=*/false, 2.0f);
     REQUIRE(segs.size() == 1);
     CHECK(segs[0].volDb == 2.0f);
     CHECK(segs[0].pan == 55.0f); // pan 没被音量冲掉
+}
+
+// ---------------------------------------------------------------------------
+// [SL-548 / J162] 非空表上「另一维已有的位」是**逐段**保留的,不是整表统一补齐或统一清空。
+// 夹具:整轨接管过 pan,随后第 2 段被 set_values 改过(那一段的位已被清掉)。再接管 vol ⇒
+// 第 1、3 段 pan|vol,第 2 段只有 vol —— pan 维因此不再「每段都带位」,读回不再把它当手动常值。
+// 删除式:把 `(seg.flags & kSegmentManualMask)` 那一项去掉 ⇒ 第 1、3 段丢 pan 位(红)。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-13 makeManualDimSegments:另一维的手动位逐段保留", "[segedit][service][SL548]")
+{
+    std::vector<Segment> segs = scvb::output::makeManualDimSegments(threeVaryingSegments(), /*isPan=*/true, 30.0f);
+    for (const auto& s : segs)
+        REQUIRE((s.flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit); // 前置
+    SegmentEditArgs sv;
+    sv.op = SegmentEditOp::SetValues;
+    sv.segIdx = 1;
+    sv.hasPan = true;
+    sv.pan = -12.0f;
+    REQUIRE(scvb::state::editTrackSegments(segs, sv) == SegmentEditResult::Ok);
+    REQUIRE((segs[1].flags & scvb::state::kSegmentManualMask) == 0u); // 前置:set_values 清了第 2 段
+
+    const std::vector<Segment> out = scvb::output::makeManualDimSegments(segs, /*isPan=*/false, -4.0f);
+    REQUIRE(out.size() == 3);
+    CHECK((out[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualMask);
+    CHECK((out[1].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualVolBit);
+    CHECK((out[2].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualMask);
+    CHECK(out[1].pan == -12.0f); // 另一维的值同样逐段保留(SERVICE-6 同款,这里顺带)
+}
+
+// ---------------------------------------------------------------------------
+// [SL-548 / J162] 旧工程兼容形状(单段 user_edited、整表无位 ⇒ 读回两维都算手动)上**再接管另一维**:
+// 按卡上 ①「非空表保留另一维**已有**的位」的原文,旧段上没有位可保留 ⇒ 只置被拖那一维 ⇒ 表上有了位,
+// 兼容规则不再适用,**原先被兼容规则判成手动的那一维随之不算手动**(输出 OFF 时它的读回改走参数面,
+// 与声音同路)。#332 复审【建议】指出变更文档漏登了这一档;按原文落地、在变更文档「兼容性影响」登记,
+// 这一格钉住现行行为。若改为「命中兼容形状就把两位一起置上」,这一格应当翻过来,连同变更文档那条一起改。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-14 makeManualDimSegments:旧工程兼容形状上再接管,只置被拖那一维", "[segedit][service][SL548]")
+{
+    Segment legacy;
+    legacy.t0 = 0;
+    legacy.t1 = static_cast<std::int64_t>(1) << 40;
+    legacy.pan = 0.0f;
+    legacy.volDb = -8.0f;
+    legacy.flags = makeSegmentFlags(SegmentOrigin::UserEdited, false); // 旧构建空表接管 vol 的产物:无位
+    const std::vector<Segment> before = {legacy};
+    REQUIRE(scvb::output::manualDimOf(before, /*isPan=*/false) != nullptr); // 前置:兼容规则两维都算
+    REQUIRE(scvb::output::manualDimOf(before, /*isPan=*/true) != nullptr);
+
+    const std::vector<Segment> after = scvb::output::makeManualDimSegments(before, /*isPan=*/true, 40.0f);
+    REQUIRE(after.size() == 1);
+    CHECK((after[0].flags & scvb::state::kSegmentManualMask) == scvb::state::kSegmentManualPanBit);
+    CHECK(after[0].volDb == -8.0f); // vol 的值原样保留
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/true) == &after.front());
+    CHECK(scvb::output::manualDimOf(after, /*isPan=*/false) == nullptr); // 兼容规则让位于显式位
 }
 
 // ---------------------------------------------------------------------------

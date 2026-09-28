@@ -672,6 +672,20 @@ scvb::state::Segment makeSegV(double t0Sec, double t1Sec, float pan, float volDb
     return s;
 }
 
+// [SL-548] 给段带上手动位(bit3 = pan / bit4 = vol),其余 flags 不动。
+scvb::state::Segment withManual(scvb::state::Segment s, bool pan, bool vol)
+{
+    if (pan)
+    {
+        s.flags |= scvb::state::kSegmentManualPanBit;
+    }
+    if (vol)
+    {
+        s.flags |= scvb::state::kSegmentManualVolBit;
+    }
+    return s;
+}
+
 std::int64_t atSec(double sec)
 {
     return static_cast<std::int64_t>(sec * kSr);
@@ -704,54 +718,15 @@ TEST_CASE("DistReadback:段选择口径逐条对齐 web/shared/readback.js", "[v
     const std::vector<scvb::state::Segment> none;
     REQUIRE(scvb::output::curveSegmentAt(none, 0) == nullptr);
 
-    // 手动常值:逐维判定「每段 origin == UserEdited ∧ 每段这一维都相等」;单段是 N=1 特例,两维同时命中。
+    // 手动常值([SL-548] / J162 起按段上的显式手动位判定,细格见下一个用例)。`manual` 这个夹具是
+    // **旧工程形状**(单段 user_edited、无位)⇒ 走兼容判据,两维同时命中 —— 下面优先级链那几格
+    // 靠的就是它。
     REQUIRE(scvb::output::manualConstantOf(manual) != nullptr);
     REQUIRE(scvb::output::manualConstantOf(gap) == nullptr);
     {
         auto notManual = manual;
         notManual.front().flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
         REQUIRE(scvb::output::manualConstantOf(notManual) == nullptr);
-    }
-
-    // [J131] / SL-180:拖过音量卡箍的轨 = 多段 user_edited、vol 全等、pan 仍是曲线。
-    // vol 读手动常值(不看输出档),pan 按播放头读曲线段 —— 两维共用一个判定时 pan 会被读成首段。
-    {
-        const std::vector<scvb::state::Segment> volManual = {
-            makeSegV(0.0, 10.0, -60.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited),
-            makeSegV(20.0, 30.0, 60.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
-        CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/false) == &volManual.front());
-        CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/true) == nullptr);
-        CHECK(scvb::output::manualConstantOf(volManual) == &volManual.front()); // 行上的标仍亮
-        const auto on = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/true, atSec(25.0));
-        REQUIRE(on.pan != nullptr);
-        CHECK(on.pan->pan == 60.0f); // ← 逐维判定删掉(两维共用 manual)时这里是 -60
-        REQUIRE(on.vol != nullptr);
-        CHECK(on.vol->volDb == -9.0f);
-        const auto off = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/false, atSec(25.0));
-        CHECK(off.pan == nullptr); // pan 不是手动常值 ⇒ 输出 OFF 回落参数面
-        REQUIRE(off.vol != nullptr); // vol 是手动常值 ⇒ 不看输出档
-        CHECK(off.vol->volDb == -9.0f);
-        // 任一段不是 UserEdited ⇒ 两维都不算手动(分析新产出的 auto 段混进来时)。
-        auto mixed = volManual;
-        mixed.back().flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
-        CHECK(scvb::output::manualDimOf(mixed, /*isPan=*/false) == nullptr);
-    }
-
-    // ⚠ **已知近似 —— 这一格钉的是现行行为,不是期望行为**(#302 复审【重要】,登记于变更文档
-    // `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。拖过音量卡箍、pan 各段**碰巧全等**
-    // (例如主唱分析出来每段都居中)的轨:判据只能从「值全等」推断,pan 也被判成手动常值,于是输出
-    // OFF 时 pan 读回停在段值、不回落参数面。段上没有「哪一维是手动」的记录,不改 state schema /
-    // §2.8 载荷就分不出来。将来改成显式标记、或让手动维也受输出档约束时,这一格**应当翻过来**——
-    // 翻的时候连同变更文档那一条一起改。JS 同款格:`smoke-tab1-interactions.mjs` (a10)。
-    {
-        const std::vector<scvb::state::Segment> panFlat = {
-            makeSegV(0.0, 10.0, 0.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited),
-            makeSegV(20.0, 30.0, 0.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
-        CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/false) == &panFlat.front()); // vol 真是手动
-        CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/true) == &panFlat.front()); // pan 被误判
-        const auto offFlat = scvb::output::readbackSegsOf(panFlat, 0, /*outputOn=*/false, atSec(25.0));
-        CHECK(offFlat.pan == &panFlat.front()); // 期望行为应是 nullptr(回落参数面);现行是段值
-        CHECK(offFlat.vol == &panFlat.front());
     }
 
     // 优先级链四档。
@@ -779,6 +754,106 @@ TEST_CASE("DistReadback:段选择口径逐条对齐 web/shared/readback.js", "[v
     const auto frzBoth = scvb::output::readbackSegsOf(manual, 3, /*outputOn=*/true, atSec(500.0));
     REQUIRE(frzBoth.pan == nullptr);
     REQUIRE(frzBoth.vol == nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-548] / J162:「哪一维是手动常值」按**段上的显式手动位**判定(flags bit3 = pan / bit4 = vol),
+// 不再从「每段 user_edited ∧ 该维各段值相等」推断。四组格,各对应变更文档的一条语义:
+//   (a) pan 各段全等 + 只接管了 vol ⇒ pan **不**算手动,输出 OFF 时 pan 读回回落参数面(跟宿主)——
+//       #302「已知近似」那一格翻过来了;
+//   (b) 每段都带 vol 位 ⇒ vol 算手动;任一段缺位 ⇒ 不算;判据里没有值比较;
+//   (c) 段编辑 op 对位的维护在 `test_segment_edit.cpp` SEGEDIT-MANUAL-*(纯数据层)钉,这里不重复;
+//   (d) 旧工程兼容:整表无位 ∧ 单段 ∧ user_edited ⇒ 两维都算;多段无位 ⇒ 都不算。
+// JS 同款格:`web-preview/tests/smoke-tab1-interactions.mjs` ⑦ 组 (a9)-(a13)。
+// ---------------------------------------------------------------------------
+TEST_CASE("DistReadback:[SL-548] 手动维按显式标记判定,不再按值推断", "[viz][readback][SL548]")
+{
+    using scvb::state::SegmentOrigin;
+    constexpr auto kUE = SegmentOrigin::UserEdited;
+
+    // (a) 单声源分析出来每段都居中、再拖了音量卡箍 —— 这是 #302 删除式 ND5 在真分析夹具上
+    // 看到的形状(HOST SL-188 的多段 auto 表各段 pan 相同)。
+    const std::vector<scvb::state::Segment> panFlat = {withManual(makeSegV(0.0, 10.0, 0.0f, -9.0f, kUE), false, true),
+                                                       withManual(makeSegV(20.0, 30.0, 0.0f, -9.0f, kUE), false, true)};
+    CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/false) == &panFlat.front()); // vol 真是手动
+    CHECK(scvb::output::manualDimOf(panFlat, /*isPan=*/true) == nullptr); // ← 按值推断时这里命中
+    {
+        const auto off = scvb::output::readbackSegsOf(panFlat, 0, /*outputOn=*/false, atSec(25.0));
+        CHECK(off.pan == nullptr); // ← 按值推断时停在段值;现在回落参数面(输出 OFF = 跟宿主)
+        CHECK(off.vol == &panFlat.front()); // vol 是手动常值 ⇒ 不看输出档
+        CHECK(off.manual == &panFlat.front()); // 行上的「手动接管」标仍亮(vol 那一维)
+        const auto on = scvb::output::readbackSegsOf(panFlat, 0, /*outputOn=*/true, atSec(25.0));
+        CHECK(on.pan == &panFlat.back()); // 输出 ON ⇒ pan 走播放头所在段(不是「手动首段」)
+    }
+    // 空表上的接管 = 单段、只带被拖那一维的位:另一维是默认值,不是用户固定的值,也不算手动。
+    const std::vector<scvb::state::Segment> emptyTakeover = {
+        withManual(makeSegV(0.0, kFarEndSec, 0.0f, -9.0f, kUE), false, true)};
+    CHECK(scvb::output::manualDimOf(emptyTakeover, /*isPan=*/false) == &emptyTakeover.front());
+    CHECK(scvb::output::manualDimOf(emptyTakeover, /*isPan=*/true) == nullptr); // ← 兼容判据越权时命中
+
+    // (b) 拖过音量卡箍的轨 = 多段 user_edited、每段带 vol 位、pan 仍是曲线(SL-180 的主形状)。
+    const std::vector<scvb::state::Segment> volManual = {
+        withManual(makeSegV(0.0, 10.0, -60.0f, -9.0f, kUE), false, true),
+        withManual(makeSegV(20.0, 30.0, 60.0f, -9.0f, kUE), false, true)};
+    CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/false) == &volManual.front());
+    CHECK(scvb::output::manualDimOf(volManual, /*isPan=*/true) == nullptr);
+    CHECK(scvb::output::manualConstantOf(volManual) == &volManual.front()); // 行上的标仍亮
+    {
+        const auto on = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/true, atSec(25.0));
+        REQUIRE(on.pan != nullptr);
+        CHECK(on.pan->pan == 60.0f); // ← 逐维判定删掉(两维共用 manual)时这里是 -60
+        REQUIRE(on.vol != nullptr);
+        CHECK(on.vol->volDb == -9.0f);
+        const auto off = scvb::output::readbackSegsOf(volManual, 0, /*outputOn=*/false, atSec(25.0));
+        CHECK(off.pan == nullptr); // pan 不是手动常值 ⇒ 输出 OFF 回落参数面
+        REQUIRE(off.vol != nullptr); // vol 是手动常值 ⇒ 不看输出档
+        CHECK(off.vol->volDb == -9.0f);
+    }
+    // 任一段缺 vol 位 ⇒ vol 不算手动(被接管的轨上混进分析新产出的 auto 段 / 某段被 set_values 过)。
+    {
+        auto mixed = volManual;
+        mixed.back().flags = scvb::state::makeSegmentFlags(SegmentOrigin::Auto, false);
+        CHECK(scvb::output::manualDimOf(mixed, /*isPan=*/false) == nullptr);
+        auto edited = volManual;
+        edited.back().flags = scvb::state::makeSegmentFlags(kUE, true); // set_values 的后置(无位)
+        CHECK(scvb::output::manualDimOf(edited, /*isPan=*/false) == nullptr);
+    }
+    // 判据里**没有值比较**:每段都带 vol 位 ⇒ vol 算手动,哪怕各段 vol 不等(写入口保证带位的段同值,
+    // 这一格只钉「判据只看位」—— 把值比较加回来时红)。
+    {
+        const std::vector<scvb::state::Segment> valsDiffer = {
+            withManual(makeSegV(0.0, 10.0, -60.0f, -9.0f, kUE), false, true),
+            withManual(makeSegV(20.0, 30.0, 60.0f, -3.0f, kUE), false, true)};
+        CHECK(scvb::output::manualDimOf(valsDiffer, /*isPan=*/false) == &valsDiffer.front());
+    }
+    // 两维都接管过 ⇒ 两维都算。
+    {
+        const std::vector<scvb::state::Segment> both = {
+            withManual(makeSegV(0.0, 10.0, 20.0f, -9.0f, kUE), true, true),
+            withManual(makeSegV(20.0, 30.0, 20.0f, -9.0f, kUE), true, true)};
+        CHECK(scvb::output::manualDimOf(both, /*isPan=*/true) == &both.front());
+        CHECK(scvb::output::manualDimOf(both, /*isPan=*/false) == &both.front());
+    }
+
+    // (d) 旧工程兼容:整表**一个手动位都没有**。
+    {
+        // 单段 user_edited(旧构建在空表上接管的产物)⇒ 两维都算,不看输出档。
+        const std::vector<scvb::state::Segment> legacy = {makeSegV(0.0, kFarEndSec, -80.0f, -9.0f, kUE)};
+        CHECK(scvb::output::manualDimOf(legacy, /*isPan=*/true) == &legacy.front());
+        CHECK(scvb::output::manualDimOf(legacy, /*isPan=*/false) == &legacy.front());
+        const auto off = scvb::output::readbackSegsOf(legacy, 0, /*outputOn=*/false, atSec(500.0));
+        CHECK(off.pan == &legacy.front());
+        CHECK(off.vol == &legacy.front());
+        // 单段 auto ⇒ 不算。
+        const std::vector<scvb::state::Segment> single = {makeSegV(0.0, 10.0, -80.0f, -9.0f)};
+        CHECK(scvb::output::manualConstantOf(single) == nullptr);
+        // 多段 user_edited、值全等、无位(#302 起到本卡之间的构建在非空表上接管写出的形状)⇒ 都不算:
+        // 兼容判据只认单段。
+        const std::vector<scvb::state::Segment> legacyMulti = {makeSegV(0.0, 10.0, 0.0f, -9.0f, kUE),
+                                                               makeSegV(20.0, 30.0, 0.0f, -9.0f, kUE)};
+        CHECK(scvb::output::manualDimOf(legacyMulti, /*isPan=*/true) == nullptr);
+        CHECK(scvb::output::manualDimOf(legacyMulti, /*isPan=*/false) == nullptr);
+    }
 }
 
 TEST_CASE("VizPublisher:panNow/volDb 走段读回,不再是曲线求值", "[viz][publisher][SL-363]")

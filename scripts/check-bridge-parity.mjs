@@ -1271,6 +1271,10 @@ function checkEventPayloadFields() {
                 "segments",
                 "stale",
             ],
+            // [SL-548] 反方向:契约里**段对象**那一层(`segments:[ {` 到下一个 `}`)登记的每个字段,
+            // 实现都得 put 出去。只查这一层,因为 `varName` 只对得上这一层 —— 别层的字段由别的
+            // 变量装配,拿 `seg` 去比会假红。
+            docObjectAnchor: "segments:[ {",
         },
         // [J146] §2.10 三层都对拍:顶层 / 每轨 / 每段。锚点取 `spans:` —— 全契约只有 §2.10 的载荷行
         // 带它(`t0S` 在 §2.8 的载荷行里也有,拿它当锚会先命中那一行)。
@@ -1316,12 +1320,13 @@ function checkEventPayloadFields() {
             );
             continue;
         }
-        // 可选字段在契约里写作 `name?:type`([J147] 起认这个 `?`;[J146] §2.10 的 `startS?:` 等
-        // 同理):不认的话 §2.6 的 `loopStartS?:f64` 一类会被当成「契约没登记」,把实发的可选字段判红。
+        // 字段名后可带 `?`:契约里「可选字段」写作 `name?:type`(§0.1 第 3 条允许的加法就长这样)。
+        // [J147] §2.6 的 `loopStartS?:f64`、[J146] §2.10 的 `startS?:`、[SL-548] 的 `manualPan?:bool`
+        // 都是这种写法 —— 不认 `?` 的话,一个按规矩登记成可选的字段会被判成「契约没登记」,把实发的
+        // 可选字段判红。下方 [SL-548] 反方向对拍复用同一个 FIELD_RE。
+        const FIELD_RE = /([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g;
         const docFields = new Set(
-            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g)].map(
-                (m) => m[1],
-            ),
+            [...line.matchAll(FIELD_RE)].map((m) => m[1]),
         );
 
         // **必须限定在装配该事件的那个函数体内**:`ch` / `seg` 这类变量名在别处的 payload
@@ -1359,6 +1364,37 @@ function checkEventPayloadFields() {
             log(
                 `  [OK]   ${c.event}:${codeFields.size} 个实发字段均已在契约载荷行登记`,
             );
+        }
+
+        if (c.docObjectAnchor) {
+            const at = line.indexOf(c.docObjectAnchor);
+            const close = at < 0 ? -1 : line.indexOf("}", at);
+            if (at < 0 || close < 0) {
+                warn(
+                    `载荷字段对拍:${c.event} 的载荷行里找不到「${c.docObjectAnchor} … }」,反方向跳过`,
+                );
+                continue;
+            }
+            const objFields = [
+                ...line
+                    .slice(at + c.docObjectAnchor.length, close)
+                    .matchAll(FIELD_RE),
+            ].map((m) => m[1]);
+            const missingInCode = objFields.filter((f) => !codeFields.has(f));
+            if (objFields.length === 0) {
+                warn(
+                    `载荷字段对拍:${c.event} 段对象那一层抽不到字段,反方向跳过`,
+                );
+            } else if (missingInCode.length > 0) {
+                errors.push(
+                    `${c.event} 契约载荷行登记了、${c.fn} 却没有 put(${c.varName}, …) 的字段:` +
+                        `${missingInCode.join(", ")} —— UI 按契约读到的会是 undefined`,
+                );
+            } else {
+                log(
+                    `  [OK]   ${c.event}:段对象那一层 ${objFields.length} 个登记字段实现都有 put`,
+                );
+            }
         }
     }
 }

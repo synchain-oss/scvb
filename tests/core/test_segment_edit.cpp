@@ -316,3 +316,113 @@ TEST_CASE("SEGEDIT-LOCK-2 解锁", "[segedit][lock]")
     REQUIRE_FALSE(segmentLocked(v[0].flags));
     REQUIRE(segmentOrigin(v[0].flags) == SegmentOrigin::UserEdited); // origin 保留
 }
+
+// ============================================================================
+// [SL-548 / J162] 手动位(flags bit3 = pan / bit4 = vol)的维护
+// ============================================================================
+// set_locked 保留;set_values / split / move_boundary / merge 清掉**被编辑段**的位(整字改写
+// flags,见 SegmentEdit.cpp `userEditedLockedFlags` 注)。别的段一律不动 —— 尤其 move_boundary 随之
+// 收缩的邻段:它的边界变了,但 flags 没被这个 op 碰过。
+// 夹具:三段都像刚被手动接管过 vol(user_edited、未锁、带 vol 位),首段另带 pan 位 —— 用来区分
+// 「保留整组位」与「只保留某一位」。每格各钉一个 op,删除式逐 op 注入(变更文档 ND 表)。
+
+namespace
+{
+using scvb::state::kSegmentManualMask;
+using scvb::state::kSegmentManualPanBit;
+using scvb::state::kSegmentManualVolBit;
+
+std::vector<Segment> threeManual()
+{
+    auto v = three();
+    for (auto& s : v)
+        s.flags = makeSegmentFlags(SegmentOrigin::UserEdited, false) | kSegmentManualVolBit;
+    v[0].flags |= kSegmentManualPanBit;
+    return v;
+}
+
+std::uint32_t manualBits(const Segment& s)
+{
+    return s.flags & kSegmentManualMask;
+}
+} // namespace
+
+TEST_CASE("SEGEDIT-MANUAL-1 set_locked 保留手动位(加锁、解锁都不动)", "[segedit][lock][SL548]")
+{
+    auto v = threeManual();
+    SegmentEditArgs a;
+    a.op = SegmentEditOp::SetLocked;
+    a.segIdx = 0;
+    a.locked = true;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    CHECK(segmentLocked(v[0].flags));
+    CHECK(segmentOrigin(v[0].flags) == SegmentOrigin::UserEdited);
+    CHECK(manualBits(v[0]) == kSegmentManualMask); // ← 整字重建(只拼 origin + locked)时这里是 0
+
+    a.locked = false;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    CHECK_FALSE(segmentLocked(v[0].flags));
+    CHECK(manualBits(v[0]) == kSegmentManualMask);
+
+    a.segIdx = 1;
+    a.locked = true;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    CHECK(manualBits(v[1]) == kSegmentManualVolBit); // 只保留自己有的那一位,不多不少
+}
+
+TEST_CASE("SEGEDIT-MANUAL-2 set_values 清被编辑段的手动位,别的段不动", "[segedit][values][SL548]")
+{
+    auto v = threeManual();
+    SegmentEditArgs a;
+    a.op = SegmentEditOp::SetValues;
+    a.segIdx = 0;
+    a.hasVol = true;
+    a.volDb = -5.0f;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    CHECK(manualBits(v[0]) == 0u);
+    CHECK(userEditedLocked(v[0]));
+    CHECK(manualBits(v[1]) == kSegmentManualVolBit);
+    CHECK(manualBits(v[2]) == kSegmentManualVolBit);
+}
+
+TEST_CASE("SEGEDIT-MANUAL-3 split 清两个子段的手动位", "[segedit][split][SL548]")
+{
+    auto v = threeManual();
+    SegmentEditArgs a;
+    a.op = SegmentEditOp::Split;
+    a.segIdx = 0;
+    a.tSamples = 500;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    REQUIRE(v.size() == 4);
+    CHECK(manualBits(v[0]) == 0u);
+    CHECK(manualBits(v[1]) == 0u);
+    CHECK(manualBits(v[2]) == kSegmentManualVolBit); // 原第 2 段不动
+}
+
+TEST_CASE("SEGEDIT-MANUAL-4 move_boundary 清本段的手动位,随之收缩的邻段不动", "[segedit][move][SL548]")
+{
+    auto v = threeManual();
+    SegmentEditArgs a;
+    a.op = SegmentEditOp::MoveBoundary;
+    a.segIdx = 0;
+    a.edgeIsT0 = false;
+    a.tSamples = 1500;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    REQUIRE(v[1].t0 == 1500); // 前置:邻段真的随之收缩了
+    CHECK(manualBits(v[0]) == 0u);
+    CHECK(manualBits(v[1]) == kSegmentManualVolBit);
+    CHECK(manualBits(v[2]) == kSegmentManualVolBit);
+}
+
+TEST_CASE("SEGEDIT-MANUAL-5 merge 的结果段不带手动位", "[segedit][merge][SL548]")
+{
+    auto v = threeManual();
+    SegmentEditArgs a;
+    a.op = SegmentEditOp::Merge;
+    a.segIdx = 0;
+    a.segIdxB = 1;
+    REQUIRE(editTrackSegments(v, a) == SegmentEditResult::Ok);
+    REQUIRE(v.size() == 2);
+    CHECK(manualBits(v[0]) == 0u); // 两段都带 vol 位也不例外:合并属段编辑,按 [J162] ③ 清位
+    CHECK(manualBits(v[1]) == kSegmentManualVolBit);
+}

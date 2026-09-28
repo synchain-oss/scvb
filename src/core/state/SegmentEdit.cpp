@@ -11,6 +11,9 @@ namespace scvb::state
 namespace
 {
 // 值/边界编辑后置:origin=user_edited 且 locked=true([J34]/[J44])。
+// [SL-548 / J162] 这个字**不带**手动位(bit3/bit4)—— 下面四个 op(set_values / split /
+// move_boundary / merge)整字改写被编辑段的 flags,于是那一段的手动位随之清掉:段值或边界
+// 被逐段改过,这条轨就不再是「一维整条固定为常值」。只有 set_locked 例外(见那一支)。
 std::uint32_t userEditedLockedFlags() noexcept
 {
     return makeSegmentFlags(SegmentOrigin::UserEdited, true);
@@ -29,7 +32,9 @@ SegmentEditResult editTrackSegments(std::vector<Segment>& segments, const Segmen
             return SegmentEditResult::BadArg;
         Segment& s = segments[static_cast<std::size_t>(args.segIdx)];
         // set_locked 单纯切换 locked,不改 origin(契约 §5.4)。
-        s.flags = makeSegmentFlags(segmentOrigin(s.flags), args.locked);
+        // [SL-548 / J162] 也不改手动位:锁只管重分析碰不碰这一段,不改段值,手动接管固定的那一维
+        // 仍是常值。只拼 origin + locked 的整字重建会在这里把 bit3/bit4 抹掉,所以显式带上。
+        s.flags = makeSegmentFlags(segmentOrigin(s.flags), args.locked) | (s.flags & kSegmentManualMask);
         return SegmentEditResult::Ok;
     }
 

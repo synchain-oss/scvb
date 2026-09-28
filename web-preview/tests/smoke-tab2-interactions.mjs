@@ -1223,7 +1223,7 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     check(!!tm, "§2.8 回推 reason=trackManual");
     const constSeg = TT.manualConstantOf(TT.segmentsOfCh(tm, 2));
     check(!!constSeg, "回推的段表 vol 维是 user_edited 手动常值(契约 §1.16 ②)");
-    eq(constSeg.volDb, -6, "常值段 volDb = 写入值");
+    eq(constSeg?.volDb, -6, "常值段 volDb = 写入值"); // `?.`:判空不抛,后面 [SL-548] 各格照跑
     // [J131] / SL-180:拖音量卡箍只固定 vol,pan 曲线逐段保留(段数、边界、每段 pan 都不变)。
     eq(
         TT.segmentsOfCh(tm, 2).segments.map((s) => ({
@@ -1359,6 +1359,136 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         seen.segments.some((s) => s.reason === "analyze"),
         "§2.8 回推 reason=analyze",
     );
+
+    // [SL-548] / J162:mock 与真桥同款维护段上的手动标记(§2.8 `manualPan` / `manualVol`;真桥是
+    // flags bit3 / bit4)。轨 4 未冻结:拖 vol ⇒ 每段只带 `manualVol`;`set_locked` 保留;
+    // `set_values` 只清被编辑段 —— 而且写的是**同一个值**,按值推断在这一步分不出变化,只有清标记
+    // 能让 vol 退出手动常值。
+    {
+        const CH = 4;
+        const lastOf = () => {
+            const f = [...seen.segments]
+                .reverse()
+                .find((x) => TT.segmentsOfCh(x, CH));
+            return f ? TT.segmentsOfCh(f, CH) : null;
+        };
+        seen.segments.length = 0;
+        const r1 = await bridge.setTrackManual(CH, "vol", -7);
+        check(
+            !!r1 && r1.ok === true && r1.replacedSegments >= 2,
+            `[SL-548] 前置:轨 4 走手动接管通道且段表多段;实得 ${JSON.stringify(r1)}`,
+        );
+        await sleep(30);
+        let segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments.every(
+                    (x) => x.manualVol === true && x.manualPan !== true,
+                ),
+            "[SL-548] 拖 vol ⇒ 每段只带 manualVol 标记",
+        );
+        eq(
+            [TT.manualDimOf(segs, "vol") !== null, TT.manualDimOf(segs, "pan")],
+            [true, null],
+            "[SL-548] vol 算手动常值、pan 不算",
+        );
+        seen.segments.length = 0;
+        eq(
+            await bridge.editSegment(CH, "set_locked", {
+                segIdx: 0,
+                locked: true,
+            }),
+            { ok: true },
+            "[SL-548] set_locked 受理",
+        );
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[0].locked === true &&
+                segs.segments[0].manualVol === true &&
+                TT.manualDimOf(segs, "vol") !== null,
+            "[SL-548] set_locked 保留手动标记,vol 仍算手动常值",
+        );
+        seen.segments.length = 0;
+        eq(
+            await bridge.editSegment(CH, "set_values", {
+                segIdx: 1,
+                volDb: -7,
+            }),
+            { ok: true },
+            "[SL-548] set_values 受理",
+        );
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[1].manualVol !== true &&
+                segs.segments[0].manualVol === true,
+            "[SL-548] set_values 只清被编辑段的标记",
+        );
+        eq(
+            TT.manualDimOf(segs, "vol"),
+            null,
+            "[SL-548] 有一段被 set_values 过(同值)⇒ vol 不再算手动常值",
+        );
+        // 其余三个段编辑 op 各一格(每格前重新接管一次,让整轨回到「每段都带 manualVol」):
+        // 只清被编辑段 —— split 是两个子段,move_boundary 是 segIdx 那一段(邻段不动),merge 是合并结果。
+        // 回接管后的段表;每段都带 manualVol 才回非 null(前置格据此判)。
+        const retake = async () => {
+            seen.segments.length = 0;
+            await bridge.setTrackManual(CH, "vol", -7);
+            await sleep(30);
+            const t = lastOf();
+            return t && t.segments.every((x) => x.manualVol === true)
+                ? t
+                : null;
+        };
+        const first = await retake();
+        check(!!first, "[SL-548] 前置:重新接管后每段都带 manualVol");
+        const s0 = first ? first.segments[0] : { t0S: 0, t1S: 0 };
+        seen.segments.length = 0;
+        await bridge.editSegment(CH, "split", {
+            segIdx: 0,
+            tS: (s0.t0S + s0.t1S) / 2,
+        });
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[0].manualVol !== true &&
+                segs.segments[1].manualVol !== true &&
+                segs.segments[2].manualVol === true,
+            "[SL-548] split 清两个子段的标记,其余段不动",
+        );
+        const beforeMove = await retake();
+        check(!!beforeMove, "[SL-548] 前置:重新接管(split 之后)");
+        seen.segments.length = 0;
+        await bridge.editSegment(CH, "move_boundary", {
+            segIdx: 0,
+            edge: "t1",
+            tS: beforeMove ? beforeMove.segments[0].t1S - 0.1 : 0,
+        });
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[0].manualVol !== true &&
+                segs.segments[1].manualVol === true,
+            "[SL-548] move_boundary 清本段的标记,随之收缩的邻段不动",
+        );
+        check(!!(await retake()), "[SL-548] 前置:重新接管(move_boundary 之后)");
+        seen.segments.length = 0;
+        await bridge.editSegment(CH, "merge", { segIdxA: 0, segIdxB: 1 });
+        await sleep(30);
+        segs = lastOf();
+        check(
+            !!segs &&
+                segs.segments[0].manualVol !== true &&
+                segs.segments[1].manualVol === true,
+            "[SL-548] merge 的结果段不带标记,其余段不动",
+        );
+    }
 
     session.stop();
 }

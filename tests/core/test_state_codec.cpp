@@ -342,6 +342,42 @@ TEST_CASE("STATE-CRVS-4 pan_curve points 往返", "[state][crvs]")
     REQUIRE(out.versions[1].panCurve[0].shape == scvb::PanCurveShape::cut);
 }
 
+// [SL-548 / J162] 手动位(flags bit3 = pan / bit4 = vol)走的是**同一个 u32**:CRVS 编解码原样读写,
+// 段记录仍是 28 字节、minor 不升 —— 这正是「盘上布局与 abi 不变」那句话的出处。本格钉「原样」:
+// 解码若像旧构建那样只取 bit0-2(`& 0x7`),重开工程后手动位全丢、该维退回兼容判据。
+// 另带一个 bit5 以上的保留位:产品内没有写入口,但 CRVS 层对它同样不做加工。
+TEST_CASE("STATE-CRVS-5 段 flags 的手动位与保留位原样往返", "[state][crvs][SL548]")
+{
+    CrvsData d;
+    Segment s;
+    s.t0 = 0;
+    s.t1 = 48000;
+    s.pan = 10.0f;
+    s.volDb = -6.0f;
+    s.flags = scvb::state::makeSegmentFlags(SegmentOrigin::UserEdited, true) | scvb::state::kSegmentManualVolBit;
+    d.versions[0].tracks[2].segments.push_back(s);
+    s.t0 = 48000;
+    s.t1 = 96000;
+    s.flags =
+        scvb::state::makeSegmentFlags(SegmentOrigin::UserEdited, false) | scvb::state::kSegmentManualMask | (1u << 9);
+    d.versions[0].tracks[2].segments.push_back(s);
+
+    std::vector<std::uint8_t> enc;
+    REQUIRE(scvb::state::encodeCrvs(d, enc));
+    CrvsData out;
+    REQUIRE(scvb::state::decodeCrvs(enc.data(), enc.size(), out));
+    const auto& segs = out.versions[0].tracks[2].segments;
+    REQUIRE(segs.size() == 2u);
+    CHECK(segs[0].flags == d.versions[0].tracks[2].segments[0].flags);
+    CHECK(segs[1].flags == d.versions[0].tracks[2].segments[1].flags);
+    CHECK(scvb::state::segmentOrigin(segs[1].flags) == SegmentOrigin::UserEdited); // 旧判据的读法不受影响
+    CHECK_FALSE(scvb::state::segmentLocked(segs[1].flags));
+
+    std::vector<std::uint8_t> enc2;
+    REQUIRE(scvb::state::encodeCrvs(out, enc2));
+    CHECK(enc == enc2);
+}
+
 // ============================================================================
 // CRVS 不可信字节校验
 // ============================================================================

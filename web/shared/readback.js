@@ -49,33 +49,39 @@ export function segmentsOfCh(segments, ch) {
 }
 
 /**
- * 「某一维被手动接管固定为常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
- * (契约 §1.16 ②)。判据:段表非空 ∧ **每一段** `origin === "user_edited"` ∧ **每一段**
- * 这一维的值都相等。命中返回首段(调用方读该维的值),否则 null。
+ * 「某一维被手动接管固定为常值」判定 —— `setTrackManual` **手动接管通道**的产物(契约 §1.16 ②)。
+ * 命中返回首段(调用方读该维的值),否则 null。判据([SL-548] / J162,**显式标记**):
+ *   ① 段表非空 ∧ **每一段**都带这一维的标记(§2.8 可选字段 `manualPan` / `manualVol` 为 `true`)——
+ *      只看标记,**不比值**;
+ *   ② 旧工程兼容:整表**一个标记都没有**(两维都没有)∧ 只有一段 ∧ 那一段
+ *      `origin === "user_edited"` ⇒ 两维都算手动(改造前的判据;旧构建在空表上接管写出的就是
+ *      这个形状)。
+ * 标记缺席按 `false` 处理(mock 生成器的段就不带;native 恒发两个布尔)。
  *
- * [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留 —— 拖过音量卡箍的轨
- * 是 N 段 user_edited、vol 全等、pan 仍是原曲线:那条轨的 **vol** 是手动常值、**pan** 一般不是
- * (例外见下 ⚠)。「段数 == 1」因此不再是产物特征;空表上的手动接管仍产出单段全时限,落在
- * N=1 特例里,两维同时命中(与改造前同形)。
- *
- * ⚠ **已知近似**(变更文档 `20260928-j131-sl180-manual-one-dim.md`「已知连带」,#302 复审):
- * 本判据是从「值全等」**推断**哪一维被接管,不是读一个记录 —— 段上没有「哪一维是手动」的
- * 标记(只有 origin + locked),要加就得改 state schema 与 §2.8 载荷,超出 [J131]。于是拖过音量
- * 卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段 pan 都一样),pan 也会命中:输出 OFF
- * 时 pan 读回停在段值、不跟参数面(与 J78 不符);检查器里逐段改过、某一维碰巧全等的轨同样算手动。
- * 现行行为由 `smoke-tab1-interactions.mjs` 的 (a10) 钉住(native 同款格在 `test_viz_plane.cpp`)。
+ * 为什么不再按值推断:[J131] / SL-180 起手动接管只改被拖的那一维、另一维逐段保留,「每段
+ * user_edited ∧ 该维各段值相等」会把**碰巧全等**的另一维(单声源分析出来每段都居中)一并判成
+ * 手动,输出 OFF 时它的读回停在段值、不跟参数面(#302 复审,变更文档
+ * `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。标记由谁置、谁清见 §2.8 字段纪律与
+ * 变更文档 `20260928-sl548-manual-dim-marker.md`;「带标记的段该维都是同一个值」靠写入口维持,
+ * 所以读首段即可。
  * **判据逐字对齐 native 的 `manualDimOf`(`src/core/output/DistReadback.h`)**,改一侧必须同改另一侧。
  */
 export function manualDimOf(segChannel, dim) {
     const segs = (segChannel && segChannel.segments) || [];
     if (!segs.length) return null;
-    const key = dim === "pan" ? "pan" : "volDb";
-    const first = segs[0] && segs[0][key];
+    const key = dim === "pan" ? "manualPan" : "manualVol";
+    let anyMark = false;
+    let everySegMarked = true;
     for (const s of segs) {
-        if (!s || s.origin !== "user_edited") return null;
-        if (s[key] !== first) return null;
+        if (s && (s.manualPan === true || s.manualVol === true)) anyMark = true;
+        if (!s || s[key] !== true) everySegMarked = false;
     }
-    return segs[0];
+    if (anyMark) return everySegMarked ? segs[0] : null; // ① 显式标记
+    // ② 旧工程兼容(整表无标记)
+    if (segs.length === 1 && segs[0] && segs[0].origin === "user_edited") {
+        return segs[0];
+    }
+    return null;
 }
 
 /**

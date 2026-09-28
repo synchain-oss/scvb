@@ -3705,6 +3705,8 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         // [J131] / SL-180:只改被拖的那一维,另一维**逐段**保留原曲线(段边界不动)。此前压成
         // 单段常值、另一维从首段继承,拖一下音量卡箍就把整条 pan 曲线压平。构造与钳制口径见
         // makeManualDimSegments 头注(单测 SERVICE-5..8 直接断言该纯函数,接线格 HOST SL-180)。
+        // [SL-548 / J162] 同一个函数给每段置上被拖那一维的手动位(flags bit3/bit4),读回链靠它判
+        // 「哪一维是手动常值」,不再按值推断(接线格 HOST SL-548)。
         std::vector<scvb::state::Segment> next = scvb::output::makeManualDimSegments(track.segments, isPan, value);
 
         // 事务名带全局流水号:下面要把参数面与冻结位占位**追加进同一条事务**,UI 的冻结跟进到达时
@@ -5611,6 +5613,8 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             seg.t1 = t1;
             seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(s.pan));
             seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(s.volDb));
+            // [SL-548 / J162] 分析产出的段不带手动位(bit3/bit4);`kept` 里的段原样保留自己的位。
+            // 于是被接管的轨上一旦混进新产出的段,就不再「每段都带位」⇒ 该维不再算手动常值。
             seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
             next.push_back(seg);
         }

@@ -33,19 +33,22 @@
 namespace scvb::output
 {
 
-// 「某一维被手动接管固定为常值」= `setTrackManual` 手动接管通道的产物特征(契约 §1.16 ②)。
-// 命中返回首段(调用方读该维的值),否则 nullptr。**判据逐字对齐 JS 的 `manualDimOf`**:
-//   段表非空 ∧ **每一段** origin == `UserEdited` ∧ **每一段**这一维的值都相等。
-// [J131] / SL-180 起手动接管只改被拖的那一维、段边界与另一维逐段保留,于是「段数 == 1」
-// 不再是产物特征:拖过音量卡箍的轨是 N 段 user_edited、vol 全等、pan 仍是原曲线 ——
-// 那条轨的 **vol** 是手动常值,**pan** 一般不是(pan 仍按曲线读;例外见下 ⚠)。空表上的手动
-// 接管仍产出单段全时限,落在本判据的 N=1 特例里,两维同时命中(与改造前同形)。
-// ⚠ **已知近似**(变更文档 `20260928-j131-sl180-manual-one-dim.md`「已知连带」,#302 复审):
-// 本判据是从「值全等」**推断**哪一维被接管,不是读一个记录 —— 段上没有「哪一维是手动」的标记
-// (flags 只有 origin + locked),要加就得改 state schema 与 §2.8 载荷,超出 [J131]。于是拖过音量
-// 卡箍的轨若 pan 各段**碰巧全等**(单段轨,或分析出来每段 pan 都一样),pan 也会命中:输出 OFF 时
-// pan 读回停在段值、不跟参数面(与 J78 不符);检查器里逐段改过、某一维碰巧全等的轨同样算手动。
-// 现行行为由 `tests/core/test_viz_plane.cpp` `DistReadback` 用例的「已知近似」格钉住。
+// 「某一维被手动接管固定为常值」= `setTrackManual` 手动接管通道的产物(契约 §1.16 ②)。
+// 命中返回首段(调用方读该维的值),否则 nullptr。**判据逐字对齐 JS 的 `manualDimOf`**
+// ([SL-548] / J162,显式标记):
+//   ① 段表非空 ∧ **每一段**都带这一维的手动位(flags bit3 = pan / bit4 = vol,`StateCodec.h`)——
+//      只看位,**不比值**;
+//   ② 旧工程兼容:整表**一个手动位都没有**(两维都没有)∧ 只有一段 ∧ 那一段 origin == `UserEdited`
+//      ⇒ 两维都算手动。这是改造前的判据,旧构建在空表上接管写出的就是这个形状(段上没有位)。
+// 位由谁置、谁清见 `StateCodec.h` 的 `kSegmentManualPanBit` 注。「带位的段该维都是同一个值」
+// 靠写入口维持(置位只在接管通道,改值 / 改边界的 op 都清位),所以读首段即可。
+// 为什么不再按值推断:[J131] / SL-180 起手动接管只改被拖的那一维、另一维逐段保留,「每段
+// user_edited ∧ 该维各段值相等」会把**碰巧全等**的另一维(单声源分析出来每段都居中)一并判成
+// 手动,输出 OFF 时它的读回停在段值、不跟参数面(#302 复审,变更文档
+// `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。
+// ⚠ ② 只认**单段**:#302 起到本卡之间的构建在非空表上接管写出的是多段 user_edited、没有位,
+// 按本判据两维都不算手动;反过来,新构建里对单段表 set_values 得到的「单段 user_edited、无位」
+// 也落进 ②(与改造前同判)。两条都登记在变更文档 `20260928-sl548-manual-dim-marker.md`。
 // 不看 t1 是不是那个 `1<<40` 哨兵 —— 哨兵在上桥时会被降级成「已知时间线末端」
 // (`BridgeArgs.h` 的 `effectiveT1Samples`),JS 那侧根本看不到它,拿它当判据两侧必然分叉。
 inline const scvb::state::Segment* manualDimOf(const std::vector<scvb::state::Segment>& segs, bool isPan)
@@ -54,19 +57,30 @@ inline const scvb::state::Segment* manualDimOf(const std::vector<scvb::state::Se
     {
         return nullptr;
     }
-    const float first = isPan ? segs.front().pan : segs.front().volDb;
+    const std::uint32_t bit = scvb::state::segmentManualBit(isPan);
+    bool anyManualBit = false;
+    bool everySegHasBit = true;
     for (const scvb::state::Segment& s : segs)
     {
-        if (scvb::state::segmentOrigin(s.flags) != scvb::state::SegmentOrigin::UserEdited)
+        if ((s.flags & scvb::state::kSegmentManualMask) != 0u)
         {
-            return nullptr;
+            anyManualBit = true;
         }
-        if ((isPan ? s.pan : s.volDb) != first)
+        if ((s.flags & bit) == 0u)
         {
-            return nullptr;
+            everySegHasBit = false;
         }
     }
-    return &segs.front();
+    if (anyManualBit)
+    {
+        return everySegHasBit ? &segs.front() : nullptr; // ① 显式标记
+    }
+    // ② 旧工程兼容(整表无位)
+    if (segs.size() == 1 && scvb::state::segmentOrigin(segs.front().flags) == scvb::state::SegmentOrigin::UserEdited)
+    {
+        return &segs.front();
+    }
+    return nullptr;
 }
 
 // 该轨有没有**任一维**是手动常值(行上那枚「手动接管」标 / 「恢复自动」入口用)。
