@@ -386,6 +386,39 @@ public:
     };
     CoverageInfo coverageOf(int channel, double startS, double endS);
 
+    // [M] §2.7 `scvb.captureProgress` 的一帧(这一帧该带哪些轨、各带什么)。
+    //
+    // 放在 processor 而不是 editor:editor 编不进任何 C++ 测试目标(要真 WebView2),
+    // 放这里 host harness 才能拿真采集、真存盘重开的数据直接断言帧内容([J152])。
+    // editor 只管「什么时候要一帧」(周期 / 两个例外)与序列化。
+    //
+    // 增量基线归调用方持有(editor 一份;测试自己一份),本函数按本帧结果推进它。
+    struct CaptureProgressBaseline
+    {
+        std::array<std::vector<scvb::analysis::HopRange>, 15> ranges{}; // 上一帧已报过的覆盖区间
+        std::array<float, 15> pct{}; // 上一帧已报过的覆盖率
+        // clearCoverage 之后作废:否则下一帧的差集会把已被清掉的区间当成仍在,覆盖条撤不下去。
+        // pct 落哨兵 −1:与任何真实百分比都不等。
+        void reset()
+        {
+            for (auto& r : ranges)
+                r.clear();
+            pct.fill(-1.0f);
+        }
+    };
+    struct CaptureProgressTrack
+    {
+        int ch = 0; // 1..15
+        std::vector<scvb::analysis::HopRange> added; // 相对基线新增的区间(hop 域)
+        float pct = 0.0f; // 0..100
+    };
+    // forceFull=false:周期帧 —— **只在播放中**出帧,且只带本帧有变化的轨(§2.7)。
+    // forceFull=true :[J152] 两个例外帧(mBridgeReady 后首帧 / clearCoverage 受理后)——
+    //   **不看走带**,15 轨全带;分母窗口为空(follow 档、从未采集、播放头在 0)时各轨 0% 照发,
+    //   否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    // 返回空 = 这一拍不发。分母窗口见 `AnalyzeScopeMath.h` 的 `captureProgressWindow`。
+    std::vector<CaptureProgressTrack> captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull);
+
     // [SL-252 / SL-257] 某段的**上报响度** L_seg(§2.8 `loudnessLufs`),emit 时按 FEAT 重算。
     // 此前上桥恒为 `0.0`:`applyAnalysisSegments` 把 `AnalysisSegment` 抄进 `state::Segment`
     // 时丢掉了它,而 `state::Segment` 没有响度字段(宪法 params-v0 定死持久化段字段),

@@ -22,6 +22,8 @@
 //   ③ 各场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
+//   (文件末尾的 ⑧ 是 [J152] 借住的一格:Tab1「当前范围内无采集数据」这句原因句同属
+//    Output 的提示面 —— 停着重开已采未析的工程不许再出现它;停着清光覆盖要让它回来。)
 //
 // 用法:node web-preview/tests/smoke-output-stale-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -1171,6 +1173,103 @@ try {
             "⑦-tour 退出导览后横幅**仍然是关着的**(导览没有动真会话里那条关闭记录)",
         );
         assertClean("scenario=stale(SL-373 ✕)");
+    }
+
+    // =========================================================================
+    // [J152] ⑧ 停着重开一个「采过、还没分析」的工程:Tab1 的覆盖率行要有数,
+    // 「当前范围内无采集数据」不许出现;停着清光覆盖 ⇒ 数字归零、原因句回来。
+    //
+    // 修复前这一态恒显示原因句:§2.7 的覆盖帧只在播放中发,段表又是空的,分析行
+    // 「覆盖 ∪ 段表」判空两边都空。本格的覆盖只可能来自**就绪首帧那一次全量**——
+    // 场景里走带停着(下面先断这一条),周期帧一帧都不会发。
+    //   ← 删掉 state-driver `firstFrames` 里那行 `scvb.captureProgress` ⇒ ⑧a 红;
+    //   ← 把 tab-master 的 analyzeNoData 改成只看段表 ⇒ ⑧a 红(原因句回来);
+    //   ← 把 mock clearCoverage 的全量帧删掉 ⇒ ⑧b 红(数字不动)。
+    log("=== ⑧ [J152] scenario=captured-unanalyzed:停着也有覆盖率;停着清除数字跟着变 ===");
+    {
+        newBucket("captured-unanalyzed");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=captured-unanalyzed`,
+        });
+        check(
+            await waitFor(READY),
+            "captured-unanalyzed:页面装载并吃到首帧段表",
+        );
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        await sleep(400);
+        const T1 = IN(`
+            const s = window.__SCVB_PREVIEW__;
+            const m = s && s.ctl && s.ctl.model;
+            const flow = gb("master-flow");
+            const cov = gb("master-analyze-coverage");
+            const reason = gb("master-analyze-preview-nodata");
+            const disp = (el) => (el ? w.getComputedStyle(el).display : "(缺节点)");
+            const pcts = m ? Array.from(m.coveragePct.values()).filter((v) => v > 0) : [];
+            let segs = 0;
+            if (m) for (const e of m.segByCh.values()) segs += (e.segments || []).length;
+            return {
+                playing: m ? m.transport.isPlaying : null,
+                segs,
+                wantP: pcts.length ? Math.round(pcts.reduce((a, v) => a + v, 0) / pcts.length) : null,
+                nodata: flow ? flow.getAttribute("data-analyze-nodata") : "(缺节点)",
+                covDisplay: disp(cov),
+                covText: cov ? cov.textContent.trim() : null,
+                reasonDisplay: disp(reason),
+            };
+        `);
+        const a = await evaluate(T1);
+        if (check(a !== null, "⑧ 取到页内 DOM 快照")) {
+            check(a.playing === false, "⑧ 前置:走带停着(周期帧不会发)");
+            check(a.segs === 0, `⑧ 前置:段表全空(实得 ${a.segs} 段)`);
+            check(
+                Number.isInteger(a.wantP) && a.wantP > 0,
+                `⑧ 前置:场景里确有覆盖(实得 ${a.wantP})`,
+            );
+            // ⑧a 就绪首帧那一次全量到了
+            check(
+                a.nodata === "0",
+                `⑧a 分析行不判「无数据」(data-analyze-nodata 实得 ${a.nodata})`,
+            );
+            check(
+                a.reasonDisplay === "none",
+                `⑧a 「当前范围内无采集数据」原因句收起(display 实得 ${a.reasonDisplay})`,
+            );
+            const m = /(\d+)\s*%/.exec(a.covText || "");
+            check(
+                a.covDisplay !== "none" && !!m && Number(m[1]) === a.wantP,
+                `⑧a 覆盖率行上屏且数字 = 有覆盖轨的均值 ${a.wantP}%(实得 display=${a.covDisplay}、「${a.covText}」)`,
+            );
+        }
+        // ⑧b 停着清光全部覆盖:受理后那一次全量把 15 轨都报成 0 ⇒ 原因句回来、覆盖率行收起。
+        const cleared = await evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.mock || typeof s.mock.clearCoverage !== "function") return null;
+            return s.mock.clearCoverage(0x7fff, 0, 100000);
+        })()`);
+        check(
+            !!cleared && cleared.ok === true,
+            `⑧b clearCoverage 受理(实得 ${JSON.stringify(cleared)})`,
+        );
+        await sleep(400);
+        const b = await evaluate(T1);
+        if (check(b !== null, "⑧b 取到页内 DOM 快照")) {
+            check(b.playing === false, "⑧b 前置:仍然停着");
+            check(
+                b.nodata === "1",
+                `⑧b 清光之后分析行判「无数据」(data-analyze-nodata 实得 ${b.nodata})`,
+            );
+            check(
+                b.reasonDisplay !== "none",
+                `⑧b 原因句回来了(display 实得 ${b.reasonDisplay})`,
+            );
+            check(
+                b.covDisplay === "none",
+                `⑧b 覆盖率行收起(display 实得 ${b.covDisplay})`,
+            );
+        }
+        assertClean("scenario=captured-unanalyzed");
     }
 } catch (e) {
     fail++;

@@ -610,10 +610,10 @@ export function laneModelFromStore(store) {
 
 /**
  * 空态判定(05 §2.3 行 318:**全部轨**无 coverage 才空)。
- * 「有无 coverage」的真源是 **scvb.state**(契约 §0.4:captureProgress 只在
- * 播放中发,首启非播放时不发,「空态由 scvb.state 承载」)—— 停播打开面板时
- * 以 state.features.bytes(§2.1:特征数据字节数)与段表判非空,coverage
- * 事件只作播放中的增量补充,不能单独当空态依据。
+ * 「有无 coverage」的真源是 **scvb.state**(契约 §0.4「空态判定仍以 scvb.state 为准」)——
+ * 以 state.features.bytes(§2.1:特征数据字节数)与段表判非空,coverage 事件只作补充,
+ * 不能单独当空态依据:它的周期帧只在播放中发,[J152] 的两个例外帧(就绪首帧 / 清除之后)
+ * 虽然停着也发,但首帧到达之前这里已经要渲染了。
  */
 export function isLanesEmpty(store) {
     const st = store || {};
@@ -4982,7 +4982,8 @@ export function createTabWave(opts) {
     }
 
     /**
-     * §2.7(播放中 2Hz):覆盖条延伸 → 该轨块缓存失效 + 静态层脏。
+     * §2.7(周期帧播放中 2Hz;[J152] 就绪首帧 / 清除之后各补一次 15 轨全量):
+     * 覆盖条延伸 → 该轨块缓存失效 + 静态层脏。
      * **只失效与 `addedRanges` 相交的块**:2Hz 增量事件通常只新增很小一段,
      * 整轨清会把 8 块 LRU 全丢 ⇒ 采集中反复整轨重取(pr-agent)。载荷没带
      * `addedRanges` 时退回整轨清(语义 =「这轨变了但不知道哪变了」)。

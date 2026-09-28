@@ -575,6 +575,24 @@ function makeContext(role, world) {
     }
 
     /**
+     * [J152] §2.7 的**全量例外帧**(mBridgeReady 后首帧 / clearCoverage 受理后):不看走带,
+     * 15 轨全带。与 native `captureProgressFrame(…, forceFull=true)` 同形:
+     *   · `addedRanges` = 该轨当前的全部覆盖区间(native 在这两个时刻基线都是空的,增量 = 全部);
+     *   · `coveragePct` = 该轨当前覆盖率;没采过的轨报 0,不是缺席。
+     * 覆盖率的分母沿用 mock 自己的口径(fixture 画像;clearCoverage 按 durationS 重算),
+     * 不复刻 native 的分母窗口 —— 那一半由 `HOST J152` 在真 processor 上钉。
+     */
+    function fullCaptureProgressPayload() {
+        return {
+            channels: allChannels().map((ch) => ({
+                ch,
+                addedRanges: clone(model.coverageRanges.get(ch) || []),
+                coveragePct: model.coveragePct.get(ch) ?? 0,
+            })),
+        };
+    }
+
+    /**
      * 用内部段表拼一帧 `scvb.segments`。
      * 容器与字段全部照 §2.8;段对象本身一律是生成器造的(或生成器产物的就地编辑),
      * 本函数不新造段字段。
@@ -858,6 +876,7 @@ function makeContext(role, world) {
         },
         fullStatePayload,
         segmentsPayload,
+        fullCaptureProgressPayload,
         connPayload: () => clone(model.conn),
         configPayload: () => clone(model.config),
         paramsFullPayload() {
@@ -946,6 +965,7 @@ function makeContext(role, world) {
         patchState,
         fullStatePayload,
         segmentsPayload,
+        fullCaptureProgressPayload,
         regenerateSegments,
         emitRecomputedSegments,
         isProtectedSegment,
@@ -971,6 +991,7 @@ function buildOutputBackend(ctx) {
         markReady,
         patchState,
         segmentsPayload,
+        fullCaptureProgressPayload, // [J152] clearCoverage 受理后的全量例外帧
         regenerateSegments,
         emitRecomputedSegments,
         isProtectedSegment,
@@ -2039,7 +2060,7 @@ function buildOutputBackend(ctx) {
             // 从 coverage 预览缓存里**真扣除**(T33 Wave 2):波形侧 covered 位、
             // affectedOf 的 §1.5 口径与 coveragePct 三处随之一致。
             let clearedS = 0;
-            const channels = chList.map((ch) => {
+            for (const ch of chList) {
                 const before = model.coverageRanges.get(ch) || [];
                 const after = subtractRange(before, startS, endS);
                 clearedS += coveredLenOf(before) - coveredLenOf(after);
@@ -2053,10 +2074,11 @@ function buildOutputBackend(ctx) {
                     1,
                 );
                 model.coveragePct.set(ch, pct);
-                // §2.7 的 addedRanges 只表达「新增」,清除只体现在 coveragePct 上。
-                return { ch, addedRanges: [], coveragePct: pct };
-            });
-            emit("scvb.captureProgress", { channels });
+            }
+            // [J152] 例外②:受理后补发一次**全量**(15 轨全带,不看走带),与 native 同形 ——
+            // native 清除后作废增量基线,补发那一帧的增量 = 剩余的全部覆盖(见
+            // fullCaptureProgressPayload 头注)。mock 是同步发的,native 在下一拍(≤40ms)发。
+            emit("scvb.captureProgress", fullCaptureProgressPayload());
             return { ok: true, clearedS: round(clearedS, 2) };
         },
 

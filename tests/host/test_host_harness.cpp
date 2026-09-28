@@ -5387,6 +5387,130 @@ TEST_CASE("HOST SL-226:反向 —— 未采集的工程往返后仍无波形", "
     }
 }
 
+// ---------------------------------------------------------------------------
+// [J152] 停着也推覆盖率的两个例外(契约 §0.4 / §2.7):mBridgeReady 后首帧、clearCoverage 受理后,
+// 各补发一次全量 `scvb.captureProgress`,不看走带。
+//
+// 用户面症状:重开一个「采过、还没分析」的工程,停着打开 Output,Tab1 一直是「当前范围内无采集
+// 数据」—— 覆盖率只在播放中推,段表又是空的,分析行「覆盖 ∪ 段表」的判空两边都空;停着清除覆盖,
+// 数字也不动。
+//
+// OutputEditor 编不进任何 C++ 测试目标(要真 WebView2);帧内容在 processor 的
+// `captureProgressFrame` 里。本用例走「真采集 → 真存盘 → 新实例重开 → 停带」,按 editor 的
+// 调用序列逐拍断言帧内容:周期帧 forceFull=false,首帧 / 清除后 forceFull=true。
+// editor 那几跳(首帧置闩锁、清除置闩锁、闩锁传进来、出过帧才清、不可见不算)由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的 [J152] 源码钉子钉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J152:停着重开已采未析的工程 —— 就绪首帧补一次全量覆盖率,清除受理后再补一次", "[host][J152]")
+{
+    juce::MemoryBlock blob;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.capturedExtentSeconds() > 0.0); // 前置:确实采到了东西
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 关工程
+
+    // 新实例 = 重开工程。走带停着、播放头在 0(FakePlayHead 的初值),先推几块让 playhead 快照落地。
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(120);
+
+    const double extent = r2.out.capturedExtentSeconds();
+    REQUIRE(extent > 0.0); // 前置:覆盖随工程回来了
+    const auto pod = r2.out.playheadSnapshot();
+    REQUIRE((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0); // 前置:停着
+    REQUIRE(pod.timeSamples == 0); // 前置:播放头在 0 —— 只取播放头的话分母窗口为空
+    REQUIRE(r2.out.runtime().rangeMode == 0); // 前置:follow 档(默认)
+
+    constexpr std::size_t kMine = static_cast<std::size_t>(kTestChannel - 1);
+    constexpr std::size_t kOther = 0; // ch1:本工程从没采过
+    static_assert(kOther != kMine, "对照轨必须是另一条");
+
+    // 与 editor 的初值同形(pct 全 0,不是 reset() 的 −1 哨兵)。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline base;
+
+    // ① 周期帧:停着不发(§2.7 周期档口径不变)。
+    CHECK(r2.out.captureProgressFrame(base, /*forceFull=*/false).empty());
+
+    // ② 就绪首帧(例外①):不看走带,15 轨全带,按 ch 升序。
+    const auto first = r2.out.captureProgressFrame(base, /*forceFull=*/true);
+    REQUIRE(first.size() == 15u);
+    for (std::size_t i = 0; i < first.size(); ++i)
+    {
+        CHECK(first[i].ch == static_cast<int>(i) + 1);
+    }
+    // 分母 = [0, max(播放头 0, 已采集末端))。
+    const float firstPct = first[kMine].pct;
+    CHECK(firstPct > 0.0f); // ← 修复前:停着一帧都不出,Tab1 拿不到这个数
+    CHECK(firstPct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK_FALSE(first[kMine].added.empty()); // 首帧基线为空 ⇒ 增量 = 窗口内全部覆盖
+    // 没采过的轨照样在帧里(「全量」),报 0 —— 不是缺席。
+    CHECK(first[kOther].pct == 0.0f);
+    CHECK(first[kOther].added.empty());
+
+    // ③ 只补一次:下一拍回到周期档,停着不发。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ④ 播放头停在已采集末端之后:分母跟到播放头(max 的另一半)。
+    const double farS = extent * 2.0;
+    r2.ph.timeSamples = static_cast<std::int64_t>(farS * kSr);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    {
+        const auto far2 = r2.out.captureProgressFrame(base, true);
+        REQUIRE(far2.size() == 15u);
+        const double phS = static_cast<double>(r2.out.playheadSnapshot().timeSamples) / kSr;
+        CHECK(far2[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, phS).pct));
+        CHECK(far2[kMine].pct < firstPct); // 分母变大了
+    }
+    r2.ph.timeSamples = 0;
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    base = ScvbOutputAudioProcessor::CaptureProgressBaseline{};
+    REQUIRE_FALSE(r2.out.captureProgressFrame(base, true).empty()); // 复位到「首帧已报」的基线
+    REQUIRE(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑤ clearCoverage 受理(例外②):清掉本轨覆盖的前半 —— editor 作废基线 + 补一次全量。
+    const auto covBefore = r2.out.coverageOf(kTestChannel, 0.0, extent);
+    REQUIRE_FALSE(covBefore.ranges.empty());
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    const double coveredFromS = static_cast<double>(covBefore.ranges.front().begin) * hopS;
+    const double midS = (coveredFromS + extent) * 0.5;
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, midS) > 0.0);
+    base.reset();
+    const auto afterClear = r2.out.captureProgressFrame(base, true);
+    REQUIRE(afterClear.size() == 15u);
+    // 已采集末端没动(清的是前半),分母仍是 [0, extent);数字跟着清除往下走。
+    CHECK(afterClear[kMine].pct < firstPct); // ← 修复前:停着清完数字不动
+    CHECK(afterClear[kMine].pct > 0.0f);
+    CHECK(afterClear[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK(afterClear[kOther].pct == 0.0f);
+
+    // ⑥ 又只补一次。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑦ 清光全部覆盖:已采集末端归 0、播放头在 0 ⇒ 分母窗口为空。例外帧**照发**,各轨报 0 ——
+    //    否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, extent + 1.0) > 0.0);
+    REQUIRE(r2.out.capturedExtentSeconds() == 0.0);
+    base.reset();
+    const auto emptied = r2.out.captureProgressFrame(base, true);
+    REQUIRE(emptied.size() == 15u);
+    CHECK(emptied[kMine].pct == 0.0f);
+    CHECK(emptied[kMine].added.empty());
+    // 周期帧在空窗口下不发(既有口径)。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+}
+
 // [SL-226] 反向②:特征被清空后再保存,必须把 FEAT 一并删掉 —— 留着上一版会让重开时
 // 把已经不存在的波形又捞回来。清空走**改组**这条真实用户路径([J66]:frameStore 按 channel
 // 索引存、没有 group 维度,改组必须整店作废)。

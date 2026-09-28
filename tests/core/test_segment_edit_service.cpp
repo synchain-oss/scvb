@@ -313,6 +313,51 @@ TEST_CASE("analyzeAllRange:follow 档取已采集时间线,与播放头无关", 
 }
 
 // ---------------------------------------------------------------------------
+// [J152] §2.7 captureProgress 的 coveragePct 分母窗口(纯函数)。
+// 帧内容与接线由 tests/host/test_host_harness.cpp 的 `HOST J152` 用真 processor 钉;
+// 这里只钉窗口算术的四个分支,每条都写着「改成什么就红」。
+// ---------------------------------------------------------------------------
+TEST_CASE("captureProgressWindow:follow 档停着取 max(播放头, 已采集末端),播放中取播放头", "[output][coverage][J152]")
+{
+    using scvb::output::captureProgressWindow;
+
+    // ① follow + 停着 + 播放头在 0(重开工程的典型形态):取已采集末端。
+    //    ← 去掉 max 只留播放头即红:窗口为空,已采集的覆盖一格都报不出来。
+    const auto reopened = captureProgressWindow(/*playing=*/false, 0, 0.0, 0.0, /*playheadS=*/0.0, /*extentS=*/42.0);
+    CHECK(reopened.startS == 0.0);
+    CHECK(reopened.endS == 42.0);
+    CHECK(reopened.valid());
+
+    // ② follow + 停着 + 播放头在已采集末端之后:取播放头(max 的另一半)。
+    //    ← 去掉 max 只留已采集末端即红。
+    const auto pastExtent = captureProgressWindow(false, 0, 0.0, 0.0, 60.0, 42.0);
+    CHECK(pastExtent.endS == 60.0);
+
+    // ③ follow + 播放中:只取播放头(周期帧的既有口径),已采集末端不参与。
+    //    ← 播放中也取 max 即红:这里 42 > 10。
+    const auto playing = captureProgressWindow(true, 0, 0.0, 0.0, 10.0, 42.0);
+    CHECK(playing.startS == 0.0);
+    CHECK(playing.endS == 10.0);
+
+    // ④ follow + 停着 + 从未采集 + 播放头在 0:窗口为空(例外帧由调用方按 0% 照发)。
+    const auto fresh = captureProgressWindow(false, 0, 0.0, 0.0, 0.0, 0.0);
+    CHECK_FALSE(fresh.valid());
+
+    // ⑤ 范围档:照用 global.range,走带与已采集末端都不参与。
+    const auto manualStopped = captureProgressWindow(false, 2, 3.0, 9.0, 0.0, 42.0);
+    CHECK(manualStopped.startS == 3.0);
+    CHECK(manualStopped.endS == 9.0);
+    const auto manualPlaying = captureProgressWindow(true, 1, 3.0, 9.0, 5.0, 42.0);
+    CHECK(manualPlaying.startS == 3.0);
+    CHECK(manualPlaying.endS == 9.0);
+
+    // ⑥ 播放头负值(宿主没给 timeInSamples 时调用方传 0;这里防御负数)夹到 0。
+    const auto negative = captureProgressWindow(false, 0, 0.0, 0.0, -5.0, 0.0);
+    CHECK_FALSE(negative.valid());
+    CHECK(negative.endS == 0.0);
+}
+
+// ---------------------------------------------------------------------------
 // v5.4 SL-190:对象形 scope 的 startS/endS 缺省口径(§1.6 里这两个字段带 `?`)。
 //
 // 现场:Tab2 解冻提示条的「重新识别(含手动段)」发的是

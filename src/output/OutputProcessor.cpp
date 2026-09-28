@@ -438,6 +438,67 @@ ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int 
     return info;
 }
 
+std::vector<ScvbOutputAudioProcessor::CaptureProgressTrack>
+ScvbOutputAudioProcessor::captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull)
+{
+    std::vector<CaptureProgressTrack> frame;
+
+    // §2.7:周期帧只在播放中发;[J152] 两个例外帧不看走带。
+    // 数据源 = FrameStore 的 coverage 记账(Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
+    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
+    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
+    const scvb::engine::PlayheadPod pod = playheadSnapshot();
+    const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+    if (!playing && !forceFull)
+    {
+        return frame;
+    }
+
+    const double sr = sampleRate();
+    const double playheadS =
+        (pod.timeSamples >= 0 && sr > 0.0) ? static_cast<double>(pod.timeSamples) / sr : 0.0;
+    // 已采集末端只有「停着」那一支用得上(见 captureProgressWindow),播放中不必扫全轨。
+    const double extentS = playing ? 0.0 : capturedExtentSeconds();
+    const auto window = scvb::output::captureProgressWindow(playing, runtime_.rangeMode, runtime_.rangeStartS,
+                                                            runtime_.rangeEndS, playheadS, extentS);
+    if (!window.valid() && !forceFull)
+    {
+        return frame; // 周期帧:时间线还没走出一个 hop,没有可报的覆盖
+    }
+    // 例外帧在窗口为空时照发:coverageOf 对空窗口回 0% / 无区间,15 轨各报一个 0。
+
+    for (int t = 0; t < 15; ++t)
+    {
+        const int ch = t + 1;
+        const auto info = coverageOf(ch, window.startS, window.endS);
+        const std::size_t idx = static_cast<std::size_t>(t);
+
+        // added = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
+        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
+        scvb::analysis::CoverageMap added;
+        for (const auto& r : info.ranges)
+            added.add(r);
+        for (const auto& r : baseline.ranges[idx])
+            added.punch(r);
+
+        const bool pctChanged = !juce::approximatelyEqual(info.pct, baseline.pct[idx]);
+        if (!forceFull && added.empty() && !pctChanged)
+        {
+            continue; // 周期帧:仅包含本帧有变化的轨(§2.7);例外帧 15 轨全带
+        }
+        baseline.ranges[idx] = info.ranges;
+        baseline.pct[idx] = info.pct;
+
+        CaptureProgressTrack track;
+        track.ch = ch;
+        track.added = added.ranges();
+        track.pct = info.pct;
+        frame.push_back(std::move(track));
+    }
+    return frame;
+}
+
 ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int channel, double startS, double endS,
                                                                             int cols)
 {

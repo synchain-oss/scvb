@@ -260,8 +260,13 @@ void OutputEditor::emitTick()
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
-    if (tickCount_ % 12 == 0)
-        emitCaptureProgress(); // ~2Hz(25Hz 12 分频);内部再判「仅播放中发」(§2.7)
+    // [J152] 例外①:mBridgeReady 后首帧补发一次全量 captureProgress,不看走带 —— 否则停着打开一个
+    // 已采未析的工程,Tab1 拿不到覆盖率,一直显示「当前范围内无采集数据」。例外② 在 handleClearCoverage。
+    // 两个例外共用 `pendingCoverageFull_` 这一个闩锁;清位只在 emitCaptureProgress 真的出过帧之后。
+    if (first)
+        pendingCoverageFull_ = true;
+    if (pendingCoverageFull_ || (tickCount_ % 12 == 0))
+        emitCaptureProgress(pendingCoverageFull_); // 周期 ~2Hz(25Hz 12 分频,仅播放中,§2.7)+ 例外帧
 
     // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)或 CRVS 修订号变化(加载工程/
     // 预设后 setStateInformation 替换段真身)必重发 —— 否则旧时间/旧段表残留到下一次段编辑/undo/切版本
@@ -619,62 +624,27 @@ void OutputEditor::emitPlayhead()
     emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
 }
 
-void OutputEditor::emitCaptureProgress()
+void OutputEditor::emitCaptureProgress(bool forceFull)
 {
-    // §2.7:播放中 2Hz;非播放不发。数据源 = FrameStore 的 coverage 记账
-    // (Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
-    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
-    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
-    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
-    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
-    if ((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0)
-    {
+    // 帧内容(带哪些轨、分母窗口、增量差集、基线推进)在 processor 的 captureProgressFrame 里,
+    // host harness 直接断言它;这里只管可见性、闩锁与序列化。
+    //
+    // 不可见时载荷会被丢:**先判、不算** —— 算了就推进了基线,这一帧的增量被永久吞掉;
+    // 例外帧的闩锁也就在没人看见的时候被清掉了(与 emitIfChanged 同一条纪律)。
+    if (!webView().isVisible())
         return;
-    }
+    const auto frame = processor_.captureProgressFrame(coverageBaseline_, forceFull);
+    // 例外帧总会出帧(15 轨全带,见 captureProgressFrame 头注),到这里就算兑现了。
+    pendingCoverageFull_ = false;
+    if (frame.empty())
+        return; // 周期帧:没在播放 / 无变化 / 窗口为空 —— 不发(§0.4 值未变不发)
 
-    // 覆盖率的分母(§2.7 字段纪律):global.range;follow 档取「全时间线已分析域」——
-    // 用当前播放位置作为已知时间线末端,否则分母是无穷大、覆盖率恒 0。
-    const auto& rt = processor_.runtime();
-    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
-    double startS = 0.0;
-    double endS = timeS;
-    if (rt.rangeMode != 0)
-    {
-        startS = rt.rangeStartS;
-        endS = rt.rangeEndS;
-    }
-    if (!(endS > startS))
-    {
-        return; // 时间线还没走出一个 hop:没有可报的覆盖
-    }
-
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
     juce::var channels = mkArray();
-    bool any = false;
-    for (int t = 0; t < 15; ++t)
+    for (const auto& track : frame)
     {
-        const int ch = t + 1;
-        const auto info = processor_.coverageOf(ch, startS, endS);
-        const std::size_t idx = static_cast<std::size_t>(t);
-
-        // addedRanges = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
-        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
-        scvb::analysis::CoverageMap added;
-        for (const auto& r : info.ranges)
-            added.add(r);
-        for (const auto& r : lastCoverageRanges_[idx])
-            added.punch(r);
-
-        const bool pctChanged = !juce::approximatelyEqual(info.pct, lastCoveragePct_[idx]);
-        if (added.empty() && !pctChanged)
-        {
-            continue; // §2.7:仅包含本帧有变化的轨
-        }
-        lastCoverageRanges_[idx] = info.ranges;
-        lastCoveragePct_[idx] = info.pct;
-
-        const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
         juce::var addedArr = mkArray();
-        for (const auto& r : added.ranges())
+        for (const auto& r : track.added)
         {
             juce::var seg = obj();
             put(seg, "startS", static_cast<double>(r.begin) * hopS);
@@ -683,16 +653,10 @@ void OutputEditor::emitCaptureProgress()
         }
 
         juce::var c = obj();
-        put(c, "ch", ch);
+        put(c, "ch", track.ch);
         put(c, "addedRanges", addedArr);
-        put(c, "coveragePct", static_cast<double>(info.pct));
+        put(c, "coveragePct", static_cast<double>(track.pct));
         push(channels, c);
-        any = true;
-    }
-
-    if (!any)
-    {
-        return; // 无变化不发(§0.4 值未变不发)
     }
 
     juce::var payload = obj();
@@ -2303,9 +2267,10 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
     const double clearedS = processor_.clearCoverage(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS);
     // 覆盖变了就重置 captureProgress 的增量基线,否则下一帧的差集会把「已被清掉的区间」
     // 当成仍然存在,覆盖条撤不下去。
-    for (auto& r : lastCoverageRanges_)
-        r.clear();
-    lastCoveragePct_.fill(-1.0f); // 哨兵:与任何真实百分比都不等 → 下一帧必报
+    coverageBaseline_.reset();
+    // [J152] 例外②:受理后补发一次全量 captureProgress,不看走带(§1.24 许诺的「回推覆盖率变化」
+    // 此前要等下一次播放才兑现,停着清完数字不动)。下一拍 emitTick 出帧,闩锁语义见那里。
+    pendingCoverageFull_ = true;
 
     juce::var o = obj();
     put(o, "ok", true);
