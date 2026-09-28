@@ -65,6 +65,7 @@ const store = {
         pendingRelease: false, // 释放确认条展开
         priorityLocal: null, // 优先级本地乐观值(等 scvb.config 回执让位)
         toastTimer: 0,
+        lastConflictFx: null, // [SL-462] 最近一次冲突抖卡 {ch,g,t,src,paired},去重用
     },
     // 本会话一次性判定([J80]:不入 state chunk、零桥、零契约)。
     // guideClosed 是首启链的**会话级**闸门:保证本次会话里语言卡与 mini tour 不重弹,
@@ -163,6 +164,32 @@ function shake(node) {
         () => node.removeAttribute("data-shake"),
         { once: true },
     );
+}
+
+/**
+ * [SL-462 复审] 同一次冲突的抖卡去重。点击撞车时反馈有两条来路:setChannelId 的返回值
+ * (src="rpc")与随后一拍的 scvb.error{channelConflict}(src="event"),先后顺序不定(mock 里
+ * 事件在前)。**一对一配对**:另一来路、同号同组、1.5s 内、且尚未配对的那一次才跳过抖卡
+ * (toast 照常刷新);同一来路不去重 —— 用户连点同一张被占的卡,每一下都照常抖。
+ * 返回 true = 这次该抖。
+ */
+const CONFLICT_FX_DEDUPE_MS = 1500;
+function claimConflictShakeDue(ch, g, src) {
+    const now = Date.now();
+    const last = store.local.lastConflictFx;
+    if (
+        last &&
+        !last.paired &&
+        last.src !== src &&
+        last.ch === ch &&
+        last.g === g &&
+        now - last.t < CONFLICT_FX_DEDUPE_MS
+    ) {
+        last.paired = true;
+        return false;
+    }
+    store.local.lastConflictFx = { ch, g, t: now, src, paired: false };
+    return true;
 }
 
 /** 一次性 toast(占用冲突反馈 ch.occupied;自动消失)。 */
@@ -399,9 +426,9 @@ async function claimChannel(ch) {
     // 契约 §3.2:claim 本组 InputSlot[n-1];已被心跳新鲜实例占 → {conflict:true}
     const res = await call("setChannelId", ch);
     if (res && res.conflict === true) {
-        const card = channelCardEl(ch);
-        shake(card);
-        showOccupiedToast(ch, store.state.group_id || 1);
+        const g = store.state.group_id || 1;
+        if (claimConflictShakeDue(ch, g, "rpc")) shake(channelCardEl(ch));
+        showOccupiedToast(ch, g);
     }
     render();
 }
@@ -417,17 +444,39 @@ function wirePriority() {
         render();
     });
     // 松手档:经 ctrl 命令环写 remoteSetPriority(契约 §3.4)
+    // [SL-20/21] 只有 {queued:true} 算送达;其余一律回滚乐观值 —— 闸门早退(unassigned/offline)、
+    // 回执 null(桥调用抛错)、queued:false 的任何 reason(ringFull/outputOffline/unassigned/busy)。
+    // 此前只认 ringFull,其余拒绝路径会让滑杆停在一个从未送达的值上,直到下一次 scvb.config 回执。
     slider.addEventListener("change", () => {
         const next = Number(slider.value);
-        if (priorityBlockReason() !== null) return;
+        const seq = ++prioritySeq;
+        if (priorityBlockReason() !== null) {
+            rollbackPriority(next, seq);
+            return;
+        }
         call("remoteSetPriority", next).then((res) => {
-            if (res && res.queued === false && res.reason === "ringFull") {
-                // 满环:设置未送达 —— 回滚乐观值(契约 §3.4 的 UI 提示由 footer 承担)
-                store.local.priorityLocal = null;
-                render();
+            if (!(res && res.queued === true)) {
+                rollbackPriority(next, seq);
             }
         });
     });
+}
+
+// 每次松手自增;回滚只认最新一次松手(见 rollbackPriority)。
+let prioritySeq = 0;
+
+/**
+ * 回滚优先级乐观值。只回滚**这一次**松手留下的值,两个条件缺一不可:
+ * · seq 必须是最新一次松手 —— 否则「拖到 X 松手、又拖走再拖回 X 松手」时,第一次的拒绝会把
+ *   第二次还在路上的乐观值清掉(值相等分辨不出是哪一次);
+ * · priorityLocal 仍是这次送出的值 —— 回执回来之前用户又拖了一下(还没松手,seq 没变),
+ *   正在拖的滑杆不能被打回去(新值自己的 change 会再走一遍)。
+ */
+function rollbackPriority(sent, seq) {
+    if (seq !== prioritySeq) return;
+    if (store.local.priorityLocal !== sent) return;
+    store.local.priorityLocal = null;
+    render();
 }
 
 function currentPriority() {
@@ -999,11 +1048,25 @@ if (bridge) {
 
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
-        // §4.5:Input 实际 code = channelConflict / srMismatch;冲突反馈已由
-        // setChannelId/setGroupId 的返回 + ch.occupied toast 承担,这里不重复弹。
+        // §4.5:Input 实际 code = channelConflict / srMismatch。
         if (e.code === "srMismatch" && store.state.claim !== "srMismatch") {
             store.state = { ...store.state, claim: "srMismatch" };
             render();
+        }
+        // [SL-462] 点击路径的冲突反馈靠 setChannelId/setGroupId 的返回值;**载入工程**那条路
+        // 没有返回值可挂 —— 工程打开时通道被占(或占着被拒、回滚到旧通道),唯一的出口就是这条
+        // 事件。按 §5.1 的落点照样抖卡 + 红 toast;被拒的号只在 `ch` 里(conflict 态下
+        // scvb.state.channel_id 为 0)。点击路径上同一次冲突也会走到这里:toast 内容相同、只重置
+        // 计时;抖卡经 claimConflictShakeDue() 去重,不抖两下。`active:false`(冲突解除)不弹。
+        if (e.code === "channelConflict" && e.active !== false) {
+            const ch = Number(e.ch) || 0;
+            const g =
+                (e.detail && Number(e.detail.groupId)) ||
+                store.state.group_id ||
+                1;
+            if (ch >= 1 && claimConflictShakeDue(ch, g, "event"))
+                shake(channelCardEl(ch));
+            showOccupiedToast(ch, g);
         }
     });
 }
