@@ -4875,6 +4875,23 @@
                 z-index: 8;
                 max-width: 330px;
             }
+            /* [J125] toast 在 #toast-region 里**随流排**:.sc-toast 基类是 absolute(设计稿
+               单枚浮层的写法),而 region 本身 absolute 且无内容尺寸 —— 不改成 relative 的话
+               toast 以 region 的零尺寸原点为锚往右下长,出卡片(页面级 ⑧e 量这个)。 */
+            #toast-region .sc-toast {
+                position: relative;
+            }
+            .sc-toast__body {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            .sc-toast__action {
+                align-self: flex-start;
+                padding: var(--sp-5) var(--sp-12);
+                font-size: var(--fs-110);
+            }
             #guide-overlay {
                 position: absolute;
                 inset: 0;
@@ -5382,16 +5399,23 @@
                     </div>
 
                     <!-- 05 §2.0 行1:Header 连接摘要 pill(设计稿 L266-269 pill() 工厂 = base.css .sc-pill) -->
+                    <!-- [rc-misc h] 采集中追加「· 采集中」后缀;点击 / Enter / 空格跳 Tab2 -->
                     <span
                         class="sc-pill"
                         data-tone="gray"
                         data-gb="header-conn-pill"
+                        role="button"
+                        tabindex="0"
+                        style="cursor: pointer"
                     >
                         <span class="sc-pill__dot"></span>
                         <span class="sc-num" data-gb="header-conn-count"
                             >0/15</span
                         >
                         <span data-t="state.notConnected">未连接</span>
+                        <span data-gb="header-conn-capturing" hidden
+                            >· <span data-t="capturing">采集中</span></span
+                        >
                     </span>
 
                     <!-- 05 §2.0 行4:语言胶囊(中/EN/FR;设计稿 L270-274) -->
@@ -9078,24 +9102,32 @@
                             8MB,已转存外部文件——发给他人需重新采集</span
                         >
                     </div>
+                    <!-- [J125] toast③(05 §2.0 / §2.3「重采集选区」行):撤防那一跳后由 app.js
+                         renderBanners 显隐,{s} 由 app.js 填(recapture-toast.js 记账)。 -->
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast③「已重采集 X.Xs,建议重分析该范围」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            已重采集 X.Xs,建议重分析该范围
-                        </span>
-                        <!-- 词条待立:「立即重分析」按钮(05 §2.0,字典缺) -->
+                        <!-- 版式照设计稿(dc.html toast 段):正文与动作钮上下两行,动作钮 = 主行动
+                             CTA 药丸(--acc-cta 底 + --acc-ink 字),不是 --dark 次按钮。 -->
+                        <div class="sc-toast__body">
+                            <span
+                                data-gb="toast-recaptured-text"
+                                data-t="toast.recaptured"
+                                >已重采集 {s}s,建议重分析该范围</span
+                            >
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--cta sc-toast__action"
+                                data-gb="toast-recaptured-goto"
+                                data-t="toast.recapturedGoto"
+                            >
+                                立即重分析
+                            </button>
+                        </div>
                         <button
-                            class="sc-btn--dark"
-                            data-gb="toast-recaptured-goto"
-                            data-gb-todo="词条待立"
-                        >
-                            立即重分析
-                        </button>
-                        <button
+                            type="button"
                             class="sc-toast__close"
                             data-gb="toast-recaptured-close"
-                            aria-label="close"
+                            data-t-aria="banner.dismiss"
                         >
                             ✕
                         </button>

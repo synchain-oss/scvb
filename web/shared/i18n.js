@@ -169,7 +169,7 @@ export const T = {
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
         "tracks.manualOverwriteConfirm":
-            "将以固定值替换该轨(当前版本)的全部分段结果,可撤销",
+            "将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销",
         "tracks.manualOverwriteConfirm.locked": "(含 {l} 个锁定段)",
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
@@ -810,6 +810,9 @@ export const T = {
         "curve.side.out": "向外",
         "curve.side.left": "向左",
         "curve.side.right": "向右",
+        // [rc-misc i] 曲线浮条两组按钮的组名(读屏用 aria-label)
+        "curve.shapeGroup": "形状",
+        "curve.sideGroup": "方向",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "斜率",
         "curve.slope.opt6": "6 dB/oct",
@@ -892,11 +895,14 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
         // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
-        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
         // [SL-94 / J133] 回到契约 §5.1 逐字栏:不指路设置页(v1 那一行已收起,SL-415),
         // 不写内部排期词。v1 出厂态不可达(自动转存关闭,SL-395),文案为开关打开那天留着。
         "toast.sidecarSwitched":
             "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // [J125] toast③(05 §2.0;逗号按本字典既有风格用半角 —— 设计稿是全角,别当 bug 改回;
+        // {s} = 这次重采集的时长,一位小数,app.js 填)
+        "toast.recaptured": "已重采集 {s}s,建议重分析该范围",
+        "toast.recapturedGoto": "立即重分析",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
@@ -1202,7 +1208,7 @@ export const T = {
             "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
         "tracks.manualOverwriteConfirm":
-            "This replaces all analyzed segments of this track (current version) with a fixed value. Undoable.",
+            "This sets this control to a fixed value on all analyzed segments of this track (current version); the other control keeps its curve. Undoable.",
         "tracks.manualOverwriteConfirm.locked":
             "(includes {l} locked segments)",
         "in.pill.abiMismatch": "VERSION MISMATCH",
@@ -1748,6 +1754,8 @@ export const T = {
         "curve.side.out": "Out",
         "curve.side.left": "Left",
         "curve.side.right": "Right",
+        "curve.shapeGroup": "Shape",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Slope",
         "curve.slope.opt6": "6 dB/oct",
@@ -1812,6 +1820,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
         "toast.sidecarSwitched":
             "Capture data exceeded 8 MB and was moved to an external file — anyone you send the project to will need to capture again",
+        "toast.recaptured":
+            "Re-captured {s} s; re-analyzing this range is recommended",
+        "toast.recapturedGoto": "Re-analyze now",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
         "scale.keep": "Save",
         "master.printLock.group": "Can't switch group while writing automation",
@@ -2035,7 +2046,7 @@ export const T = {
             "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
         "tracks.manualOverwriteConfirm":
-            "Remplace tous les segments analysés de cette piste (version actuelle) par une valeur fixe. Annulable.",
+            "Fixe cette commande à une valeur constante sur tous les segments analysés de cette piste (version actuelle) ; l'autre commande garde sa courbe. Annulable.",
         "tracks.manualOverwriteConfirm.locked":
             "(dont {l} segments verrouillés)",
         "in.pill.abiMismatch": "VERSION INCOMPATIBLE",
@@ -2598,6 +2609,8 @@ export const T = {
         "curve.side.out": "Extérieur",
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
+        "curve.shapeGroup": "Forme",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Pente",
         "curve.slope.opt6": "6 dB/oct",
@@ -2663,6 +2676,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "toast.sidecarSwitched":
             "Les données de capture ont dépassé 8 Mo et ont été déplacées dans un fichier externe — toute personne à qui vous envoyez le projet devra refaire la capture",
+        "toast.recaptured":
+            "{s} s re-capturées ; il est conseillé de ré-analyser cette plage",
+        "toast.recapturedGoto": "Ré-analyser maintenant",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
         "scale.keep": "Enregistrer",
         "master.printLock.group":

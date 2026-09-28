@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath> // std::isfinite(clampManualValue 拦 NaN/Inf)
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -188,16 +189,6 @@ inline void commitCrvsTransaction(juce::UndoManager& undo, scvb::state::CrvsData
     undo.perform(new CrvsTransactionAction(crvs, oldData, newData, rebuild));
 }
 
-// setTrackManual(契约 §1.16 / 04 §1.5 方案 A)的产物:覆盖全时间线的单段 user_edited 常值。
-//
-// **pan 与 vol 是同一条常值段上的两个独立维度**,而 UI 的读回值对两维读的是同一段
-// (tab-tracks.js manualConstantOf)。所以写一维时必须原样保留另一维 —— 早先的实现把另一维
-// 硬写成默认值(pan 写 0、vol 写 0dB),于是「先调 vol 再调 pan」会把 vol 打回 0dB、反过来
-// 把 pan 打回居中,两个维度互相冲掉(T37 三轮 D 族)。
-//
-// existing = 该轨替换前的段表:非空则从首段继承另一维;空表(从未编辑/分析过)才落各自默认。
-// 纯函数,可离线断言。
-
 // 手动值的值域钳制(pan −100..+100 / vol −24..+12 dB,契约 §1.16 的 `value` 域)。
 // [J85] 冻结通道**不写曲线**,于是「钳制」不能再只藏在建段函数里 —— 参数面那一路也要用同一
 // 把尺子,否则两条通道对同一个越界输入会给出两个不同的落地值。
@@ -215,24 +206,54 @@ inline float clampManualValue(bool isPan, float value)
     return isPan ? std::clamp(value, -100.0f, 100.0f) : std::clamp(value, -24.0f, 12.0f);
 }
 
-inline scvb::state::Segment makeManualConstantSegment(const std::vector<scvb::state::Segment>& existing, bool isPan,
-                                                      float value)
+// setTrackManual(契约 §1.16 ② 手动接管通道)的产物:**只改被拖的那一维**([J131] / SL-180)。
+//
+// **pan 与 vol 是同一条段上的两个独立维度**。手动接管一维时,另一维必须原样保留 ——
+//   · T37 三轮 D 族:早先把另一维硬写成默认值(pan 写 0、vol 写 0dB),「先调 vol 再调 pan」
+//     会把 vol 打回 0dB、反过来把 pan 打回居中;
+//   · [J131] / SL-180:此前的修法是「压成单段全时限常值、另一维从**首段**继承」—— 于是在
+//     未冻结轨上拖一下音量卡箍,该轨**整条 pan 曲线**被压成首段那个 pan 值。用户裁定:
+//     只把被拖的那一维固定为常值,另一维**保留原曲线**。
+//
+// 所以本函数**不再把段表压成一段**:
+//   · existing 非空 → 段数、每段 t0/t1、另一维的值逐段原样保留;每段的被拖维度 = 钳制后的 value;
+//     每段 flags = `origin=user_edited`、`locked=false`(与改造前那条常值段同一口径:重分析按
+//     ADR-008 不覆盖 user 段,`clearManual`「恢复自动」仍能整轨清回 auto;会连 locked 段一并改写,
+//     J34 的 locked 保护只约束重分析,UI 一次性确认条如实报锁定段数)。
+//   · existing 为空(从未编辑/分析过)→ 没有曲线可保留,照旧落**覆盖全时间线的单段常值**,
+//     另一维取默认(pan 居中 / vol 0dB)。
+//
+// ⚠ 段值保留 ≠ 过渡斜坡逐样本不变:`CurveEvaluator` 的段间 ramp 宽度按两维较大的那一维反推
+// (02 §8.2 `max(tPan, tGain)`),被拖维度变成常值后,原先由它主导的那几条边界上另一维的 ramp
+// 会变窄。段内稳态值不变。
+// 纯函数,可离线断言(tests/core/test_segment_edit_service.cpp SERVICE-5..8)。
+inline std::vector<scvb::state::Segment> makeManualDimSegments(const std::vector<scvb::state::Segment>& existing,
+                                                               bool isPan, float value)
 {
-    float keepPan = 0.0f;
-    float keepVolDb = 0.0f;
-    if (!existing.empty())
+    const float applied = clampManualValue(isPan, value);
+    const std::uint32_t flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+
+    if (existing.empty())
     {
-        keepPan = existing.front().pan;
-        keepVolDb = existing.front().volDb;
+        scvb::state::Segment seg;
+        seg.t0 = 0;
+        seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
+        seg.pan = isPan ? applied : 0.0f;
+        seg.volDb = isPan ? 0.0f : applied;
+        seg.flags = flags;
+        return {seg};
     }
 
-    scvb::state::Segment seg;
-    seg.t0 = 0;
-    seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
-    seg.pan = isPan ? clampManualValue(true, value) : keepPan;
-    seg.volDb = isPan ? keepVolDb : clampManualValue(false, value);
-    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
-    return seg;
+    std::vector<scvb::state::Segment> out = existing;
+    for (auto& seg : out)
+    {
+        if (isPan)
+            seg.pan = applied;
+        else
+            seg.volDb = applied;
+        seg.flags = flags;
+    }
+    return out;
 }
 
 // 结果门控的段编辑事务:先 editTrackSegments 判结果,仅 Ok 才压入 undo 事务并重建;
