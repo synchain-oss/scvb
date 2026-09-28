@@ -9,7 +9,8 @@
 //  1. guide.rule1..9(九条硬约束红字)不在本文件手写——由 scripts/gen-hard-rules.mjs 从唯一真源
 //     docs/USER_GUIDE.zh-CN.md#硬约束 生成写入本文件,任何位置禁止手抄(05 §0.1 / §5);
 //     CI 跑 gen-hard-rules.mjs --check 比对哈希。设计稿里的 NINE 常量只是视觉参照,不是文案真源。
-//     fr 红字必须经人工审校后方可发布(05 §5)。
+//     fr 红字必须经审校后方可发布(05 §5);v1 发布前的这次审校由用户授权以 AI 三语交叉核对代替人工抽检
+//     (J127,2026-09-28,以中文为准核 en/fr),状态记在 docs/hard-rules.i18n.json 的 frReview。
 //  2. 三词分工(R1 定案,禁止混用):range = 范围(作用范围,Tab1)、interval = 区段(分析产物,
 //     「将影响 N 区段」)、selection = 选区(Tab3 工作选区,重采集/重分析/清除的对象)。
 //  3. 连接类状态每态唯一用词,一律走 state.* 组,不再自由造「等待连接 / 离线」之类泛化说法。
@@ -24,6 +25,9 @@
 //  一个语义无关的中文数词会让那道安全门禁常年假红。)
 // state.groupSuffix 三语、tour.step1..7 的 EN/FR —— 均待人工审校,逐条清单见 T27 差异清单
 // 的「i18n.js」小节(05 §5 要求 fr 发布前人工审校,那份清单就是审校人的入口)。
+// [J127] 2026-09-28:本文件全部词条已做过一轮 AI 三语交叉核对(以 zh 为准核 en/fr,用户授权代替人工抽检)。
+// 下面各段注释里的「待人工审校 / 待 U17 审校 / U17 review pending」是写那段时的记录,由这一轮结清,
+// 不再逐条改写;此后新增或改动的 en/fr 词条仍要重新审校。
 // ======================================================================
 export const T = {
     zh: {
@@ -1301,7 +1305,7 @@ export const T = {
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
-            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click to delete. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
+            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click a point to delete it. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
         "tour.step16.title": "This page: Tracks",
         "tour.step16.body":
             "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
@@ -1821,7 +1825,7 @@ export const T = {
         "wave.tipSensitivity":
             "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
         "wave.tipMinSeg":
-            "Minimum segment length: automatic segments shorter than it are dropped (judged before padding) or merged into a touching neighbour to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected. After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a scope or range re-analysis, or the leftover of a neighbour dropped wholesale because it clashed with a manual segment) (default {d})",
+            "Minimum segment length: automatic segments shorter than it are dropped (judged before padding) or merged into a touching neighbour to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected. After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a selection or range re-analysis, or the leftover of a neighbour dropped wholesale because it clashed with a manual segment) (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -2034,7 +2038,7 @@ export const T = {
         // 首次启动引导页(05 §5,606-610 行)。
         // guide.title 与 guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从
         // docs/USER_GUIDE.zh-CN.md#硬约束 + docs/hard-rules.i18n.json 生成写入(禁止手抄)。
-        // fr 红字发布前必须经人工审校(05 §5),审校状态见 docs/hard-rules.i18n.json 的 frReview。
+        // fr 红字发布前必须经审校(05 §5;J127 授权以 AI 三语交叉核对代替人工抽检),审校状态见 docs/hard-rules.i18n.json 的 frReview。
         // BEGIN GENERATED hard-rules:fr
         "guide.title":
             "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
@@ -2137,7 +2141,7 @@ export const T = {
             "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre les intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
-            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez pour supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
+            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez sur un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
         "tour.step16.title": "Cette page : Pistes",
         "tour.step16.body":
             "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
@@ -2585,7 +2589,7 @@ export const T = {
         "curve.slope.opt18": "18 dB/oct",
         "curve.slope.opt24": "24 dB/oct",
         "curve.sideTooltip":
-            "Extérieur: coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite: coupe uniquement ce côté",
+            "Extérieur : coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite : coupe uniquement ce côté",
         "curve.deleteLabel": "Supprimer le point",
         "curve.announcePoint":
             "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q}",
