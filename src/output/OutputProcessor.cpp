@@ -7,11 +7,13 @@
 
 #include "AnalyzeScopeMath.h" // [SL-242] 范围 → hop 窗的向内取整(纯函数,scvb_tests 直接断言)
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
+#include "HostId.h" // [J150] 桥面 §1.1 `host` 的取值口径
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
 #include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径(与分析入口共用)
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
+#include "analysis/WaveValleys.h" // [J145] §1.27 valleys[]:吸附谷点
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
@@ -26,7 +28,52 @@ constexpr int kVersionMax = 2; // [J59] 1..2
 constexpr int kTimelineInvalidTicks = 12; // 25Hz × 0.5s(§4.2 连续无效判定)
 // [SL-545] 插件自己写它的地方要标来源(leadOrigin_);ParamID 冻结(docs/PARAMETERS.md index 2)。
 constexpr const char* kLeadSelectId = "lead_select";
+
+// [J146] runtime state → 分析参数的换算,**唯一一份**:`startAnalysis`(松手档与「点分析」)与
+// 拖动档预览 `previewVadSegmentation` 都从这里取。预览要回答的是「松手后那一趟会怎么判」,
+// 两边各写一份换算就是第二把尺子 —— 下面那条单位对位一旦只改一边,预览就会和结果对不上。
+//
+// 单位换算(**两侧不是同一个量**,直接透传会让 VAD 一段都切不出来):
+//   · state 的 analysis.vad.threshold_db 是**绝对**静音门限,UI 档位 −60..−10 dB、默认 −38;
+//   · VadParams::thresholdDb 是**自适应基准之下的深度**(T_on = A − thresholdDb),默认 30。
+// 以两侧各自的默认值为锚做线性对位:depth = kVadUiRefDb − ui,取 kVadUiRef = −8 使
+// ui=−38 恰好落回 depth=30。方向也对:ui 越低(越想收更轻的声)→ depth 越大 → 门限越低。
+// 直接把 −45 当 depth 用会得到 T_on = A + 45 —— 门限**高过**基准,任何素材都过不去,
+// 于是分析跑完却零段(v4 实测 P0-1 的次生现象)。
+scvb::analysis::VadParams analysisVadParamsOf(const OutputRuntimeState& rt)
+{
+    constexpr float kVadUiRefDb = -8.0f;
+    scvb::analysis::VadParams v;
+    v.thresholdDb = juce::jlimit(1.0f, 80.0f, kVadUiRefDb - rt.vadThresholdDb);
+    v.hysteresisDb = rt.vadHysteresisDb;
+    v.hangoverMs = rt.vadHangoverMs;
+    v.paddingPreMs = rt.vadPaddingPreMs;
+    v.paddingPostMs = rt.vadPaddingPostMs;
+    v.minSegmentMs = rt.segmentationMinSegmentMs;
+    return v;
+}
+
+scvb::analysis::SegmentationParams analysisSegParamsOf(const OutputRuntimeState& rt)
+{
+    scvb::analysis::SegmentationParams sp;
+    sp.minSegmentMs = static_cast<double>(rt.segmentationMinSegmentMs);
+    sp.sensitivity = static_cast<double>(rt.segmentationSensitivity);
+    return sp;
+}
+
+// [J150] 测试注入的宿主类型(nullopt = 按真实宿主判定)。只由 setHostTypeForTesting 写,
+// 单测线程;与下面 sidecarTestBaseDirRef 同款。
+std::optional<juce::PluginHostType::HostType>& hostTypeTestOverrideRef()
+{
+    static std::optional<juce::PluginHostType::HostType> type;
+    return type;
+}
 } // namespace
+
+void ScvbOutputAudioProcessor::setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type)
+{
+    hostTypeTestOverrideRef() = type;
+}
 
 ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
@@ -64,6 +111,10 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // state」的语义都不变,工程里存过的值仍然压过它。
     sessionGuid_ = juce::Uuid().toDashedString();
 
+    // [J150] 宿主标识:构造期判定一次(PluginHostType 按宿主可执行文件名识别,不在音频线程)。
+    // 测试注入见 setHostTypeForTesting;生产路径恒走 juce::PluginHostType().type。
+    hostId_ = scvb::output::hostIdOf(hostTypeTestOverrideRef().value_or(juce::PluginHostType().type));
+
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
     printer_.installHostEchoShield(apvts);
@@ -79,6 +130,7 @@ ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
     apvts.removeParameterListener(kLeadSelectId, &leadOriginListener_); // [SL-545] 构造期挂的
     stopTimer();
     vizTimer_.reset(); // [SL-192] viz 独立定时器:先拆,免得析构过程中还有一拍打进来
+    panPreviewTimer_.reset(); // [J157] 同上:它的回调要取 lifecycleMutex_、碰 authority_
     // 顺序不可倒:先 cancelAnalysis() 把工作线程 signal + join 掉 —— join 返回即保证 run() 已经
     // 结束,此后不会再有人调 triggerAsyncUpdate();再 cancelPendingUpdate() 撤掉可能已经入队的
     // 那一次派发。两步做完,消息队列里不可能再有指向本对象的回调。
@@ -274,6 +326,14 @@ void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::Positi
         pod.bpm = *bpm;
         pod.flags |= scvb::engine::kPlayheadTempoValid;
     }
+    // [J147] 拍号:Tab1 手动范围按小节显示要它(契约 §2.6 `timeSigNum`/`timeSigDen`)。
+    // 只拷两个 int,零分配;合理域的判定留给 [M] 侧的 hostTempoOf(PlayheadShot.h)。
+    if (const auto sig = pos.getTimeSignature(); sig.hasValue())
+    {
+        pod.timeSigNum = sig->numerator;
+        pod.timeSigDen = sig->denominator;
+        pod.flags |= scvb::engine::kPlayheadTimeSigValid;
+    }
     if (const auto loop = pos.getLoopPoints(); loop.hasValue())
     {
         pod.loopStartPpq = loop->ppqStart;
@@ -442,6 +502,66 @@ ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int 
     return info;
 }
 
+std::vector<ScvbOutputAudioProcessor::CaptureProgressTrack>
+ScvbOutputAudioProcessor::captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull)
+{
+    std::vector<CaptureProgressTrack> frame;
+
+    // §2.7:周期帧只在播放中发;[J152] 两个例外帧不看走带。
+    // 数据源 = FrameStore 的 coverage 记账(Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
+    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
+    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
+    const scvb::engine::PlayheadPod pod = playheadSnapshot();
+    const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+    if (!playing && !forceFull)
+    {
+        return frame;
+    }
+
+    const double sr = sampleRate();
+    const double playheadS = (pod.timeSamples >= 0 && sr > 0.0) ? static_cast<double>(pod.timeSamples) / sr : 0.0;
+    // 已采集末端只有「停着」那一支用得上(见 captureProgressWindow),播放中不必扫全轨。
+    const double extentS = playing ? 0.0 : capturedExtentSeconds();
+    const auto window = scvb::output::captureProgressWindow(playing, runtime_.rangeMode, runtime_.rangeStartS,
+                                                            runtime_.rangeEndS, playheadS, extentS);
+    if (!window.valid() && !forceFull)
+    {
+        return frame; // 周期帧:时间线还没走出一个 hop,没有可报的覆盖
+    }
+    // 例外帧在窗口为空时照发:coverageOf 对空窗口回 0% / 无区间,15 轨各报一个 0。
+
+    for (int t = 0; t < 15; ++t)
+    {
+        const int ch = t + 1;
+        const auto info = coverageOf(ch, window.startS, window.endS);
+        const std::size_t idx = static_cast<std::size_t>(t);
+
+        // added = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
+        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
+        scvb::analysis::CoverageMap added;
+        for (const auto& r : info.ranges)
+            added.add(r);
+        for (const auto& r : baseline.ranges[idx])
+            added.punch(r);
+
+        const bool pctChanged = !juce::approximatelyEqual(info.pct, baseline.pct[idx]);
+        if (!forceFull && added.empty() && !pctChanged)
+        {
+            continue; // 周期帧:仅包含本帧有变化的轨(§2.7);例外帧 15 轨全带
+        }
+        baseline.ranges[idx] = info.ranges;
+        baseline.pct[idx] = info.pct;
+
+        CaptureProgressTrack track;
+        track.ch = ch;
+        track.added = added.ranges();
+        track.pct = info.pct;
+        frame.push_back(std::move(track));
+    }
+    return frame;
+}
+
 ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int channel, double startS, double endS,
                                                                             int cols)
 {
@@ -466,6 +586,10 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
     const double hopS = featHopSeconds();
     const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
     const double colS = (endS - startS) / static_cast<double>(cols);
+    // [J146] vad 列在拖动档预览期间读**覆盖层**(当前参数下的即时重判决),其余时候读 vadP ——
+    // 见 `vadPreviewQAt`。修改序号取一次:本函数持锁,循环里特征不会变。
+    const int track = channel - 1;
+    const std::uint64_t featSeq = frames.mutationSeq();
 
     for (int i = 0; i < cols; ++i)
     {
@@ -513,7 +637,7 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
                 any = true;
                 mx = std::max(mx, static_cast<double>(frames.peakDbq(h)) / 100.0);
                 mn = std::min(mn, static_cast<double>(frames.kwDbq(h)) / 100.0);
-                if (frames.vadP(h) > 127)
+                if (vadPreviewQAt(track, h, featSeq, frames.vadP(h)) > 127)
                 {
                     voiced = true;
                 }
@@ -530,7 +654,59 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
         tile.minDb[k] = std::min(mn, mx);
         tile.vad[k] = voiced ? 1 : 0;
     }
+
+    // [J145] 吸附谷点(§1.27 `valleys[]`)。同一把锁里算:谷点与包络必须来自同一刻的 FrameStore,
+    // 否则两者可能一个是采集前、一个是采集后。代价与已覆盖 hop 数同阶并有上限
+    // (`kSnapValleyMaxScanHops`),与请求跨度无关 —— 上面 P0-A 那段注释的同一条纪律。
+    // 门槛与分析同源:`startAnalysis` 装配 `cfg.segmentation.sensitivity` 用的也是这一个值。
+    scvb::analysis::SegmentationParams sp;
+    sp.sensitivity = static_cast<double>(runtime_.segmentationSensitivity);
+    tile.valleys = scvb::analysis::snapValleysSeconds(frames, startS, endS, hopS, sp, static_cast<std::size_t>(cols));
     return tile;
+}
+
+juce::var ScvbOutputAudioProcessor::waveformResponse(const WaveformTile& tile)
+{
+    // 列数 = 瓦片自己的列数:waveformOf 一进门就把四列按 cols 铺满(提前返回的也是满长哨兵),
+    // 四列恒等长 —— 与原先编辑器里 `for (i < cols)` 直接下标的写法同一个前提。
+    const std::size_t cols = tile.minDb.size();
+    juce::Array<juce::var> minDb;
+    juce::Array<juce::var> maxDb;
+    juce::Array<juce::var> vad;
+    juce::Array<juce::var> covered;
+    juce::Array<juce::var> stale;
+    juce::Array<juce::var> passId;
+    for (std::size_t k = 0; k < cols; ++k)
+    {
+        minDb.add(tile.minDb[k]);
+        maxDb.add(tile.maxDb[k]);
+        vad.add(tile.vad[k]);
+        covered.add(tile.covered[k]);
+        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
+        // [J145] passId 这一版仍恒 0(没做):FrameStore 只记「覆盖了哪些 hop」,不记「哪一轮采的」,
+        // 要填它得先给覆盖记账加采集轮次 —— 那是存储面的改动,不是这里一行的事。契约 §9.3 附注
+        // 本就允许首版回退常量(「值填充不触发契约变更」)。
+        stale.add(0);
+        passId.add(0);
+    }
+    // [J145] 吸附谷点(§1.27):此前回包里这一项是一个**从不填**的空数组,tab-wave 的 snapBoundary
+    // 读的就是它 ⇒ tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,
+    // 所以 web 侧的冒烟一直是绿的)。
+    juce::Array<juce::var> valleys;
+    for (const double v : tile.valleys)
+    {
+        valleys.add(v);
+    }
+
+    auto* o = new juce::DynamicObject();
+    o->setProperty("minDb", minDb);
+    o->setProperty("maxDb", maxDb);
+    o->setProperty("vad", vad);
+    o->setProperty("covered", covered);
+    o->setProperty("stale", stale);
+    o->setProperty("passId", passId);
+    o->setProperty("valleys", valleys);
+    return juce::var(o);
 }
 
 double ScvbOutputAudioProcessor::capturedExtentSeconds()
@@ -1090,6 +1266,11 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 重分段就会在 PRINT 态下改写段表并 rebuildAllCurves(),正是 §1.18「抑制条件**只有**
     // PRINT 态或分析进行中」要防的那一格。窗口只有一拍(40ms),但它是可证伪的竞态。
     tickResegmentDebounce(now);
+    // [J146] 拖动档预览的空闲结束(排在防抖之后:这一拍刚起飞的重分段已把 analysisRunning 置真,
+    // 不会被误判成「没人接手」)。
+    // [J146 复审②] 合并下来的那一次(自适应占空比)在这里按最新参数补算;editor 的 emitTick 随后发出。
+    tickVadPreviewPending();
+    tickVadPreviewExpiry(now);
 
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
     // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
@@ -1112,10 +1293,11 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
-    // 两个都要跑(不能靠 || 短路):优先级与检测值各自独立地弄脏配置。
+    // 三个都要跑(不能靠 || 短路):优先级、检测值、[J150] 轨道名各自独立地弄脏配置。
     const bool prioChanged = applyRemotePriorities();
     const bool srcChanged = refreshSourceChannels();
-    if (prioChanged || srcChanged)
+    const bool nameChanged = applyTrackNames(now);
+    if (prioChanged || srcChanged || nameChanged)
     {
         ++runtime_.configSeq;
     }
@@ -1324,6 +1506,42 @@ bool ScvbOutputAudioProcessor::applyRemotePriorities()
     return changed;
 }
 
+bool ScvbOutputAudioProcessor::applyTrackNames(scvb::u64 nowMs)
+{
+    // [J150] 04 §7 步 2:「轨道名自动填入 label」。只读观察实例不改配置(本组真源是 kActive 那一个)。
+    if (session_.state() != scvb::output::OutputClaimState::kActive)
+    {
+        return false;
+    }
+    bool changed = false;
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        auto& c = runtime_.channels[static_cast<std::size_t>(t)];
+        if (!c.labelFollowsTrackName())
+        {
+            continue; // 用户亲手起的名字:不跟随 DAW 轨道名
+        }
+        std::string name;
+        if (!session_.readOwnedTrackName(static_cast<scvb::u32>(t + 1), nowMs, name))
+        {
+            // 掉线 / 条目不归现任 Input / 宿主没给名字:什么都不做 —— label 停在最后一次的轨道名上
+            // (Input 断开后「保留最后的名字」就是这一行的效果,不是另写的逻辑)。
+            continue;
+        }
+        // 与桥面 setChannelConfig 同一上限:24 码点(JUCE String 在 UTF-8 构建下按码点截,
+        // 与 `OutputEditor::handleSetChannelConfig` 的 `substring(0, 24)` 同口径)。
+        const juce::String next = juce::String::fromUTF8(name.data(), static_cast<int>(name.size()))
+                                      .substring(0, static_cast<int>(scvb::state::kOutputChannelLabelMaxChars));
+        c.autoLabel = next; // 先记「自动填的是什么」:label 与它相等 ⇔ 仍跟随轨道名
+        if (next != c.label)
+        {
+            c.label = next;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void ScvbOutputAudioProcessor::publishConfigBroadcast()
 {
     // 只读观察实例不得写广播区:本组真源是那个 kActive 的 Output,两个实例抢写会让 Input
@@ -1430,17 +1648,31 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 先写 PRMS 就会把旧 GUID 存进工程,下次开工程按旧 GUID 去找,找到的是别人那份或者空。
     writeFeaturesChunk(chunks);
 
-    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
+    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位 + ui.active_tab。
     // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表把 guide_seen /
-    // tour_seen / lang_chosen 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language 才是
-    // 两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
+    // tour_seen / lang_chosen / active_tab 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language
+    // 才是两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
     // 见 OutputUiState.h 头注(那里另记了 CFGS 尾扩口径自 [J69/U24] 起的变化,以及跨 abi 整块
     // 拒载是 PRMS/CFGS 共同处境、论证不了字段该放哪一节)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
                                        runtime_.tourSeen.load(std::memory_order_relaxed),
                                        runtime_.langChosen.load(std::memory_order_relaxed)});
+    // [J148] §1.31「重开面板恢复上次 tab」的落盘那一半。存的是**此刻**的 tab —— 桥入口只改内存,
+    // 真正写进工程只发生在宿主来取 state 的这一刻,所以用户来回切 tab 不会产生任何落盘动作。
+    scvb::output::writeActiveTab(state, runtime_.activeTab.load(std::memory_order_relaxed));
     scvb::output::writeSessionGuid(state, sessionGuid_); // [SL-215] 会话 GUID 随 PRMS 落盘
+    // [J150] channels[].auto_label 随 PRMS 落盘(理由见 OutputUiState.h 那组函数的头注):每轨原样记内存里的
+    // autoLabel,载入后「label 是否跟随轨道名」的推导与存盘前逐轨相同。每次整条覆写,不留上一份工程的残值
+    // (replaceState 会把载入的属性原样带进 APVTS 状态树)。
+    {
+        std::array<juce::String, scvb::engine::kNumTracks> autoLabels;
+        for (std::size_t t = 0; t < autoLabels.size(); ++t)
+        {
+            autoLabels[t] = runtime_.channels[t].autoLabel;
+        }
+        scvb::output::writeAutoLabels(state, autoLabels);
+    }
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -2153,6 +2385,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
 
+    // [J150] channels[].auto_label 随 PRMS 走、却要跟 CFGS 里的 label 一起落地(下面 channels 那段):
+    // 先在这里读出来。缺席(本功能之前的工程)/ 畸形 ⇒ 全空 ⇒ 非空 label 一律视为用户命名。
+    std::array<juce::String, scvb::engine::kNumTracks> loadedAutoLabels;
+
     // 载入覆盖了撤销步所写的面 ⇒ 整栈清空。两个调用点:PRMS 读回处(下面)与函数末尾(CFGS / CRVS);
     // 为什么清、按什么判见末尾那段注释。
     const auto clearUndoForLoad = [this] {
@@ -2175,6 +2411,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
+            // [J148] ui.active_tab:PRMS 解得开时,属性缺失(本版之前存的工程)或非四值 ⇒ Tab1,**照样写回**,
+            // 不做「属性缺失就保留现值」—— 那样上一个工程停在哪个 tab,载入这份就还停在哪(#96 陈旧值同族)。
+            // 范围只到这一层:PRMS 整节缺失 / XML 解不开时根本进不来,tab 与同节的 123 个参数、上面三个
+            // 首启位一起保持现值(「没有信息」不读成「回默认」,与 SL-226 同口径)。本插件存的工程恒带 PRMS。
+            // 编辑器开着时,下一帧 scvb.state 带着新值到页面,页面按 §1.31 切过去。
+            runtime_.activeTab.store(scvb::output::readActiveTab(loaded), std::memory_order_relaxed);
             // [SL-215] 工程里存过合法 GUID 就沿用它 —— 这是「同一工程反复开,sidecar 指向同一份
             // 特征」的全部依据。缺失(老工程)或形状非法(不可信字节)时保留构造期生成的那一个,
             // 绝不把畸形串带进文件名;下次保存即把这个新的写回去。
@@ -2182,6 +2424,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             {
                 sessionGuid_ = loadedGuid;
             }
+            loadedAutoLabels = scvb::output::readAutoLabels(loaded); // [J150]
             {
                 // [SL-545 / J143b] 载入工程 / 预设恢复出来的 lead_select 是插件自己写的,不是宿主自动化。
                 const scvb::analysis::LeadWriteOrigin::ScopedPluginWrite leadScope(leadOrigin_, /*active=*/true);
@@ -2335,6 +2578,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         dst.leadLock = src.leadLock;
         dst.leadVolExempt = src.leadVolExempt;
         dst.pairId = static_cast<int>(src.pairId);
+        // [J150] auto_label:与 label 相等 ⇒ 这条 label 是上次存盘时自动填的轨道名,继续跟随;不等(含缺席 =
+        // 本功能之前的工程)⇒ 非空 label 视为用户命名。旧构建另存时会把这个 PRMS 属性原样带回来,但用户
+        // 若在旧构建里改过名字,label 就不再等于它 —— 仍判成用户命名,不会被轨道名覆盖。
+        dst.autoLabel = loadedAutoLabels[t];
     }
     // 走既有的通道配置推送路径,不另造:桥面改完配置也只做这一件事(`++configSeq`)。
     // 与桥面「值变化才 bump」不同,这里**无条件** bump,是有意的:载入是整份替换,逐项比对省下的只是
@@ -3548,6 +3795,61 @@ void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::
         // 走这个回调而不是直接调 setPanCurve,是为了**撤销/重做**也走同一条路 ——
         // commitCrvsTransaction 的 onChanged 在 undo/redo 时同样会被调用。
         [this] { rebuildAllCurves(); });
+    // [J157] 松手即收掉拖动预览。点表真的变了时,上面 rebuild 里 authority_.setPanCurve 已经撤过
+    // (并在点表与最后一份预览相同时沿用了那张表);这一行管的是**点表没变**的那一种 —— 拖出去又
+    // 拖回原处松手:已提交曲线一个字节没动、no-op 路不碰预览,不在这里撤的话最后那份预览会一直
+    // 留在音频里,而松手之后再也没有人会撤它。
+    authority_.cancelPanCurvePreview();
+}
+
+scvb::output::OutputAuthority::PanCurvePreviewRequest
+ScvbOutputAudioProcessor::previewPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Req r = Req::accepted;
+    bool pending = false;
+    {
+        const juce::ScopedLock lock(lifecycleMutex_);
+        r = authority_.requestPanCurvePreview(version, points);
+        if (r != Req::accepted)
+            return r;
+        // 先就地试一次:闸门开着的话这一拍就发出去,不必等定时器(拖动的第一下零额外延迟)。
+        pending = authority_.pumpPanCurvePreview(static_cast<double>(scvb::steadyNowMs()));
+    }
+    if (pending)
+    {
+        if (panPreviewTimer_ == nullptr)
+        {
+            panPreviewTimer_ = std::make_unique<juce::TimedCallback>([this] {
+                bool stillPending = false;
+                {
+                    const juce::ScopedLock lock(lifecycleMutex_);
+                    stillPending = authority_.pumpPanCurvePreview(static_cast<double>(scvb::steadyNowMs()));
+                }
+                // 自停放在锁外:stopTimer 与 releaseResources 那条「先停定时器再取锁」同一纪律。
+                // 没有待发了(发出去 / 被提交或 cancel 撤掉 / 换了版本)就停;否则下一拍再试 ——
+                // **这一条是「手指停在半路也听得到最后那一下」的全部依据**。
+                if (!stillPending)
+                    panPreviewTimer_->stopTimer();
+            });
+        }
+        if (!panPreviewTimer_->isTimerRunning())
+            panPreviewTimer_->startTimer(kPanPreviewRetryMs);
+    }
+    return r;
+}
+
+void ScvbOutputAudioProcessor::cancelPanCurvePreview()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    authority_.cancelPanCurvePreview();
+    // 定时器不在这里停:下一拍它看到没有待发就自停(与上面同一处判据,不另写一份)。
+}
+
+bool ScvbOutputAudioProcessor::panCurvePreviewPending()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return authority_.panCurvePreviewPending();
 }
 
 bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)
@@ -3954,6 +4256,323 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
         pendingResegmentReason_ = AnalysisDoneReason::None; // 没起来就别留着脏 reason
 }
 
+// ============================================================================
+// [J146] 拖动档预览(契约 §1.18/§1.19;事件 §2.10)。设计与边界见头文件 VadPreviewState 那段头注。
+// ============================================================================
+void ScvbOutputAudioProcessor::requestVadPreview()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    vadPreviewLastUseMs_ = static_cast<std::int64_t>(scvb::steadyNowMs()); // 待算期间别让空闲收尾误收
+    if (scvb::analysis::vadPreviewComputeDue(juce::Time::getMillisecondCounterHiRes(), vadPreviewLastComputeStartMs_,
+                                             vadPreviewLastComputeCostMs_,
+                                             static_cast<double>(vadPreviewMinGapForTestMs_)))
+    {
+        vadPreviewPending_ = false;
+        previewVadSegmentation();
+    }
+    else
+    {
+        vadPreviewPending_ = true; // 合并:只记「有待算」,25Hz 定时器按最新参数补算
+    }
+}
+
+void ScvbOutputAudioProcessor::tickVadPreviewPending()
+{
+    if (!vadPreviewPending_)
+        return;
+    if (!scvb::analysis::vadPreviewComputeDue(juce::Time::getMillisecondCounterHiRes(), vadPreviewLastComputeStartMs_,
+                                              vadPreviewLastComputeCostMs_,
+                                              static_cast<double>(vadPreviewMinGapForTestMs_)))
+        return;
+    vadPreviewPending_ = false;
+    previewVadSegmentation();
+}
+
+const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previewVadSegmentation()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    const auto nowMs = static_cast<std::int64_t>(scvb::steadyNowMs());
+    vadPreviewLastUseMs_ = nowMs;
+    // 本次重判决的起点与耗时(自适应占空比的输入,见 `vadPreviewComputeDue`)。任何返回路径都记。
+    struct ComputeMark
+    {
+        double* start;
+        double* cost;
+        double t0;
+        ~ComputeMark()
+        {
+            *start = t0;
+            *cost = juce::Time::getMillisecondCounterHiRes() - t0;
+        }
+    } mark{&vadPreviewLastComputeStartMs_, &vadPreviewLastComputeCostMs_, juce::Time::getMillisecondCounterHiRes()};
+
+    // 窗:与 `tickResegmentDebounce` → `startAnalysis` **同一把尺子**(范围档 + 已采集时间线 →
+    // 计算窗 / 写回窗)。预览回答的是「松手那一趟会怎么判」,窗不同就不是那一趟了。
+    const double hopS = featHopSeconds();
+    const double extentS = capturedExtentSeconds();
+    const scvb::output::AnalyzeRange r =
+        scvb::output::analyzeAllRange(runtime_.rangeMode, runtime_.rangeStartS, runtime_.rangeEndS, extentS);
+    const auto windows = scvb::output::analysisWindows(r.startS, r.endS, extentS, hopS);
+    if (windows.rejects)
+    {
+        dropVadPreviewLocked(); // 写集为空:松手那一趟也会被拒,没有可预览的东西
+        return vadPreview_;
+    }
+    const std::uint64_t firstHop = windows.compute.firstHop;
+    const std::uint64_t lastHop = windows.compute.lastHop;
+    std::uint64_t applyFirst = std::max(windows.apply.firstHop, firstHop);
+    std::uint64_t applyLast = std::min(windows.apply.lastHop, lastHop);
+    const std::size_t numHops = static_cast<std::size_t>(lastHop - firstHop);
+    // 与 `startAnalysis` 那道分配上限同源(`analysisWindows` 已判过,这里只为 resize 前就地再断一次)。
+    if (numHops == 0 || numHops > static_cast<std::size_t>(scvb::output::kMaxHop) || applyLast <= applyFirst)
+    {
+        dropVadPreviewLocked();
+        return vadPreview_;
+    }
+
+    // ---- 写回集 + 缓存新旧 -------------------------------------------------------------------
+    // [SL-535] 与 `startAnalysis` 同一条参与判据:此刻没连上 Input 的轨不进写回集(它的段表松手后
+    // 一个字节不动,预览也就不画它)。与 `previewAnalysis` 一样各自采一次时钟 —— 其间连接态变了,
+    // 后果只是这一帧预览与松手那一趟差一条轨,下一次拖动调用即对齐。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
+    const scvb::analysis::HopRange applyHops{applyFirst, applyLast};
+    const bool windowSame = firstHop == vadPreviewCacheFirstHop_ && lastHop == vadPreviewCacheLastHop_;
+    std::array<bool, scvb::engine::kNumTracks> inSet{};
+    bool anyValid = false;
+    bool needRebuild = false;
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        const auto ti = static_cast<std::size_t>(t);
+        const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
+        // 写回集判据与 `startAnalysis` 的预扫逐字同款(enabled ∧ 此刻已连接 ∧ 写回窗内有覆盖;松手档
+        // tracksMask=0)。
+        inSet[ti] = runtime_.channels[ti].enabled && (connMask & (1u << t)) != 0 && frames.coveredHops(applyHops) != 0;
+        // 只数写回集里的轨(判据与理由见 `vadPreviewRebuildThrottled` 的头注)。
+        anyValid = anyValid || (inSet[ti] && vadPreviewCacheValid_[ti]);
+        if (inSet[ti] && (!vadPreviewCacheValid_[ti] || !windowSame || vadPreviewCacheSeq_[ti] != frames.mutationSeq()))
+        {
+            needRebuild = true;
+        }
+    }
+
+    // [J146 复审①] **重建限频**。缓存的前提是「特征没变」,而边播边采时 FrameStore 每 25Hz 都在写
+    // (`mutationSeq` 跟着涨、时间线跟着延长 ⇒ 计算窗也在变),不限频的话每一次拖动调用都要对每条
+    // 写回轨重建一遍(取样 + 两次整段排序 + n 次 log10),在 [M] 上持 `lifecycleMutex_` —— 长会话
+    // 下单次就是几百毫秒量级,40Hz 连发会把消息线程与宿主存盘一起堵住。
+    // 所以:距上次重建不足 `kVadPreviewRebuildMinMs` 时**不重建**,这一次沿用手上那份缓存(它自己的
+    // 窗、≤1s 前的特征)按**当前参数**照跑状态机 —— 虚影仍随每一次拖动即时变;代价是:
+    //   · 这段时间里新采到的那一截不进预览(下一次重建补上);
+    //   · 覆盖层按缓存那一刻的修改序号记账,而特征已经变了 ⇒ `waveformOf` 退回读 vadP ——
+    //     **采集写入进行中时 VAD 着色不随拖动变**(契约 §1.27 口径补写里写明了这条例外)。
+    // 首建(一份有效缓存都没有)不限频。
+    const bool throttled = scvb::analysis::vadPreviewRebuildThrottled(
+        needRebuild, anyValid, nowMs, vadPreviewLastRebuildMs_, kVadPreviewRebuildMinMs);
+    std::uint64_t cFirst = firstHop;
+    std::uint64_t cLast = lastHop;
+    if (throttled)
+    {
+        cFirst = vadPreviewCacheFirstHop_;
+        cLast = vadPreviewCacheLastHop_;
+        applyFirst = std::max(applyFirst, cFirst);
+        applyLast = std::min(applyLast, cLast);
+        if (applyLast <= applyFirst)
+        {
+            return vadPreview_; // 缓存那一刻的窗与现在的写回窗不相交:这一拍不动,等下一次重建
+        }
+    }
+    else if (!windowSame)
+    {
+        // 计算窗变了(采集把时间线往后延了)⇒ 基准的输入变了,整份缓存作废。
+        vadPreviewCacheValid_.fill(false);
+        vadPreviewCacheFirstHop_ = firstHop;
+        vadPreviewCacheLastHop_ = lastHop;
+    }
+    const std::size_t cHops = static_cast<std::size_t>(cLast - cFirst);
+
+    const scvb::analysis::VadParams vp = analysisVadParamsOf(runtime_);
+    const scvb::analysis::SegmentationParams sp = analysisSegParamsOf(runtime_);
+    const scvb::analysis::HopRange computeHops{cFirst, cLast};
+
+    vadPreviewPosterior_.resize(cHops);
+    std::uint16_t mask = 0;
+    bool rebuilt = false;
+    std::vector<std::int16_t> kwq; // 取样暂存(按页批量取,见下)
+    std::vector<std::int16_t> pkq;
+    std::vector<std::uint8_t> vdq;
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        const auto ti = static_cast<std::size_t>(t);
+        auto& spans = vadPreview_.spans[ti];
+        spans.clear();
+        // 不在写回集里的轨:松手那一趟不会改它,预览也不画它 —— 覆盖层与缓存一并释放。
+        if (!inSet[ti])
+        {
+            std::vector<std::uint8_t>().swap(vadPreviewQ_[ti]);
+            vadPreviewCache_[ti] = scvb::analysis::VadPreviewTrackCache{};
+            vadPreviewCacheValid_[ti] = false;
+            continue;
+        }
+        const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
+        const std::uint64_t featSeq = frames.mutationSeq();
+        if (!vadPreviewCacheValid_[ti] || vadPreviewCacheSeq_[ti] != featSeq)
+        {
+            if (throttled && !vadPreviewCacheValid_[ti])
+            {
+                std::vector<std::uint8_t>().swap(vadPreviewQ_[ti]);
+                continue; // 限频期里新进写回集的轨:没有可沿用的缓存,等下一次重建再出现
+            }
+            if (!throttled)
+            {
+                // 取样口径与 `startAnalysis` 相同:计算窗逐 hop,未覆盖 hop 留 0(VAD 自然判成静音)。
+                // 按覆盖区间推进,每个区间走 `appendRange` 按页批量取(每 4096 hop 才查一次页索引,
+                // 与 SL-232 的批量写同形);值与逐 hop `kwMs(h)` 逐位相同(同一个 `dequantizeKwMs`)。
+                std::vector<float> kw(cHops, 0.0f);
+                for (const auto& cr : frames.coverage().intersect(computeHops))
+                {
+                    kwq.clear();
+                    pkq.clear();
+                    vdq.clear();
+                    frames.appendRange(cr, kwq, pkq, vdq);
+                    const auto base = static_cast<std::size_t>(cr.begin - cFirst);
+                    for (std::size_t i = 0; i < kwq.size(); ++i)
+                    {
+                        kw[base + i] = scvb::analysis::dequantizeKwMs(kwq[i]);
+                    }
+                }
+                vadPreviewCache_[ti] = scvb::analysis::buildVadPreviewTrackCache(kw.data(), kw.size());
+                vadPreviewCacheSeq_[ti] = featSeq;
+                vadPreviewCacheValid_[ti] = true;
+                ++vadPreviewCacheBuilds_;
+                rebuilt = true;
+            }
+            // throttled ∧ 缓存有效但旧:沿用(见上面那段头注)。
+        }
+
+        const auto hopSegs = scvb::analysis::runVadPreviewTrack(vadPreviewCache_[ti], static_cast<std::int64_t>(cFirst),
+                                                                vp, sp, hopS, vadPreviewPosterior_.data());
+
+        // 覆盖层 = 写回窗那一截后验的量化值(与 `finishAnalysis` 写 vadP 同一个量化器、同一个窗)。
+        auto& q = vadPreviewQ_[ti];
+        q.resize(static_cast<std::size_t>(applyLast - applyFirst));
+        const std::size_t off = static_cast<std::size_t>(applyFirst - cFirst);
+        for (std::size_t i = 0; i < q.size(); ++i)
+        {
+            q[i] = scvb::analysis::quantizeVadPosterior(vadPreviewPosterior_[off + i]);
+        }
+        // 限频期记哨兵(沿用的缓存算自旧窗,这条轨自己没被写过也不算数,见 `vadPreviewOverlaySeq`)。
+        vadPreviewQSeq_[ti] = scvb::analysis::vadPreviewOverlaySeq(throttled, vadPreviewCacheSeq_[ti]);
+
+        // 段:裁到写回窗(窗外那一截松手后一个字节不动,画出来就是假话),hop → 秒。
+        for (const auto& hs : hopSegs)
+        {
+            const std::uint64_t b = static_cast<std::uint64_t>(std::max<std::int64_t>(hs.startHop, 0));
+            const std::uint64_t e = static_cast<std::uint64_t>(std::max<std::int64_t>(hs.endHop, 0));
+            const std::uint64_t lo = std::max(b, applyFirst);
+            const std::uint64_t hi = std::min(e, applyLast);
+            if (hi > lo)
+            {
+                spans.emplace_back(static_cast<double>(lo) * hopS, static_cast<double>(hi) * hopS);
+            }
+        }
+        mask = static_cast<std::uint16_t>(mask | (1u << t));
+    }
+    if (rebuilt)
+    {
+        vadPreviewLastRebuildMs_ = nowMs;
+    }
+
+    if (mask == 0)
+    {
+        dropVadPreviewLocked(); // 写回集为空(没有启用且有数据的轨)
+        return vadPreview_;
+    }
+    vadPreviewApplyFirstHop_ = applyFirst;
+    vadPreviewApplyLastHop_ = applyLast;
+    vadPreview_.active = true;
+    vadPreview_.startS = static_cast<double>(applyFirst) * hopS;
+    vadPreview_.endS = static_cast<double>(applyLast) * hopS;
+    vadPreview_.tracksMask = mask;
+    ++vadPreview_.seq;
+    return vadPreview_;
+}
+
+void ScvbOutputAudioProcessor::dropVadPreviewLocked() noexcept
+{
+    const bool wasActive = vadPreview_.active;
+    vadPreview_.active = false;
+    vadPreview_.startS = 0.0;
+    vadPreview_.endS = 0.0;
+    vadPreview_.tracksMask = 0;
+    for (std::size_t t = 0; t < vadPreview_.spans.size(); ++t)
+    {
+        // swap 进空 vector = 真的把堆内存还回去(clear 只清长度不还容量)。
+        std::vector<std::pair<double, double>>().swap(vadPreview_.spans[t]);
+        std::vector<std::uint8_t>().swap(vadPreviewQ_[t]);
+        vadPreviewCache_[t] = scvb::analysis::VadPreviewTrackCache{};
+    }
+    vadPreviewCacheValid_.fill(false);
+    std::vector<float>().swap(vadPreviewPosterior_);
+    vadPreviewApplyFirstHop_ = 0;
+    vadPreviewApplyLastHop_ = 0;
+    vadPreviewPending_ = false; // 收尾了就没有「待算」可言(丢弃事件后不该再补算出一帧)
+    if (wasActive)
+    {
+        ++vadPreview_.seq; // 让 editor 发一帧 active:false 收尾
+    }
+}
+
+void ScvbOutputAudioProcessor::tickVadPreviewExpiry(std::int64_t nowMs) noexcept
+{
+    if (!vadPreview_.active)
+        return;
+    // 还有人要接手这份预览:松手防抖已排(到点会起流水线)或分析在跑(落地时 finishAnalysis 收尾)。
+    if (resegmentDueAtMs_ != 0 || analysisRunning())
+        return;
+    if (nowMs - vadPreviewLastUseMs_ < kVadPreviewIdleMs)
+        return;
+    dropVadPreviewLocked();
+}
+
+std::uint8_t ScvbOutputAudioProcessor::vadPreviewQAt(int track, std::uint64_t hop, std::uint64_t mutationSeq,
+                                                     std::uint8_t fallback) const noexcept
+{
+    if (!vadPreview_.active || track < 0 || track >= scvb::engine::kNumTracks)
+        return fallback;
+    const auto ti = static_cast<std::size_t>(track);
+    const auto& q = vadPreviewQ_[ti];
+    // 特征在覆盖层算出之后被改过 ⇒ 覆盖层作废(下一次拖动调用会按新特征重算)。
+    if (q.empty() || vadPreviewQSeq_[ti] != mutationSeq)
+        return fallback;
+    if (hop < vadPreviewApplyFirstHop_ || hop >= vadPreviewApplyLastHop_)
+        return fallback; // 写回窗外:松手那一趟不写这里的 vadP,预览也不改它
+    const auto i = static_cast<std::size_t>(hop - vadPreviewApplyFirstHop_);
+    return i < q.size() ? q[i] : fallback;
+}
+
+ScvbOutputAudioProcessor::VadPreviewHead ScvbOutputAudioProcessor::vadPreviewHead() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return VadPreviewHead{vadPreview_.seq, vadPreview_.active};
+}
+
+ScvbOutputAudioProcessor::VadPreviewState ScvbOutputAudioProcessor::vadPreviewSnapshot() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return vadPreview_;
+}
+
+std::size_t ScvbOutputAudioProcessor::vadPreviewBytes() const
+{
+    std::size_t n = vadPreviewPosterior_.capacity() * sizeof(float);
+    for (std::size_t t = 0; t < vadPreviewQ_.size(); ++t)
+    {
+        n += vadPreviewQ_[t].capacity();
+        n += vadPreviewCache_[t].bytes();
+        n += vadPreview_.spans[t].capacity() * sizeof(std::pair<double, double>);
+    }
+    return n;
+}
+
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask,
                                                                                   double startS, double endS,
                                                                                   bool clearManual, bool fullScope)
@@ -4208,22 +4827,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     cfg.hopMs = static_cast<int>(scvb::output::OutputSession::featHopMs());
     cfg.rangeStartSample = static_cast<std::int64_t>(firstHop) * hopSamples;
     cfg.rangeEndSample = static_cast<std::int64_t>(lastHop) * hopSamples;
-    // 单位换算(**两侧不是同一个量**,直接透传会让 VAD 一段都切不出来):
-    //   · state 的 analysis.vad.threshold_db 是**绝对**静音门限,UI 档位 −60..−10 dB、默认 −38;
-    //   · VadParams::thresholdDb 是**自适应基准之下的深度**(T_on = A − thresholdDb),默认 30。
-    // 以两侧各自的默认值为锚做线性对位:depth = kVadUiRefDb − ui,取 kVadUiRef = −8 使
-    // ui=−38 恰好落回 depth=30。方向也对:ui 越低(越想收更轻的声)→ depth 越大 → 门限越低。
-    // 直接把 −45 当 depth 用会得到 T_on = A + 45 —— 门限**高过**基准,任何素材都过不去,
-    // 于是分析跑完却零段(v4 实测 P0-1 的次生现象)。
-    constexpr float kVadUiRefDb = -8.0f;
-    cfg.vad.thresholdDb = juce::jlimit(1.0f, 80.0f, kVadUiRefDb - runtime_.vadThresholdDb);
-    cfg.vad.hysteresisDb = runtime_.vadHysteresisDb;
-    cfg.vad.hangoverMs = runtime_.vadHangoverMs;
-    cfg.vad.paddingPreMs = runtime_.vadPaddingPreMs;
-    cfg.vad.paddingPostMs = runtime_.vadPaddingPostMs;
-    cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs;
-    cfg.segmentation.minSegmentMs = static_cast<double>(runtime_.segmentationMinSegmentMs);
-    cfg.segmentation.sensitivity = static_cast<double>(runtime_.segmentationSensitivity);
+    // 单位换算(threshold_db 是绝对门限、VadParams::thresholdDb 是基准之下的深度)与字段对位
+    // [J146] 收进 `analysisVadParamsOf` / `analysisSegParamsOf`(本文件顶部),拖动档预览走同一份。
+    cfg.vad = analysisVadParamsOf(runtime_);
+    cfg.segmentation = analysisSegParamsOf(runtime_);
     cfg.balance.panCurve = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)].panCurve;
     // J69/02 §5.6:中心槽策略取 state(Tab4 那一档此前零消费方,拧了不生效)。
     if (runtime_.centerSlotPolicy == "lead_exclusive")
@@ -4772,6 +5379,10 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         runtime_.analysisRunning = false;
         runtime_.analysisProgress.store(result.cancelled ? 0.0f : 1.0f, std::memory_order_relaxed);
+        // [J146] 任何一趟分析落地都结束拖动档预览:松手那一趟的 vadP 已按同一组参数写好(覆盖层与它
+        // 逐位相同,撤掉不会让泳道跳),段表也已是真结果;别的分析(点「分析」)落地时预览的前提
+        // 「段表还是上一次的」也不成立了。
+        dropVadPreviewLocked();
         // [SL-255] 完成时的 §2.8 reason:松手档那一路随作业带过来(`resegmentReason`),
         // 点「分析」那一路带的是 None ⇒ 落 Analyze。
         //

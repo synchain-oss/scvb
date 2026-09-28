@@ -47,7 +47,7 @@
  * 顺序也照 manifest(顺序对 parity 无影响,照抄是为了人工比对时一眼可对)。
  */
 export const BRIDGE_FUNCTIONS = {
-    // Output —— 36 个(契约 §1)
+    // Output —— 37 个(契约 §1)
     output: [
         "requestInitialState",
         "setCaptureEnabled",
@@ -66,6 +66,7 @@ export const BRIDGE_FUNCTIONS = {
         "setChannelConfig",
         "setTrackManual",
         "setPanCurve",
+        "previewPanCurve", // J157 §1.37(本表行内注释勿带方括号:parity 脚本按首个右方括号截取数组)
         "setVadParams",
         "setSegmentation",
         "setTransitionRamp",
@@ -115,7 +116,7 @@ export const BRIDGE_FUNCTIONS = {
  * 事件是纯下行:UI 只订阅,绝不用这些名字发起上行调用(§0.5)。
  */
 export const BRIDGE_EVENTS = {
-    // Output —— 9 个(契约 §2)
+    // Output —— 10 个(契约 §2)
     output: [
         "scvb.state",
         "scvb.params",
@@ -126,6 +127,7 @@ export const BRIDGE_EVENTS = {
         "scvb.captureProgress",
         "scvb.segments",
         "scvb.error",
+        "scvb.vadPreview", // [J146] 拖动档 VAD/边界预览(契约 §2.10)
     ],
     // Input —— 5 个(契约 §4)
     input: [

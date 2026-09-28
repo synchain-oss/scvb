@@ -59,6 +59,9 @@
 //     现在 `smoke-mock.mjs` 的 second-output 那族逐个断言这七个,枚举第一次有判据看着它。
 //   • `channel-conflict`:Input `setChannelId(n)` 命中 `caps.occupiedMask` 的位 →
 //     `{conflict:true}` + 推 `scvb.error{code:"channelConflict"}`。
+//   • [SL-463 / J156] `claim-unavailable` / `claim-abi-mismatch`(`caps.claimFailure`):Input
+//     `setChannelId` / `setGroupId` 回非冲突失败 `{ok:false, reason:"unavailable"|"abiMismatch"}`,
+//     不推 `scvb.error`(§4.5 没有对应 code;真桥同样只靠回执 + `scvb.state`)。
 //   • `stereo-mixed&loop=none`:`caps.loopAvailable=false` → `setRange("daw_loop", …)`
 //     回 `{ok:false, reason:"noLoop"}`(灰模 Range 档的「宿主未提供循环区」disabled 占位)。
 //
@@ -81,6 +84,7 @@ import {
     makeSegments,
     makeWaveformTile,
     coverageRangesOf,
+    vadPreviewOf,
     CHART_MODES,
     localizeDemoChannels,
 } from "../../web/shared/mock-data.js";
@@ -324,6 +328,16 @@ function makeContext(role, world) {
         // `requestRender` 都不排。只有 `ctl.setHostTimeAvailable` 写它(见那一条),
         // 页面与契约面一个字节都不知道它存在。
         hostTimeAvailable: true,
+        // [J147] **宿主报的速度 / 拍号**(契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。
+        // null = 宿主不给(页面按秒显示)。初值取 world.caps.hostTempo(`?tempo=` 可覆写,
+        // 见 state-driver 的 parsePreviewQuery);运行中只有 `ctl.setHostTempo` 写它。
+        // 拍位置按一张两段的速度表造:可选的 `pre: {untilS, bpm}` = 「untilS 秒之前是另一个速度」,
+        // 缺省即「从 0 秒起恒速」(ppq = 秒 × bpm / 60)。停着时用 `setHostTempo` 换一张表 =
+        // 用户在宿主里改了速度表(同一时刻的拍位置 / 速度变了,页面据此作废旧观察)。
+        hostTempo: world.caps.hostTempo ? { ...world.caps.hostTempo } : null,
+        // [J157] §1.37 拖动预览此刻在「音频」里的那份({version, points} | null)。只有
+        // previewPanCurve / setPanCurve 写它;页面与契约面不读(预览不回推任何事件)。
+        panCurvePreview: null,
         snapshot,
         // conn / config 与快照共用同一对象,写一处两处同步(契约 §1.1/§3.1 语义行:
         // 快照的 conn/config 子树与事件载荷不得各自漂移)。
@@ -363,6 +377,12 @@ function makeContext(role, world) {
         // `OutputRuntimeState::recaptureAutoEnabledCapture` 同名同义)。撤防只在这一位为真
         // 且采集仍开着时才关回去 —— 布防前本来就开着的保持开。
         recaptureAutoEnabledCapture: false,
+        // [J146] 当前拖动档预览(null = 不在预览中):{startS, endS, byCh: ch → {mask, spans}}。
+        vadPreview: null,
+        // [J146] 上一次**落地**的分析用的 VAD 参数(null = 还没分析过 ⇒ vad 列取 fixture 原样)。
+        // native 的 vad 列读的是分析写下的 vadP,它随那一趟的参数走;mock 原先恒按 fixture 乐句画,
+        // 于是「松手落地后 VAD 列 = 拖动时预览的那一份」在 preview 里不成立(落地那一下会跳回去)。
+        analyzedVad: null,
     };
 
     if (role === "output") {
@@ -514,6 +534,7 @@ function makeContext(role, world) {
             delete s.version;
             delete s.guide_seen_global;
             delete s.tour_seen_global;
+            delete s.host; // [J150] 快照专属(§1.1),真桥的 §2.1 事件里没有它
             delete s.conn;
             return { full: true, ...s };
         }
@@ -533,10 +554,13 @@ function makeContext(role, world) {
 
     /** 写内部 state 并推增量帧(Output 带 `full:false`;Input 无 full 字段)。 */
     function patchState(patch) {
-        if (role === "input" && "claim" in patch) {
-            model.claim = patch.claim;
+        if (role === "input" && ("claim" in patch || "abi_remote" in patch)) {
+            // claim 与 abi_remote 都只在 §4.1 事件里、不属 §3.1 快照字段集:记在 model 上,不并进快照。
+            if ("claim" in patch) model.claim = patch.claim;
+            if ("abi_remote" in patch) model.abiRemote = patch.abi_remote;
             const rest = { ...patch };
             delete rest.claim;
+            delete rest.abi_remote;
             mergeDeep(model.snapshot, rest);
         } else {
             mergeDeep(model.snapshot, patch);
@@ -572,6 +596,24 @@ function makeContext(role, world) {
             seg.segIdx = i;
         });
         return list;
+    }
+
+    /**
+     * [J152] §2.7 的**全量例外帧**(mBridgeReady 后首帧 / clearCoverage 受理后):不看走带,
+     * 15 轨全带。与 native `captureProgressFrame(…, forceFull=true)` 同形:
+     *   · `addedRanges` = 该轨当前的全部覆盖区间(native 在这两个时刻基线都是空的,增量 = 全部);
+     *   · `coveragePct` = 该轨当前覆盖率;没采过的轨报 0,不是缺席。
+     * 覆盖率的分母沿用 mock 自己的口径(fixture 画像;clearCoverage 按 durationS 重算),
+     * 不复刻 native 的分母窗口 —— 那一半由 `HOST J152` 在真 processor 上钉。
+     */
+    function fullCaptureProgressPayload() {
+        return {
+            channels: allChannels().map((ch) => ({
+                ch,
+                addedRanges: clone(model.coverageRanges.get(ch) || []),
+                coveragePct: model.coveragePct.get(ch) ?? 0,
+            })),
+        };
     }
 
     /**
@@ -839,6 +881,23 @@ function makeContext(role, world) {
         setHostTimeAvailable(on) {
             model.hostTimeAvailable = on !== false;
         },
+        /**
+         * [J147] **预览专用**开关(同 `setHostTimeAvailable`,不在桥面契约里):
+         * `{bpm, num, den, pre?: {untilS, bpm}}` = 宿主从下一帧起按这张速度表报;`null` = 宿主不报。
+         */
+        setHostTempo(t) {
+            model.hostTempo =
+                t && Number.isFinite(t.bpm)
+                    ? {
+                          bpm: t.bpm,
+                          num: t.num,
+                          den: t.den,
+                          pre: t.pre
+                              ? { untilS: t.pre.untilS, bpm: t.pre.bpm }
+                              : null,
+                      }
+                    : null;
+        },
         /** §2.6 的可选字段:宿主提供 loop 才出现,缺失即字段不存在(不发哨兵)。 */
         playheadOverrides(tS) {
             // 宿主不给走带位置时,native 侧 timeS 恒 0.0 —— 连同 inRange 一起按 0 算,
@@ -854,10 +913,32 @@ function makeContext(role, world) {
                 extra.loopStartS = loop.startS;
                 extra.loopEndS = loop.endS;
             }
+            // [J147] 与 native `hostTempoOf` 同口径:bpm 与拍号同进同出;ppq 另要求本帧有
+            // 时间线(没有时 timeS 是填的 0,不能与它配对)。
+            const ht = model.hostTempo;
+            if (ht) {
+                // 与载荷里的 timeS 配对:makePlayhead 把 timeS 取整到毫秒,这里用同一个值算,
+                // 否则「拍位置 − 秒 × bpm / 60」会带上取整残差。
+                const tMs = Math.round(t * 1000) / 1000;
+                const pre = ht.pre || null;
+                const before = !!pre && tMs < pre.untilS;
+                extra.bpm = before ? pre.bpm : ht.bpm;
+                extra.timeSigNum = ht.num;
+                extra.timeSigDen = ht.den;
+                if (model.hostTimeAvailable) {
+                    extra.ppq = !pre
+                        ? (tMs * ht.bpm) / 60
+                        : before
+                          ? (tMs * pre.bpm) / 60
+                          : (pre.untilS * pre.bpm) / 60 +
+                            ((tMs - pre.untilS) * ht.bpm) / 60;
+                }
+            }
             return extra;
         },
         fullStatePayload,
         segmentsPayload,
+        fullCaptureProgressPayload,
         connPayload: () => clone(model.conn),
         configPayload: () => clone(model.config),
         paramsFullPayload() {
@@ -946,6 +1027,7 @@ function makeContext(role, world) {
         patchState,
         fullStatePayload,
         segmentsPayload,
+        fullCaptureProgressPayload,
         regenerateSegments,
         emitRecomputedSegments,
         isProtectedSegment,
@@ -971,6 +1053,7 @@ function buildOutputBackend(ctx) {
         markReady,
         patchState,
         segmentsPayload,
+        fullCaptureProgressPayload, // [J152] clearCoverage 受理后的全量例外帧
         regenerateSegments,
         emitRecomputedSegments,
         isProtectedSegment,
@@ -991,6 +1074,27 @@ function buildOutputBackend(ctx) {
     const OK = () => ({ ok: true });
     const BAD_ARG = () => ({ ok: false, reason: "badArg" });
     const OBSERVER = () => ({ observer: true });
+
+    /** §1.17 / §1.37 共用的点表校验(native 侧同样只有一份:BridgeArgs.h parsePanCurvePointsArg)。 */
+    function panCurvePointsOk(points) {
+        if (!Array.isArray(points) || points.length > 16) return false;
+        for (const p of points) {
+            if (
+                !isPlainObject(p) ||
+                !isFiniteNumber(p.angle) ||
+                p.angle < -100 ||
+                p.angle > 100 ||
+                !isFiniteNumber(p.gain_db) ||
+                !["bell", "shelf", "cut"].includes(p.shape) ||
+                !isFiniteNumber(p.q) ||
+                p.q <= 0 ||
+                !["out", "left", "right"].includes(p.side ?? "out")
+            ) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /** 只读观察态(`second-output`):§5.6 的 `{observer:true}`。 */
     function readOnly() {
@@ -1152,11 +1256,119 @@ function buildOutputBackend(ctx) {
                 reanalysis: true,
             });
             emitRecomputedSegments(reason, allChannels(), frame);
+            model.analyzedVad = clone(model.snapshot.analysis.vad); // [J146] vadP 随这一趟的参数走
+            endVadPreview(); // [J146] 落地即收尾(native:finishAnalysis → dropVadPreviewLocked)
             // [SL-279] 松手档是全轨重算,与 native 的 `tickResegmentDebounce` 对齐:那边传的
             // 是 `r.wholeTimeline`,所以这里也读同款判据 —— follow 档前移,范围档不前移。
             // 漏了前移这一半,mock 里会出现「整表按新档重算完、徽标还亮着」;漏了范围档
             // 这一半,则是范围外还没重算就把徽标灭掉。两个方向都是真桥产不出来的组合。
             if (wholeTimelineNow()) advanceAppliedAnalysis();
+        });
+    }
+
+    // ---- [J146] 拖动档预览(契约 §2.10 `scvb.vadPreview`)---------------------------
+    // 与 native `previewVadSegmentation` 同形的**时序与生命周期**:setVadParams / setSegmentation
+    // 每次调用当场发一帧 active:true;预览在三种时刻结束(发一帧 active:false):
+    //   ① 任何一趟分析落地(松手防抖那一趟 / 点「分析」那一趟);② 丢弃事件(mock 里只有
+    //   「真切版本」这一件 —— undo/redo 恒回 ok:false、栈没动,按 native「动了栈才丢」天然不丢);
+    //   ③ 空闲 1.5s 且没有已排的防抖、没有在跑的分析(抑制态松手)。
+    // 预览**内容**是 mock 近似(`vadPreviewOf`,见其头注),不对拍 native 的 VAD 数值。
+    let vadPreviewSeq = 0;
+    let vadPreviewIdleId = null;
+    const VAD_PREVIEW_IDLE_MS = 1500; // 与 native `kVadPreviewIdleMs` 同值
+
+    /** 写回窗:follow 档 = 已采集时间线;范围档 = 用户设的区间(与松手档那一趟同一把尺子)。 */
+    function vadPreviewWindow() {
+        const range = model.snapshot.global.range;
+        let extent = 0;
+        for (const cov of model.coverageRanges.values()) {
+            for (const r of cov || []) extent = Math.max(extent, r.endS);
+        }
+        if (range.mode !== "follow") {
+            const w =
+                range.mode === "daw_loop"
+                    ? loopWindow()
+                    : { startS: range.start_s, endS: range.end_s };
+            if (w && w.endS > w.startS) {
+                return {
+                    startS: Math.max(0, w.startS),
+                    endS: Math.min(extent, w.endS),
+                };
+            }
+        }
+        return { startS: 0, endS: extent };
+    }
+
+    function emitVadPreview() {
+        const win = vadPreviewWindow();
+        const byCh = new Map();
+        const channels = [];
+        if (win.endS > win.startS) {
+            for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
+                const cfg = model.snapshot.channels[ch - 1] || {};
+                if (cfg.enabled === false) continue;
+                const cov = model.coverageRanges.get(ch) || [];
+                // 写回集 = 启用且写回窗内有采集数据。native 还要「此刻已连接」([SL-535]);这里**不建模**,
+                // 理由与 affectedOf 里 [SL-535] 那条登记相同(mock 默认世界 15 轨全空闲,照搬会让预览恒空)。
+                const inWin = cov.some(
+                    (c) =>
+                        Math.min(c.endS, win.endS) >
+                        Math.max(c.startS, win.startS),
+                );
+                if (!inWin) continue;
+                const pv = vadPreviewOf(
+                    ch,
+                    model.snapshot.analysis.vad,
+                    model.snapshot.analysis.segmentation,
+                    win,
+                    cov,
+                );
+                byCh.set(ch, pv);
+                channels.push({ ch, spans: clone(pv.spans) });
+            }
+        }
+        if (!channels.length) {
+            endVadPreview(); // 写回集为空:没有可预览的东西(若原本在预览中则收尾)
+            return;
+        }
+        model.vadPreview = { startS: win.startS, endS: win.endS, byCh };
+        vadPreviewSeq++;
+        emit("scvb.vadPreview", {
+            seq: vadPreviewSeq,
+            active: true,
+            startS: win.startS,
+            endS: win.endS,
+            channels,
+        });
+        armVadPreviewIdle();
+    }
+
+    function endVadPreview() {
+        if (vadPreviewIdleId !== null) {
+            clearTimeout(vadPreviewIdleId);
+            vadPreviewIdleId = null;
+        }
+        if (!model.vadPreview) return;
+        model.vadPreview = null;
+        vadPreviewSeq++;
+        emit("scvb.vadPreview", {
+            seq: vadPreviewSeq,
+            active: false,
+            channels: [],
+        });
+    }
+
+    function armVadPreviewIdle() {
+        if (vadPreviewIdleId !== null) clearTimeout(vadPreviewIdleId);
+        vadPreviewIdleId = later(VAD_PREVIEW_IDLE_MS, () => {
+            vadPreviewIdleId = null;
+            // 还有人要接手(防抖已排 / 分析在跑):由它落地时收尾;这里再等一拍,与 native
+            // `tickVadPreviewExpiry` 的「有人接手就不收」同口径。
+            if (debounceId !== null || model.snapshot.analysis_run.running) {
+                armVadPreviewIdle();
+                return;
+            }
+            endVadPreview();
         });
     }
 
@@ -1361,6 +1573,8 @@ function buildOutputBackend(ctx) {
                     },
                 );
                 emitRecomputedSegments("analyze", allChannels(), frame);
+                model.analyzedVad = clone(model.snapshot.analysis.vad); // [J146] 同上
+                endVadPreview(); // [J146] 任何一趟分析落地都收尾(与 native 同口径)
                 // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
                 // 「全量」两个维度都要满足,与 native 的 `fullScope` 逐条对应:
                 //   · 轨维:scope 不是对象形 ⇒ 全轨(见下);
@@ -1460,6 +1674,8 @@ function buildOutputBackend(ctx) {
                 clearTimeout(debounceId);
                 debounceId = null;
             }
+            // [J146] 同一件事结束拖动档预览(native:discardPendingResegment → dropVadPreviewLocked)。
+            if (next !== cur) endVadPreview();
             patchState({ global: { version_active: next } });
             // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)。
             // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动
@@ -1728,27 +1944,34 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.17 ------------------------------------------------------------
         setPanCurve(points) {
-            if (!Array.isArray(points) || points.length > 16) return BAD_ARG();
-            for (const p of points) {
-                if (
-                    !isPlainObject(p) ||
-                    !isFiniteNumber(p.angle) ||
-                    p.angle < -100 ||
-                    p.angle > 100 ||
-                    !isFiniteNumber(p.gain_db) ||
-                    !["bell", "shelf", "cut"].includes(p.shape) ||
-                    !isFiniteNumber(p.q) ||
-                    p.q <= 0 ||
-                    !["out", "left", "right"].includes(p.side ?? "out")
-                ) {
-                    return BAD_ARG();
-                }
-            }
+            if (!panCurvePointsOk(points)) return BAD_ARG();
             const active = model.snapshot.global.version_active;
             const versions = clone(model.snapshot.versions);
             versions[active - 1].pan_curve = { points: clone(points) };
             versions[active - 1].empty = points.length === 0;
             patchState({ versions });
+            // [J157] 松手提交顺带撤掉拖动预览(native:setPanCurve 之后 cancelPanCurvePreview)。
+            model.panCurvePreview = null;
+            return OK();
+        },
+
+        // ---- §1.37([J157] 拖动预览)-------------------------------------------
+        // 不写 state、不发事件、不入栈 —— 与 native 一样只换「音频用的那张表」;preview 里没有
+        // 音频,于是只把「此刻在预览的是什么」记在 model.panCurvePreview 上(冒烟可读,页面不读)。
+        // 判序与 native `handlePreviewPanCurve` 逐条同款:参数形态 → null 撤回(只读也放行)→
+        // 只读 observer → 版本号不是当前版本 staleVersion → 受理。
+        previewPanCurve(v, points) {
+            if (!Number.isInteger(v) || v < 1 || v > VERSION_COUNT)
+                return BAD_ARG();
+            if (points === null || points === undefined) {
+                model.panCurvePreview = null;
+                return OK();
+            }
+            if (!panCurvePointsOk(points)) return BAD_ARG();
+            if (readOnly()) return OBSERVER();
+            if (v !== model.snapshot.global.version_active)
+                return { ok: false, reason: "staleVersion" };
+            model.panCurvePreview = { version: v, points: clone(points) };
             return OK();
         },
 
@@ -1767,6 +1990,7 @@ function buildOutputBackend(ctx) {
             }
             patchState({ analysis: { vad: clone(p) } });
             debounceAnalysisPipeline("vad");
+            emitVadPreview(); // [J146] 拖动档:每次调用当场回发预览(§1.18 / §2.10)
             return OK();
         },
 
@@ -1782,6 +2006,7 @@ function buildOutputBackend(ctx) {
             }
             patchState({ analysis: { segmentation: clone(p) } });
             debounceAnalysisPipeline("segmentation");
+            emitVadPreview(); // [J146] 同 setVadParams
             return OK();
         },
 
@@ -2067,7 +2292,7 @@ function buildOutputBackend(ctx) {
             // 从 coverage 预览缓存里**真扣除**(T33 Wave 2):波形侧 covered 位、
             // affectedOf 的 §1.5 口径与 coveragePct 三处随之一致。
             let clearedS = 0;
-            const channels = chList.map((ch) => {
+            for (const ch of chList) {
                 const before = model.coverageRanges.get(ch) || [];
                 const after = subtractRange(before, startS, endS);
                 clearedS += coveredLenOf(before) - coveredLenOf(after);
@@ -2081,10 +2306,11 @@ function buildOutputBackend(ctx) {
                     1,
                 );
                 model.coveragePct.set(ch, pct);
-                // §2.7 的 addedRanges 只表达「新增」,清除只体现在 coveragePct 上。
-                return { ch, addedRanges: [], coveragePct: pct };
-            });
-            emit("scvb.captureProgress", { channels });
+            }
+            // [J152] 例外②:受理后补发一次**全量**(15 轨全带,不看走带),与 native 同形 ——
+            // native 清除后作废增量基线,补发那一帧的增量 = 剩余的全部覆盖(见
+            // fullCaptureProgressPayload 头注)。mock 是同步发的,native 在下一拍(≤40ms)发。
+            emit("scvb.captureProgress", fullCaptureProgressPayload());
             return { ok: true, clearedS: round(clearedS, 2) };
         },
 
@@ -2145,6 +2371,44 @@ function buildOutputBackend(ctx) {
                 // clearCoverage 清掉的区域里去(那里根本没有能量谷可言)。
                 tile.valleys = (tile.valleys || []).filter((v) =>
                     overlapsRanges(cov, v, v + 0.01),
+                );
+            }
+            // [J146] vad 列的后验来源(§1.27 口径补写):拖动档预览期间,写回窗内取预览着色罩
+            // (native 读覆盖层);其余时候取**上一次落地的分析**所用参数下的着色罩(native 读 vadP)。
+            // 默认参数下着色罩 = fixture 乐句原样,所以没分析过 / 按默认分析过的 preview 与改动前逐列相同。
+            const pv = model.vadPreview && model.vadPreview.byCh.get(ch);
+            const colW = (endS - startS) / cols;
+            const paintMask = (mask, w0, w1) => {
+                for (let i = 0; i < cols; i++) {
+                    if (!tile.covered[i]) continue;
+                    const tMid = startS + (i + 0.5) * colW;
+                    if (tMid < w0 || tMid >= w1) continue;
+                    tile.vad[i] = mask.some(
+                        (m) => tMid >= m.t0S && tMid < m.t1S,
+                    )
+                        ? 1
+                        : 0;
+                }
+            };
+            if (model.analyzedVad) {
+                const covNow = model.coverageRanges.get(ch) || [];
+                paintMask(
+                    vadPreviewOf(
+                        ch,
+                        model.analyzedVad,
+                        model.snapshot.analysis.segmentation,
+                        { startS: 0, endS: Number.MAX_VALUE }, // 整条时间线(vadPreviewOf 只收有限窗)
+                        covNow,
+                    ).mask,
+                    -Infinity,
+                    Infinity,
+                );
+            }
+            if (pv) {
+                paintMask(
+                    pv.mask,
+                    model.vadPreview.startS,
+                    model.vadPreview.endS,
                 );
             }
             return tile;
@@ -2305,7 +2569,9 @@ function buildInputBackend(ctx) {
             return snap;
         },
 
-        // ---- §3.2(返回行只有 {ok} | {conflict:true} ⇒ 非法 n 走夹取)------------
+        // ---- §3.2 ---------------------------------------------------------------
+        // 返回并集([J156]):{ok} | {conflict:true} | {ok:false, reason:"abiMismatch"|"unavailable"|"badArg"}。
+        // mock 只产前四种:非法 n 走夹取、不产 badArg(返回行登记的形状,mock 可以只产其中一部分)。
         setChannelId(n) {
             const next = clampInt(
                 n,
@@ -2313,6 +2579,18 @@ function buildInputBackend(ctx) {
                 CHANNEL_COUNT,
                 model.snapshot.channel_id,
             );
+            // [SL-463 / J156] 场景 claim-abi-mismatch(`caps.claimFailure="abiMismatch"`):本组 registry
+            // 由另一 abi 的 SCVB 建。真桥上这一支在**打开 registry** 时就失败(首次选通道 / 换组才会打开),
+            // 先于占用判定,所以排在冲突前面;一个 slot 也没持住 ⇒ channel_id 报 0(§3.1)。
+            // 已绑定通道时(同组换通道不重开 registry)真桥走不到这一支 —— 该场景开箱就是未分配。
+            if (next > 0 && model.caps.claimFailure === "abiMismatch") {
+                patchState({
+                    channel_id: 0,
+                    claim: "abiMismatch",
+                    abi_remote: model.snapshot.version.abi + 1,
+                });
+                return { ok: false, reason: "abiMismatch" };
+            }
             const occupiedByOthers =
                 next > 0 &&
                 ((model.caps.occupiedMask >>> (next - 1)) & 1) === 1 &&
@@ -2352,6 +2630,21 @@ function buildInputBackend(ctx) {
                 }
                 return { conflict: true };
             }
+            // [SL-463 / J156] 场景 claim-unavailable(`caps.claimFailure="unavailable"`):通道抢到了、
+            // 但建段失败(真桥在 claimInput 之后的 createSegments 那一步 ⇒ 排在冲突判定之后)。
+            // 已绑定着别的通道:补偿式回滚,会话留在原通道,state 一个字段都不变(与冲突那支同形);
+            // 首次选通道:没有可回滚的,一个 slot 也没持住 ⇒ channel_id 0 + claim "idle"(§5.2 ② 支)。
+            // 回执两种情况都是失败 —— 这正是本卡要修的:真桥此前在这里回 {ok:true}。
+            if (
+                next > 0 &&
+                next !== model.snapshot.channel_id &&
+                model.caps.claimFailure === "unavailable"
+            ) {
+                if (model.snapshot.channel_id === 0) {
+                    patchState({ channel_id: 0, claim: "idle" });
+                }
+                return { ok: false, reason: "unavailable" };
+            }
             const claim = claimStateFor(next);
             patchState({ channel_id: next, claim });
             // 本实例占的位也算进 occupiedMask(§4.2 字段纪律),并同步音频路径。
@@ -2379,6 +2672,18 @@ function buildInputBackend(ctx) {
                     }),
                 );
                 return { conflict: true };
+            }
+            // [SL-463 / J156] 场景 claim-unavailable:新组里建段失败。组号**已经**换过去(真桥的
+            // changeGroup 失败也不退回旧组),本实例在新组一个 slot 也没持住 ⇒ channel_id 0 + "idle"。
+            // 真桥另有一支「新组 ctrl 段打不开 ⇒ 组号不变」,mock 不造(界面反馈两支同形:抖胶囊 + toast)。
+            // 未选通道时改组不 claim 任何 slot,真桥不会失败 —— 这里同样只在 channel_id>0 时失败。
+            if (
+                next !== model.snapshot.group_id &&
+                model.snapshot.channel_id > 0 &&
+                model.caps.claimFailure === "unavailable"
+            ) {
+                patchState({ group_id: next, channel_id: 0, claim: "idle" });
+                return { ok: false, reason: "unavailable" };
             }
             patchState({
                 group_id: next,

@@ -181,34 +181,25 @@ int symmetricDifferenceSize(const std::vector<int>& a, const std::vector<int>& b
     return diff;
 }
 
-} // namespace
-
-double SegmentationParams::minDepthDb() const
+// 谷底平坦区:极大连续等值区间,且严格低于左右邻居(02 §3.2 步骤 2a「局部极小」)。
+// [J145] 从 detectValleys 里原样抽出来,供 detectSnapValleys 共用同一份「什么算一个谷底」——
+// 两份各写一遍就是下一个「两侧口径漂移」。行为逐字未变(SEG-* 用例钉着)。
+struct MinRun
 {
-    return minDepthFromSensitivity(sensitivity);
-}
-
-std::vector<Valley> detectValleys(const float* l, int64_t startHop, int64_t endHop, const SegmentationParams& p)
-{
-    std::vector<Valley> valleys;
-    if (l == nullptr || endHop - startHop < 2)
-        return valleys;
-
-    const std::vector<double> lv = smoothEnvelope(l, startHop, endHop, p.smoothHops / 2);
-    const int64_t n = endHop - startHop;
-
-    // 谷底平坦区:极大连续等值区间,且严格低于左右邻居(02 §3.2 步骤 2a「局部极小」)。
-    struct Run
+    int64_t a; // 绝对 hop,闭区间 [a,b]
+    int64_t b;
+    // 谷底代表 = 平坦区中心(四舍五入),使对称谷的切分点落在名义位置。
+    int64_t rep() const
     {
-        int64_t a; // 绝对 hop,闭区间 [a,b]
-        int64_t b;
-        // 谷底代表 = 平坦区中心(四舍五入),使对称谷的切分点落在名义位置。
-        int64_t rep() const
-        {
-            return static_cast<int64_t>(std::llround((static_cast<double>(a) + static_cast<double>(b)) / 2.0));
-        }
-    };
-    std::vector<Run> runs;
+        return static_cast<int64_t>(std::llround((static_cast<double>(a) + static_cast<double>(b)) / 2.0));
+    }
+};
+
+// lv = 平滑后的 ℓ(相对下标 0..n-1,对应绝对 hop startHop..);返回的 a/b 是绝对 hop。
+std::vector<MinRun> findMinimumRuns(const std::vector<double>& lv, int64_t startHop)
+{
+    const int64_t n = static_cast<int64_t>(lv.size());
+    std::vector<MinRun> runs;
     int64_t i = 0;
     while (i < n)
     {
@@ -233,6 +224,55 @@ std::vector<Valley> detectValleys(const float* l, int64_t startHop, int64_t endH
             runs.push_back({startHop + a, startHop + b});
         i = b + 1;
     }
+    return runs;
+}
+
+// [J145] 地形侧峰:peak[i] = 从 i 向一侧走、遇到**第一个严格更低**的点(差 > kEpsilon)之前
+// 经过的最大值(含 i 自身);走到段端都没有更低点 ⇒ 取到段端为止。单调栈一趟 O(n)。
+// forward=true 算左侧峰(从左往右扫),false 算右侧峰。
+// 栈里每项存「它与栈中前一项之间(不含前一项、含它自己)的最大值」;弹栈时把这些区间
+// 拼起来,拼出的正好是「上一个更低点之后 .. i」这一段的最大值。
+std::vector<double> terrainSidePeaks(const std::vector<double>& lv, bool forward)
+{
+    const std::size_t n = lv.size();
+    std::vector<double> peak(n, 0.0);
+    struct Entry
+    {
+        std::size_t idx;
+        double maxSince;
+    };
+    std::vector<Entry> st;
+    st.reserve(64);
+    for (std::size_t step = 0; step < n; ++step)
+    {
+        const std::size_t i = forward ? step : (n - 1 - step);
+        double m = lv[i];
+        while (!st.empty() && !(lv[st.back().idx] < lv[i] - kEpsilon))
+        {
+            m = std::max(m, st.back().maxSince);
+            st.pop_back();
+        }
+        peak[i] = m;
+        st.push_back({i, m});
+    }
+    return peak;
+}
+
+} // namespace
+
+double SegmentationParams::minDepthDb() const
+{
+    return minDepthFromSensitivity(sensitivity);
+}
+
+std::vector<Valley> detectValleys(const float* l, int64_t startHop, int64_t endHop, const SegmentationParams& p)
+{
+    std::vector<Valley> valleys;
+    if (l == nullptr || endHop - startHop < 2)
+        return valleys;
+
+    const std::vector<double> lv = smoothEnvelope(l, startHop, endHop, p.smoothHops / 2);
+    const std::vector<MinRun> runs = findMinimumRuns(lv, startHop);
 
     for (std::size_t ri = 0; ri < runs.size(); ++ri)
     {
@@ -263,6 +303,37 @@ std::vector<Valley> detectValleys(const float* l, int64_t startHop, int64_t endH
         valleys.push_back(v);
     }
     return valleys;
+}
+
+std::vector<SnapValley> detectSnapValleys(const float* l, int64_t startHop, int64_t endHop, const SegmentationParams& p)
+{
+    std::vector<SnapValley> out;
+    if (l == nullptr || endHop - startHop < 2)
+        return out;
+
+    // ℓ 平滑与「谷底」判定与 detectValleys 逐字同一份(smoothEnvelope + findMinimumRuns)。
+    const std::vector<double> lv = smoothEnvelope(l, startHop, endHop, p.smoothHops / 2);
+    const std::vector<MinRun> runs = findMinimumRuns(lv, startHop);
+    if (runs.empty())
+        return out;
+
+    // 唯一不同的是 depth 的侧峰边界:detectValleys 以**相邻局部极小**为界(S1 递归要的「无自指」),
+    // 吸附这里以**第一个更低点**为界(地形 prominence)。为什么不能照搬前者,见头文件注释。
+    const std::vector<double> leftPeak = terrainSidePeaks(lv, /*forward=*/true);
+    const std::vector<double> rightPeak = terrainSidePeaks(lv, /*forward=*/false);
+    const double minDepth = p.minDepthDb();
+    for (const MinRun& r : runs)
+    {
+        const std::size_t a = static_cast<std::size_t>(r.a - startHop);
+        const std::size_t b = static_cast<std::size_t>(r.b - startHop);
+        const int64_t kStar = r.rep();
+        const double bottom = lv[static_cast<std::size_t>(kStar - startHop)];
+        const double depth = std::min(leftPeak[a], rightPeak[b]) - bottom;
+        // 与 S1 候选谷同一条门槛(02 §3.2 步骤 3:depth > minDepth)。
+        if (depth > minDepth)
+            out.push_back(SnapValley{kStar, depth});
+    }
+    return out;
 }
 
 ValleySplitResult splitValleys(const float* l, int64_t startHop, int64_t endHop, const SegmentationParams& p)

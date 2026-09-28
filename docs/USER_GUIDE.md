@@ -80,6 +80,8 @@ Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain,
 
 Open each Input and give it a channel id. Channel ids may not repeat within one group (hard rule 5). The group selector is eight capsules, A–H, defaulting to A; a single song project will not normally need a second group — groups exist for "one DAW project containing several unrelated vocal buses". On the Output side, pick the same group in Tab 1.
 
+**Track names fill in automatically**: once an Input has a channel and is connected to the Output, that track's name on the Output Tracks tab is taken from the DAW track name of the vocal track it sits on (anything past 24 characters is cut off); rename the track in your DAW and the name here follows. A track whose name you have **edited yourself** on the Tracks tab stops following DAW renames; **clear** the name to go back to automatic (while the Input is connected, the current track name is filled back in right away). When the Input disconnects (set to unassigned, its track deleted, and so on — the same test the UI uses for "not connected") the last track name is kept. If the host does not provide track names, nothing is filled in and the field keeps whatever it had (the placeholder if it was never filled).
+
 ### Capture
 
 Turn on **Capture** in the Output, then play back as usual. Capture writes only while the switch is ON **and** the transport is rolling; whatever you play is what gets captured, and replaying a section overwrites the old data for it. SCVB **stores no audio** — only one feature frame every 10 ms (see "Sessions and files").
@@ -121,6 +123,22 @@ The first time you open an Output you get, in order: the language card, then the
 - The tour is a spotlight-style walkthrough. **Left-click anywhere to advance**, it is purely visual and textual with no audio, and it runs on demo data — **nothing is written into your project**.
 - In the Settings tab, **"Show guide again"** replays the tour at any time, **"Show all nine"** reopens the rules page, and **"View workflow"** opens the workflow overview card.
 
+## Engine range (Range)
+
+The RANGE card on the Overview tab decides which stretch of the timeline capture and the output engine work on. Three modes: **Follow** (default — capture follows wherever you play), **Loop** (follows the DAW loop region) and **Manual** (you set the start and end).
+
+In Manual mode:
+
+- The start and end boxes take `minutes:seconds.milliseconds`; the line below also shows the **bar and beat** the range falls on (for example "Bars 33.1 → 49.1"), and **−4 / +4** move the end by **4 bars**.
+- Bars are converted from the **tempo, time signature and current beat position** the host reports. The plugin can only read the host's tempo **at the current moment** — it cannot read the whole tempo map — so:
+  - **Constant tempo, one time signature**: the bars are exact and no note is shown;
+  - **Tempo changes**: places you have not played are estimated from the most recent tempo, with the note "Bar numbers are estimates; they calibrate after playing this area". Play (or park the playhead) around the start and the end once and they calibrate to the positions the host reports; the note goes away;
+  - **Time signature changes**: bar numbers depend on the whole meter history, which the plugin cannot read. The note says "Time signature changed — bar numbers are estimates"; playing does not calibrate them — go by the DAW ruler;
+  - **The host reports no tempo** (or the plugin window has only just opened and nothing has arrived yet): the range is shown in seconds only, with a note, and −4 / +4 move by 4 seconds.
+- The plugin only knows about a tempo change once it has **seen** it: the playhead passing the change, or being parked somewhere after it, both count. Until then it converts the whole range as if the tempo were constant, without a note.
+- After you **edit the tempo** in the DAW, as soon as the point under the playhead (or a previously played spot the playhead then passes or is parked on) no longer matches, the plugin discards everything it had recorded and starts observing again; an edit that falls where you have not played yet in this session only affects values that were already extrapolated from the most recent tempo.
+- While the transport is stopped the last tempo read is kept. This tempo information lives in memory only while the plugin window is open and is not saved with the project; close and reopen the window and it starts observing again.
+
 ## Capture
 
 - **When it writes**: capture switch ON **and** transport rolling. Stop the transport and writing stops.
@@ -130,7 +148,7 @@ The first time you open an Output you get, in order: the language card, then the
 
 ## Analysis
 
-- **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview. **These five settings and the transition time on Tab 1 are saved with the project** — reopen the project and they still show the values you saved (since v5.6.15; [SL-416]).
+- **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview: while you drag, the green band at the top of each lane and the green dotted lines show **where each track counts as voiced and where long phrases get cut under the current settings** (a preview only — the segment table is not touched; while capture is running during playback the green band does not follow the drag, though the dotted lines still do, using capture data up to one second old). The real re-segmentation runs 300 ms after you release, and the final segment table is additionally cut at **other tracks'** boundaries, so it can contain more segments than the preview shows. **These five settings and the transition time on Tab 1 are saved with the project** — reopen the project and they still show the values you saved (since v5.6.15; [SL-416]).
 - **Segmentation**: energy-valley detection plus a minimum segment length (the wave page's **MIN SEG** slider, **50–2000 ms**, default 120 ms) and a breath tolerance. Automatic segments shorter than it are dropped, or merged into a **touching** neighbouring segment; manually edited segments are unaffected. **After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour**; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a selection or range re-analysis, and the leftover of a neighbour dropped wholesale because it clashed with a manual segment). **These settings are saved with the project** (mode / sensitivity / minimum segment length have been persisted since v5.6.14 — see `docs/contract-changes/20260914-sl411-segmentation-persist.md`): reopen the project and the sliders still show the values you saved, and **the minimum segment length and sensitivity are what the analysis runs with**; the segmentation **mode** is a **reserved slot in v1** — there is no control for it anywhere in the UI (**there never was** one; this release did not hide it), and the engine does not consume it (it always runs energy-valley detection), so it is only carried through the project file so the value is not lost (the `vad_only` setting is kept for the card that wires it up — see `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`).
 - **Segment loudness basis**: Settings offers **K-weighted segment integration (default) / RMS / peak dBFS**; changing it requires a re-analysis.
 - **Centre-slot policy**: the fallback rule for when several tracks compete for the centre position — **priority queue (default) / lead exclusive / evenly nudged apart**, also a "re-analyse after changing" setting.
@@ -145,6 +163,8 @@ Select a segment on the waveform page and edit its pan / vol in the segment insp
 - you can additionally mark a segment `locked`;
 - **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected;
 - **a locked segment survives even "re-detect (including manual segments)"** — the lock is a second gate, and only you can lift it, segment by segment.
+
+**Dragging a segment boundary snaps it to energy valleys** (hold Alt while dragging to turn snapping off): when the handle comes within 6 pixels of a valley it lands on the valley and the handle lights up amber. An "energy valley" here is a low point in the loudness envelope (smoothed over 50 ms) that the envelope **climbs back more than 6 dB from on both sides** — that is the threshold at the default segmentation sensitivity; higher sensitivity lowers it (3–12 dB). Typical valleys are the pauses between phrases and deeper breaths; stretches that were never captured do not count as valleys. So if a spot does not snap, the envelope most likely does not climb back that far on both sides. When zoomed so far out that more than about an hour of this track's captured material is on screen, there is no snapping.
 
 **Freezing** a dimension on the Tracks page declares "I am taking this dimension over by hand": on write, that dimension is printed into automation as a flat line, and whatever you draw in the DAW afterwards will never be overridden by the engine. The priority chain is: **host automation > frozen manual value > manual touch-up > engine analysis curve**.
 
@@ -185,6 +205,8 @@ Things worth knowing:
 ## Pan curve editor
 
 The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
+
+As with an EQ, you hear the change while you drag: moving a point, the Q slider, or the mouse wheel applies the curve live (at most 20 updates per second, each crossfaded over 30 ms). Dragging is only a preview until you let go (for the Q slider and the wheel: until you pause for a moment) — that is what gets saved to the project and what becomes **one** undo step. The preview does not affect printed automation, the Monitor display or the analysis balance.
 
 ## Target width
 
@@ -227,6 +249,7 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 | **Installing Input left the whole track with no sound** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If that track really has no sound, collect the output of "Copy diagnostics" in Settings and open an issue |
 | **"Channel conflict" warning** | Two Inputs in the same group claim the same channel (also shown when a project opens and its channel is already taken) | Change the channel id on one of them, or move it to another group. Once the other Input releases the channel (track deleted or renumbered), the waiting one takes it over by itself within about a second |
 | **"Group X already has a primary Output; this instance is read-only"** | The group already has an active Output | A group may only have one active Output (hard rule 6). Remove the extra one, or move it to another group |
+| **"Could not connect: the shared memory the plug-ins communicate through could not be opened" after clicking a channel card or switching group** | The Input could not open or set up the shared-memory segment it uses to talk to the Output (for example, a segment with the same name was created by a different SCVB version) | Try again; if it keeps failing, restart the host and make sure no other DAW with a different SCVB version is running on the same machine. If it happens while switching channels, the track stays on its previous channel and keeps working |
 | **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **The whole image is skewed to one side** | Host pan on a vocal track or on the bus is not centred | Return every host pan to centre (hard rule 4) |
 | **The exported audio differs from what you heard live** | A routing or ordering problem under offline rendering | Timeline addressing holds under offline rendering too; if it still differs, note your DAW and version and open an issue |

@@ -148,6 +148,7 @@ const SCENARIO_NAMES = {
         "slow-state-echo", // [SL-354] 真桥时序:写回执先到、scvb.state 后到一拍
         "applied-echo-drop", // [SL-354] 写落地后补一帧缺 analysis.applied 的全量快照
         "sync-state-echo", // [SL-357] 同步回声逃生口(默认异步之后的旧语义)
+        "captured-unanalyzed", // [J152] 重开已采未析的工程、停着:覆盖在、段表空
     ],
     input: [
         "occupied",
@@ -159,6 +160,9 @@ const SCENARIO_NAMES = {
         "group-mismatch",
         // 05 §3 文末 J80 节引入:T48 Input 首启轻量引导(语言卡 → 5 步 mini tour)
         "input-first-run",
+        // [SL-463 / J156] 点卡 / 切组回非冲突失败(契约 §3.2/§3.3 `{ok:false, reason}`)
+        "claim-unavailable",
+        "claim-abi-mismatch",
     ],
     // [T46] Monitor 侧的演示场景;名单真源 = ./mock/monitor-mock.js 的
     // MONITOR_SCENARIOS(此处引用而不是抄一份,免得两处漂开)。

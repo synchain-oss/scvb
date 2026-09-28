@@ -268,10 +268,9 @@ void InputEditor::handleSetChannelId(const juce::Array<juce::var>& args, WBC::Na
         return;
     }
     const auto st = processor_.setChannelId(*n); // 内部 clamp 0..15;n=0 = 释放
-    // ⚠ [SL-463] 契约 §3.2 的返回并集只有 {ok:true} | {conflict:true}:kAbiMismatch / kUnavailable
-    // 这两个失败码在这里也回 {ok:true},失败原因只经 scvb.state.claim 回推。已知留白,见
-    // InputSession.h prepare() 头注。
-    complete(st == InputClaimState::kConflict ? bridge::conflictResponse() : scvb::bridge::okResponse());
+    // §3.2 返回并集([J156]):conflict / abiMismatch / unavailable 各回各的失败形状,只有成功才回 {ok:true}。
+    // 映射表与「为什么认返回值不认 state()」见 InputBridgeLogic.h claimRequestResponse() 头注。
+    complete(bridge::claimRequestResponse(st));
 }
 
 void InputEditor::handleSetGuideSeen(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
@@ -310,7 +309,7 @@ void InputEditor::handleSetGroupId(const juce::Array<juce::var>& args, WBC::Nati
         return;
     }
     const auto st = processor_.setGroupId(*g); // 内部 clamp 1..8;同组 = no-op
-    complete(st == InputClaimState::kConflict ? bridge::conflictResponse() : scvb::bridge::okResponse());
+    complete(bridge::claimRequestResponse(st)); // §3.3 返回并集([J156]),与 handleSetChannelId 同一张映射表
 }
 
 void InputEditor::handleRemoteSetPriority(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)

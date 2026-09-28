@@ -85,6 +85,8 @@ pwsh scripts/gates.ps1 -Quick -BuildDir build-T03
 ## 4. DAW 支持等级表(初版,上机前)
 
 > 初版依据 research/08 §2.1 + 03 §4,周日实测后回填为定版。Tier 1=完全支持 / Tier 2=有限制 / Tier 3=不支持。
+>
+> **定版以 [docs/DAW_COMPATIBILITY.md](../DAW_COMPATIBILITY.md) §4 为准。** 上面说的「回填为定版」没有在本文件里做:本表停在上机前的初版,只作 spike 记录;两处不一致时以 DAW_COMPATIBILITY 为准。
 
 | DAW | 初版等级 | 已知坑 / 前置(03 §4) | S2 验证点 |
 | --- | --- | --- | --- |

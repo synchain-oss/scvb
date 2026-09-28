@@ -19,12 +19,15 @@ namespace scvb::output
 // OutputEditor —— Output 插件桥(T29,契约 docs/SCVB_CONTRACT.md §1/§2)。
 // 继承 WebViewHost(T26 装配层):requestInitialState/setLang/setUiScale/commitUiScale 四个通用函数与
 // mBridgeReady 门控 / 25Hz Timer 由基类承载;本类经 augmentOptions 追加其余 30 个 native function,
-// 并在 emitTick 里做 9 个事件的 diff-then-emit(每类独立节流 + 首帧必发)。
+// 并在 emitTick 里做 10 个事件的 diff-then-emit(每类独立节流 + 首帧必发;[J146] 的 scvb.vadPreview
+// 另在拖动调用里当场发,emitTick 只补收尾帧)。
 class OutputEditor final : public scvb::webview::WebViewHost
 {
 public:
     explicit OutputEditor(ScvbOutputAudioProcessor& processor);
-    ~OutputEditor() override = default;
+    // [J157] 关窗时撤掉拖动预览:拖到一半关掉编辑器就不会再有松手那一下,不撤的话那份预览
+    // 会一直留在音频里(而界面、存盘都是已提交的曲线)。
+    ~OutputEditor() override;
 
 protected:
     // 首帧全量快照(契约 §1.1)。
@@ -52,10 +55,14 @@ private:
     void emitGroups();
     void emitMeters();
     void emitPlayhead();
-    void emitCaptureProgress();
+    // forceFull = [J152] 例外帧(mBridgeReady 后首帧 / clearCoverage 受理后):不看走带、15 轨全带。
+    void emitCaptureProgress(bool forceFull);
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+    // [J146] §2.10 scvb.vadPreview:按 processor 的预览 seq diff-then-emit(不可见时不推进基线)。
+    // 拖动调用里当场发一次(契约 §1.18「[M] 预览同步」),emitTick 里再补「调用之外结束」的收尾帧。
+    void emitVadPreview();
     // [SL-412] §2.9 的 `newerState` 一档(CLAUDE.md §7.3「拒载**并提示升级**」里那半句提示)。
     // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
     // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
@@ -118,6 +125,7 @@ private:
     void handleSetChannelConfig(const ArgList& a, Completion c);
     void handleSetTrackManual(const ArgList& a, Completion c);
     void handleSetPanCurve(const ArgList& a, Completion c);
+    void handlePreviewPanCurve(const ArgList& a, Completion c); // [J157] §1.37
     void handleSetVadParams(const ArgList& a, Completion c);
     void handleSetSegmentation(const ArgList& a, Completion c);
     void handleSetTransitionRamp(const ArgList& a, Completion c);
@@ -239,8 +247,17 @@ private:
     float lastBusRPeak_ = -1000.0f;
     bool metersEverSent_ = false;
     // §2.7 captureProgress 的增量基线:上一帧已报过的覆盖区间与覆盖率(index = ch-1)。
-    std::array<std::vector<scvb::analysis::HopRange>, 15> lastCoverageRanges_{};
-    std::array<float, 15> lastCoveragePct_{};
+    // 初值 pct 全 0(不是 reset() 的 −1 哨兵):周期帧开播时不报「一直是 0%」的轨。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline coverageBaseline_{};
+    // [J152] 例外帧闩锁:mBridgeReady 后首帧 / clearCoverage 受理后置位;emitCaptureProgress
+    // 在 webview 可见、真的出过帧之后才清(不可见时载荷会被丢,闩锁留着下一拍再补)。
+    // 与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向,首帧只有一次),复位纪律一并适用。
+    bool pendingCoverageFull_ = false;
+    // [J146] §2.10 的基线:最后一次**真的发出去**的预览 seq;`vadPreviewForce_` = 首帧时正处于
+    // 预览中、要补发一次(条件类事件:空闲时首帧不发空帧)。与 `newerStateShown_` 吃同一条前提
+    // (`bridgeReady_` 单向),复位纪律一并适用。
+    std::uint32_t vadPreviewSentSeq_ = 0;
+    bool vadPreviewForce_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputEditor)
 };

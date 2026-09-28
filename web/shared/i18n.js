@@ -139,11 +139,13 @@ export const T = {
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
         // app.js 里 footer 的填值处(`secondsToTimecode(range.start_s)`)把这两个占位符
         // 一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
-        // UI 只收秒);而**桥面没有宿主 tempo map 入口**(A17),小节值算不出来 ——
-        // 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
+        // UI 只收秒)—— 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
+        // [J147] 起桥面 `scvb.playhead` 带了宿主**当前位置**的速度 / 拍号,Tab1 手动范围已按它
+        // 换算小节(web/output/host-tempo.js);**footer 这个填值点没跟着换**(J147 只裁了 Tab1
+        // 手动范围),所以这里的理由照旧成立。
         // 加回单位词的后果是 footer 显示「写入自动化 V1 · 00:12.000–01:36.000 小节」:
         // 不带单位是**不精确但不撒谎**,带上就是**明确错标**。
-        // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),拿到 tempo map(T33)后回填。
+        // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),footer 改填小节之后再回填。
         // **同一个填值点还填着 `footer.printDone`**(紧随其后的
         // `fillKeyed($("footer-print-done"), …)`,同一对 `secondsToTimecode`),它三语也带
         // `{x}–{y}`、且本就在推迟的 4 条里 —— 同理,别给它加单位词。
@@ -192,7 +194,7 @@ export const T = {
         // 的内容是**生成物** —— 手改会被下一次 --write 覆盖,并在此之前被 --check 判红。
         // BEGIN GENERATED hard-rules:zh
         "guide.title":
-            "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。",
+            "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、声像位置错误或分析失效。",
         "guide.rule1":
             "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
         "guide.rule2":
@@ -293,8 +295,9 @@ export const T = {
         "tour.step13.body":
             "段间过渡:20–300ms;决定区间之间音量和声像过渡的速度。",
         "tour.step15.title": "角度域曲线",
+        // [J153] 双击点即删,不用先选中(curve-editor.js 的 dblclick:hitTest 命中即 deleteAt)。
         "tour.step15.body":
-            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,选中后双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
+            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
         "tour.step16.title": "本页:轨道",
         "tour.step16.body":
             "每个通道占一行,构成 15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动调节。",
@@ -320,12 +323,15 @@ export const T = {
         "tour.step24.title": "参与音量调节",
         "tour.step24.body":
             "独立开关:该轨是否参与音量平衡计算(默认开),与主唱锁 / Lead Select 不联动。",
+        // [J153] 默认档按代码实况写:未显式设置一律参与([J83];真源 = OutputProcessor.h 的
+        // `participatesInAutoPan()`),立体声轨不例外。旧句「立体声轨默认关闭」是 [J60] 的口径,已被 J83 取代。
         "tour.step25.title": "参与自动声像",
         "tour.step25.body":
-            "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
+            "该轨是否参与声像重分布(默认开,含立体声轨);关掉后仍参与音量平衡。",
+        // [J153] 「同一配对」不写「同组」:组是 A–H 那个概念,这里说的是 pair_id 相同的两轨。
         "tour.step23.title": "配对",
         "tour.step23.body":
-            "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同组两轨行首显示同色圆点。",
+            "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同一配对的两轨行首显示同色圆点。",
         "tour.step26.title": "冻结 PAN / VOL",
         "tour.step26.body":
             "两个冻结开关会 bypass 引擎对该维度的影响,旋钮与推子随之解锁为纯手动调节。",
@@ -364,7 +370,7 @@ export const T = {
             "一次完整的工作流程:采集 → 分析 → 微调/冻结 → 写入自动化 → 手动调自动化。优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。之后随时可在设置页「查看工作流程」里回看。",
         "tour.step37.title": "使用说明",
         "tour.step37.body":
-            "三步工作流 + 九条重要提示;请逐条读一遍,违反任何一条都会导致静音或错音。",
+            "三步工作流 + 九条重要提示;请逐条读一遍,违反任何一条都会导致静音或声像位置错误。",
         "tour.step38.title": "第二响度指标",
         "tour.step38.body":
             "段响度采用哪个指标:K 加权段积分(接近人耳听感)/ RMS(平均能量)/ 峰值 dBFS(瞬时峰值);修改后需重新分析。",
@@ -564,8 +570,10 @@ export const T = {
         //      **不带介词** —— 按 ① 的标准(同格标签同构)它该跟音量段一样,与 ② 指向相反。
         // 两种写法都是合法法语,本卡**不动**:三个参照点里有两个互相矛盾,这是 T32 EN/FR 人工
         // 审校该裁的事,不是文案对齐能顺手办的。要统一就三处一起改,别只改看起来碍眼的那一处。
+        // [J153] 「声像」段的默认档按代码实况写(同 `tour.step25.body` 上方那条):一律默认参与,
+        // stereo 轨不例外;旧括注「stereo 轨默认关」是 [J60] 口径。改这一段别动上面说的 fr 介词。
         "tracks.colLegend":
-            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(默认开,含 stereo 轨;关掉后仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -753,6 +761,11 @@ export const T = {
         "in.footer.noBackend": "未接后端——请经 web-preview 预览入口打开",
         "in.priority.unassigned": "需先选择通道",
         "ch.occupied.group": "通道已被占用(组 {g})",
+        // [SL-463 / J156] 点卡 / 切组的回执是非冲突失败(契约 §3.2/§3.3 {ok:false, reason})时的一次性 toast。
+        "ch.claimFailed.unavailable":
+            "未能连接:插件间通信用的内存段打不开。请重新选择;仍不行请重启宿主后再试",
+        "ch.claimFailed.abiMismatch":
+            "未能连接:两端 SCVB 版本不匹配——请把两个插件升到同一版本",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -827,6 +840,12 @@ export const T = {
         "master.rangeEnd": "终点",
         "master.setToPlayhead": "设为播放头",
         "master.barsEstimateNote": "小节为估算值,播放该区域后校准",
+        // [J147] 手动范围的小节换算行与另两种注释(tab-master.js renderRangeBars)。
+        // `{x}`/`{y}` 填「小节.拍」(如 33.1);精确时注释行隐藏。
+        "master.rangeBars": "小节 {x} → {y}",
+        "master.barsMeterNote": "拍号有变化,小节号为估算值",
+        "master.rangeSecondsNote":
+            "未读到宿主速度与拍号,范围按秒显示,±4 为 4 秒",
         "footer.defaultHint":
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
@@ -864,10 +883,24 @@ export const T = {
         // 文案不说「谁把它关的」,只说**现在是什么状态 + 怎么办**,两条路才都读得通。
         "banner.recaptureVoided":
             "重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防",
+        // [J150] 横幅 ⑫⑬⑭:宿主专属提示(03 §4.2 REAPER / §4.4 Ableton Live),只在 §1.1 快照
+        // `host` 为 reaper / live 时出,判据见 web/output/host-hints.js。
+        // 用词随 [J88]:输出开关的 ON 档叫「写入自动化」,界面上不说「打印」(那是规格里的内部说法)。
+        // ⑫ REAPER ∧ 输出开关 ON:RD-04,REAPER 在插件窗口关着时可能不写自动化。
+        "banner.reaperKeepOpen":
+            "REAPER:写入自动化期间请保持本插件窗口打开——窗口关着时 REAPER 可能不写入自动化",
+        // ⑬ REAPER ∧ 本会话进过写入(一次性):宿主端解法,路径与 docs/DAW_COMPATIBILITY.md §2.2 逐字一致。
+        //    REAPER 的菜单与选项名保持英文原文(REAPER 没有官方中文界面,用户照着找的是英文字面)。
+        //    不说「车道」:[J97] 用户裁定界面用词不用「车道」,这里改说「没有录到自动化」。
+        "banner.reaperPrintNote":
+            "REAPER:若写完后没有录到自动化,请在 Preferences → Plug-ins → VST → VST compatibility 中把 Parameter automation notifications 设为 process all notifications",
+        // ⑭ Live ∧ 写入已结束 ∧(停走或输出关):03 §4.4 ①。Re-Enable Automation 是 Live 界面上的按钮原名,保持英文。
+        "banner.liveReEnable":
+            "Live:写入已结束。Re-Enable Automation 按钮亮起属正常现象,点击它即可恢复读取自动化",
         // [SL-373] 用户 v5.6.8 实测:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。
-        // 这枚 x 只挂在**建议类**横幅 ⑧⑨⑩ 上(数据源是 §2.8 段表 / §2.1 state,不是 §5.1
-        // 错误码);①-⑥ 那六条是 SCVB_CONTRACT §5.1 降级纪律② 明令「不可手动关闭」的
-        // 持续性条件,不加、也不许加。钮面是字形 ✕,可访问名走本词条。
+        // 这枚 x 只挂在**建议类**横幅上(⑧⑨⑩,[J150] 起加上 ⑫⑬⑭;数据源是 §2.8 段表 / §2.1 state /
+        // §1.1 快照 `host`,不是 §5.1 错误码);①-⑥ 那六条是 SCVB_CONTRACT §5.1 降级纪律② 明令
+        // 「不可手动关闭」的持续性条件,不加、也不许加。钮面是字形 ✕,可访问名走本词条。
         "banner.dismiss": "关掉这条提示",
         "wave.staleTrack":
             "该轨的已采集特征已过期(上游音频或采样率与采集时不同),建议重新采集",
@@ -1190,9 +1223,9 @@ export const T = {
         //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
         //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
         //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
-        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
-        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
-        //   tempo map 后再回填,三语一起动。
+        //   填的是 **mm:ss.mmm**(footer 这个填值点不换算小节;[J147] 只给 Tab1 手动范围接了宿主速度)。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定、footer 改填
+        //   小节之后再回填,三语一起动。
         //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
         //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
@@ -1352,7 +1385,7 @@ export const T = {
             "Independent switch: whether this track joins level balancing (on by default); not linked to Lead Lock / Lead Select.",
         "tour.step25.title": "Auto-Pan Participate",
         "tour.step25.body":
-            "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
+            "Whether this track joins pan redistribution (on by default, stereo tracks included); when off, it is still level-balanced.",
         "tour.step23.title": "Pair",
         "tour.step23.body":
             "Pair two tracks; their pan is linked and the pair moves as one. Same pair shows the same colored dot at the row head.",
@@ -1565,7 +1598,7 @@ export const T = {
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
-            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (on by default, stereo included; still level-balanced when off) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
@@ -1702,6 +1735,10 @@ export const T = {
         "in.footer.noBackend": "No backend attached — open via web-preview",
         "in.priority.unassigned": "Select a channel first",
         "ch.occupied.group": "A channel is already taken (group {g})",
+        "ch.claimFailed.unavailable":
+            "Could not connect: the shared memory the plug-ins communicate through could not be opened. Select again; if it still fails, restart the host and retry.",
+        "ch.claimFailed.abiMismatch":
+            "Could not connect: SCVB version mismatch. Update both plug-ins to the same version.",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1778,6 +1815,11 @@ export const T = {
         "master.setToPlayhead": "Set to playhead",
         "master.barsEstimateNote":
             "Bar numbers are estimates; they calibrate after playing this area",
+        "master.rangeBars": "Bars {x} → {y}",
+        "master.barsMeterNote":
+            "Time signature changed — bar numbers are estimates",
+        "master.rangeSecondsNote":
+            "No host tempo or time signature yet — range shown in seconds, ±4 = 4 s",
         "footer.defaultHint":
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
@@ -1798,6 +1840,13 @@ export const T = {
             "Upstream-change detection is paused while capture is on (these features are being rewritten as the new baseline) — turn capture off, then play, to check whether upstream changed",
         "banner.recaptureVoided":
             "Re-capture is still armed but capture is off — this re-capture will record nothing. Turn capture back on, or disarm.",
+        // [J150] ⑫⑬⑭ 宿主专属提示(判据与用词理由见 zh 侧同名词条上方)。
+        "banner.reaperKeepOpen":
+            "REAPER: keep this plug-in window open while writing automation — REAPER may not write automation while the window is closed",
+        "banner.reaperPrintNote":
+            "REAPER: if no automation was recorded after writing, set Parameter automation notifications to process all notifications under Preferences → Plug-ins → VST → VST compatibility",
+        "banner.liveReEnable":
+            "Live: writing has finished. The Re-Enable Automation button lighting up is expected — click it to resume reading automation",
         "banner.dismiss": "Dismiss this notice",
         "wave.staleTrack":
             "Captured features on this track are out of date (upstream audio or sample rate differs from when they were captured) — re-capture recommended",
@@ -2030,9 +2079,9 @@ export const T = {
         //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
         //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
         //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
-        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
-        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
-        //   tempo map 后再回填,三语一起动。
+        //   填的是 **mm:ss.mmm**(footer 这个填值点不换算小节;[J147] 只给 Tab1 手动范围接了宿主速度)。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定、footer 改填
+        //   小节之后再回填,三语一起动。
         //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
         //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
@@ -2195,7 +2244,7 @@ export const T = {
             "Interrupteur indépendant : si la piste entre dans l'équilibrage du volume (activé par défaut) ; non lié au verrou lead / Lead Select.",
         "tour.step25.title": "Participation pan auto",
         "tour.step25.body":
-            "Si la piste entre dans la redistribution du pan ; stéréo désactivé par défaut, équilibrage conservé.",
+            "Si la piste entre dans la redistribution du pan (activé par défaut, pistes stéréo comprises) ; une fois désactivé, l'équilibrage du volume est conservé.",
         "tour.step23.title": "Paire",
         "tour.step23.body":
             "Appairez deux pistes ; leur panoramique est lié et la paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
@@ -2415,7 +2464,7 @@ export const T = {
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
-            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (activé par défaut, stéréo compris ; équilibrage conservé une fois désactivé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
@@ -2556,6 +2605,10 @@ export const T = {
         "in.footer.noBackend": "Aucun backend — ouvrez via web-preview",
         "in.priority.unassigned": "Sélectionnez d'abord un canal",
         "ch.occupied.group": "Un canal est déjà occupé (groupe {g})",
+        "ch.claimFailed.unavailable":
+            "Connexion impossible : la mémoire partagée par laquelle les plug-ins communiquent n'a pas pu être ouverte. Sélectionnez à nouveau ; en cas de nouvel échec, redémarrez l'hôte puis réessayez.",
+        "ch.claimFailed.abiMismatch":
+            "Connexion impossible : versions SCVB incompatibles. Mettez les deux plug-ins à la même version.",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -2635,6 +2688,11 @@ export const T = {
         "master.setToPlayhead": "Définir sur la tête de lecture",
         "master.barsEstimateNote":
             "Les numéros de mesure sont estimés ; ils se calibrent après lecture de cette zone",
+        "master.rangeBars": "Mesures {x} → {y}",
+        "master.barsMeterNote":
+            "Le chiffrage de mesure a changé — numéros de mesure estimés",
+        "master.rangeSecondsNote":
+            "Tempo et chiffrage de l'hôte pas encore reçus — plage en secondes, ±4 = 4 s",
         "footer.defaultHint":
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
@@ -2656,6 +2714,13 @@ export const T = {
             "La détection des changements en amont est suspendue tant que la capture est active (ces caractéristiques sont réécrites comme nouvelle référence) — désactivez la capture, puis lancez la lecture, pour vérifier si l'amont a changé",
         "banner.recaptureVoided":
             "La recapture est toujours armée mais la capture est désactivée — cette recapture n'enregistrera rien. Réactivez la capture, ou désarmez.",
+        // [J150] ⑫⑬⑭ 宿主专属提示(判据与用词理由见 zh 侧同名词条上方)。
+        "banner.reaperKeepOpen":
+            "REAPER : gardez la fenêtre de ce plug-in ouverte pendant l'écriture de l'automation — REAPER peut ne pas écrire l'automation quand la fenêtre est fermée",
+        "banner.reaperPrintNote":
+            "REAPER : si aucune automation n'a été enregistrée après l'écriture, réglez Parameter automation notifications sur process all notifications dans Preferences → Plug-ins → VST → VST compatibility",
+        "banner.liveReEnable":
+            "Live : l'écriture est terminée. Le bouton Re-Enable Automation allumé est normal — cliquez dessus pour reprendre la lecture de l'automation",
         "banner.dismiss": "Masquer cet avis",
         "wave.staleTrack":
             "Les caractéristiques capturées sur cette piste sont périmées (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",

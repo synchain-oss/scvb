@@ -306,6 +306,8 @@
          [data-gb="master-width|master-msbalance|master-leadselect|master-distchart"]
                                      data-host-echo="0|1"(§0.5 hostEcho 灰显,只更新显示不回写)
          .range-manual__tc           data-invalid="0|1"(manual 起止校验失败)
+         [data-gb="master-range-bars"] data-est="0|1"(小节换算行:1 = 估算态斜体半透明)+ hidden(没读到宿主速度)
+         [data-gb="master-range-note"] hidden(两端小节都精确)+ data-t 三选一([J147])
          [data-gb="scale-confirm"]   hidden(10 秒防呆确认,卡片层单例)
          [data-gb="guide-overlay-rules-missing"] hidden(guide.rule1..9 未生成时的占位注记)
        ================================================================= */
@@ -1906,6 +1908,11 @@
                 font-size: var(--fs-95);
                 font-style: italic;
                 color: var(--txt-est);
+            }
+            /* [J147] 斜体/半透明是**估算态**的样式(05 §2.1 ②);两个端点都精确时按常规读数显示。 */
+            .range-manual__conv[data-est="0"] {
+                font-style: normal;
+                color: var(--txt-2);
             }
             .range-manual__btn {
                 padding: var(--sp-4) var(--sp-8);
@@ -5764,6 +5771,110 @@
                         </button>
                         <!-- [T3x] bridge.confirmPrintGuard() —— 契约 §1.34 -->
                     </div>
+                    <!-- ⑫⑬⑭ [J150] 宿主专属提示(03 §4.2 REAPER / §4.4 Ableton Live)。
+                         宿主取 §1.1 快照 `host`;三条的条件与「本会话」口径见 web/output/host-hints.js 头注。
+                         都是**建议类**(不是 §5.1 错误码)⇒ 与 ⑧⑨⑩ 一样带 ✕,走 app.js 的 showDismissible。
+                         Cubase / 其他宿主上三条恒不出。 -->
+                    <!-- ⑫ REAPER ∧ 输出开关 ON:写入自动化期间请保持插件窗口打开(RD-04) -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-reaperKeepOpen"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.reaperKeepOpen"
+                            data-gb="banner-reaperKeepOpen-text"
+                            >REAPER:写入自动化期间请保持本插件窗口打开——窗口关着时
+                            REAPER 可能不写入自动化</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-reaperKeepOpen-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <!-- ⑬ REAPER ∧ 本会话进过写入(一次性提示):宿主端解法 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-reaperPrintNote"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.reaperPrintNote"
+                            data-gb="banner-reaperPrintNote-text"
+                            >REAPER:若写完后没有录到自动化,请在 Preferences →
+                            Plug-ins → VST → VST compatibility 中把 Parameter
+                            automation notifications 设为 process all
+                            notifications</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-reaperPrintNote-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <!-- ⑭ Live ∧ 写入已结束 ∧(停走或输出关):点 Re-Enable Automation -->
+                    <div class="sc-banner" data-gb="banner-liveReEnable" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.liveReEnable"
+                            data-gb="banner-liveReEnable-text"
+                            >Live:写入已结束。Re-Enable Automation
+                            按钮亮起属正常现象,点击它即可恢复读取自动化</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-liveReEnable-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
                 </div>
 
                 <!-- ============================== Tab 导航(05 §1.1 + §2.0) ============================== -->
@@ -6893,14 +7004,17 @@
                                             />
                                         </div>
                                         <!-- 「小节+拍+tick」↔「mm:ss.mmm」双向联动(04 §2.3);换算行(设计稿 L404)。
-                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),而**宿主 tempo map 没有任何桥入口**,
-                                             小节↔秒换算做不出来 —— 故本波把**可编辑侧**改成桥面单位 mm:ss.mmm,
-                                             换算行显示同一区间的另一种写法;拿到 tempo map(T33)后再把小节侧接回来。 -->
+                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),**可编辑侧**是桥面单位 mm:ss.mmm。
+                                             [J147] 换算行显示同一区间落在第几小节第几拍:速度 / 拍号 / 拍位置取自
+                                             scvb.playhead 的 bpm / timeSigNum / timeSigDen / ppq(宿主**当前位置**的值,
+                                             不是整张速度表 —— 估算与校准的口径见 web/output/host-tempo.js 头注)。
+                                             一帧速度都没读到过时本行隐藏、下面的注释行改说「按秒显示」。 -->
                                         <span
                                             class="range-manual__conv sc-num"
-                                            data-gb="master-range-timecode"
-                                            >01:12.400 → 01:47.900</span
-                                        >
+                                            data-gb="master-range-bars"
+                                            data-est="1"
+                                            hidden
+                                        ></span>
                                         <div class="range-manual__row">
                                             <button
                                                 class="range-manual__btn range-manual__btn--wide"
@@ -6922,11 +7036,16 @@
                                                 +4
                                             </button>
                                         </div>
-                                        <!-- tempo 表未覆盖区域:小节值为估算态(斜体/半透明,设计稿 L410) -->
+                                        <!-- 注释行(设计稿 L410),[J147] 起按情况三选一、精确时隐藏
+                                             (tab-master.js renderRangeBars):估算 master.barsEstimateNote /
+                                             拍号变过 master.barsMeterNote / 没读到速度 master.rangeSecondsNote。
+                                             初值 = 「还没读到速度」那一态,与页面启动时的速度模型一致。 -->
                                         <span
                                             class="range-manual__note"
-                                            data-t="master.barsEstimateNote"
-                                            >小节为估算值,播放该区域后校准</span
+                                            data-gb="master-range-note"
+                                            data-t="master.rangeSecondsNote"
+                                            >未读到宿主速度与拍号,范围按秒显示,±4
+                                            为 4 秒</span
                                         >
                                     </div>
                                 </div>
@@ -7154,8 +7273,9 @@
                                 data-t="tracks.colLegend"
                                 data-gb="tracks-legend-text"
                                 >音量＝参与音量调节,该轨是否进音量平衡计算(默认开)
-                                · 声像＝参与自动声像,该轨是否进声像重分布(stereo
-                                轨默认关,仍参与音量平衡) ·
+                                ·
+                                声像＝参与自动声像,该轨是否进声像重分布(默认开,含
+                                stereo 轨;关掉后仍参与音量平衡) ·
                                 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)</span
                             >
                             <span
@@ -7414,7 +7534,14 @@
                                              `getClientRects().length`,不是 `el.hidden` 属性。
                                              别往 `smoke-tab3-interactions.mjs` 里加:那一套是
                                              源码/纯函数级、无 DOM,`getClientRects()` 在那里
-                                             根本不存在,加进去只会得到一个恒绿的格。 -->
+                                             根本不存在,加进去只会得到一个恒绿的格。
+                                             [J145] 灵敏度现在还决定**边界吸附的谷点门槛**
+                                             (`requestWaveform.valleys[]` 的 minDepth,契约 §1.27)。
+                                             重新上屏时须同批:`setSegmentation` 回执后对各轨
+                                             `waveSource.invalidate` —— web 块缓存不按灵敏度分键,
+                                             不失效的话视口不动时吸附沿用旧谷点 —— 并补一格页面级
+                                             冒烟钉它。见 `docs/contract-changes/20260929-j145-waveform-valleys.md`
+                                             的「已知局限」。 -->
                                         <div
                                             class="wave-slider"
                                             data-gb="wave-seg-sensitivity"
