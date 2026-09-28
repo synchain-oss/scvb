@@ -265,6 +265,12 @@
 - **界面里删掉两处从来不会出现的提示**:轨道页轨名旁与波形页轨头的「样本不足」黄标,以及
   「检测到工程副本」提示条。插件从未发出过触发它们的信号,所以它们此前也从未显示过;对应的
   两个错误码已从桥契约撤回。**使用上没有任何变化**(#285)
+- **发版流水线可以真正跑了**:推 `vX.Y.Z` / `vX.Y.Z-rc.N` tag 后,先核对 tag 与 `CMakeLists.txt` 的
+  `project(SCVB VERSION)`(此前取错行、任何真 tag 都会被判不匹配),再调用与出包硬门同一份的构建 /
+  ctest / pluginval,然后由新增的 `scripts/package.ps1` 打出 `SCVB-v<版本>-win64.zip`(Input / Output /
+  可选的 Monitor 三个 bundle + `LICENSE.txt` + `THIRD-PARTY-NOTICES.md` + `LICENSES/` + `INSTALL.txt`,
+  后者含精确到 tag 的源码地址与未签名插件的解除锁定 / SmartScreen 步骤)、独立 `.sha256` 与
+  `package-summary.md`,最后建**草稿** Release,发布仍由维护者手动。`v0.0.0-test` 可用来演练整条链路(#297)
 
 ### 修复
 
