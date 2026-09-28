@@ -203,6 +203,7 @@
 - 协作文档组:CONTRIBUTING 全文、Contributor Covenant v2.1 原文与官方中译、SECURITY、第三方依赖声明、[新贡献者上手](docs/CONTRIBUTOR_ONBOARDING.md)(#73)
 - [DAW 兼容矩阵与支持等级表](docs/DAW_COMPATIBILITY.md):Cubase / Studio One / Ableton Live / REAPER 四家 × 四类场景逐格有值,外加 16 条通用坑(#72)
 - 桥契约 `docs/SCVB_CONTRACT.md`(#33)、端到端联调旅程与真机执行清单(#71)
+- 发版验证目录 `docs/validation/`:首个 rc(v0.9.0-rc.1)的逐项发版清单(每项写明怎么查、证据与负责人,任何一项未勾不得发布)、DAW 实测矩阵、DAW 支持等级登记与 null test 日志;`docs/RELEASE.md` 加一行指向它(#316)
 
 **开发与验证设施**
 
