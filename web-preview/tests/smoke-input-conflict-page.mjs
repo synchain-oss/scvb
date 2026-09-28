@@ -538,16 +538,25 @@ try {
     // [SL-462 复审] 点击撞车的反馈有两条来路(RPC 返回值 + scvb.error 边沿,mock 里事件先到),
     // 同一次冲突只能抖一次卡。删除式(未提交,人工核过):把 app.js 两处
     // `claimConflictShakeDue(...)` 改成恒真 ⇒ 本条读到 2。
-    await sleep(300);
+    // 这是「不会多抖」的反向断言,不靠固定等待兜时间:本夹具 channel_id=0,mock 的 setChannelId
+    // 走「从未绑定」那支,在返回之前就同步推出 scvb.error,两条来路都在点击那一次求值里(连同其后的
+    // 微任务)跑完;上面几条 waitFor 都是之后的求值,读到这里时计数已经定了。前提是 mock 同步分发 ——
+    // 换成异步推事件的后端,这条要重新设计。
+    await waitFor(IN(`return window.__sl19ShakeCount >= 1;`), 6000);
     eq(
         await evaluate(IN(`return window.__sl19ShakeCount;`)),
         1,
         "③ 点击撞车只抖一次卡(RPC 返回值与 channelConflict 事件去重)",
     );
     // 去重只配对「一次 RPC + 一次事件」,不能吞掉用户的第二次点击:等上一次抖动动画放完
-    // (--dur-shake .45s)后再点同一张卡,计数必须到 2。删除式(未提交,人工核过):把配对条件里
-    // `last.src !== src` 与 `!last.paired` 去掉(退回按时间窗滑动去重)⇒ 本条读到 1。
-    await sleep(600);
+    // (animationend 摘掉 data-shake)后再点同一张卡,计数必须到 2。删除式(未提交,人工核过):
+    // 把配对条件里 `last.src !== src` 与 `!last.paired` 去掉(退回按时间窗滑动去重)⇒ 本条读到 1。
+    // 前提:夹具首帧那条 channelConflict{ch:4}(壳页在 iframe load 时才起 driver 推出)已在第一次
+    // 点击之前落地。它若晚到,会覆写去重记录,那次注入下本条仍读到 2 —— 这一格对该注入不是每跑必红。
+    await waitFor(
+        IN(`const c = card(3); return !!c && !c.hasAttribute("data-shake");`),
+        6000,
+    );
     check(
         await evaluate(
             IN(
@@ -556,7 +565,7 @@ try {
         ),
         "③ 再点一次通道卡 3",
     );
-    await sleep(400);
+    await waitFor(IN(`return window.__sl19ShakeCount >= 2;`), 6000);
     eq(
         await evaluate(IN(`return window.__sl19ShakeCount;`)),
         2,
@@ -649,7 +658,8 @@ try {
         await evaluate(emitConflict(5, 2, false)),
         "⑥ 推一帧 channelConflict{ch:5, groupId:2, active:false}",
     );
-    await sleep(600);
+    // 反向断言,不靠固定等待:ctl.emit 同步调到页面的 scvb.error 处理器,showOccupiedToast 也是
+    // 同步置 hidden=false,上面那次求值返回时处理器已经跑完。前提同 ③「只抖一次」:mock 同步分发。
     check(
         (await evaluate(TOAST_SHOWN)) === false,
         "⑥ active:false(冲突解除)不弹 toast",
