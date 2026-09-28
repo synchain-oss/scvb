@@ -599,7 +599,9 @@ void OutputEditor::emitPlayhead()
     // 读音频线程发布的 playheadShot_ SPSC 快照(PR#55 建议①;不直读宿主 AudioPlayHead)。
     const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
     const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
-    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+    // [J147] 采样率只读一次:timeS 与下面 ppq 的发不发由同一个值决定(两次原子读之间可能换了 prepare)。
+    const double timeRate = processor_.sampleRate();
+    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, timeRate) : 0.0;
 
     // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
     const auto& rt = processor_.runtime();
@@ -623,7 +625,8 @@ void OutputEditor::emitPlayhead()
     // [J147] 宿主速度 / 拍号 / 拍位置(§2.6 四个可选字段):Tab1 手动范围据此换算小节。
     // bpm 与拍号同进同出(缺一样页面也换算不了);ppq 另要求本帧有时间线 —— 它与本载荷的
     // timeS 出自同一次快照读,页面拿这一对当换算锚点。取值纪律见 hostTempoOf。
-    const scvb::engine::HostTempo tempo = scvb::engine::hostTempoOf(pod);
+    // 第二个实参 = 上面换算 timeS 用的那个采样率:两者对不上(插件已停用)时 ppq 不发。
+    const scvb::engine::HostTempo tempo = scvb::engine::hostTempoOf(pod, timeRate);
     if (tempo.valid)
     {
         put(payload, "bpm", tempo.bpm);

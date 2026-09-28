@@ -17,6 +17,12 @@
 //     之内的端点按那个锚点换算,算「已校准」—— 这就是「播放该区域后校准」。
 //   · **本次会话见过拍号变化** ⇒ 小节号取决于整段拍号历史,插件读不到,**播放也校准不了**,
 //     一律按估算显示,提示换成 `master.barsMeterNote`(不说「播放后校准」,那句话此时不成立)。
+//   · **用户在宿主里改了速度表**(PR #325 复审①):停在同一个时刻,宿主却报出了不同的拍位置或
+//     速度 ⇒ 此前的锚点与「变没变过」的判断都是对着旧速度表攒的,**整份作废、从这一帧重新观察**
+//     (拍号变化那一位除外:它说的是小节号的历史,改完速度表也不会因此变准)。不作废的话,
+//     落在旧锚点旁边的端点会被判「已校准」,显示的却是按旧速度算的小节号 —— 标成精确的错值。
+//     看不到的一类照实说:改动只发生在播放头**之后**、停着那一点的拍位置与速度都没变时,
+//     插件无从得知,要等播放头经过那里。
 //
 // 锚点表只在内存里(不进 state、不过桥),上限 `MAX_ANCHORS` 个,超了先丢最久没更新的。
 // 关掉插件窗口再打开 = 新页面 = 从头观察(与 04 §2.3「仅内存缓存」同口径)。
@@ -35,11 +41,16 @@ export const MAX_ANCHORS = 28800;
 export const OFFSET_TOL_QN = 0.01;
 /** 拍线吸附(秒):输入框只到毫秒,落在拍线上的端点经毫秒取整后会差出一丝,别让它掉到前一拍。 */
 export const SNAP_S = 0.001;
+/** 「停在同一个时刻」的判定宽度(秒):停带时宿主逐帧报的是同一个样本位置,秒值逐位相同。 */
+export const SAME_SPOT_S = 1e-6;
 
 /** 空模型(页面启动时、以及测试里用)。 */
 export function emptyTempo() {
     return {
-        latest: null, // {bpm, num, den, ppq|null, timeS}:最近一次带速度的帧
+        latest: null, // {bpm, num, den, ppq|null, timeS}:最近一次带速度的帧(给 bpm 与拍号)
+        // 最近一次**带拍位置**的帧:外推的基点。与 `latest` 分开存(PR #325 复审②)——
+        // 没有时间线的帧(C++ 侧不发 ppq)不该把基点从「宿主报的拍位置」换成「假设原点在 0 秒」。
+        latestPpq: null,
         anchors: new Map(), // 桶号 → {timeS, ppq, bpm}
         tempoVaried: false,
         meterVaried: false,
@@ -68,6 +79,18 @@ function offsetOf(f) {
     return f.ppq - (f.timeS * f.bpm) / 60;
 }
 
+function bpmDiffers(a, b) {
+    return Math.abs(a - b) > b * 1e-9;
+}
+
+/** 停在同一个时刻,宿主却报出了不同的拍位置或速度 ⇒ 速度表被改过(见文件头)。 */
+function tempoMapEdited(m, f) {
+    const a = m.latestPpq;
+    if (!a || f.ppq === null) return false;
+    if (Math.abs(f.timeS - a.timeS) > SAME_SPOT_S) return false;
+    return Math.abs(f.ppq - a.ppq) > OFFSET_TOL_QN || bpmDiffers(f.bpm, a.bpm);
+}
+
 /**
  * 喂一帧 `scvb.playhead`。**就地**更新并返回同一个模型(锚点表是 Map,整份拷贝 30 次/秒不划算)。
  * 这一帧没带速度字段 ⇒ 什么都不动(沿用最后一次读到的值)。
@@ -77,9 +100,16 @@ export function observeTempo(model, playhead) {
     const f = readTempoFields(playhead);
     if (!f) return m;
     const prev = m.latest;
-    if (prev) {
-        if (f.num !== prev.num || f.den !== prev.den) m.meterVaried = true;
-        if (Math.abs(f.bpm - prev.bpm) > prev.bpm * 1e-9) m.tempoVaried = true;
+    if (prev && (f.num !== prev.num || f.den !== prev.den))
+        m.meterVaried = true;
+    if (tempoMapEdited(m, f)) {
+        // 旧观察整份作废,这一帧当第一帧重来(下面的偏移判定因此会拿它与 0 比)。
+        m.anchors.clear();
+        m.tempoVaried = false;
+        m.lastOffset = null;
+        m.latestPpq = null;
+    } else if (prev && bpmDiffers(f.bpm, prev.bpm)) {
+        m.tempoVaried = true;
     }
     if (f.ppq !== null) {
         const off = offsetOf(f);
@@ -94,6 +124,7 @@ export function observeTempo(model, playhead) {
         while (m.anchors.size > MAX_ANCHORS) {
             m.anchors.delete(m.anchors.keys().next().value);
         }
+        m.latestPpq = f;
     }
     m.latest = f;
     return m;
@@ -135,9 +166,9 @@ export function qnAt(model, t) {
     if (near) {
         bpm = near.bpm;
         qn = near.ppq + ((tt - near.timeS) * bpm) / 60;
-    } else if (m.latest.ppq !== null) {
-        bpm = m.latest.bpm;
-        qn = m.latest.ppq + ((tt - m.latest.timeS) * bpm) / 60;
+    } else if (m.latestPpq) {
+        bpm = m.latestPpq.bpm;
+        qn = m.latestPpq.ppq + ((tt - m.latestPpq.timeS) * bpm) / 60;
     } else {
         // 宿主给了速度却没给拍位置:只能假设拍位置原点在 0 秒。
         bpm = m.latest.bpm;

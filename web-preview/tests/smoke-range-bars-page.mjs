@@ -16,11 +16,14 @@
 //      点 +4 ⇒ 终点 96 → 104 s(= 4 小节 × 2 s),换算行随之到 53.1,桥面真收到 104;
 //      点 −4 ⇒ 回到 96 s。
 //   ② `tempo=none`(宿主不报速度):换算行隐藏,注释行说「按秒显示」;+4 ⇒ 终点 +4 s。
-//   ③ 运行中宿主换速度(120 → 100):注释行换成「小节为估算值,播放该区域后校准」,换算行
-//      进估算态,且按最近的 100 BPM 换算(6.1 → 41.1);+4 ⇒ 按 100 BPM 挪 9.6 s。
+//   ③ `tempo=var`(30 s 前 120、后 100 BPM,停在 42 s):注释行「小节为估算值,播放该区域后
+//      校准」,换算行进估算态,按最近的 100 BPM 外推(8.3 → 43.3);+4 ⇒ 按 100 BPM 挪 9.6 s。
 //   ④ 校准:把两个端点都放到播放头(42 s)0.25 s 之内 —— 播放头停着时宿主一直在报那一点的
 //      拍位置,两个端点都算「播放过」⇒ 注释行隐藏、换算行回到非估算态。
 //   ⑤ 运行中宿主换拍号(4/4 → 3/4):注释行换成「拍号有变化,小节号为估算值」。
+//   ⑥ 停着时把速度 120 改成 100(= 用户在宿主里改了速度表):旧观察作废,按新速度精确显示
+//      (6.1 → 41.1、注释行隐藏)—— 不作废的话会停在「变过 ⇒ 估算」,而旧锚点旁的端点还会被
+//      判成精确(PR #325 复审①,逐函数那一半见 smoke-host-tempo ⑧)。
 //   每段零 console.error、零未捕获异常。
 //
 // 删除式(未提交,人工核过;读数见 PR 描述):
@@ -28,6 +31,7 @@
 //   · tab-master.js `nudgeRange` 的小节分支退回「恒挪 4 秒」⇒ ① 的 104 s 与 ③ 的 105.6 s 红;
 //   · `renderRangeBars` 注释行恒显示 ⇒ ① / ④ 的「注释行隐藏」红;
 //   · state-driver 不往下传 `tempo: parsed.tempo` ⇒ ② 整段红(页面仍按 120 BPM 显示小节)。
+//   · host-tempo.js 不作废旧观察(改速度表的判定恒假)⇒ ⑥ 红(停在估算态)。
 //
 // 用法:node web-preview/tests/smoke-range-bars-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -559,28 +563,22 @@ try {
     assertClean("②");
 
     // =========================================================================
-    log("=== ③ 运行中宿主换速度 120 → 100:估算态 + 按最近 BPM 换算 ===");
-    await open("fixture=stereo-mixed&play=0");
-    {
-        const r0 = await waitProbe(barsIs("7.1", "49.1"));
-        check(r0.ok, "③ 前提:先以 120 BPM 显示小节");
-    }
-    eq(
-        await setHostTempo({ bpm: 100, num: 4, den: 4 }),
-        "ok",
-        "③ 预览会话认得 setHostTempo",
+    log(
+        "=== ③ 变速工程(30 s 前 120、后 100 BPM,停在 42 s):估算态 + 按最近 BPM 换算 ===",
     );
+    await open("fixture=stereo-mixed&play=0&tempo=var");
     {
-        // 播放头停在 42 s:拍位置 = 42 × 100 / 60 = 70;12 s ⇒ 20 拍 = 6.1;96 s ⇒ 160 拍 = 41.1。
+        // 42 s 处拍位置 = 30 × 2 + 12 × 100 / 60 = 80(偏移 +10 拍 ⇒ 前面有过别的速度)。
+        // 按最近的 100 BPM 外推:12 s ⇒ 80 − 50 = 30 拍 = 8.3;96 s ⇒ 80 + 90 = 170 拍 = 43.3。
         const r = await waitProbe(
             (p) =>
                 p.noteShown &&
                 p.noteKey === "master.barsEstimateNote" &&
-                barsIs("6.1", "41.1")(p),
+                barsIs("8.3", "43.3")(p),
         );
         check(
             r.ok,
-            `③ 注释行 = master.barsEstimateNote,换算行按 100 BPM 为 6.1 → 41.1(实得 ${JSON.stringify(r.last)})`,
+            `③ 注释行 = master.barsEstimateNote,换算行按 100 BPM 外推为 8.3 → 43.3(实得 ${JSON.stringify(r.last)})`,
         );
         eq(r.last && r.last.barsEst, "1", "③ 换算行进估算态(data-est=1)");
         check(
@@ -622,7 +620,12 @@ try {
     // =========================================================================
     log("=== ⑤ 运行中宿主换拍号 4/4 → 3/4:拍号变化提示(不说「播放后校准」)===");
     eq(
-        await setHostTempo({ bpm: 100, num: 3, den: 4 }),
+        await setHostTempo({
+            bpm: 100,
+            num: 3,
+            den: 4,
+            pre: { untilS: 30, bpm: 120 },
+        }),
         "ok",
         "⑤ 预览会话认得 setHostTempo",
     );
@@ -642,6 +645,34 @@ try {
         );
     }
     assertClean("⑤");
+
+    // =========================================================================
+    log(
+        "=== ⑥ 停着时在宿主里把速度 120 改成 100:旧观察作废,按新速度精确显示(PR #325 复审①)===",
+    );
+    await open("fixture=stereo-mixed&play=0");
+    {
+        const r0 = await waitProbe(barsIs("7.1", "49.1"));
+        check(r0.ok, "⑥ 前提:先以 120 BPM 精确显示小节");
+    }
+    eq(
+        await setHostTempo({ bpm: 100, num: 4, den: 4 }),
+        "ok",
+        "⑥ 预览会话认得 setHostTempo",
+    );
+    {
+        // 停着的 42 s 处拍位置 84 → 70、速度 120 → 100 ⇒ 速度表被改过 ⇒ 从这一帧重新观察:
+        // 改完是恒速 100(偏移 0)⇒ 精确;12 s ⇒ 20 拍 = 6.1,96 s ⇒ 160 拍 = 41.1。
+        const r = await waitProbe(
+            (p) =>
+                barsIs("6.1", "41.1")(p) && !p.noteShown && p.barsEst === "0",
+        );
+        check(
+            r.ok,
+            `⑥ 换算行按新速度 6.1 → 41.1、非估算态、注释行隐藏(实得 ${JSON.stringify(r.last)})`,
+        );
+    }
+    assertClean("⑥");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

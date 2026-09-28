@@ -181,13 +181,22 @@ const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
 /**
  * [J147] 宿主报的速度与拍号(`scvb.playhead` 的 bpm / timeSigNum / timeSigDen / ppq 的来源)。
  * 默认 = 常见宿主的样子(120 BPM、4/4,恒速);`?tempo=none` = 宿主不报(页面按秒显示),
- * `?tempo=<bpm>/<分子>/<分母>`(如 `90/3/4`)= 换一个速度与拍号。
+ * `?tempo=<bpm>/<分子>/<分母>`(如 `90/3/4`)= 换一个速度与拍号;`?tempo=var` = 变速工程
+ * (30 s 之前 120 BPM、之后 100 BPM,4/4)。
  */
 const HOST_TEMPO = Object.freeze({ bpm: 120, num: 4, den: 4 });
+const HOST_TEMPO_VAR = Object.freeze({
+    bpm: 100,
+    num: 4,
+    den: 4,
+    pre: Object.freeze({ untilS: 30, bpm: 120 }),
+});
 
-/** `?tempo=` 的解析:合法 ⇒ {bpm,num,den};`none` ⇒ "none";非法 ⇒ undefined。 */
+/** `?tempo=` 的解析:合法 ⇒ {bpm,num,den[,pre]};`none` ⇒ "none";非法 ⇒ undefined。 */
 function parseTempoQuery(raw) {
     if (raw === "none") return "none";
+    if (raw === "var")
+        return { ...HOST_TEMPO_VAR, pre: { ...HOST_TEMPO_VAR.pre } };
     const m = /^(\d+(?:\.\d+)?)\/(\d+)\/(\d+)$/.exec(String(raw));
     if (!m) return undefined;
     const bpm = Number(m[1]);
@@ -327,7 +336,7 @@ export function parsePreviewQuery(params) {
         const v = parseTempoQuery(rawTempo);
         if (v === undefined)
             warnings.push(
-                `tempo=${rawTempo} 非法(要 none 或 <bpm>/<分子>/<分母>,如 90/3/4),已按默认档`,
+                `tempo=${rawTempo} 非法(要 none / var 或 <bpm>/<分子>/<分母>,如 90/3/4),已按默认档`,
             );
         else tempo = v;
     }

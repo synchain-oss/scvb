@@ -81,6 +81,9 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free, "PlayheadShot.seq 必�
 //     只给一样等于没给(web 按「秒」显示并明说);
 //   · `ppqValid` 另要求 `timeSamples >= 0`:`scvb.playhead.timeS` 在宿主不给时间线时
 //     填的是 0.0,那时把 ppq 发出去,页面会拿它与一个假的 0 秒配对当换算锚点。
+//   · 同理还要求 `timeRate`(调用方把 timeSamples 换成 timeS 用的那个采样率)> 0 且等于本帧
+//     发布时的 `sampleRate`(PR #325 复审):插件停用后处理器采样率回 0,`timeS` 被填成 0.0,
+//     而补发的那一帧里 ppq 仍是真实位置 —— 同一个假锚点的另一条来路。
 struct HostTempo
 {
     bool valid = false;
@@ -94,7 +97,7 @@ struct HostTempo
 inline constexpr double kHostTempoMaxBpm = 999.0; // 宿主给出超过它的值按「没给」处理
 inline constexpr int32_t kHostTimeSigMax = 64; // 拍号分子/分母上界(同上)
 
-inline HostTempo hostTempoOf(const PlayheadPod& p) noexcept
+inline HostTempo hostTempoOf(const PlayheadPod& p, double timeRate) noexcept
 {
     HostTempo t;
     const bool tempoOk =
@@ -107,7 +110,8 @@ inline HostTempo hostTempoOf(const PlayheadPod& p) noexcept
     t.bpm = p.bpm;
     t.timeSigNum = p.timeSigNum;
     t.timeSigDen = p.timeSigDen;
-    if ((p.flags & kPlayheadMusicValid) != 0u && p.timeSamples >= 0 && std::isfinite(p.ppq))
+    if ((p.flags & kPlayheadMusicValid) != 0u && p.timeSamples >= 0 && std::isfinite(p.ppq) && timeRate > 0.0 &&
+        timeRate == p.sampleRate)
     {
         t.ppqValid = true;
         t.ppq = p.ppq;

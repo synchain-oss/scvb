@@ -359,7 +359,7 @@ TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.p
         CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u);
         CHECK(pod.timeSigNum == 3);
         CHECK(pod.timeSigDen == 4);
-        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod);
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
         CHECK(t.valid);
         CHECK(t.bpm == 120.0);
         CHECK(t.timeSigNum == 3);
@@ -376,7 +376,7 @@ TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.p
         const auto pod = r.out.playheadSnapshot();
         CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) == 0u);
         CHECK((pod.flags & scvb::engine::kPlayheadTempoValid) != 0u); // 对照:bpm 本身是到了的
-        CHECK_FALSE(scvb::engine::hostTempoOf(pod).valid);
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
     }
 
     SECTION("③ 宿主只给拍号、不给 bpm ⇒ 四个字段都不发")
@@ -385,7 +385,7 @@ TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.p
         r.runBlocks(2);
         const auto pod = r.out.playheadSnapshot();
         CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u); // 对照:拍号本身是到了的
-        CHECK_FALSE(scvb::engine::hostTempoOf(pod).valid);
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
     }
 
     SECTION("④ 宿主不给时间线 ⇒ bpm/拍号照发,ppq 不发(timeS 此时是填的 0,不能当锚点)")
@@ -395,9 +395,25 @@ TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.p
         const auto pod = r.out.playheadSnapshot();
         CHECK(pod.timeSamples < 0);
         CHECK((pod.flags & scvb::engine::kPlayheadMusicValid) != 0u); // 对照:ppq 本身是到了的
-        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod);
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
         CHECK(t.valid);
         CHECK_FALSE(t.ppqValid);
+    }
+
+    SECTION("⑤ 插件停用后 ⇒ bpm/拍号照发,ppq 不发(timeS 此时按采样率 0 换成了 0.0)")
+    {
+        // [PR #325 复审] releaseResources 补发一帧「只清 playing 位」的快照([SL-527]),
+        // ppq 仍是停用前的真实位置,而处理器采样率已回 0 ⇒ emitPlayhead 算出的 timeS = 0.0。
+        r.runBlocks(2);
+        r.out.releaseResources();
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr)); // 对照:位置还在
+        CHECK(pod.sampleRate == kSr); // 对照:快照里记着发布时的采样率
+        CHECK(r.out.sampleRate() == 0.0); // 对照:处理器这边已经回 0
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+        r.out.prepareToPlay(kSr, kBlock); // 还给 Rig 的析构一个已 prepare 的处理器
     }
 }
 
@@ -411,12 +427,12 @@ TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「
     ok.timeSigDen = 8;
     ok.timeSamples = 0;
     ok.ppq = 0.0;
-    REQUIRE(scvb::engine::hostTempoOf(ok).valid); // 对照格:下面每一格只改一个字段
+    REQUIRE(scvb::engine::hostTempoOf(ok, ok.sampleRate).valid); // 对照格:下面每一格只改一个字段
 
     auto withBpm = [&](double v) {
         auto p = ok;
         p.bpm = v;
-        return scvb::engine::hostTempoOf(p).valid;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
     };
     CHECK_FALSE(withBpm(0.0));
     CHECK_FALSE(withBpm(-120.0));
@@ -429,7 +445,7 @@ TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「
         auto p = ok;
         p.timeSigNum = n;
         p.timeSigDen = d;
-        return scvb::engine::hostTempoOf(p).valid;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
     };
     CHECK_FALSE(withSig(0, 4));
     CHECK_FALSE(withSig(4, 0));
@@ -440,8 +456,14 @@ TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「
 
     auto nanPpq = ok;
     nanPpq.ppq = std::numeric_limits<double>::quiet_NaN();
-    CHECK(scvb::engine::hostTempoOf(nanPpq).valid); // bpm/拍号照发
-    CHECK_FALSE(scvb::engine::hostTempoOf(nanPpq).ppqValid); // ppq 不发
+    CHECK(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).valid); // bpm/拍号照发
+    CHECK_FALSE(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).ppqValid); // ppq 不发
+
+    // 换算 timeS 用的采样率与快照发布时的对不上 ⇒ ppq 不发(bpm/拍号照发)
+    CHECK(scvb::engine::hostTempoOf(ok, ok.sampleRate).ppqValid); // 对照
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, 0.0).ppqValid);
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, ok.sampleRate / 2.0).ppqValid);
+    CHECK(scvb::engine::hostTempoOf(ok, 0.0).valid);
 }
 
 // ---------------------------------------------------------------------------

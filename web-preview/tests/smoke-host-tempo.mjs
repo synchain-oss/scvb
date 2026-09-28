@@ -17,6 +17,8 @@
 //   D8b readTempoFields 不查拍号分母         ⇒ ①「分母 0」「缺分母」红
 //   D9  stepByBars 不按拍号折(恒按 4/4)     ⇒ ② 的 3/4、6/8 两格红
 //   D10 校准窗不设上界(最近锚点就算)        ⇒ ③「离锚点 0.3 s ⇒ 仍是估算」红
+//   D11 不认「改了速度表」(判定恒假)          ⇒ ⑧ ①②③ 各格红
+//   D12 外推基点用 latest 而不是 latestPpq     ⇒ ⑨ 红(12 s 退回 7.1)
 //
 // 用法:node web-preview/tests/smoke-host-tempo.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败。
@@ -132,7 +134,11 @@ log("=== ② 恒速:小节换算与 ±4 小节 ===");
 
     // 拍位置原点不在 0(用宿主的拍位置,不自己按秒推):42 s 处报 86 拍(偏移 +2 拍)
     const off = fed(frame(42, 120, 4, 4, 86));
-    eq(bb(off, 42), "22.3", "42 s 处 86 拍 ⇒ 22.3(按宿主拍位置,不是 21.1)");
+    eq(
+        bb(off, 42),
+        "22.3",
+        "42 s 处 86 拍 ⇒ 22.3(按宿主拍位置,不是按秒推的 22.1)",
+    );
 }
 
 // =============================================================================
@@ -224,6 +230,66 @@ log("=== ⑦ 锚点表有上限,超了丢最久没更新的 ===");
     for (let i = 0; i < 50; i++)
         m2 = HT.observeTempo(m2, steady(5 + i * 0.001));
     eq(m2.anchors.size, 1, "同一桶里 50 帧只留一个锚点");
+}
+
+// =============================================================================
+log("=== ⑧ 停着时宿主改了速度表 ⇒ 旧锚点与旧判断整份作废(PR #325 复审①)===");
+{
+    // 先按 120 BPM 从 0 播到 20 s(每 33 ms 一帧,锚点铺满),再停在 20 s 上。
+    const played = () => {
+        let m = HT.emptyTempo();
+        for (let t = 0; t <= 20; t += 0.033) m = HT.observeTempo(m, steady(t));
+        for (let i = 0; i < 3; i++) m = HT.observeTempo(m, steady(20));
+        return m;
+    };
+    const base = played();
+    eq(HT.barBeatAt(base, 10).exact, true, "前提:改之前 10 s 是精确的 6.1");
+    eq(bb(base, 10), "6.1", "前提:10 s @120 = 20 拍 = 6.1");
+
+    // ① 全曲改成 100 BPM:停着的 20 s 处拍位置 40 → 33.33、速度 120 → 100
+    const m = HT.observeTempo(played(), steady(20, 100));
+    eq(m.anchors.size, 1, "① 旧锚点清空,只剩这一帧");
+    eq(m.tempoVaried, false, "① 改完是恒速 100(偏移为 0)⇒ 不算变过");
+    // 10 s @100 = 16.67 拍 ⇒ 5.1(旧锚点会给出 6.1 且标成精确)
+    eq(bb(m, 10), "5.1", "① 10 s 按新速度换算 = 5.1");
+    eq(HT.barBeatAt(m, 10).exact, true, "① 新速度表下恒速 ⇒ 精确");
+
+    // ② 前面插了一段变速:20 s 处速度不变、拍位置从 40 变成 38
+    const m2 = HT.observeTempo(played(), frame(20, 120, 4, 4, 38));
+    eq(m2.anchors.size, 1, "② 拍位置变了 ⇒ 旧锚点清空");
+    eq(m2.tempoVaried, true, "② 新的第一帧偏移 −2 拍 ⇒ 变过");
+    eq(HT.barBeatAt(m2, 10).exact, false, "② 10 s 不再被旧锚点判成已校准");
+
+    // ③ 只在停着的这一点改了速度(拍位置不变):20 s 处 120 → 100
+    const m3 = HT.observeTempo(played(), frame(20, 100, 4, 4, 40));
+    eq(m3.anchors.size, 1, "③ 只有速度变了也算改过 ⇒ 旧锚点清空");
+    eq(HT.barBeatAt(m3, 10).exact, false, "③ 10 s 不再被旧锚点判成已校准");
+
+    // 对照:播放中穿过变速点(每帧时刻都在走)不算改速度表 —— 锚点保留
+    let c = HT.emptyTempo();
+    for (let t = 0; t <= 10; t += 0.033) c = HT.observeTempo(c, steady(t));
+    for (let t = 10.033; t <= 12; t += 0.033)
+        c = HT.observeTempo(c, frame(t, 100, 4, 4, 20 + ((t - 10) * 100) / 60));
+    check(
+        c.anchors.size > 40,
+        `对照:播放中变速不清锚点(实得 ${c.anchors.size} 个)`,
+    );
+    eq(HT.barBeatAt(c, 5).exact, true, "对照:5 s 仍是已校准");
+    // 对照:停着、同一帧重复到来(宿主停带时逐帧重发)不算改
+    // (0–20 s、0.25 s 一桶 ⇒ 81 个锚点)
+    const same = HT.observeTempo(played(), steady(20));
+    eq(same.anchors.size, 81, "对照:停着重复收到同一帧不清锚点");
+}
+
+// =============================================================================
+log("=== ⑨ 没有时间线的帧不替换外推基点(PR #325 复审②)===");
+{
+    // 42 s 处宿主报 86 拍(原点偏 +2 拍);之后来一帧没时间线的(timeS 填 0、不带 ppq)。
+    // 取 12 s(离 42 s 的锚点远,走的是外推那一支):86 − 30 × 2 = 26 拍 ⇒ 7.3;
+    // 退回「原点在 0 秒」的话是 24 拍 ⇒ 7.1。
+    const m = fed(frame(42, 120, 4, 4, 86), frame(0, 120, 4, 4));
+    eq(bb(m, 12), "7.3", "外推仍从 42 s / 86 拍出发(不退回按秒推的 7.1)");
+    eq(HT.hasTempo(m), true, "速度仍在");
 }
 
 if (fail > 0) {
