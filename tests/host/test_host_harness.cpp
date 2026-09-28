@@ -26,6 +26,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array> // [SL-393] segTableOf 的逐字段快照
+#include <atomic> // [加载守卫] HostWriteSpy 计数
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -5121,6 +5122,227 @@ TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设
     }
 }
 
+// ---------------------------------------------------------------------------
+// [SL-219][SL-218][J134][J135] 「没恢复」诊断位图的三个来路 + 更高 CRVS minor 原样带走。
+//
+// ① 更高 minor([SL-219]①):未来构建写的 CRVS,本构建解不开 ⇒ 按 [SL-524][J122] 原样写回,
+//    保存两次都逐字节相同。载荷故意带一段本构建不认识的尾部,证明写回的不是重编码。
+// ② CFGS 缺失 / 解不开([SL-219]②):setStateInformation 在读 CRVS 之前早退,此前诊断位
+//    停在上一次载入的值上(先载一份完整工程把它清成 0,正是这一格要比出来的差别)。
+//    blob 带着 CRVS 时,那份 CRVS 同样原样带走(不然横幅那句「原数据会原样保留」是假话)。
+// ③ 位图的值逐一核对(上桥 detail 的 missing / rejected 两张表就从它算)。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 一份**合法**、带用户段的 CRVS 载荷(ch1 两段),与 live 表(新开实例 = 空表)不同。
+std::vector<std::uint8_t> userCrvsPayload(const juce::MemoryBlock& base, int versionActive)
+{
+    scvb::state::CrvsData d;
+    const auto basePayload = crvsPayloadOf(base);
+    REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+    const auto flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    d.versions[static_cast<std::size_t>(versionActive - 1)].tracks[0].segments = {
+        scvb::state::Segment{0, 480000, 30.0f, -6.0f, flags},
+        scvb::state::Segment{480000, 960000, -40.0f, -3.0f, flags}};
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeCrvs(d, payload));
+    return payload;
+}
+
+// 在 base 的容器上改 chunk:dropCfgs = 删掉 CFGS;cfgsPayload 非空 = 换成它;crvsPayload 非空 = 换成它。
+std::vector<std::uint8_t> blobEdited(const juce::MemoryBlock& base, bool dropCfgs,
+                                     const std::vector<std::uint8_t>& cfgsPayload,
+                                     const std::vector<std::uint8_t>& crvsPayload)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    if (dropCfgs)
+    {
+        chunks.chunks.erase(
+            std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                           [](const scvb::state::Chunk& c) { return c.fourcc == scvb::state::kFourccCfgs; }),
+            chunks.chunks.end());
+    }
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCfgs && !cfgsPayload.empty())
+            c.payload = cfgsPayload;
+        if (c.fourcc == scvb::state::kFourccCrvs && !crvsPayload.empty())
+            c.payload = crvsPayload;
+    }
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+// 只留 PRMS:轨道 / 参数预设的形态(没有 CFGS、没有 CRVS)。
+std::vector<std::uint8_t> blobPrmsOnly(const juce::MemoryBlock& base)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(
+        std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                       [](const scvb::state::Chunk& c) { return c.fourcc != scvb::state::kFourccPrms; }),
+        chunks.chunks.end());
+    REQUIRE(chunks.chunks.size() == 1u);
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+} // namespace
+
+TEST_CASE("HOST SL-219①:更高 CRVS minor 的载荷原样带走,保存逐字节相同", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+
+    // 未来构建的 CRVS:minor = 当前 +1,后面多一段本构建不认识的字节。
+    auto future = userCrvsPayload(base, r.out.versionActive());
+    REQUIRE(future.size() >= 2u);
+    const std::uint16_t newerMinor = static_cast<std::uint16_t>(scvb::state::kCrvsMinorVersion + 1u);
+    future[0] = static_cast<std::uint8_t>(newerMinor & 0xFFu);
+    future[1] = static_cast<std::uint8_t>(newerMinor >> 8);
+    for (std::uint8_t b : {std::uint8_t{0xA5}, std::uint8_t{0x5A}, std::uint8_t{0x01}, std::uint8_t{0x02}})
+        future.push_back(b);
+    scvb::state::CrvsData probe;
+    REQUIRE_FALSE(scvb::state::decodeCrvs(future.data(), future.size(), probe)); // 前提:本构建确实不收
+
+    const auto blob = blobEdited(base, false, {}, future);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.hasCrvsNotRestored());
+    CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        INFO("save #" << (i + 1));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == future); // ★ 不是空表,也不是按本构建布局重编码
+    }
+}
+
+TEST_CASE("HOST SL-219②:CFGS 缺失的早退点也置诊断位(只带 PRMS 的预设)", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+
+    // 先载一份完整工程:位图清成 0。不先清的话,下面比不出「早退点没置位、停在旧值上」。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == 0);
+
+    const auto preset = blobPrmsOnly(base);
+    r.out.setStateInformation(preset.data(), static_cast<int>(preset.size()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.hasCrvsNotRestored()); // ★ 改前:停在 false
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing));
+
+    // 对照:再载完整工程 ⇒ 清回 0(横幅撤下的条件源)。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    CHECK(r.out.stateNotRestoredMask() == 0);
+}
+
+TEST_CASE("HOST SL-219②:CFGS 缺失但带 CRVS ⇒ 置位且 CRVS 原样带走", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto user = userCrvsPayload(base, r.out.versionActive());
+
+    const auto blob = blobEdited(base, /*dropCfgs=*/true, {}, user);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(segmentsOfTrack(r.out, 1).empty()); // 前提:CRVS 确实没被采用(早退在读它之前)
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsRejected));
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == user); // ★ 改前:写的是 live 空表
+}
+
+TEST_CASE("HOST SL-219②:CFGS 解不开的早退点也置诊断位,CRVS 原样带走", "[host][sl219]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == 0);
+
+    const auto user = userCrvsPayload(base, r.out.versionActive());
+    const std::vector<std::uint8_t> badCfgs(12, std::uint8_t{0xEE}); // 解不开的 CFGS
+    const auto blob = blobEdited(base, false, badCfgs, user);
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+    CHECK(r.out.stateNotRestoredMask() ==
+          (scvb::output::kNotRestoredCfgsRejected | scvb::output::kNotRestoredCrvsRejected));
+
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    CHECK(crvsPayloadOf(saved) == user);
+}
+
+// [SL-218 #307 复审第 1 轮] 横幅⑪ 的清位 / 不清位时机,各一格:
+//   E1 用户改过段表后的那次保存 ⇒ 清(「原样保留」从此不成立);没改之前保存不清;
+//   E2 载入更高 abi 的工程 ⇒ 清(上一份工程的留底不再写出);
+//   E3 容器损坏 ⇒ 不动(什么都没载入,上一份工程仍是当前工程)。
+TEST_CASE("HOST SL-218:横幅条件的清位时机(改段后保存 / 更高 abi / 容器损坏)", "[host][sl219][sl218]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto rejected = rejectedCrvsPayload(base, r.out.versionActive());
+    const auto bad = blobWithCrvsPayload(base, rejected);
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+
+    SECTION("E1 改段后保存 ⇒ 清;没改之前保存不清")
+    {
+        juce::MemoryBlock untouched;
+        r.out.getStateInformation(untouched);
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected); // 原样写回期间照旧亮
+        int replaced = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        REQUIRE(crvsPayloadOf(saved) != rejected); // 前提:这次确实写了新表
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E2 载入更高 abi 的工程 ⇒ 清")
+    {
+        std::vector<std::uint8_t> newer(static_cast<const std::uint8_t*>(base.getData()),
+                                        static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        const std::uint32_t abi = scvb::state::kCurrentAbi + 1u;
+        for (int i = 0; i < 4; ++i)
+            newer[static_cast<std::size_t>(4 + i)] = static_cast<std::uint8_t>((abi >> (8 * i)) & 0xFFu);
+        r.out.setStateInformation(newer.data(), static_cast<int>(newer.size()));
+        Rig::pumpMessages(100);
+        REQUIRE(r.out.hasStateAbiMismatch()); // 前提:确实走了更高 abi 那一支
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E3 容器损坏 ⇒ 不动")
+    {
+        std::vector<std::uint8_t> corrupt(static_cast<const std::uint8_t*>(base.getData()),
+                                          static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        corrupt[0] ^= 0xFFu; // magic 坏
+        r.out.setStateInformation(corrupt.data(), static_cast<int>(corrupt.size()));
+        Rig::pumpMessages(100);
+        REQUIRE_FALSE(r.out.hasStateAbiMismatch());
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+    }
+}
+
 // ===========================================================================
 // [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
 //
@@ -7298,6 +7520,154 @@ TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToP
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 重开 output_enabled=ON 的工程:确认前打印器止于 ARMED(04 §5.3 / 契约 §1.3、§1.34)。
+//
+// 修前 `printGuardPending` 没有任何写 true 的地方:横幅⑦与「继续写入自动化」钮都在,三态求值
+// 却不看它 —— 工程一重开、一按播放就进 PRINT,把 DAW 车道(常留在 Latch)上已录的自动化盖掉。
+//
+// 两个落点各有一格删除式:
+//   ① setStateInformation 里「恢复 ON ⇒ 置待确认」—— 删掉则 `CHECK(printGuardPending())` 与
+//      「确认前零写入」两格都红;
+//   ② timerCallback 三态求值里的 `!guardPending` —— 删掉则只有「确认前零写入」那几格红,
+//      `CHECK(printGuardPending())` 仍绿(故那一格必须是 CHECK 不是 REQUIRE,否则分不开)。
+// 判据落点 = 挂在真 processor 上的 AudioProcessorListener(宿主替身),不看打印器内部计数。
+// 进 Print 档不走「采集 + 分析」:setTrackManual 写一条覆盖全时间线的常值段(同 SL-489 那格)。
+// ---------------------------------------------------------------------------
+namespace
+{
+struct HostWriteSpy final : juce::AudioProcessorListener
+{
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { ++writes; }
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int) override { ++begins; }
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int) override { ++ends; }
+
+    std::atomic<int> writes{0};
+    std::atomic<int> begins{0};
+    std::atomic<int> ends{0};
+};
+} // namespace
+
+TEST_CASE("HOST 加载守卫:恢复 output=ON 的工程,确认前播放零写入,确认后恢复打印", "[host][loadguard][print]")
+{
+    HostWriteSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(8);
+
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+
+    // 造一份「输出 ON」的工程 blob。先关一次让打印器走 endAllGestures 回到干净起点;
+    // 开 → 存 → 关 三步之间**不泵消息**:25Hz tick 在消息线程,不泵就不会插进来进 PRINT。
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.setOutputEnabled(true);
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(r.out.printGuardPending()); // 前置:本会话里没被恢复过,不该有守卫
+
+    // ★ 宿主重开工程。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.outputEnabled()); // 前置:blob 里确实是 ON
+    CHECK(r.out.printGuardPending()); // ← 落点①删掉即红
+
+    r.out.addListener(&spy);
+
+    // 确认前:播放中 ∧ 播放头在区间内(常值段覆盖全时间线),满足 PRINT 三与条件 —— 仍须零写入。
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() == 0); // ← 落点①或②删掉即红
+    CHECK(spy.writes.load() == 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
+
+    // 确认(契约 §1.34,幂等)⇒ 下一拍起恢复正常 PRINT。这一段同时证明上面的「零写入」
+    // 不是因为区间/走带条件本来就不满足 —— 条件一点没变,只多了这一次确认。
+    r.out.confirmPrintGuard();
+    r.out.confirmPrintGuard();
+    CHECK_FALSE(r.out.printGuardPending());
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() > 0);
+    CHECK(spy.writes.load() > 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [加载守卫] 守卫的其余写点:恢复 OFF 不设守卫(且清掉上一个工程残留的);关输出即解除
+// (桥面 OFF 与 [J92a] 手动开采集连带关输出两条路都走 applyOutputEnabled);
+// 守卫在时再发 setOutputEnabled(true) **不算确认**(契约 P-1 候选②「复用 setOutputEnabled(true)
+// 作确认信号」已被 A-29 否决,确认入口只有 §1.34);确认过后宿主再灌 ON ⇒ 重新置位([J154])。
+// 删除式:删掉 applyOutputEnabled 里的清除 ⇒ 「桥面 OFF」与「J92a」两格红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出不算确认", "[host][loadguard]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    juce::MemoryBlock onBlob;
+    juce::MemoryBlock offBlob;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.setOutputEnabled(true);
+        donor.getStateInformation(onBlob);
+        donor.setOutputEnabled(false);
+        donor.getStateInformation(offBlob);
+    }
+
+    ScvbOutputAudioProcessor out;
+    // 新建实例的 outputEnabled_ 初值就是 true,但那不是「随工程恢复」—— 不该有守卫。
+    CHECK(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 恢复 ON ⇒ 待确认;再载一个 OFF 工程 ⇒ 清掉。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending());
+    out.setStateInformation(offBlob.getData(), static_cast<int>(offBlob.getSize()));
+    CHECK_FALSE(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+
+    // 守卫在时开输出(已经是 ON)不算确认。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setOutputEnabled(true);
+    CHECK(out.printGuardPending());
+
+    // 桥面关输出 ⇒ 解除;再开回来不重新设守卫(走 UI 的 OFF→ON 一次性确认)。
+    out.setOutputEnabled(false);
+    CHECK_FALSE(out.printGuardPending()); // ← applyOutputEnabled 的清除删掉即红
+    out.setOutputEnabled(true);
+    CHECK_FALSE(out.printGuardPending());
+
+    // [J92a] 手动开采集连带关输出 ⇒ 同样解除。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.setCaptureEnabled(true);
+    REQUIRE_FALSE(out.outputEnabled()); // 前置:互斥确实把输出关了
+    CHECK_FALSE(out.printGuardPending()); // ← 同上
+
+    out.setCaptureEnabled(false);
+
+    // [J154] 契约 §1.34「本工程会话」的边界:确认过之后,宿主对同一实例再灌一次输出=开的状态
+    // (带插件状态的撤销 / A/B 对比 / 载入预设)算新的一次会话 ⇒ 守卫重新置位。
+    // 放在本用例最后:J154 未取的选项 (b)「同一实例确认过就不再重置」会让这个实例此后每次重灌都
+    // 不再置位,放在前面会连带把后面各段的前置 REQUIRE 一起弄红,分不出是哪一格钉住了它。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.confirmPrintGuard();
+    REQUIRE_FALSE(out.printGuardPending());
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending()); // ← 改成 (b) 即红
 }
 
 // ===========================================================================
@@ -12749,4 +13119,392 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
             CHECK(c.pairId == ctorDefault.pairId);
         }
     }
+}
+
+// ===========================================================================
+// [SL-216 / J136] 主唱居中进分析计算。
+//
+// 用户裁定(J136):主唱居中由「播放期强制覆盖」改为进入分析引擎的槽位/平衡计算,其余声部据此排布。
+// `lead_select` 是宿主可自动化的参数,插件拿不到宿主的自动化曲线,只能在**播放经过时**看到它的值 ——
+// 所以 Output 在走带播放时逐块记下它(LeadRecorder → LeadTimeline),分析按区间取多数值,
+// 选中轨在该区间并入集合 C(与 lead_lock 同一条路径)。纯算法那半在 tests/core/test_lead_timeline.cpp;
+// 这里钉**接线**:播放时真的记了、分析真的取了、记录真的随工程存取、队列真的有人排干。
+// ===========================================================================
+namespace
+{
+void setLeadSelect(ScvbOutputAudioProcessor& out, int v)
+{
+    auto* p = out.getAPVTS().getParameter("lead_select");
+    REQUIRE(p != nullptr);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(v)));
+    p->endChangeGesture();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(60);
+}
+
+int countOffCenter(const std::vector<scvb::state::Segment>& segs)
+{
+    int n = 0;
+    for (const auto& s : segs)
+    {
+        if (std::abs(s.pan) > 1.0f)
+        {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// 从一份完整 blob 里只留下指定的 chunk(按容器层解开→筛→重编,与生产同一套编解码)。
+std::vector<std::uint8_t> blobKeeping(const juce::MemoryBlock& src, const std::vector<std::uint32_t>& keep)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                                       [&](const scvb::state::Chunk& c) {
+                                           return std::find(keep.begin(), keep.end(), c.fourcc) == keep.end();
+                                       }),
+                        chunks.chunks.end());
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+std::vector<std::uint8_t> blobWithout(const juce::MemoryBlock& src, std::uint32_t fourcc)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    chunks.chunks.erase(std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                                       [&](const scvb::state::Chunk& c) { return c.fourcc == fourcc; }),
+                        chunks.chunks.end());
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+bool sameRuns(const std::vector<scvb::analysis::LeadRun>& a, const std::vector<scvb::analysis::LeadRun>& b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("HOST SL-216:改主唱、播一遍、重新分析 → 新主唱每段都在正中,其余两轨离开正中", "[host][sl216][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // 基线:lead_select = 0 采集并分析。挑**离开正中的段最多**的那条轨当新主唱 ——
+    // 这样下面「它每段都在正中」只能来自本卡的改动,不会是它本来就居中。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+
+    // 换主唱 → 播放头送回采集起点,采集关着把这段再放一遍(只为让 Output 记下新值)→ 重新分析。
+    r.out.setCaptureEnabled(false);
+    MonoMultiRig::pump(100);
+    setLeadSelect(r.out, leadCh);
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+    r.ph.timeSamples = s0;
+    r.runBlocks(static_cast<int>((s1 - s0) / kBlock) + 2, 0.5f);
+
+    // 前提:记录覆盖了分析窗,多数值就是新主唱(播放路径真的记了)。
+    CHECK(scvb::analysis::majorityLead(r.out.leadTimelineSnapshot(), s0, s1) == leadCh);
+
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    const auto leadSegs = segmentsOfTrack(r.out, leadCh);
+    REQUIRE_FALSE(leadSegs.empty());
+    for (const auto& s : leadSegs)
+    {
+        CHECK(s.pan == 0.0f); // ★ 主唱进了分析:段表里就是正中,不靠播放期覆盖
+    }
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        if (ch == leadCh)
+        {
+            continue;
+        }
+        INFO("non-lead track " << ch);
+        CHECK(countOffCenter(segmentsOfTrack(r.out, ch)) > 0); // 其余声部围绕主唱排到两侧
+    }
+}
+
+TEST_CASE("HOST SL-216:lead_select 记录随工程存取;完整工程无 LEAD 即清空,只带 PRMS 的预设不动它",
+          "[host][sl216][state]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 2);
+    r.runBlocks(40);
+    setLeadSelect(r.out, 5);
+    r.runBlocks(40);
+    const auto before = r.out.leadTimelineSnapshot();
+    REQUIRE(before.size() == 2);
+    CHECK(before[0].lead == 2);
+    CHECK(before[1].lead == 5);
+
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    {
+        scvb::state::StateChunks chunks;
+        REQUIRE(
+            scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+        REQUIRE(chunks.find(scvb::state::kFourccLead) != nullptr); // 写侧:存档里真有这一块
+    }
+
+    // 只带 PRMS 的预设:记录不动。
+    const auto presetOnly = blobKeeping(full, {scvb::state::kFourccPrms});
+    r.out.setStateInformation(presetOnly.data(), static_cast<int>(presetOnly.size()));
+    Rig::pumpMessages(60);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
+
+    // 完整工程但没有 LEAD(旧工程 / 从没播过):记录清空,不能把上一份工程的主唱带进来。
+    // 载入前先放几块、**不泵消息**:这几块还留在音频线程队列里(是上一份工程的播放),
+    // 载入必须把它们一并丢掉,不能在下一次排干时混进新工程。
+    setLeadSelect(r.out, 7);
+    r.runBlocks(10, 0.25f, /*pumpEveryN=*/0);
+    const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+    r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+    Rig::pumpMessages(60);
+    CHECK(r.out.leadTimelineSnapshot().empty());
+
+    // 读侧:原样灌回 → 记录逐字段回来。
+    r.out.setStateInformation(full.getData(), static_cast<int>(full.getSize()));
+    Rig::pumpMessages(60);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
+}
+
+TEST_CASE("HOST SL-216:更高 minor 的 LEAD 块原样回写,不被内存里的记录覆盖", "[host][sl216][state]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 3);
+    r.runBlocks(20);
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    std::vector<std::uint8_t> newer;
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccLead)
+        {
+            c.payload[0] = static_cast<std::uint8_t>(scvb::analysis::kLeadChunkMinor + 1);
+            newer = c.payload;
+        }
+    }
+    REQUIRE_FALSE(newer.empty());
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+    r.out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+    Rig::pumpMessages(60);
+    CHECK(r.out.leadTimelineSnapshot().empty()); // 不认识 → 分析按「没有记录」
+
+    // 再载一份只带 PRMS 的预设:loadedChunks_ 被整个换成 {PRMS},那份更高 minor 的字节
+    // 只剩自留的那一份 —— 保存时仍必须写回它。
+    const auto presetOnly = blobKeeping(full, {scvb::state::kFourccPrms});
+    r.out.setStateInformation(presetOnly.data(), static_cast<int>(presetOnly.size()));
+    Rig::pumpMessages(60);
+
+    // 再播一段(内存里有了新记录),保存:LEAD 仍是那份更高 minor 的原始字节。
+    r.runBlocks(20);
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    scvb::state::StateChunks back;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(saved.getData()), saved.getSize(), back).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const auto* lead = back.find(scvb::state::kFourccLead);
+    REQUIRE(lead != nullptr);
+    CHECK(lead->payload == newer);
+}
+
+TEST_CASE("HOST SL-216:长时间播放不分析不存盘,记录队列由定时器排干,不丢块", "[host][sl216]")
+{
+    // 队列容量 4096 块;这里连放 4400 块,中间只靠 25Hz 定时器排干(每 256 块泵一次消息循环)。
+    // 定时器那一句不在,多出来的 304 块会被丢掉,记录的右端停在 4096 块处。
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 4);
+    const std::int64_t start = r.ph.timeSamples;
+    constexpr int kBlocks = static_cast<int>(scvb::analysis::LeadRecorder::kCapacity) + 304;
+    r.runBlocks(kBlocks, 0.25f, /*pumpEveryN=*/256, /*pumpMs=*/60);
+    const auto runs = r.out.leadTimelineSnapshot();
+    REQUIRE(runs.size() == 1);
+    CHECK(runs[0].lead == 4);
+    CHECK(runs[0].t0 == start);
+    CHECK(runs[0].t1 == start + static_cast<std::int64_t>(kBlocks) * kBlock);
+}
+
+TEST_CASE("HOST SL-216:走带停住时不记录(定位点上的值不代表那段时间被播过)", "[host][sl216]")
+{
+    Rig r;
+    r.ph.playing = true;
+    setLeadSelect(r.out, 2);
+    r.runBlocks(20);
+    const auto before = r.out.leadTimelineSnapshot();
+    REQUIRE(before.size() == 1);
+
+    // 停住、换值、空转:宿主照样调 processBlock(t0 不动),但这不算「播过」。
+    r.ph.playing = false;
+    setLeadSelect(r.out, 9);
+    r.runBlocks(20);
+    CHECK(sameRuns(r.out.leadTimelineSnapshot(), before));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-216 × SL-535] 主唱是一条没连上 Input 的轨:照样不进分析,主唱记录对其余轨零影响。
+//
+// 两张卡在 startAnalysis 里各管一面:SL-535 定「谁参与」(计算集与写回集都只认此刻已连接的轨),
+// SL-216 定「参与的轨里谁按主唱锁排」(区间多数值选中的轨并入集合 C)。合起来的口径是
+// **参与面先定、主唱后挑**:选中的轨没连上时它不在区间的活跃轨里,主唱锁无处可落,其余轨的解
+// 与主唱记录为 0 时逐字段相同,它自己的段表一个字节不动。反过来(主唱记录把没连上的轨带回
+// 计算集或写回集)就是两条判据打架 —— 一条早已没有 Input 的轨仍在左右其余声部的排布。
+//
+// 判据两格,各钉一个落点(前提另断,前提不成立时两格恒绿、测不到东西):
+//   ① 写回集:受理回执是 2 轨。删除式:预扫那一处让主唱轨绕过连接判据 ⇒ 回执 3 轨,只红这一条。
+//      「主唱轨段表逐字段不动」在这一注入下**仍绿**(没进计算集的轨写回时本来不改写,同上面
+//      SL-535 那条的说明),它钉的是「不清数据」,别把它读成 ① 的判据。干跑那条读的是 previewAnalysis,
+//      不经预扫,同样不是 ① 的判据。
+//   ② 计算集:主唱记录 = 该轨 与 = 0 两次分析,其余两轨的段表逐字段相同。删除式:取样那一处让主唱轨
+//      绕过连接判据 ⇒ 两次的段表不同,只红这一条(实测差在 volDb:平衡把它的旧能量算进去了;
+//      pan 两次都是两侧对称,所以只比 pan 测不到)。
+// 挑主唱轨的办法同上面 SL-216 那条:全连着分析时离开正中的段最多的轨。
+// 断开后不再调它的 processBlock(宿主不会调已卸下的插件),所以重放不用 runBlocks、只推仍连着的两条。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不进分析,其余轨与主唱记录为 0 时同解",
+          "[host][sl216][sl535][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+
+    // 之后推块只为让 Output 记下 lead_select,不许改写采集数据。
+    r.out.setCaptureEnabled(false);
+    MonoMultiRig::pump(100);
+
+    const auto leadBefore = r.segTableOf(leadCh);
+    REQUIRE_FALSE(leadBefore.empty());
+    r.ins[static_cast<std::size_t>(leadCh - 1)]->releaseResources();
+    MonoMultiRig::pump(200);
+
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+    const auto replayWithLead = [&](int lead) {
+        setLeadSelect(r.out, lead);
+        r.ph.timeSamples = s0;
+        const int blocks = static_cast<int>((s1 - s0) / kBlock) + 2;
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            for (int i = 0; i < MonoMultiRig::kCount; ++i)
+            {
+                if (i + 1 == leadCh)
+                {
+                    continue;
+                }
+                Rig::fillSine(r.inBuf, 0.5f * (0.4f + 0.3f * static_cast<float>(i)), r.ph.timeSamples);
+                r.ins[static_cast<std::size_t>(i)]->processBlock(r.inBuf, r.midi);
+            }
+            r.out.processBlock(r.outBuf, r.midi);
+            r.ph.timeSamples += kBlock;
+            if ((b % 4) == 3)
+            {
+                MonoMultiRig::pump(8);
+            }
+        }
+        MonoMultiRig::pump(100);
+    };
+    // 前提:记录真是 lead、主唱轨没连上但旧数据还在、另两条连着。
+    const auto requirePremise = [&](int lead) {
+        REQUIRE(scvb::analysis::majorityLead(r.out.leadTimelineSnapshot(), s0, s1) == lead);
+        const auto snap = r.out.connSnapshot();
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            INFO("ch " << ch);
+            REQUIRE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(ch - 1)]) ==
+                    (ch != leadCh));
+        }
+        REQUIRE(r.out.coverageOf(leadCh, win.startS, win.endS).coveredS > 0.0);
+    };
+    const auto analyzeOthers = [&]() {
+        CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == MonoMultiRig::kCount - 1);
+        const auto accepted = r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false);
+        REQUIRE(accepted.ok);
+        CHECK(accepted.tracks == MonoMultiRig::kCount - 1); // ① 主唱记录没把它带回写回集
+        bool done = false;
+        for (int waited = 0; waited < 20000 && !done; waited += 50)
+        {
+            MonoMultiRig::pump(50);
+            done = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+        }
+        REQUIRE(done);
+        std::vector<std::vector<std::array<double, 5>>> tables;
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            if (ch != leadCh)
+            {
+                tables.push_back(r.segTableOf(ch));
+                REQUIRE_FALSE(tables.back().empty()); // 前提:有段可比,否则「相同」毫无意义
+            }
+        }
+        return tables;
+    };
+
+    replayWithLead(leadCh);
+    requirePremise(leadCh);
+    const auto withLead = analyzeOthers();
+    CHECK(r.segTableOf(leadCh) == leadBefore); // 不清数据、不改写(不是 ① 的判据,见头注)
+
+    replayWithLead(0);
+    requirePremise(0);
+    const auto withoutLead = analyzeOthers();
+    CHECK(withLead == withoutLead); // ② 主唱记录没把它的旧数据带回计算集
+    CHECK(r.segTableOf(leadCh) == leadBefore);
 }
