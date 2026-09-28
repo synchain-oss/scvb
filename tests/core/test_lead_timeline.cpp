@@ -4,8 +4,11 @@
 // 三层各钉各的:
 //   · LeadTimeline / majorityLead / LeadRecorder / LEAD 编解码 —— 纯数据结构;
 //   · runAnalysisPipeline —— 记录里选中的那一轨在该区间居中、不占槽,其余声部按剩下的轨数排槽;
-//     与「把那一轨设成 lead_lock」逐位同解(同一条 C 路径,平衡也一样);没有记录 ⇒ 与改动前同解。
-// 接线(Output 播放时记录 / 分析取记录 / 随工程存取)在 tests/host/test_host_harness.cpp 的 [sl216]。
+//     与「把那一轨设成 lead_lock」逐位同解(同一条 C 路径,平衡也一样);没有记录且当前值为 0 ⇒ 与改动前同解。
+//   · [SL-545 / J143 + J143a] 点分析那一刻的 lead_select(cfg.leadFallback)怎么进来:窗里的记录 ≤ 1 个值 ⇒
+//     整窗用它;≥ 2 个值 ⇒ 按记录,没有记录的区间才用它 —— 标签 [sl545]。
+// 接线(Output 播放时记录 / 分析取记录 / 随工程存取 / 当前值取参数面)在 tests/host/test_host_harness.cpp 的
+// [sl216] 与 [sl545]。
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -178,6 +181,34 @@ TEST_CASE("SL216 多数值:按已记录样本数取最多,平局取小,未记录
     CHECK(majorityLead(withZero, 0, 1000) == 0);
 }
 
+TEST_CASE("SL545 多数值:整段没有记录 → 回落值;有一个已记录样本就按记录(记录的 0 也压过回落值)",
+          "[analysis][lead][sl545]")
+{
+    const std::vector<LeadRun> runs{{0, 300, 2}, {300, 1000, 5}};
+    CHECK(majorityLead(runs, 1000, 2000, 7) == 7); // 全未记录 → 回落值
+    CHECK(majorityLead({}, 0, 1000, 7) == 7); // 一条记录都没有 → 回落值
+    CHECK(majorityLead(runs, 1000, 1000, 7) == 7); // 空区间:没有已记录样本,同一条定义
+    // 窗里只有一小截有记录:仍按记录定,回落值不参与计数(记录优先)。
+    CHECK(majorityLead(runs, 900, 5000, 7) == 5);
+    CHECK(majorityLead(runs, 0, 1000, 7) == 5);
+    // 记录了 0 ≠ 没有记录:0 是一个值,压过回落值。
+    const std::vector<LeadRun> zeros{{0, 1000, 0}};
+    CHECK(majorityLead(zeros, 0, 1000, 7) == 0);
+    CHECK(majorityLead(zeros, 1000, 2000, 7) == 7); // 同一份记录,窗挪到记录外 → 回落
+}
+
+TEST_CASE("SL545 不同值计数:只数窗里有已记录样本的值;0 也算一个值;没记录的空档与窗外的记录不算",
+          "[analysis][lead][sl545]")
+{
+    const std::vector<LeadRun> runs{{0, 300, 0}, {300, 600, 3}, {800, 1000, 3}, {1000, 1200, 5}};
+    CHECK(distinctLeadValues(runs, 0, 1000) == 2); // 0 与 3;600..800 的空档不算;[1000,1200) 贴着窗右端、不相交
+    CHECK(distinctLeadValues(runs, 300, 1000) == 1); // 只有 3
+    CHECK(distinctLeadValues(runs, 0, 1200) == 3);
+    CHECK(distinctLeadValues(runs, 600, 800) == 0); // 窗整个落在空档里
+    CHECK(distinctLeadValues(runs, 500, 500) == 0); // 空窗
+    CHECK(distinctLeadValues({}, 0, 1000) == 0);
+}
+
 TEST_CASE("SL216 记录队列:排干进时间线;满了丢并计数", "[analysis][lead][sl216]")
 {
     LeadRecorder rec;
@@ -270,10 +301,12 @@ TEST_CASE("SL216 管线:没有记录 → 优先级最低的轨 1 拿中心(前�
     CHECK_FALSE(allPansAre(res.segments[1], 0.0));
 }
 
-TEST_CASE("SL216 管线:记录选中轨 2 → 轨 2 居中,另两轨在两侧对称排开", "[analysis][lead][sl216][pipeline]")
+TEST_CASE("SL216 管线:记录与当前值都是轨 2 → 轨 2 居中,另两轨在两侧对称排开", "[analysis][lead][sl216][pipeline]")
 {
     ThreeVoices v;
     v.cfg.leadRuns = {{v.cfg.rangeStartSample, v.cfg.rangeEndSample, 2}};
+    // [SL-545 / J143a] 整窗只有一个值的记录不单独说了算(整窗用当前值);这里是「播完没再动旋钮」的常规情形。
+    v.cfg.leadFallback = 2;
     const auto res = runAnalysisPipeline(v.features, v.cfg);
 
     CHECK(allPansAre(res.segments[1], 0.0)); // 主唱:每一段都在正中
@@ -289,7 +322,7 @@ TEST_CASE("SL216 管线:记录选中轨 2 → 轨 2 居中,另两轨在两侧对
     }
 }
 
-TEST_CASE("SL216 管线:lead_select 记录与 lead_lock 走同一条 C 路径(pan 与 vol 逐位同解)",
+TEST_CASE("SL216 管线:lead_select 选中与 lead_lock 走同一条 C 路径(pan 与 vol 逐位同解)",
           "[analysis][lead][sl216][pipeline]")
 {
     // 三轨能量不等:平衡要真的出 u,才验得到「平衡也把主唱当居中轨算」。
@@ -311,6 +344,7 @@ TEST_CASE("SL216 管线:lead_select 记录与 lead_lock 走同一条 C 路径(pa
     REQUIRE(leadIdx >= 0);
     auto cfgSelect = makeConfig(features[0].kwMs.size(), 3);
     cfgSelect.leadRuns = {{cfgSelect.rangeStartSample, cfgSelect.rangeEndSample, leadIdx + 1}};
+    cfgSelect.leadFallback = leadIdx + 1; // [SL-545 / J143a] 记录只有一个值时整窗用当前值,两者同值
     auto cfgLock = makeConfig(features[0].kwMs.size(), 3);
     cfgLock.tracks[static_cast<std::size_t>(leadIdx)].leadLock = true;
 
@@ -398,6 +432,7 @@ TEST_CASE("SL216 管线:选中的轨在该区间不活跃 → 不影响其余轨
     ThreeVoices v;
     const auto base = runAnalysisPipeline(v.features, v.cfg);
     v.cfg.leadRuns = {{v.cfg.rangeStartSample, v.cfg.rangeEndSample, 9}}; // 轨 9 没有素材
+    v.cfg.leadFallback = 9; // [SL-545 / J143a] 记录只有一个值时整窗用当前值:同值,否则 9 根本不会被取到
     const auto res = runAnalysisPipeline(v.features, v.cfg);
     for (int t = 0; t < 3; ++t)
     {
@@ -410,4 +445,176 @@ TEST_CASE("SL216 管线:选中的轨在该区间不活跃 → 不影响其余轨
         }
     }
     CHECK(res.segments[8].empty());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-545 / J143 + J143a] 点分析那一刻的 lead_select(cfg.leadFallback)
+//
+// J143a:计算窗里的记录 ≤ 1 个不同的值(没有记录 / 全是 0 / 全是同一轨)⇒ 不算自动化,整窗用当前值;
+// ≥ 2 个值 ⇒ 按记录逐区间取多数值,一个已记录样本都没有的区间才用当前值。
+// 本机台只有三条轨有素材(ThreeVoices),所以「当前值」一律取 1..3 里的某一轨 —— 选一条没有素材的轨
+// 当当前值,「它居中」在段表里看不出来,与「没有主唱」无法区分。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// 各段的分界都切在两轮之间的**静音缝**里,这样没有哪个段、哪个区间横跨分界 —— 横跨的区间里多数值
+// 怎么取是另一件事(见上面多数值那两条),这里只钉「整段是某个值 / 整段没有记录」的区间。
+//   ThreeVoices = 4 轮 × (80 hop 发声 + 60 hop 静音):第 1、2 轮之间的缝约为 hop 240..268(段含前后 padding),
+//   第 2、3 轮之间约为 hop 380..408。前提由 noSegmentStraddles 当场核,不靠这段注释。
+constexpr std::int64_t kCutA = 254 * kHopSamples;
+constexpr std::int64_t kCutB = 394 * kHopSamples;
+
+bool noSegmentStraddles(const PipelineResult& res, std::int64_t cut)
+{
+    for (int t = 0; t < 3; ++t)
+    {
+        for (const auto& s : res.segments[static_cast<std::size_t>(t)])
+        {
+            if (s.t0Samples < cut && s.t1Samples > cut)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// [t0, t1) 里完整落进去的段:pan 全是 0 ⇒ 返回段数(> 0);有一段不是 0 或一段都没有 ⇒ 0 / −1。
+// 用段数而不是 bool,让调用处能同时断言「确实查到了段」。
+int centeredCountIn(const std::vector<AnalysisSegment>& segs, std::int64_t t0, std::int64_t t1)
+{
+    int n = 0;
+    for (const auto& s : segs)
+    {
+        if (s.t0Samples >= t0 && s.t1Samples <= t1)
+        {
+            if (s.pan != 0.0)
+            {
+                return -1;
+            }
+            ++n;
+        }
+    }
+    return n;
+}
+
+// [t0, t1) 里完整落进去的段,有几段离开了正中。
+int offCenterCountIn(const std::vector<AnalysisSegment>& segs, std::int64_t t0, std::int64_t t1)
+{
+    int n = 0;
+    for (const auto& s : segs)
+    {
+        if (s.t0Samples >= t0 && s.t1Samples <= t1 && s.pan != 0.0)
+        {
+            ++n;
+        }
+    }
+    return n;
+}
+
+void checkSameLayout(const PipelineResult& a, const PipelineResult& b)
+{
+    for (int t = 0; t < 3; ++t)
+    {
+        const auto& sa = a.segments[static_cast<std::size_t>(t)];
+        const auto& sb = b.segments[static_cast<std::size_t>(t)];
+        REQUIRE(sa.size() == sb.size());
+        for (std::size_t i = 0; i < sa.size(); ++i)
+        {
+            INFO("track " << (t + 1) << " seg " << i);
+            CHECK(sa[i].t0Samples == sb[i].t0Samples);
+            CHECK(sa[i].pan == sb[i].pan);
+            CHECK(sa[i].volDb == sb[i].volDb);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("SL545 管线:记录全是 0、当前值 = 3 → 轨 3 居中,另两轨在两侧对称排开(采集后改了 Lead Select 不重播)",
+          "[analysis][lead][sl545][pipeline]")
+{
+    // 用户那条路:采集时 Lead Select = 0(采集就是走带播放,于是整窗记下的都是 0),采完改成 3,
+    // 不重播直接点分析。记录只有一个值 ⇒ 不算自动化 ⇒ 整窗按当前值 3。
+    ThreeVoices v;
+    REQUIRE_FALSE(allPansAre(runAnalysisPipeline(v.features, v.cfg).segments[2], 0.0)); // 前提:轨 3 本来不居中
+    v.cfg.leadRuns = {{v.cfg.rangeStartSample, v.cfg.rangeEndSample, 0}};
+    v.cfg.leadFallback = 3;
+    const auto res = runAnalysisPipeline(v.features, v.cfg);
+
+    CHECK(allPansAre(res.segments[2], 0.0)); // ★
+    REQUIRE(res.segments[0].size() == res.segments[1].size());
+    REQUIRE_FALSE(res.segments[0].empty());
+    for (std::size_t i = 0; i < res.segments[0].size(); ++i)
+    {
+        const double p0 = res.segments[0][i].pan;
+        const double p1 = res.segments[1][i].pan;
+        // 两条自由轨 → 偶数分支 K=1 → 槽 {−60,+60}(02 §5.2):中心让给主唱,其余左右对称。
+        CHECK(std::abs(std::abs(p0) - 60.0) < 1e-9);
+        CHECK(std::abs(p0 + p1) < 1e-9);
+    }
+}
+
+TEST_CASE("SL545 管线:记录恒为轨 3、当前值 = 2 → 轨 2 居中、轨 3 不居中(用户最后一次的设定就是意图)",
+          "[analysis][lead][sl545][pipeline]")
+{
+    // 播的时候是 3,播完改成 2、不重播:一份恒定的记录不比旋钮多带任何信息 ⇒ 按 2。
+    ThreeVoices v;
+    v.cfg.leadRuns = {{v.cfg.rangeStartSample, v.cfg.rangeEndSample, 3}};
+    v.cfg.leadFallback = 2;
+    const auto res = runAnalysisPipeline(v.features, v.cfg);
+    CHECK(allPansAre(res.segments[1], 0.0)); // ★ 轨 2
+    CHECK_FALSE(allPansAre(res.segments[2], 0.0)); // 记录里的 3 没有说了算
+}
+
+TEST_CASE("SL545 管线:记录有两个值(A 段 0、B 段 3)、C 段没有记录、当前值 = 2 → A 无主唱、B 轨 3、C 轨 2",
+          "[analysis][lead][sl545][pipeline]")
+{
+    // 真自动化(窗里记下了 0 和 3 两个值)⇒ 有记录的地方按记录,当前值只补没有记录的 C 段。
+    // 刻意自动化成 0 的 A 段(合唱句 / 无主唱)不会被当前值盖掉。
+    ThreeVoices v;
+    v.cfg.leadRuns = {{0, kCutA, 0}, {kCutA, kCutB, 3}};
+    v.cfg.leadFallback = 2;
+    const auto res = runAnalysisPipeline(v.features, v.cfg);
+    REQUIRE(noSegmentStraddles(res, kCutA));
+    REQUIRE(noSegmentStraddles(res, kCutB));
+    const std::int64_t end = v.cfg.rangeEndSample;
+
+    // A:记录了 0 ⇒ 无主唱 ⇒ 优先级最低的轨 1 拿中心(与「没有记录」那条同一个前提),轨 2 不居中。
+    CHECK(centeredCountIn(res.segments[0], 0, kCutA) > 0);
+    CHECK(offCenterCountIn(res.segments[1], 0, kCutA) > 0);
+    // B:记录了 3 ⇒ 轨 3 居中;当前值 2 压不过记录。
+    CHECK(centeredCountIn(res.segments[2], kCutA, kCutB) > 0);
+    CHECK(offCenterCountIn(res.segments[1], kCutA, kCutB) > 0);
+    // C:没有记录 ⇒ 当前值 2。
+    CHECK(centeredCountIn(res.segments[1], kCutB, end) > 0);
+    CHECK(offCenterCountIn(res.segments[0], kCutB, end) > 0);
+    CHECK(offCenterCountIn(res.segments[2], kCutB, end) > 0);
+}
+
+TEST_CASE("SL545 管线:记录恒为轨 3、当前值 = 0 → 无主唱,与没有记录逐位同解", "[analysis][lead][sl545][pipeline]")
+{
+    // 播的时候选了 3,之后把 Lead Select 改回 0(不要主唱):按 0。
+    ThreeVoices none;
+    const auto base = runAnalysisPipeline(none.features, none.cfg);
+    ThreeVoices v;
+    v.cfg.leadRuns = {{v.cfg.rangeStartSample, v.cfg.rangeEndSample, 3}};
+    v.cfg.leadFallback = 0;
+    const auto res = runAnalysisPipeline(v.features, v.cfg);
+    CHECK_FALSE(allPansAre(res.segments[2], 0.0)); // 前提:轨 3 在「没有主唱」时本来不居中
+    checkSameLayout(res, base);
+}
+
+TEST_CASE("SL545 管线:没有记录(旧工程)、当前值 = 2 → 与 lead_lock 轨 2 逐位同解", "[analysis][lead][sl545][pipeline]")
+{
+    // SL-216 之前存的工程:特征在、LEAD 块不在 ⇒ 窗里 0 个值 ⇒ 整窗用当前值。
+    // 与 lead_lock 逐位同解 = 当前值走的就是记录那条 C 路径(恒居中、不占槽、平衡把它当居中轨),不是另一套近似。
+    ThreeVoices v;
+    REQUIRE(v.cfg.leadRuns.empty());
+    v.cfg.leadFallback = 2;
+    ThreeVoices lock;
+    lock.cfg.tracks[1].leadLock = true;
+    const auto res = runAnalysisPipeline(v.features, v.cfg);
+    CHECK(allPansAre(res.segments[1], 0.0));
+    checkSameLayout(res, runAnalysisPipeline(lock.features, lock.cfg));
 }

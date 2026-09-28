@@ -13,7 +13,9 @@
 //     只在消息线程上用(Output 持 lifecycleMutex_ 访问)。
 //   · `LeadRecorder`:音频线程 → 消息线程的单生产者单消费者队列,音频线程每块 push 一条,
 //     消息线程每拍排干进 `LeadTimeline`。音频线程侧无分配、无锁。
-//   · `majorityLead`:分析取值 —— 一个区间里**已记录**的样本中占比最大的那个值。
+//   · `majorityLead`:分析取值 —— 一个区间里**已记录**的样本中占比最大的那个值
+//     (整段没有记录 → 调用方给的回落值,[SL-545 / J143]);`distinctLeadValues` 数窗里记下了几个值
+//     (只有一个值 ⇒ 分析整窗改用当前值,[J143a])。
 //
 // 纯 C++17、JUCE-free,可在 scvb_tests 里直接测。
 
@@ -72,9 +74,14 @@ private:
 };
 
 // 区间 [t0, t1) 的主唱:在**已记录**的样本里按覆盖样本数取最多的那个值;
-// 平局取较小的值;整段都没有记录 → 0(无主唱)。
-// 0 也是一个值(「这段没有选主唱」),参与计数 —— 未记录 ≠ 记录了 0,但两者的结论都是 0。
-int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1);
+// 平局取较小的值;整段一个已记录样本都没有 → `fallback`([SL-545 / J143]:分析传的是点分析
+// 那一刻的 lead_select;缺省 0 = 无主唱)。只要有一个已记录样本,`fallback` 就不参与(记录优先)。
+// 0 也是一个值(「这段没有选主唱」),参与计数 —— 未记录 ≠ 记录了 0:前者得 `fallback`,后者得 0。
+int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1, int fallback = 0);
+
+// [SL-545 / J143a] [t0, t1) 里**已记录**的样本一共出现了几个不同的值(0 也算一个值;没记录的空档不算)。
+// 分析据此分辨「真自动化」(≥ 2)与「一直是同一个值」(≤ 1),见 AnalysisPipeline.h `leadFallback`。
+int distinctLeadValues(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1);
 
 // 音频线程 → 消息线程的记录队列(SPSC,定长环,满则丢并计数)。
 class LeadRecorder

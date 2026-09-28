@@ -2216,7 +2216,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             }
             else
             {
-                // 坏块:按「没有记录」处理(分析退回改动前的行为,播放期覆盖层照常),下次保存以
+                // 坏块:按「没有记录」处理(分析整窗取点分析那一刻的 lead_select,[SL-545 / J143a];
+                // 播放期覆盖层照常),下次保存以
                 // 内存里的记录为准。它是可以重新播一遍补回来的派生数据,不值得为它整份拒载工程。
                 DBG("SCVB Output: LEAD chunk malformed, ignored");
             }
@@ -3923,6 +3924,14 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 写回窗外的上下文区间也要按同一份主唱来排,否则范围分析与全量分析在窗内的解会不一样。
     leadRecorder_.drainInto(leadTimeline_);
     cfg.leadRuns = leadTimeline_.runsOverlapping(cfg.rangeStartSample, cfg.rangeEndSample);
+    // [SL-545 / J143 + J143a] **点分析这一刻**的 lead_select:计算窗里的记录只有一个值(或没有)时整窗用它,
+    // 记录有 ≥ 2 个值时只补没有记录的区间(判据在管线里,见 AnalysisPipeline.h `leadFallback`)。
+    // ⚠ 计算窗是整条已采集时间线,所以「只有一个值」判的是**全部已记录部分**,不只是这次 scope。
+    // 取值口径与 processBlock 记录那一句同(截断取整 + 夹到 0..15),记下的与回落的是同一把尺子。
+    cfg.leadFallback = handles_.rawLeadSelect != nullptr
+                           ? std::clamp(static_cast<int>(handles_.rawLeadSelect->load(std::memory_order_relaxed)), 0,
+                                        scvb::analysis::kLeadMaxValue)
+                           : 0;
 
     // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须
     // **把 freeze 位清零**。此前只清段不清位,于是:

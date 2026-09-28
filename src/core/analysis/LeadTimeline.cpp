@@ -115,11 +115,11 @@ void LeadTimeline::assign(const std::vector<LeadRun>& runs)
     }
 }
 
-int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1)
+int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1, int fallback)
 {
     if (t1 <= t0)
     {
-        return 0;
+        return fallback;
     }
     std::array<std::int64_t, kLeadMaxValue + 1> covered{};
     for (const auto& r : runs)
@@ -135,7 +135,9 @@ int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t
             covered[static_cast<std::size_t>(r.lead)] += b - a;
         }
     }
-    int best = 0;
+    // [SL-545 / J143] 初值即回落值:下面只有「某个值确有已记录样本」才会换掉它,
+    // 所以一个已记录样本都没有 ⇔ 原样返回 fallback;有记录时回落值不参与计数(记录优先)。
+    int best = fallback;
     std::int64_t bestCovered = 0;
     for (int v = 0; v <= kLeadMaxValue; ++v)
     {
@@ -147,6 +149,26 @@ int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t
         }
     }
     return best;
+}
+
+int distinctLeadValues(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1)
+{
+    std::array<bool, kLeadMaxValue + 1> seen{};
+    int n = 0;
+    for (const auto& r : runs)
+    {
+        // 与 majorityLead 同一把尺子:值域外的不算,与窗没有交集(没有已记录样本落在窗里)的不算。
+        if (r.lead < 0 || r.lead > kLeadMaxValue || std::min(r.t1, t1) <= std::max(r.t0, t0))
+        {
+            continue;
+        }
+        if (!seen[static_cast<std::size_t>(r.lead)])
+        {
+            seen[static_cast<std::size_t>(r.lead)] = true;
+            ++n;
+        }
+    }
+    return n;
 }
 
 void LeadRecorder::record(std::int64_t t0, std::int64_t t1, int lead) noexcept

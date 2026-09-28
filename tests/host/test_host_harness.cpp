@@ -13364,3 +13364,130 @@ TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不�
     CHECK(withLead == withoutLead); // ② 主唱记录没把它的旧数据带回计算集
     CHECK(r.segTableOf(leadCh) == leadBefore);
 }
+
+// ===========================================================================
+// [SL-545 / J143 + J143a] 点分析那一刻的 Lead Select 进分析。
+//
+// J143:没有记录的区间用点分析那一刻的 lead_select。J143a(统筹 2026-09-28):计算窗里的记录只有一个值
+// (全 0 / 全是同一轨)⇒ 不算自动化,整窗用当前值;≥ 2 个值 ⇒ 按记录逐区间,没有记录的区间才用当前值。
+// J143 单独不够的原因就是下面第一格的前提:采集本身就是走带播放,采集过的地方全有记录(值是采集那会儿的
+// lead_select,通常 0)⇒ 「采完改了 Lead Select、不重播直接点分析」在只有 J143 时仍按记录的 0 分析。
+// 纯算法那半在 tests/core/test_lead_timeline.cpp 的 [sl545];这里钉**接线**:startAnalysis 真的把参数面上的
+// lead_select 交给了管线,判据看的是 Output 真实记下的那份记录(计算窗 = 整条已采集时间线,从 0 起)。
+// ===========================================================================
+TEST_CASE("HOST SL-545:改了 Lead Select 不重播直接分析 —— 记录恒定用当前值,记录有两个值按记录",
+          "[host][sl545][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+
+    // 事实前提(不是本卡造的):采集就是走带播放 ⇒ 从时间线起点到采集末尾全有记录,值都是 0、只有这一个值。
+    {
+        const auto runs = r.out.leadTimelineSnapshot();
+        REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 1);
+        REQUIRE(scvb::analysis::majorityLead(runs, s0, s1, /*fallback=*/7) == 0); // 7 当哨兵:取到 0 = 窗里有记录
+    }
+
+    // 基线:Lead Select = 0。挑离开正中的段最多的那条轨当主唱 —— 这样下面「它每段都在正中」只能来自本卡。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    const auto panBase = r.flatOf(/*wantPan=*/true);
+    const auto volBase = r.flatOf(/*wantPan=*/false);
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+    r.out.setCaptureEnabled(false); // 下面几格的重播只为让 Output 记下 Lead Select,不改特征
+    MonoMultiRig::pump(100);
+
+    const auto checkLeadCentredOthersAround = [&] {
+        const auto leadSegs = segmentsOfTrack(r.out, leadCh);
+        REQUIRE_FALSE(leadSegs.empty());
+        for (const auto& s : leadSegs)
+        {
+            CHECK(s.pan == 0.0f); // ★ 主唱进了分析:段表里就是正中,不靠播放期覆盖
+        }
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            if (ch == leadCh)
+            {
+                continue;
+            }
+            INFO("non-lead track " << ch);
+            CHECK(countOffCenter(segmentsOfTrack(r.out, ch)) > 0); // 其余声部围绕主唱排到两侧
+        }
+    };
+
+    SECTION("记录全是 0、改 Lead Select 不重播 → 主唱居中,其余围绕它")
+    {
+        const auto before = r.out.leadTimelineSnapshot();
+        setLeadSelect(r.out, leadCh); // 只改参数,不走带
+        REQUIRE(sameRuns(r.out.leadTimelineSnapshot(), before)); // 前提:记录没变,居中只能来自当前值
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("旧工程(没有 LEAD 块)、Lead Select = 主唱轨、不播放 → 主唱居中,其余围绕它")
+    {
+        juce::MemoryBlock full;
+        r.out.getStateInformation(full);
+        const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+        r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+        MonoMultiRig::pump(100);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        setLeadSelect(r.out, leadCh);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("记录有两个值(前 2/3 主唱轨、其余 0)、Lead Select 换成另一轨、不重播 → 按记录,当前值说了不算")
+    {
+        // 本机台每轨只切出**一段**(六个爆发之间的静音短于换气容忍,整窗并成一段)⇒ 整窗只有一个全局区间,
+        // 它的主唱是记录的多数值。重播前 2/3 让主唱轨占多数、其余仍是采集时记下的 0 —— 记录里就有两个值。
+        const std::int64_t cut = s0 + ((s1 - s0) * 2 / 3 / kBlock) * kBlock;
+        setLeadSelect(r.out, leadCh);
+        r.ph.timeSamples = s0;
+        r.runBlocks(static_cast<int>((cut - s0) / kBlock), 0.5f);
+        const int otherCh = leadCh % MonoMultiRig::kCount + 1;
+        setLeadSelect(r.out, otherCh); // 停下后换成另一轨,不播
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 2); // 前提:真自动化
+            REQUIRE(scvb::analysis::majorityLead(runs, s0, s1) == leadCh); // 前提:主唱轨占多数
+            REQUIRE(scvb::analysis::majorityLead(runs, cut, s1, /*fallback=*/7) == 0);
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        INFO("leadCh=" << leadCh << " otherCh=" << otherCh);
+        checkLeadCentredOthersAround(); // 其中含「当前值那一轨离开正中」:它没把记录盖掉
+    }
+
+    SECTION("记录恒为主唱轨、Lead Select 改回 0 → 不居中,与基线逐位同解")
+    {
+        setLeadSelect(r.out, leadCh);
+        r.ph.timeSamples = 0; // 从时间线起点重播到采集末尾:计算窗里只剩主唱轨这一个值
+        r.runBlocks(static_cast<int>(s1 / kBlock) + 2, 0.5f);
+        setLeadSelect(r.out, 0);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 1);
+            REQUIRE(scvb::analysis::majorityLead(runs, 0, s1) == leadCh);
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        CHECK(r.flatOf(/*wantPan=*/true) == panBase);
+        CHECK(r.flatOf(/*wantPan=*/false) == volBase);
+    }
+}

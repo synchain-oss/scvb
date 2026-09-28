@@ -210,6 +210,10 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
     std::array<std::vector<AnalysisSegment>, kPipelineTracks> assigned;
 
+    // [SL-545 / J143a] 计算窗里的 lead_select 记录只有 ≤ 1 个不同的值 ⇒ 不算自动化,整窗取当前值
+    // (cfg.leadFallback);≥ 2 个 ⇒ 按记录逐区间取多数值。判据的理由见 AnalysisPipeline.h `leadFallback`。
+    const bool leadAutomated = distinctLeadValues(cfg.leadRuns, cfg.rangeStartSample, cfg.rangeEndSample) >= 2;
+
     for (std::size_t i = 0; i < intervals.size(); ++i)
     {
         report(onProgress, 0.55f + 0.4f * (static_cast<float>(i) / static_cast<float>(intervals.size())));
@@ -230,7 +234,10 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         // 恒 P=0、不占槽;lead_exclusive 档据此剔除中心),其余声部按剩下的轨数排槽,平衡把它当
         // 居中那一轨算。不另造一条「主唱」分支:C 的语义(02 §5.2/§5.6)原样适用,包括
         // 「pair 成员被锁 → pair 忽略」「冻结 pan 也让位」这两条既有优先级。
-        const int intervalLead = majorityLead(cfg.leadRuns, gi.t0, gi.t1);
+        // [SL-545 / J143 + J143a] 不是自动化 → 本区间取点分析那一刻的 lead_select(cfg.leadFallback);
+        // 是自动化 → 按记录多数值,本区间一个已记录样本都没有时才取 cfg.leadFallback。
+        const int intervalLead =
+            leadAutomated ? majorityLead(cfg.leadRuns, gi.t0, gi.t1, cfg.leadFallback) : cfg.leadFallback;
 
         // 本区间的活跃轨 → TrackMeta(z 取该区间内的平均能量)。
         std::vector<TrackMeta> metas;
