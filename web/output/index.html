@@ -5764,6 +5764,110 @@
                         </button>
                         <!-- [T3x] bridge.confirmPrintGuard() —— 契约 §1.34 -->
                     </div>
+                    <!-- ⑫⑬⑭ [J150] 宿主专属提示(03 §4.2 REAPER / §4.4 Ableton Live)。
+                         宿主取 §1.1 快照 `host`;三条的条件与「本会话」口径见 web/output/host-hints.js 头注。
+                         都是**建议类**(不是 §5.1 错误码)⇒ 与 ⑧⑨⑩ 一样带 ✕,走 app.js 的 showDismissible。
+                         Cubase / 其他宿主上三条恒不出。 -->
+                    <!-- ⑫ REAPER ∧ 输出开关 ON:写入自动化期间请保持插件窗口打开(RD-04) -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-reaperKeepOpen"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.reaperKeepOpen"
+                            data-gb="banner-reaperKeepOpen-text"
+                            >REAPER:写入自动化期间请保持本插件窗口打开——窗口关着时
+                            REAPER 可能不写入自动化</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-reaperKeepOpen-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <!-- ⑬ REAPER ∧ 本会话进过写入(一次性提示):宿主端解法 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-reaperPrintNote"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.reaperPrintNote"
+                            data-gb="banner-reaperPrintNote-text"
+                            >REAPER:若写完后没有录到自动化,请在 Preferences →
+                            Plug-ins → VST → VST compatibility 中把 Parameter
+                            automation notifications 设为 process all
+                            notifications</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-reaperPrintNote-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <!-- ⑭ Live ∧ 写入已结束 ∧(停走或输出关):点 Re-Enable Automation -->
+                    <div class="sc-banner" data-gb="banner-liveReEnable" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.liveReEnable"
+                            data-gb="banner-liveReEnable-text"
+                            >Live:写入已结束。Re-Enable Automation
+                            按钮亮起属正常现象,点击它即可恢复读取自动化</span
+                        >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-liveReEnable-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
+                    </div>
                 </div>
 
                 <!-- ============================== Tab 导航(05 §1.1 + §2.0) ============================== -->

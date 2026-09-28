@@ -99,13 +99,15 @@ REAPER 的 FX chain 无 pre/post 分隔线概念;「最后一格」= FX chain �
 
 推荐 **Write / Latch**。REAPER 有「**关闭插件 GUI 后不写自动化**」的历史坑(RD-04,VST 时代确认,VST3 待复验);若打印落点为空,先做:Preferences → Plug-ins → VST → VST compatibility → Parameter automation notifications = process all notifications,并**打印期间保持 SCVB Output 窗口打开**。
 
+**插件界面会提示这两件事**([J150];不再只写在文档里):SCVB Output 识别出宿主是 REAPER 时,① 输出开关打开(写入自动化)期间,界面顶部常显一条横幅「写入自动化期间请保持本插件窗口打开」;② 本次打开插件窗口后**第一次**进入写入时,再出一条一次性提示,写明上面那条首选项的路径。两条都可以点 ✕ 关掉:① 关掉后要到输出开关关掉再打开才会再出;② 关掉后本次窗口里不再出(关掉插件窗口再打开算新的一次)。其他宿主上这两条不出。
+
 #### 离线渲染注意事项
 
 File → Render 正确;S1 R-5 已验 1× 与 **Full-speed Offline** 两档 null 通过。单轨 Freeze / Render in Place 会得到静音文件。
 
 #### 已知坑
 
-- **RD-04 · 关 GUI 不写自动化**:见上文「录自动化」的宿主端解法。出处:masterPlan 11-risks RD-04、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) R-1..R-4。
+- **RD-04 · 关 GUI 不写自动化**:见上文「录自动化」的宿主端解法与界面提示。出处:masterPlan 11-risks RD-04、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) R-1..R-4。
 - **anticipative FX**:S1 R-2/R-3/R-4 三档(开/最大/关)均 gapCount 0;render-ahead 实测上限 5000ms 下环有余量。
 - **Run as dedicated process**:R-12 已验跨进程共享内存仍工作。
 - **同机双工程/双 tab 抢 channel**:v1 明示同机同时只支持一个使用 SCVB 的工程。
@@ -136,6 +138,8 @@ Live 的 device chain 无 pre/post 分隔线;「最后一格」= 设备链末尾
 
 推荐 **Write / Latch**。**128 参数上限(RD-02)**:SCVB 声明 123 + wrapper 合成 bypass = **124 宿主可见,Live 128 上限余 4**(封顶,不得再加自动化参数)。打印过程中 **Re-Enable Automation** 按钮亮起属正常现象,打印完点击它(或重新播放)即可恢复读取。
 
+**插件界面会提示这件事**([J150];不再只写在文档里):SCVB Output 识别出宿主是 Ableton Live 时,写入结束且停走(或关掉输出开关)后,界面顶部会出一条提示「点击 Re-Enable Automation 即可恢复读取自动化」;循环播放时播放头每一圈出入写入范围不算结束,不出这条(下一圈还会接着写)。可点 ✕ 关掉,下一次写入结束会再出。其他宿主上这条不出。
+
 #### 离线渲染注意事项
 
 Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到静音产物。**设备停用**(J52):Live 设备停用不经 bypass、直接停止调用 processBlock,SCVB 检测到后会通知各 Input 转直通,人声约 **~5.5 秒**内恢复(未经平衡的原始声像);A/B 请用 SCVB 面板轨道开关,不要停用设备。
@@ -143,7 +147,7 @@ Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到�
 #### 已知坑
 
 - **RD-02 · 128 参数上限**(124 口径,余 4)。出处:masterPlan 11-risks RD-02。
-- **Re-Enable Automation 频繁亮起**(R4/R9)。出处:masterPlan 03 §4.4。
+- **Re-Enable Automation 频繁亮起**(R4/R9):写入结束时界面会提示点它(见上文「录自动化」)。出处:masterPlan 03 §4.4。
 - **设备停用 ~5.5s 直通兜底**(L-5/J52)。
 - **S1/S2 均未上机**:U27(2026-08-14)决定 S1 跳过 Live,L-5 已挂 T24。
 
@@ -197,7 +201,7 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 ### 3.2 宿主侧已知开放问题(未修复,按操作/兜底)
 
 7. **RD-01 · Cubase 录不进插件自发参数变化**(宿主侧开放问题;**Cubase 15 成品实测未复现**,见 §1 脚注 7):Cubase 12+ 下 setValueNotifyingHost 发起的自动化可能录不进,无公开确定解。万一遇到,**兜底 = 建议表 + CSV 导出(T41)**。出处:masterPlan 11-risks RD-01。
-8. **RD-04 · REAPER 关 GUI 不写自动化**(未修复,宿主端设置兜底):打印期间保持插件窗口打开,或把 Parameter automation notifications 设为 process all notifications。出处:masterPlan 11-risks RD-04。
+8. **RD-04 · REAPER 关 GUI 不写自动化**(未修复,宿主端设置兜底;插件界面在 REAPER 上会提示,见 §2.2):打印期间保持插件窗口打开,或把 Parameter automation notifications 设为 process all notifications。出处:masterPlan 11-risks RD-04。
 9. **RD-02 · Live 128 参数上限**(未修复,预算封顶):123 声明 + bypass = 124 宿主可见,余 4;任何加自动化参数的 PR 必须先改宪法。出处:masterPlan 11-risks RD-02。
 10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声 ~5.5s 内转直通恢复(未经平衡),FL 用户请对总线关 smart disable。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6。
 11. **同机双工程限制**(未修复,v1 明示限制):共享内存段名只按组号区分、不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 用同一个组时后开者抢 channel)。v2 走 documentToken 隔离。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-5。
@@ -217,8 +221,8 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
-| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击;停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
+| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
+| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 
 > **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。

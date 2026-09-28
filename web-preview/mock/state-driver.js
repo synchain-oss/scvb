@@ -95,6 +95,10 @@ export const SCENARIO_MAP = Object.freeze({
     "abi-mismatch": "fifteen-tracks",
     "sr-mismatch": "fifteen-tracks",
     "group-mismatch": "fifteen-tracks",
+    // [SL-463 / J156] Input 认领的**非冲突**失败(契约 §3.2/§3.3 `{ok:false, reason}`):
+    // 点卡 / 切组的回执是失败,界面要抖卡 + 弹说明 toast。开箱态由 buildWorld 的场景覆写给。
+    "claim-unavailable": "fifteen-tracks",
+    "claim-abi-mismatch": "fifteen-tracks",
     // T31 接线两档:落在健康满配世界上,由 buildWorld 的场景覆写改快照初值
     // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
     "print-guard": "fifteen-tracks",
@@ -222,6 +226,12 @@ const PERIOD = Object.freeze({
  */
 const AUTO_REQUEST_INITIAL_STATE_MS = 1500;
 
+/**
+ * [J150] `?host=` 的合法值 = 契约 §1.1 快照 `host` 的闭集(native 侧 src/output/HostId.h)。
+ * 预览里只有它决定宿主专属提示(横幅 ⑪⑫⑬)出不出,见 web/output/host-hints.js。
+ */
+export const HOST_VALUES = Object.freeze(["reaper", "live", "cubase", "other"]);
+
 // -----------------------------------------------------------------------------
 // 1. 查询参数解析
 // -----------------------------------------------------------------------------
@@ -248,7 +258,7 @@ function toSearchParams(params) {
 /**
  * 解析预览参数。
  * @returns {{fixture:string, scenario:string|null, loop:"host"|"none"|null,
- *            play:boolean|null, role:string|null, warnings:string[]}}
+ *            play:boolean|null, host:string|null, role:string|null, warnings:string[]}}
  */
 export function parsePreviewQuery(params) {
     const q = toSearchParams(params);
@@ -306,12 +316,26 @@ export function parsePreviewQuery(params) {
     const play =
         rawPlay === null ? null : rawPlay !== "0" && rawPlay !== "false";
 
+    // [J150] 宿主标识(§1.1 快照 `host`,闭集 = HOST_VALUES)。缺省 = 快照生成器的默认 "other"。
+    // 非法值**出警告**不静默吞(同 staleFullEvery):拼错一个字就悄悄跑在 "other" 上,
+    // 拿到的是「提示怎么没出」而不是「参数写错了」。
+    const rawHost = q.get("host");
+    let host = null;
+    if (rawHost !== null) {
+        if (HOST_VALUES.includes(rawHost)) host = rawHost;
+        else
+            warnings.push(
+                `host=${rawHost} 未知(只认 ${HOST_VALUES.join(" / ")}),已按默认 other`,
+            );
+    }
+
     return {
         fixture,
         scenario: rawScenario,
         loop,
         play,
         staleFullEvery,
+        host,
         role: q.get("role"),
         warnings,
     };
@@ -401,6 +425,9 @@ export function buildWorld(opts = {}) {
         loop: { ...HOST_LOOP },
         occupiedMask: ALL_CHANNELS_MASK,
         groupConflict: false,
+        // [SL-463 / J156] Input 认领的非冲突失败:null | "unavailable" | "abiMismatch"
+        // (由 claim-unavailable / claim-abi-mismatch 两个场景置,语义见 juce-bridge-mock.js §3.2/§3.3)。
+        claimFailure: null,
         ringFull: false,
         noTimeline: false,
         // [SL-354] 「状态回声延后一拍」—— 只有开了它,mock 的时序才与真桥同形。
@@ -877,6 +904,35 @@ export function buildWorld(opts = {}) {
         inputClaim = "idle";
         groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output
         caps.occupiedMask = 0; // 本组(B)无其它 Input
+    } else if (opts.scenario === "claim-unavailable") {
+        // [SL-463 / J156] 开箱已接管 ch2(组 A);之后点别的卡 / 切组,建段都失败 ⇒ 回执
+        // {ok:false, reason:"unavailable"}。本组没有别的 Input(不让冲突先截走这次点击)。
+        const connected = connectedInputSnapshot(2);
+        inputSnapshot = {
+            ...connected,
+            conn: { ...connected.conn, occupiedMask: 1 << 1 }, // 只有本实例占 ch2
+        };
+        inputClaim = "active";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "unavailable";
+    } else if (opts.scenario === "claim-abi-mismatch") {
+        // [SL-463 / J156] 开箱未分配;本组 registry 由另一 abi 的 SCVB 建 ⇒ 第一次点卡回执
+        // {ok:false, reason:"abiMismatch"},claim 随之变 abiMismatch(红 pill + 横幅)。
+        // 开箱的 claim 还是 unassigned:真桥在打开 registry 之前探测不到对端 abi。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 0,
+            group_id: 1,
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 0,
+            },
+            config: { config_seq: 42 },
+        });
+        inputClaim = "unassigned";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "abiMismatch";
     }
 
     // ---- Input 首启链的开箱位([J80] T48)---------------------------------------
@@ -910,6 +966,11 @@ export function buildWorld(opts = {}) {
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
+    // [J150] `?host=`:只改 Output 快照的 `host`(§1.1 快照专属键),其余一个字节不动。
+    // 非法值在 parsePreviewQuery 已经出过警告并落成 null ⇒ 这里不再判。
+    if (outputSnapshot && HOST_VALUES.includes(opts.host)) {
+        outputSnapshot = { ...outputSnapshot, host: opts.host };
+    }
 
     // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
     // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
@@ -1203,6 +1264,9 @@ export function createPreviewSession(opts = {}) {
         // 上一版在 caps 里写了覆写逻辑却没往下传,那段代码一次都没执行过 ——
         // 加参数时**同一个 commit 里就要有一格跑在非默认值上**,否则看不出没接上。
         staleFullEvery: parsed.staleFullEvery,
+        // [J150] 同上一条的接线纪律:`?host=` 只有经这一行才到得了 buildWorld。
+        // 非默认值那一格 = smoke-host-hints.mjs 的 mock 段(host=reaper 必须落进快照)。
+        host: parsed.host,
     });
     const { backend, ctl } = createMockBackend({ role, world });
     const driver = makeDriver(ctl, world);

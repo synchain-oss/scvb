@@ -617,7 +617,10 @@ export function makeOutputState(overrides = {}) {
 /**
  * §1.1 `requestInitialState()` 的 Output 全量快照。
  * = §2.1 state 全字段 + 快照专属的 session_guid / guide_seen_global / tour_seen_global /
- *   version / conn(契约 §1.1 语义行);**没有** `full` 键(那是事件字段),**没有**顶层 abi。
+ *   lang_chosen_global / version / host / conn(契约 §1.1 语义行);**没有** `full` 键
+ *   (那是事件字段),**没有**顶层 abi。
+ * [J150] `host` 默认 `"other"`(= 不出任何宿主专属提示),预览里要看 REAPER / Live 的提示
+ *   用 `?host=reaper` / `?host=live`(web-preview/mock/state-driver.js 的 parsePreviewQuery)。
  */
 export function makeOutputSnapshot(overrides = {}) {
     const state = makeOutputState();
@@ -642,6 +645,8 @@ export function makeOutputSnapshot(overrides = {}) {
         analysis_run: state.analysis_run,
         // 本机 abi 的唯一落点(§1.1:无顶层 abi 键)
         version: { plugin: PLUGIN_VERSION, abi: LOCAL_ABI },
+        // [J150] 宿主标识(闭集 reaper / live / cubase / other;native 侧 src/output/HostId.h)
+        host: "other",
         conn: makeConn(),
     };
     return mergeDeep(snapshot, overrides);

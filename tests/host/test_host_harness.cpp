@@ -45,6 +45,7 @@
 #include "UiDefaultsStore.h" // [SL-208] 缩放档位全局默认
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
+#include "ipc/CtrlPlane.h" // [SL-463] CtrlHeader / kCtrlSegmentSize(坏 ctrl 段夹具)
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
 #include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
@@ -5746,6 +5747,186 @@ TEST_CASE("HOST SL-481:兄弟 Input 接手同一通道后,原实例析构不得�
     Rig::pumpMessages(50);
 }
 
+// ---------------------------------------------------------------------------
+// [SL-463 / J156] Input setChannelId / setGroupId 的**非冲突**失败要报成失败(契约 §3.2/§3.3 返回并集)。
+// 真 Processor + 真命名段:用一个「magic 已发布、abi 不符」的同名段(= 另一版本的 SCVB 建的段)
+// 把失败造出来,每格钉两件事 ——
+//   ① Processor 的返回值是**这次请求本身**的结果,不是会话此刻的 state();
+//   ② 这个结果经 claimRequestResponse() 映射成 {ok:false, reason}(桥面回执)。InputEditor 把
+//      返回值交给它的那一行,由 tests/webview/test_input_bridge.cpp 的源码级判据钉。
+// 组号用 4/5(测试专用组,见文件头「组号纪律」;不碰 g1/g2 与保留组 8)。坏段在用例结束前把 abi
+// 改回并解映射,不给同进程后面的用例留坏段。
+// ---------------------------------------------------------------------------
+namespace
+{
+template<typename Header>
+struct Sl463PoisonedSegment
+{
+    scvb::SegmentBackendWin32& backend;
+    scvb::SegmentView view;
+    Header* header = nullptr;
+
+    Sl463PoisonedSegment(scvb::SegmentBackendWin32& b, const std::wstring& fullName, std::size_t size,
+                         std::size_t dataOffset)
+        : backend(b)
+    {
+        REQUIRE(backend.createOrOpen(fullName, size, view) == scvb::InitResult::kOk);
+        header = static_cast<Header*>(view.base);
+        if (view.created)
+        {
+            REQUIRE(backend.initHeader(view, &header->magic, &header->abi, nullptr, dataOffset) ==
+                    scvb::InitResult::kOk);
+        }
+        // 已存在(上一格留下、还没随句柄归零销毁)也照样能用:只要 magic 已发布,改 abi 就是坏段。
+        REQUIRE(header->magic.load(std::memory_order_acquire) == scvb::kScvbMagic);
+        header->abi.store(scvb::kScvbAbi + 1, std::memory_order_release);
+    }
+    ~Sl463PoisonedSegment()
+    {
+        header->abi.store(scvb::kScvbAbi, std::memory_order_release);
+        backend.unmap(view);
+    }
+    Sl463PoisonedSegment(const Sl463PoisonedSegment&) = delete;
+    Sl463PoisonedSegment& operator=(const Sl463PoisonedSegment&) = delete;
+};
+
+constexpr std::size_t kSl463AudioSegmentSize =
+    sizeof(scvb::AudioRingHeader) + static_cast<std::size_t>(scvb::kDefaultRingFrames) * 2 * sizeof(float);
+
+void checkClaimFailedResponse(scvb::input::InputClaimState result, const char* reason)
+{
+    const juce::var resp = scvb::input::bridge::claimRequestResponse(result);
+    auto* o = resp.getDynamicObject();
+    REQUIRE(o != nullptr);
+    CHECK(o->hasProperty("ok"));
+    CHECK(static_cast<bool>(o->getProperty("ok")) == false);
+    CHECK(o->getProperty("reason").toString() == juce::String(reason));
+}
+} // namespace
+
+TEST_CASE("HOST SL-463:首次选通道时 registry abi 不符 → 请求结果 abiMismatch,回执不再是成功", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    scvb::Registry probe(backend, kGroup);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    probe.header()->abi.store(scvb::kScvbAbi + 1, std::memory_order_release); // 本组 registry 由另一 abi 的 SCVB 建
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+
+        const auto result = in.setChannelId(kCh);
+        CHECK(result == scvb::input::InputClaimState::kAbiMismatch);
+        checkClaimFailedResponse(result, "abiMismatch");
+
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kAbiMismatch);
+        CHECK(snap.channelId == 0); // 一个 slot 也没持住
+
+        in.releaseResources();
+    }
+    probe.header()->abi.store(scvb::kScvbAbi, std::memory_order_release);
+}
+
+TEST_CASE("HOST SL-463:换通道时目标 audio 段打不开 → 会话回滚到原通道,回执仍是 unavailable", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kGroup = 4;
+    constexpr int kFrom = 5;
+    constexpr int kTo = 6;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kGroup, kTo),
+                                                         kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kFrom) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setChannelId(kTo);
+        CHECK(result == scvb::input::InputClaimState::kUnavailable);
+        checkClaimFailedResponse(result, "unavailable");
+
+        // 补偿式回滚成功:会话回到原通道、仍活跃。正因如此回执认返回值不认 state() ——
+        // 此刻 state() 是 kActive,按它回执就又是 {ok:true},用户点了卡却什么都没发生。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.claimState == scvb::input::InputClaimState::kActive);
+        CHECK(snap.channelId == kFrom);
+        CHECK(snap.configuredChannelId == kFrom);
+
+        in.releaseResources();
+    }
+}
+
+TEST_CASE("HOST SL-463:改组时新组 ctrl 段 abi 不符 → 组号不变,请求结果 abiMismatch(此前回成功)", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kFromGroup = 5;
+    constexpr int kToGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::CtrlHeader> poisoned(backend, scvb::segmentCtrlName(kToGroup), scvb::kCtrlSegmentSize,
+                                                    scvb::kCtrlBroadcastOffset);
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kFromGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kFromGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kCh) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setGroupId(kToGroup);
+        CHECK(result == scvb::input::InputClaimState::kAbiMismatch);
+        checkClaimFailedResponse(result, "abiMismatch");
+
+        // 这一支改组**没有生效**:组号、会话都留在旧组。此前回的是 session_.state()(= kActive)⇒ {ok:true}。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.groupId == kFromGroup);
+        CHECK(snap.claimState == scvb::input::InputClaimState::kActive);
+        CHECK(snap.channelId == kCh);
+
+        in.releaseResources();
+    }
+}
+
+TEST_CASE("HOST SL-463:改组后新组 audio 段打不开 → 组号已换,请求结果 unavailable", "[host][input][sl463]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr int kFromGroup = 5;
+    constexpr int kToGroup = 4;
+    constexpr int kCh = 5;
+
+    scvb::SegmentBackendWin32 backend;
+    Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kToGroup, kCh),
+                                                         kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
+    {
+        ScvbInputAudioProcessor in;
+        in.setGroupId(kFromGroup);
+        REQUIRE(in.bridgeTickSnapshot().groupId == kFromGroup); // [SL-324] 读回断言
+        in.prepareToPlay(kSr, kBlock);
+        REQUIRE(in.setChannelId(kCh) == scvb::input::InputClaimState::kActive);
+
+        const auto result = in.setGroupId(kToGroup);
+        CHECK(result == scvb::input::InputClaimState::kUnavailable);
+        checkClaimFailedResponse(result, "unavailable");
+
+        // 与上一格相反:ctrl 段换过去了,组号**已经**是新组;失败发生在新组里的 claim(建段)。
+        const auto snap = in.bridgeTickSnapshot();
+        CHECK(snap.groupId == kToGroup);
+        CHECK(snap.claimState == scvb::input::InputClaimState::kUnavailable);
+        CHECK(snap.channelId == 0);
+
+        in.releaseResources();
+    }
+}
+
 TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例", "[host][v56][SL210]")
 {
     Rig r; // r.out = 第一个 Output(主实例)
@@ -5944,6 +6125,67 @@ TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][
     //    而不是修复前那句凭空的「已保存为外部文件」)。
     REQUIRE(a.featureBytes() == 0);
     REQUIRE_FALSE(a.featuresInSidecar());
+}
+
+// ---------------------------------------------------------------------------
+// [J150] 宿主标识:桥面 §1.1 快照的 `host` 取 processor 的 hostId()(03 §4.2 REAPER / §4.4 Live
+// 的宿主专属提示据此只在对应宿主上出)。OutputEditor::buildSnapshot 里那一行 put 不在本目标里
+// (那个 TU 拖 WebView2),由 web-preview/tests/smoke-host-hints.mjs 的源码钉子锁。
+//
+// 本用例钉的是**构造期判定 → hostId()** 这一段,逐支注入(REAPER / Live 两种枚举 /
+// Cubase 两种枚举 / Nuendo / Studio One / pluginval / 未知宿主),每一支都是「先注入、再构造」。
+// ⚠ 钉不住的那一半照实说:**真实判定**(`juce::PluginHostType().type`,按本进程可执行文件名)
+//   在这里只测得到 "other" —— harness 自己不是任何 DAW。把那半句换成常量 UnknownHost,
+//   ① 照样绿;它靠的是 JUCE 自己的识别表,不是本仓代码。
+// 用 CHECK 不用 REQUIRE:一支红了要看得到其余各支仍绿还是一起红(REQUIRE 会掐断后面的支)。
+// 出口一律复位注入,免得一支红了把注入漏给后面的用例。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J150:宿主标识在构造期判定并经 hostId() 发布(§1.1 快照 host)", "[host][J150]")
+{
+    struct ResetHostOverride
+    {
+        ~ResetHostOverride() { ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt); }
+    } resetHostOverride;
+
+    // ① 不注入:走真实判定;本进程不是 DAW ⇒ "other"。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    {
+        ScvbOutputAudioProcessor real;
+        CHECK(std::string(real.hostId()) == "other");
+    }
+
+    // ② 逐支注入。
+    struct HostCase
+    {
+        juce::PluginHostType::HostType type;
+        const char* want;
+    };
+    const HostCase cases[] = {
+        {juce::PluginHostType::Reaper, "reaper"},
+        {juce::PluginHostType::AbletonLiveGeneric, "live"}, // Live 12 走这一支(文件名不带 6..11)
+        {juce::PluginHostType::AbletonLive11, "live"},
+        {juce::PluginHostType::SteinbergCubaseGeneric, "cubase"}, // Cubase 12+ 走这一支
+        {juce::PluginHostType::SteinbergCubase10_5, "cubase"},
+        {juce::PluginHostType::SteinbergNuendoGeneric, "other"}, // 本卡不给 Nuendo 出提示
+        {juce::PluginHostType::StudioOne, "other"},
+        {juce::PluginHostType::pluginval, "other"},
+        {juce::PluginHostType::UnknownHost, "other"},
+    };
+    for (const auto& c : cases)
+    {
+        ScvbOutputAudioProcessor::setHostTypeForTesting(c.type);
+        ScvbOutputAudioProcessor p;
+        INFO("PluginHostType::HostType = " << static_cast<int>(c.type) << " -> want " << c.want);
+        CHECK(std::string(p.hostId()) == c.want);
+    }
+
+    // ③ 注入只影响**之后构造**的实例:复位后新构造的回到真实判定。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(juce::PluginHostType::Reaper);
+    ScvbOutputAudioProcessor before;
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    ScvbOutputAudioProcessor after;
+    CHECK(std::string(before.hostId()) == "reaper");
+    CHECK(std::string(after.hostId()) == "other");
 }
 
 // ---------------------------------------------------------------------------

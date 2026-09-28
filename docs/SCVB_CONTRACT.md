@@ -99,8 +99,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | 无 |
-| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy, applied:{loudness_mode, center_slot_policy}},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool, lang_chosen?:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool, lang_chosen_global?:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
-| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `lang_chosen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(**用户 2026-09-14 裁定 sidecar 不上之后,Tab4「存储状态」行已收起,故本版无 UI 消费面**;字段仍在事件里照常下发,04 §5.4/ADR-007 —— 见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
+| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy, applied:{loudness_mode, center_slot_policy}},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool, lang_chosen?:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool, lang_chosen_global?:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  host?:"reaper"\|"live"\|"cubase"\|"other",`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
+| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `lang_chosen_global` / `host` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(**用户 2026-09-14 裁定 sidecar 不上之后,Tab4「存储状态」行已收起,故本版无 UI 消费面**;字段仍在事件里照常下发,04 §5.4/ADR-007 —— 见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。**`host`**([J150],变更文档 `docs/contract-changes/20260928-j150-snapshot-host.md`)= 宿主标识,**闭集** `"reaper"` / `"live"` / `"cubase"` / `"other"`:C++ 侧按 `juce::PluginHostType` 在 Output 实例构造期判定一次(JUCE 按宿主可执行文件名识别:`isReaper()` / `isAbletonLive()`(各版本)/ `isCubase()`(各版本);Nuendo / Studio One / FL Studio 及其余一律 `"other"`;取值口径的代码真源 = `src/output/HostId.h`),实例寿命内不变,故**只进本快照、不进 §2.1 事件**。用途 = 03 §4.2 / §4.4 的宿主专属界面提示(REAPER:写入自动化期间请保持插件窗口打开 + 首次进入写入时的一次性首选项提示;Live:写入结束后提示点 Re-Enable Automation),**只对 `reaper` / `live` 出提示**。native 本版恒发;字段标 `?` 是给 UI 的容忍纪律:**缺席或不认识的值一律按 `"other"` 处理**(不出任何提示)。取值域今后只许放宽(§0.1 第 3 条)。只读、不属工程 state、不入 state chunk。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步;每个编辑器生命周期至少调用一次 |
@@ -615,9 +615,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `n: 0..15`(**0 = 未分配/主动释放**,J01/J59) |
-| 返回 | `{ok:true}` 或 `{conflict:true}` |
-| 语义 | claim 本组 registry 的 `InputSlot[n-1]`:CAS `state 0→1`;已被占且心跳新鲜 → `{conflict:true}`(UI:卡片抖动 + 红 toast `ch.occupied`「通道 {n} 已被占用(组 {g})」,`{n}`=请求值、`{g}`=当前组);**陈旧占用可覆盖成功**(≥5000ms 且 pid 存活探测失败,J10 双条件)。`n=0` = 释放当前 slot,本轨回到直通(J12);Output 侧该轨回落「未连接」。claim 结果经 `scvb.state.claim` 回推。 |
-| 拒绝态 | `{conflict:true}`;abi 不符的对端由 registry 侧拒连,本实例 claim 态置 `abiMismatch`(§5.2) |
+| 返回 | `{ok:true}` 或 `{conflict:true}` 或 `{ok:false, reason:"abiMismatch"}` 或 `{ok:false, reason:"unavailable"}` 或 `{ok:false, reason:"badArg"}`(参数不是 int 范围内的数值;§0.8 第 2 条)—— 后三种为 [J156] 补登,变更文档 `docs/contract-changes/20260929-j156-sl463-claim-failure-receipt.md` |
+| 语义 | claim 本组 registry 的 `InputSlot[n-1]`:CAS `state 0→1`;已被占且心跳新鲜 → `{conflict:true}`(UI:卡片抖动 + 红 toast `ch.occupied`「通道 {n} 已被占用(组 {g})」,`{n}`=请求值、`{g}`=当前组);**陈旧占用可覆盖成功**(≥5000ms 且 pid 存活探测失败,J10 双条件)。`n=0` = 释放当前 slot,本轨回到直通(J12);Output 侧该轨回落「未连接」;释放不 claim 任何 slot,不会失败。claim 结果经 `scvb.state.claim` 回推。**返回值报的是这次请求本身的结果**([J156]):换通道时新 slot 没拿到、而补偿式回滚把原通道抢了回来(会话仍在原通道,`claim` 仍是 `active`),回执照样是失败形状 —— UI 以回执决定提示,以 `scvb.state` 决定选中卡与 pill。 |
+| 拒绝态 | `{conflict:true}`:见上。`{ok:false, reason:"abiMismatch"}`:打开本组 registry 时 abi 与本机不符,registry 侧拒连,本实例 claim 态同时置 `abiMismatch`(§5.2)。`{ok:false, reason:"unavailable"}`:段不可用 —— 与 §3.1 同一组四项(段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败;**audio / feat 段由另一 abi 的 SCVB 建、abi 不符也归这里**,`abiMismatch` 只报 registry 那一层);没能回滚到原通道时 claim 态为 `idle` 的「段不可用」那一支、`channel_id` 为 `0`(§3.1/§5.2)。这两种失败的 UI:卡片抖动 + 一次性 toast(`ch.claimFailed.abiMismatch` / `ch.claimFailed.unavailable`)。**[J156] 之前**这两种失败都回 `{ok:true}`,失败原因只经 `scvb.state.claim` 回推 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 持 `lifecycleMutex`;用户操作触发 |
 | 真源 | 05 §1.4 / §3;ipc §1;01 §4.1 |
@@ -627,9 +627,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `g: 1..8`(UI 显示 A-H) |
-| 返回 | `{ok:true}` 或 `{conflict:true}`(新组同 channel 已被占 → 01 §4.1 I2) |
-| 语义 | 写 state `group_id`;触发 01 §4.1 改组释放-重连:释放旧组 slot → 新组对同 channel 重走 claim;**期间走直通,人声不消失**。经 §3 释放确认条触发。**与 Output 侧 §1.4 同名同签名**,返回值不同。 |
-| 拒绝态 | `{conflict:true}` |
+| 返回 | `{ok:true}` 或 `{conflict:true}`(新组同 channel 已被占 → 01 §4.1 I2)或 `{ok:false, reason:"abiMismatch"}` 或 `{ok:false, reason:"unavailable"}` 或 `{ok:false, reason:"badArg"}`(参数不是 int 范围内的数值;§0.8 第 2 条)—— 后三种为 [J156] 补登,变更文档同 §3.2 |
+| 语义 | 写 state `group_id`;触发 01 §4.1 改组释放-重连:释放旧组 slot → 新组对同 channel 重走 claim;**期间走直通,人声不消失**。经 §3 释放确认条触发。**与 Output 侧 §1.4 同名同签名**,返回值不同。未选通道(配置号为 `0`)时改组不 claim 任何 slot,不会失败。**失败分两支,组号去向不同**([J156]):① 新组的 ctrl 段打不开(abi 不符 → `abiMismatch`,其余 → `unavailable`)⇒ **不改组**,`group_id` 与会话原样留在旧组;② ctrl 段换过去了、新组里的 claim 失败(`conflict` / `abiMismatch` / `unavailable`,各自含义同 §3.2)⇒ `group_id` **已写成新组**,本实例在新组一个 slot 也没持住。 |
+| 拒绝态 | `{conflict:true}`;`{ok:false, reason:"abiMismatch"}` / `{ok:false, reason:"unavailable"}`(两支见语义格)。UI:组胶囊抖动 + 与 §3.2 同一条一次性 toast。**[J156] 之前**两种非冲突失败都回 `{ok:true}`,第 ① 支连 `scvb.state` 都不变(组号没换、会话照旧) |
 | 撤销 | 否 |
 | 线程/频率 | [M] 持 `lifecycleMutex`;用户确认后触发 |
 | 真源 | 05 §1.4 / §3;01 §4.1 |
@@ -748,10 +748,10 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 值 | 含义 | UI 落点 |
 |---|---|---|
 | `unassigned` | 未 claim 任何 slot(**引导态,非错误**;不计入 Output 的 `N/15`,Output 侧完全不可见)。**本态下 `channel_id` 未必为 `0`**:它镜像的是配置号,`releaseResources()` 之后配置号原样留着 ⇒ **可以为非 `0`**;反过来 `channel_id=0` 也不蕴含本态(claim 失败态下它同样是 `0`)。完整规则见 §3.1 | pill「未选择通道」+ 直通副文案 |
-| `idle` | **一个字符串承载两支**([J103]:不拆名,C++ 侧的枚举→字符串映射不变):① **等待读取** —— 已选 channel,slot 已声明但 Output 尚未健康读取本轨(`kActive` 且 `connected_mask` 本位为 0);② **段不可用** —— `kUnavailable`(段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败,与 §3.1 同一组四项):本实例**一个 slot 也没持住**,属 claim 失败态而非等待态,`channel_id` 为 `0`(§3.1)。**两支靠 `channel_id` 分辨**:① 为所选通道号,② 为 `0` | ① pill「等待 Output」/「Output 未运行」+ 直通副文案;② 灰 pill「未选择通道」+ 直通副文案(Input 页的 pill 推导在 `channel_id=0` 处先行拦下,不看 `claim`) |
+| `idle` | **一个字符串承载两支**([J103]:不拆名,C++ 侧的枚举→字符串映射不变):① **等待读取** —— 已选 channel,slot 已声明但 Output 尚未健康读取本轨(`kActive` 且 `connected_mask` 本位为 0);② **段不可用** —— `kUnavailable`(段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败,与 §3.1 同一组四项):本实例**一个 slot 也没持住**,属 claim 失败态而非等待态,`channel_id` 为 `0`(§3.1)。**两支靠 `channel_id` 分辨**:① 为所选通道号,② 为 `0` | ① pill「等待 Output」/「Output 未运行」+ 直通副文案;② 灰 pill「未选择通道」+ 直通副文案(Input 页的 pill 推导在 `channel_id=0` 处先行拦下,不看 `claim`);由点卡 / 切组触发的那一次,回执另带 `reason:"unavailable"`,UI 另弹一次性 toast(§3.2/§3.3,[J156]) |
 | `active` | slot 活跃且被本组 Output 健康读取(`connected_mask` 本位=1) | pill「已连接」+「已接管:本轨静音转发」 |
 | `conflict` | claim 失败:同组同 channel 被心跳新鲜的实例占用 | 卡片抖动 + `ch.occupied` toast |
-| `abiMismatch` | 两端 SCVB abi 不匹配 → **拒连**(不进 registry 有效位) | 红 pill「版本不匹配」+ 卡内 `banner.abiMismatch`(两端 abi 取 §4.1 `abi`/`abi_remote`)+ 直通副文案照常 |
+| `abiMismatch` | 两端 SCVB abi 不匹配 → **拒连**(不进 registry 有效位) | 红 pill「版本不匹配」+ 卡内 `banner.abiMismatch`(两端 abi 取 §4.1 `abi`/`abi_remote`)+ 直通副文案照常;由点卡 / 切组触发的那一次,回执另带 `reason:"abiMismatch"`,UI 另弹一次性 toast(§3.2/§3.3,[J156]) |
 | `srMismatch` | 采样率不一致 | 红 pill「采样率不一致」+ 直通副文案 |
 
 ### 5.3 `range.mode` —— 三值(J04)
@@ -793,7 +793,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `{conflict:true}` | Input `setChannelId`、Input `setGroupId` | claim 冲突:目标 slot 被心跳新鲜的实例占用 |
 | `{observer:true}` | Output `setGroupId`(新组已有主 Output);只读观察态下的一切写函数 | 本实例进/处于只读观察模式,写入未生效 |
 
-其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**十一值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned` / **`cancelled`** / **`noData`** / **`ioError`**。后三个由 §1.36 `exportSuggestions` 带入([J81],纯新增,不改既有八值语义)——`cancelled` 是本契约第一个**用户可取消的阻塞式操作**(文件对话框),此前八值里没有「用户取消了一个对话框」这件事。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
+其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**十三值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned` / **`cancelled`** / **`noData`** / **`ioError`** / **`abiMismatch`** / **`unavailable`**。`cancelled` / `noData` / `ioError` 三个由 §1.36 `exportSuggestions` 带入([J81],纯新增,不改既有八值语义)——`cancelled` 是本契约第一个**用户可取消的阻塞式操作**(文件对话框),此前八值里没有「用户取消了一个对话框」这件事。`abiMismatch` / `unavailable` 两个由 Input §3.2 `setChannelId` / §3.3 `setGroupId` 带入([J156],纯新增,不改既有十一值语义)——`abiMismatch` 与 §5.2 claim 值同拼写、同含义(abi 不符拒连);`unavailable` 对应 §5.2 `idle` 的「段不可用」那一支;此前这两种认领失败没有回执形状,被回成 `{ok:true}`。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
 
 ---
 
@@ -881,8 +881,8 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
   "input": {
     "functions": [
       {"name": "requestInitialState", "params": [], "returns": "InputSnapshot"},
-      {"name": "setChannelId", "params": ["n"], "returns": "{ok} | {conflict:true}"},
-      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {conflict:true}"},
+      {"name": "setChannelId", "params": ["n"], "returns": "{ok} | {conflict:true} | {ok:false,reason:\"abiMismatch\"} | {ok:false,reason:\"unavailable\"} | {ok:false,reason:\"badArg\"}"},
+      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {conflict:true} | {ok:false,reason:\"abiMismatch\"} | {ok:false,reason:\"unavailable\"} | {ok:false,reason:\"badArg\"}"},
       {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?} | {ok:false,reason:\"badArg\"}"},
       {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "commitUiScale", "params": [], "returns": "{ok}"},
