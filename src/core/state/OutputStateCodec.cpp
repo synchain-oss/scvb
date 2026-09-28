@@ -25,8 +25,18 @@ constexpr std::size_t kSegmentationBytes = 12;
 // u32(`hangover_ms` / `padding_*_ms` / `transition_ramp_ms` 都是整数毫秒),u32+f32+f32+u32×4
 // 一起构成**一个整档** —— 档内不许半截,见下面的长度回退。
 constexpr std::size_t kVadBytes = 24;
+// [SL-472] 第五级尾扩:channels[15] 七项(abi 5→6)。每轨一条**定长**记录 = 7×u32 + 96 字节 label 槽,
+// 15 轨一整档 1860 字节 —— 档内不许半截,见下面的长度回退。定长的理由写在头注(变长记录会让「这一档
+// 到哪里结束」依赖档内的 labelBytes,一个坏长度就把其后的未知尾部一起读歪)。
+constexpr std::size_t kChannelRecordBytes = 7 * 4 + kOutputChannelLabelMaxBytes; // 124
+constexpr std::size_t kChannelsBytes = kOutputChannelCount * kChannelRecordBytes; // 1860
+// 已知尾部各档的累计长度(remaining 只接受 0 / 8 / 16 / 28 / 52 / 1912 及 1912+)。
+constexpr std::size_t kTailThroughVad = kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes; // 52
+constexpr std::size_t kTailThroughChannels = kTailThroughVad + kChannelsBytes; // 1912
 
 static_assert(sizeof(float) == 4, "f32 尾字段依赖 IEEE-754 单精度(4 字节)");
+static_assert(kChannelRecordBytes == 124 && kChannelsBytes == 1860 && kTailThroughChannels == 1912,
+              "[SL-472] channels 档的 wire 长度写进了头注与 STATE_SCHEMA,改这里要连着两处一起改");
 
 void putU32(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
@@ -130,6 +140,109 @@ std::uint32_t segModeOrdinal(const std::string& s)
     // 一个坏串会让整个 setSegmentation badArg,三个字段谁都进不去)。
     return s == "vad_only" ? 1 : 0;
 }
+
+// ---- [SL-472] label 的 UTF-8 边界 ----
+
+// 从 s[i] 起解一个**严格**合法的 UTF-8 码点:返回其字节数(1..4),非法返回 0。
+// 严格 = 拒过长编码、拒 UTF-16 代理区(U+D800..U+DFFF)、拒 > U+10FFFF、拒截断的续字节。
+std::size_t utf8SeqLen(const std::uint8_t* s, std::size_t n, std::size_t i)
+{
+    const std::uint8_t b0 = s[i];
+    if (b0 < 0x80u)
+    {
+        return 1;
+    }
+    std::size_t len = 0;
+    std::uint32_t cp = 0;
+    std::uint32_t minCp = 0;
+    if ((b0 & 0xE0u) == 0xC0u)
+    {
+        len = 2;
+        cp = b0 & 0x1Fu;
+        minCp = 0x80u;
+    }
+    else if ((b0 & 0xF0u) == 0xE0u)
+    {
+        len = 3;
+        cp = b0 & 0x0Fu;
+        minCp = 0x800u;
+    }
+    else if ((b0 & 0xF8u) == 0xF0u)
+    {
+        len = 4;
+        cp = b0 & 0x07u;
+        minCp = 0x10000u;
+    }
+    else
+    {
+        return 0; // 孤立续字节或 0xF8.. 前缀
+    }
+    if (i + len > n)
+    {
+        return 0;
+    }
+    for (std::size_t k = 1; k < len; ++k)
+    {
+        const std::uint8_t b = s[i + k];
+        if ((b & 0xC0u) != 0x80u)
+        {
+            return 0;
+        }
+        cp = (cp << 6) | (b & 0x3Fu);
+    }
+    if (cp < minCp || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu))
+    {
+        return 0;
+    }
+    return len;
+}
+
+// 编码侧截断:取 s 的最长前缀,使其 ≤ kOutputChannelLabelMaxChars 个码点且 ≤ kOutputChannelLabelMaxBytes
+// 字节,且不切出半个码点。遇到非法字节(本进程内存里的 label 来自 juce::String,正常不会有)即在那里截止,
+// 保证写下去的字节一定能被 decode 原样收回 —— 否则一次坏字节会让整条 label 在下次打开时回落成空。
+std::size_t labelEncodeBytes(const std::string& s)
+{
+    const auto* p = reinterpret_cast<const std::uint8_t*>(s.data());
+    const std::size_t n = s.size();
+    std::size_t i = 0;
+    std::uint32_t chars = 0;
+    while (i < n && chars < kOutputChannelLabelMaxChars)
+    {
+        const std::size_t len = (p[i] == 0u) ? 0u : utf8SeqLen(p, n, i);
+        if (len == 0 || i + len > kOutputChannelLabelMaxBytes)
+        {
+            break;
+        }
+        i += len;
+        ++chars;
+    }
+    return i;
+}
+
+// 解码侧校验:bytes 是否为 ≤24 码点、无 NUL 的严格 UTF-8(长度 ≤96 由调用方先判)。
+bool labelDecodeValid(const std::uint8_t* p, std::size_t n)
+{
+    std::size_t i = 0;
+    std::uint32_t chars = 0;
+    while (i < n)
+    {
+        if (p[i] == 0u)
+        {
+            return false;
+        }
+        const std::size_t len = utf8SeqLen(p, n, i);
+        if (len == 0)
+        {
+            return false;
+        }
+        i += len;
+        if (++chars > kOutputChannelLabelMaxChars)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
@@ -138,8 +251,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes +
-                    s.unknownTail.size());
+        out.reserve(kHeaderBytes + langBytes + kTailThroughChannels + s.unknownTail.size());
     }
     catch (...)
     {
@@ -175,6 +287,23 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, s.vadPaddingPreMs);
     putU32(out, s.vadPaddingPostMs);
     putU32(out, s.transitionRampMs);
+    // [SL-472] channels[15] 恒写一整档(15 × 124 字节)。与前几档同一条分工:数值字段编码侧不校验
+    // (入参是本进程的 runtime_,桥面已按同一值域夹过),值域校验是 decode 的职责。**唯一的例外是 label**:
+    // 它必须被截到槽里放得下(≤96 字节、≤24 码点、不切半个码点)—— 那不是「校验」,是「能不能写下去」,
+    // 与 uiLanguage 的超长截断同一类。截断后的字节一定能被 decode 原样收回(见 labelEncodeBytes)。
+    for (const OutputChannelState& c : s.channels)
+    {
+        putU32(out, c.enabled ? 1u : 0u);
+        putU32(out, c.participateAutoPan);
+        putU32(out, c.priority);
+        putU32(out, c.leadLock ? 1u : 0u);
+        putU32(out, c.leadVolExempt ? 1u : 0u);
+        putU32(out, c.pairId);
+        const std::size_t labelBytes = labelEncodeBytes(c.label);
+        putU32(out, static_cast<std::uint32_t>(labelBytes));
+        out.insert(out.end(), c.label.begin(), c.label.begin() + static_cast<std::ptrdiff_t>(labelBytes));
+        out.insert(out.end(), kOutputChannelLabelMaxBytes - labelBytes, std::uint8_t{0}); // 槽内补 0
+    }
     out.insert(out.end(), s.unknownTail.begin(), s.unknownTail.end()); // 未知尾部原样回写
     return true;
 }
@@ -245,6 +374,13 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     if (hasSegmentation && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes && !hasVad)
     {
         return false; // 28 < remaining < 52:vad/ramp 字段被截断 → 拒载(不可信字节)
+    }
+    // [SL-472] 第五级:channels[15](15 × 124 = 1860 字节)**整档**要么齐、要么全没有。半截
+    // (52 < remaining < 1912)同样拒载 —— 与前四档同一条「档内不许半截」。
+    const bool hasChannels = (remaining >= kTailThroughChannels);
+    if (hasVad && remaining > kTailThroughVad && !hasChannels)
+    {
+        return false; // 52 < remaining < 1912:channels 档被截断 → 拒载(不可信字节)
     }
 
     // 兼容:旧版(abi=1)payload 无末两个 u32 → 两字段回落默认,不计未知回落。
@@ -449,11 +585,104 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.vadPaddingPostMs = vadPaddingPostMs;
     parsed.transitionRampMs = transitionRampMs;
 
-    if (hasVad && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes)
+    // [SL-472] channels[15] 七项:**缺席时取构造默认且不计回落**(abi≤5 的旧工程「当年没存过」);
+    // 在席时逐轨逐项校验,非法 → 该轨该项回落构造默认 + 该字段计一次(与前几档同一族,理由见头注)。
+    // `parsed.channels` 由 OutputState 的默认构造给出构造默认,缺席分支因此什么都不用做。
+    if (hasChannels)
+    {
+        const std::uint8_t* rec = data + base + kTailThroughVad;
+        for (std::size_t t = 0; t < kOutputChannelCount; ++t, rec += kChannelRecordBytes)
+        {
+            std::uint32_t enabled = 0;
+            std::uint32_t participate = 0;
+            std::uint32_t priority = 0;
+            std::uint32_t leadLock = 0;
+            std::uint32_t leadVolExempt = 0;
+            std::uint32_t pairId = 0;
+            std::uint32_t labelBytes = 0;
+            // 整档长度已在上面判过,这里的 readU32 不会越界;仍按「每次读都给剩余长度」的口径调用,
+            // 与本文件其余读点一致(别在这一档破例写成裸指针解引用)。
+            if (!readU32(rec, kChannelRecordBytes, enabled) ||
+                !readU32(rec + 4, kChannelRecordBytes - 4, participate) ||
+                !readU32(rec + 8, kChannelRecordBytes - 8, priority) ||
+                !readU32(rec + 12, kChannelRecordBytes - 12, leadLock) ||
+                !readU32(rec + 16, kChannelRecordBytes - 16, leadVolExempt) ||
+                !readU32(rec + 20, kChannelRecordBytes - 20, pairId) ||
+                !readU32(rec + 24, kChannelRecordBytes - 24, labelBytes))
+            {
+                return false;
+            }
+            OutputChannelState& c = parsed.channels[t];
+            const auto count = [report](std::uint32_t OutputDecodeReport::*field) {
+                if (report != nullptr)
+                {
+                    ++(report->*field);
+                }
+            };
+            if (enabled <= 1u)
+            {
+                c.enabled = enabled != 0u;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelEnabledFallbacks);
+            }
+            if (participate <= kOutputParticipateUnset)
+            {
+                c.participateAutoPan = participate;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelParticipateFallbacks);
+            }
+            if (priority <= kOutputChannelPriorityMax)
+            {
+                c.priority = priority;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelPriorityFallbacks);
+            }
+            if (leadLock <= 1u)
+            {
+                c.leadLock = leadLock != 0u;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelLeadLockFallbacks);
+            }
+            if (leadVolExempt <= 1u)
+            {
+                c.leadVolExempt = leadVolExempt != 0u;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelLeadVolExemptFallbacks);
+            }
+            if (pairId <= kOutputChannelPairIdMax)
+            {
+                c.pairId = pairId;
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelPairIdFallbacks);
+            }
+            // labelBytes 先判上限再用于索引(§7.3);槽是定长的,所以坏长度只坏这一格,不会把后面读歪。
+            if (labelBytes <= kOutputChannelLabelMaxBytes && labelDecodeValid(rec + 28, labelBytes))
+            {
+                c.label.assign(reinterpret_cast<const char*>(rec + 28), labelBytes);
+            }
+            else
+            {
+                count(&OutputDecodeReport::channelLabelFallbacks);
+            }
+        }
+    }
+
+    if (hasChannels && remaining > kTailThroughChannels)
     {
         // 未知尾部(未来小版本追加字段)保留,编码时原样回写,防静默丢字段。
-        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes,
-                                  data + size);
+        parsed.unknownTail.assign(data + base + kTailThroughChannels, data + size);
     }
 
     out = std::move(parsed);

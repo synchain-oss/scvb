@@ -56,6 +56,17 @@ bool migrate_4_to_5(StateChunks& chunks) noexcept
     return true;
 }
 
+// abi 5→6:[SL-472] CFGS 尾扩 channels[15] 七项(15 条定长记录,一整档 1860 字节)。同样 no-op —— abi=5 的
+// CFGS 只有到 vad/ramp 为止的尾部,而 decodeOutputState 按「长度回退」把缺席的七项 × 15 轨取**构造默认**
+// (与 `OutputProcessor.h` 里 `Channel` 的初值逐项相同)且**不计回落**:旧工程确实没存过它们,取构造默认
+// 正是旧构建重开后的值,于是「旧工程打开后的行为与今天逐字相同」。与 3→4、4→5 同类取舍。
+// 旧版读到新(abi=6)blob 仍走 RejectedNewer → preservedOriginal 原样回写,绝不静默降级。
+bool migrate_5_to_6(StateChunks& chunks) noexcept
+{
+    (void)chunks;
+    return true;
+}
+
 StateLoadResult loadState(const std::uint8_t* data, std::size_t size, StateChunks& out)
 {
     StateLoadResult res;

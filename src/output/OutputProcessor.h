@@ -10,6 +10,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
+#include <optional>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -87,6 +88,10 @@ struct OutputRuntimeState
     juce::String appliedCenterSlotPolicy = "priority_queue";
 
     // channels[15](§1.15;index = ch-1)
+    // [SL-472] 除 `sourceChannels` 外七项**随工程保存**(CFGS 第五档,abi 5→6):`getStateInformation`
+    // 写、`setStateInformation` 恢复,值域由 codec 校验。**下面的初值同时是旧工程(abi≤5)与坏值的回落值**
+    // —— `OutputStateCodec.h` 的 `OutputChannelState` 逐项抄了这一组;改这里的初值要连着那边一起改
+    // (`HOST SL472` 的旧工程那一格会逐项对拍两边)。
     struct Channel
     {
         bool enabled = true;
@@ -320,6 +325,30 @@ public:
         juce::String appliedCenterSlotPolicy;
     };
     AnalysisConfigPair analysisConfigWithApplied();
+
+    // [SL-472 R1] runtime_.channels 的**跨线程**读写口。本卡起 `getStateInformation` / `setStateInformation`
+    // (宿主可能在非消息线程调)持 lifecycleMutex_ 读写整节,而其中 `label` 是 `juce::String` ——
+    // 与 POD 字段「最坏读到旧值」不同档,引用计数缓冲区的赋值与拷贝撞上是 use-after-free。
+    // 所以消息线程这两处也必须持同一把锁,**别再直接读写 runtime().channels**:
+    //   · 桥面 setChannelConfig 的写入 → `bridgeApplyChannelConfig`(持锁应用,值变化才 ++configSeq,
+    //     返回是否变化);
+    //   · 25Hz buildStateSubtree 的读取 → `channelsSnapshot`(持锁拷贝整节;同一 tick 里
+    //     `crvsSnapshot` / `analysisConfigWithApplied` 已经各取一次这把锁,多一次同量级)。
+    // 本类内部持锁的读点(timerCallback / publishConfigBroadcast / startAnalysis)不经这两个口。
+    struct ChannelConfigPatch
+    {
+        std::optional<bool> enabled;
+        std::optional<juce::String> label;
+        std::optional<int> priority;
+        std::optional<bool> leadLock;
+        std::optional<bool> leadVolExempt;
+        std::optional<bool> participate; // 有值 ⇒ 显式设置(participateAutoPanSet = true)
+        std::optional<int> pairId;
+    };
+    // 返回值 = **生效配置有没有真的变**(变了才 ++configSeq);index 越界同样返回 false、且什么都不写 ——
+    // 所以 false 不等于「写入成功但值相同」,别拿它判写入成败(桥面入口在调用前已校验 ch 1..15)。
+    bool bridgeApplyChannelConfig(int channelIndex, const ChannelConfigPatch& patch); // index = ch-1
+    std::array<OutputRuntimeState::Channel, scvb::engine::kNumTracks> channelsSnapshot();
 
     // [SL-284] 最近一次**落地**的分析里最坏的平衡回退级(§6.4 回退链):1..4;从未落地过 = 0。
     //

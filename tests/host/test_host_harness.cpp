@@ -11547,3 +11547,250 @@ TEST_CASE("HOST SL-510:复制版本零参数写入、零 gesture(生产路径)",
     CHECK(spy2.ends == 0);
     r.out.removeListener(&spy2);
 }
+
+// ===========================================================================
+// [SL-472] 轨道页七项(enabled / label / participate_in_auto_pan / priority / lead_lock / lead_vol_exempt /
+// pair_id)**随工程保存** —— 存 → 关 → 新实例载入 → 运行态与推给 Input 的广播区逐项一致。
+//
+// 用户 v5.6.18 真机实测(J113):「配对、优先级、命名全部没有保存下来,主唱锁定也没有保存下来」。
+// 定谳:`runtime_.channels` 整节从未接过持久化 —— CFGS 不写、加载不读(STATE_SCHEMA §一 却一直列着)。
+//
+// 本用例钉**生产那几跳**(搬运层单档往返 / 旧档缺席 / 非法值回落 / 半截拒载在
+// `tests/core/test_output_session.cpp` 的 [SL-472] 各格):
+//   · 写入 —— `getStateInformation` 把 runtime_.channels 七项写进 CFGS(删掉那段 ⇒ ① 全红);
+//   · 读取 + 应用 —— `setStateInformation` 把它们写回 runtime_(删掉那段 ⇒ ① 全红);
+//   · 推送 —— 载入后 `++configSeq`,下一拍 `publishConfigBroadcast` 把新配置写进广播区,Input 看得到
+//     (删掉那一行 ⇒ ② 红:广播区停在载入前那一份);
+//   · 旧工程 —— abi=5 形态的 CFGS(无 channels 档)载入后七项回到**构造默认**,并与 codec 的
+//     `OutputChannelState` 缺省值逐项对拍(两边的默认值各写了一份,见 OutputProcessor.h 那段注释)。
+//   · 与 [SL-485] 共存 —— 同一份工程里带一节 44.1k 采的 FEAT:载入后 stale 仍亮、再存仍记 44100,
+//     七项也不被那条路径覆盖(两者都在 setStateInformation 里、互不相干,这里钉「互不相干」)。
+//
+// ⚠ **离线不可达的那一跳照实登记**:`OutputEditor::buildStateSubtree` 把 runtime_.channels 装进
+// `scvb.state` 回推给 web 页面 —— OutputEditor 依赖 WebView2,不在 host 套件的 TU 清单里(与 `HOST SL411`
+// 头注同一笔账)。那一跳是**纯读** runtime_.channels(每 25Hz 全量比对下发),所以本用例对 runtime_ 的
+// 逐项断言就是它的输入;但「装配那几行没写错」不在这里,别把这一格读成「web 回推已覆盖」。
+// ===========================================================================
+TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态与广播区逐项一致,旧工程回默认,与 SL-485 共存",
+          "[host][state][sl472]")
+{
+    const juce::String kLabelVox = juce::String::fromUTF8("\xE4\xB8\xBB\xE5\x94\xB1 Lead"); // 「主唱 Lead」
+    const juce::String kLabelTest = juce::String::fromUTF8("\xE5\x92\x8C\xE5\xA3\xB0 R"); // 「和声 R」
+    constexpr std::size_t kIdx = static_cast<std::size_t>(kTestChannel - 1);
+    juce::MemoryBlock blob;
+
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        Rig::pumpMessages(300);
+
+        // 先装一节「44.1k 下采过 kTestChannel」的 FEAT(造法与 HOST SL-485 同源),好让本工程同时带着
+        // SL-485 那条要往返的东西。
+        {
+            scvb::state::FeaturesData d;
+            d.sampleRate = 44100;
+            d.hopMs = 10;
+            d.vadPresent = false;
+            scvb::state::ChannelFeatures c;
+            c.channelId = static_cast<std::uint8_t>(kTestChannel);
+            constexpr std::uint32_t kHops = 64;
+            c.coverage.push_back(scvb::state::HopRange{0, kHops});
+            for (std::uint32_t i = 0; i < kHops; ++i)
+            {
+                c.kwDbq.push_back(static_cast<std::int16_t>(-3000));
+                c.peakDbq.push_back(static_cast<std::int16_t>(-2000));
+            }
+            d.channels.push_back(std::move(c));
+            juce::MemoryBlock base;
+            r.out.getStateInformation(base);
+            scvb::state::StateChunks chunks;
+            REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks)
+                        .status == scvb::state::StateLoadStatus::Ok);
+            chunks.set(scvb::state::kFourccFeat, scvb::state::encodeFeatures(d));
+            std::vector<std::uint8_t> withFeat;
+            REQUIRE(scvb::state::encodeContainer(chunks, withFeat));
+            r.out.setStateInformation(withFeat.data(), static_cast<int>(withFeat.size()));
+            Rig::pumpMessages(100);
+        }
+        REQUIRE(r.out.captureStale(kTestChannel)); // 前提:SL-485 那一半在存盘前是亮的
+
+        // 用户在轨道页上改的七项 —— 走桥面 setChannelConfig 阶段 2 用的同一个持锁口
+        // `bridgeApplyChannelConfig`([SL-472 R1]),顺带钉住它「值变化才 ++configSeq、返回是否变化」。
+        // 每项至少一条轨取非默认值;kTestChannel 那条多项同时非默认,好在 Input 侧广播区里逐项看得到。
+        using Patch = ScvbOutputAudioProcessor::ChannelConfigPatch;
+        {
+            Patch p0;
+            p0.label = kLabelVox;
+            p0.leadLock = true;
+            p0.priority = 10;
+            CHECK(r.out.bridgeApplyChannelConfig(0, p0));
+            const std::uint32_t seqAfter = r.out.runtime().configSeq;
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(0, p0)); // 同值再下发:不算变化、不 bump
+            CHECK(r.out.runtime().configSeq == seqAfter);
+        }
+        {
+            Patch pt;
+            pt.label = kLabelTest;
+            pt.priority = 9;
+            pt.leadLock = true;
+            pt.leadVolExempt = true;
+            pt.pairId = 4;
+            pt.participate = false; // 显式不参与(默认是「未设置 ⇒ 参与」)
+            CHECK(r.out.bridgeApplyChannelConfig(static_cast<int>(kIdx), pt));
+        }
+        {
+            Patch p5;
+            p5.enabled = false;
+            p5.pairId = 4;
+            CHECK(r.out.bridgeApplyChannelConfig(5, p5));
+            Patch p6;
+            p6.participate = true; // 显式参与:与「未设置」存成两个值
+            // [SL-472 R2] 生效值没变(未设置本来就是参与)⇒ 不算变化、不 bump;但「显式设置」位已落下,
+            // 重开后 c2[6].participateAutoPanSet 那一行钉它确实被存了下来。
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(6, p6));
+            CHECK(r.out.runtime().channels[6].participateAutoPanSet);
+        }
+        CHECK_FALSE(r.out.bridgeApplyChannelConfig(15, Patch{})); // 越界 index 不写
+        {
+            // [SL-472 R2] participate 按**生效值**判变化:从没动过的轨 8(生效 = 参与)只下发 false,
+            // 必须算变化并 bump —— 按存储值判会得到「false == false 没变」,广播区停在「参与」。
+            // 单字段 patch,不让别的字段的变化把 bump 带出来。
+            CHECK_FALSE(
+                r.out.runtime().channels[8].participateAutoPanSet); // 前提:轨 9 从没动过(CHECK:红了也让后面的格照跑)
+            const std::uint32_t seqBefore = r.out.runtime().configSeq;
+            Patch p8;
+            p8.participate = false;
+            CHECK(r.out.bridgeApplyChannelConfig(8, p8));
+            CHECK(r.out.runtime().configSeq == seqBefore + 1u);
+            // 反方向:显式设回 true(生效值 false → true)同样算变化。
+            Patch p8b;
+            p8b.participate = true;
+            CHECK(r.out.bridgeApplyChannelConfig(8, p8b));
+            // 再下发一次 true:生效值不变 ⇒ 不算变化。
+            CHECK_FALSE(r.out.bridgeApplyChannelConfig(8, p8b));
+        }
+        Rig::pumpMessages(300);
+        // 持锁口的 bump 真的把改动推到了广播区(存盘前,同一实例)。
+        CHECK(juce::String::fromUTF8(r.in.bridgeTickSnapshot().broadcast.labels[kIdx]) == kLabelTest);
+        // 读口:channelsSnapshot 与 runtime_ 同值。
+        CHECK(r.out.channelsSnapshot()[kIdx].label == kLabelTest);
+
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 作用域退出 = 实例连同 runtime_ 一起没了(等价于关工程再打开)
+
+    Rig r2;
+    r2.ph.playing = true;
+    REQUIRE(r2.waitUntilInjected());
+    Rig::pumpMessages(300);
+    // 前置:新实例是**构造默认**,且广播区里 kTestChannel 也是默认 —— 否则下面证明不了「载入真的改了它们」。
+    REQUIRE(r2.out.runtime().channels[kIdx].priority == 5);
+    REQUIRE(r2.out.runtime().channels[kIdx].label.isEmpty());
+    {
+        const auto snap0 = r2.in.bridgeTickSnapshot();
+        REQUIRE(snap0.broadcastValid);
+        REQUIRE(snap0.broadcast.channels[kIdx].priority == 5u);
+    }
+
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(300); // 让 25Hz Timer 把广播区写出去
+
+    // ① 运行态逐项回到存盘那一份(用 CHECK:一格红了其余格照样要跑)。
+    const auto& c2 = r2.out.runtime().channels;
+    CHECK(c2[0].label == kLabelVox);
+    CHECK(c2[0].leadLock);
+    CHECK(c2[0].priority == 10);
+    CHECK(c2[kIdx].label == kLabelTest);
+    CHECK(c2[kIdx].priority == 9);
+    CHECK(c2[kIdx].leadLock);
+    CHECK(c2[kIdx].leadVolExempt);
+    CHECK(c2[kIdx].pairId == 4);
+    CHECK(c2[kIdx].participateAutoPanSet);
+    CHECK_FALSE(c2[kIdx].participateAutoPan);
+    CHECK_FALSE(c2[kIdx].participatesInAutoPan());
+    CHECK_FALSE(c2[5].enabled);
+    CHECK(c2[5].pairId == 4);
+    CHECK(c2[6].participateAutoPanSet);
+    CHECK(c2[6].participateAutoPan);
+    CHECK_FALSE(c2[7].participateAutoPanSet); // 没动过的轨保持「未显式设置」
+    CHECK(c2[7].participatesInAutoPan());
+    CHECK(c2[7].enabled);
+    CHECK(c2[7].priority == 5);
+
+    // ② 推给 Input 的广播区(Input 轨道页读的就是这里)逐项一致。
+    {
+        const auto snap = r2.in.bridgeTickSnapshot();
+        REQUIRE(snap.broadcastValid);
+        const auto& m = snap.broadcast.channels[kIdx];
+        CHECK(m.priority == 9u);
+        CHECK(m.pair_id == 4u);
+        CHECK((m.flags & scvb::kCfgFlagEnabled) != 0);
+        CHECK((m.flags & scvb::kCfgFlagLeadLock) != 0);
+        CHECK((m.flags & scvb::kCfgFlagLeadVolExempt) != 0);
+        CHECK((m.flags & scvb::kCfgFlagParticipateAutoPan) == 0);
+        CHECK(juce::String::fromUTF8(snap.broadcast.labels[kIdx]) == kLabelTest);
+    }
+
+    // ③ 与 SL-485 共存:同一份工程里的 44.1k 采集率随载入恢复、再存仍记 44100,且再存一次七项还在。
+    CHECK(r2.out.captureStale(kTestChannel));
+    CHECK(savedFeatSampleRate(r2.out) == 44100u);
+    {
+        juce::MemoryBlock again;
+        r2.out.getStateInformation(again);
+        r2.out.setStateInformation(again.getData(), static_cast<int>(again.getSize()));
+        Rig::pumpMessages(100);
+        CHECK(r2.out.runtime().channels[kIdx].label == kLabelTest);
+        CHECK(r2.out.runtime().channels[0].priority == 10);
+        CHECK(r2.out.captureStale(kTestChannel));
+    }
+
+    // ④ 旧工程(abi=5 形态:CFGS 没有 channels 档)⇒ 七项 × 15 轨回到构造默认,不残留上一份工程的值。
+    {
+        scvb::state::StateChunks chunks;
+        REQUIRE(
+            scvb::state::loadState(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+        scvb::state::Chunk* cfgs = nullptr;
+        for (auto& ck : chunks.chunks)
+        {
+            if (ck.fourcc == scvb::state::kFourccCfgs)
+            {
+                cfgs = &ck;
+            }
+        }
+        REQUIRE(cfgs != nullptr);
+        REQUIRE(cfgs->payload.size() > 1860u);
+        cfgs->payload.resize(cfgs->payload.size() - 1860u); // 砍掉 channels 那一整档
+        chunks.abi = 5u;
+        std::vector<std::uint8_t> old;
+        REQUIRE(scvb::state::encodeContainer(chunks, old));
+        r2.out.setStateInformation(old.data(), static_cast<int>(old.size()));
+        Rig::pumpMessages(100);
+
+        const OutputRuntimeState::Channel ctorDefault{};
+        const scvb::state::OutputChannelState codecDefault{};
+        // 两份默认值先互相对拍(改了一边忘了另一边,这里先红)。
+        CHECK(ctorDefault.enabled == codecDefault.enabled);
+        CHECK(ctorDefault.label.toStdString() == codecDefault.label);
+        CHECK(ctorDefault.participateAutoPanSet ==
+              (codecDefault.participateAutoPan != scvb::state::kOutputParticipateUnset));
+        CHECK(static_cast<std::uint32_t>(ctorDefault.priority) == codecDefault.priority);
+        CHECK(ctorDefault.leadLock == codecDefault.leadLock);
+        CHECK(ctorDefault.leadVolExempt == codecDefault.leadVolExempt);
+        CHECK(static_cast<std::uint32_t>(ctorDefault.pairId) == codecDefault.pairId);
+        for (std::size_t t = 0; t < 15u; ++t)
+        {
+            INFO("channel index " << t);
+            const auto& c = r2.out.runtime().channels[t];
+            CHECK(c.enabled == ctorDefault.enabled);
+            CHECK(c.label == ctorDefault.label);
+            CHECK(c.participateAutoPanSet == ctorDefault.participateAutoPanSet);
+            CHECK(c.participateAutoPan == ctorDefault.participateAutoPan);
+            CHECK(c.priority == ctorDefault.priority);
+            CHECK(c.leadLock == ctorDefault.leadLock);
+            CHECK(c.leadVolExempt == ctorDefault.leadVolExempt);
+            CHECK(c.pairId == ctorDefault.pairId);
+        }
+    }
+}

@@ -431,7 +431,9 @@ TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[outp
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 78u); // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + [SL-411] seg 3* + [SL-416] vad/ramp 6*)
+    REQUIRE(b.size() ==
+            78u + 1860u); // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + [SL-411] seg 3* + [SL-416] vad/ramp 6*)
+    // + [SL-472] channels[15] 一整档 15×124 = 1860
     auto put = [&](std::size_t off, std::uint32_t v) {
         b[off] = static_cast<std::uint8_t>(v & 0xFF);
         b[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
@@ -457,7 +459,8 @@ TEST_CASE("OutputStateCodec:旧版 payload(无枚举字段)回落默认且不计
     // [SL-279] 砍 16 而不是 8:尾部现在是**多级**(当前 2×u32 + applied 2×u32 + [SL-411] segmentation),
     // 「abi=1 的旧版」= 一档都没有。只砍 8 得到的是 abi=2、只砍 20 得到的是 abi=3,那是下面另两格。
     // [SL-411] 起总尾长 28 字节,[SL-416] 起 52 字节(28 + vad/ramp 那一整档 24),故这里砍 52。
-    b.resize(b.size() - 52); // 去掉末尾整条尾巴 → 旧版 24+langBytes
+    // [SL-472] 起再 + channels 一整档 1860,故再多砍 1860。
+    b.resize(b.size() - 52 - 1860); // 去掉末尾整条尾巴 → 旧版 24+langBytes
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -530,7 +533,7 @@ TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // [SL-411] 砍 20 = applied 那两个 u32(8)+ segmentation 那一整档(12);「abi=2 的形态」=
     // 尾部到「当前」那两个 u32 为止。[SL-416] 起还要再砍 vad/ramp 那一整档(24)⇒ 共 44。
-    b.resize(b.size() - 44); // → abi=2 形态
+    b.resize(b.size() - 44 - 1860); // → abi=2 形态([SL-472] 起再多砍 channels 一整档 1860)
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -591,7 +594,8 @@ TEST_CASE("OutputStateCodec:[SL-411] segmentation 三项往返 + 与前面几档
     s.segmentationMinSegmentMs = 1000u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 2u + 52u); // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
+    REQUIRE(b.size() == 24u + 2u + 52u + 1860u); // [SL-472] + channels 1860
+    // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
 
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
@@ -624,7 +628,8 @@ TEST_CASE("OutputStateCodec:[SL-411] abi=3 旧 payload(无 seg 档)⇒ 三默认
     s.segmentationMinSegmentMs = 900u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.resize(b.size() - 36); // 砍掉 segmentation(12)+ vad/ramp(24)两整档 → abi=3 形态(尾长 16)
+    b.resize(b.size() - 36 -
+             1860); // 砍掉 segmentation(12)+ vad/ramp(24)+ [SL-472] channels(1860)三整档 → abi=3 形态(尾长 16)
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -757,7 +762,8 @@ TEST_CASE("OutputStateCodec:[SL-416] vad 五字段 + ramp 往返 + 与前面几�
     s.transitionRampMs = 140u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 2u + 52u); // 24 头 + "en" 2 + 13×u32(13×4 = 52)
+    REQUIRE(b.size() == 24u + 2u + 52u + 1860u); // [SL-472] + channels 1860
+    // 24 头 + "en" 2 + 13×u32(13×4 = 52)
 
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
@@ -803,7 +809,7 @@ TEST_CASE("OutputStateCodec:[SL-416] abi=4 旧 payload(无 vad/ramp 档)⇒ 六�
     s.transitionRampMs = 200u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.resize(b.size() - 24); // 砍掉 vad/ramp 那一整档 → abi=4 形态(尾长 28)
+    b.resize(b.size() - 24 - 1860); // 砍掉 vad/ramp 与 [SL-472] channels 两整档 → abi=4 形态(尾长 28)
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -955,6 +961,347 @@ TEST_CASE("OutputStateCodec:[SL-416] vad/ramp 半截(28<remaining<52)→ 拒载"
     }
 }
 
+// ============================================================================
+// [SL-472] channels[15] 七项随工程落盘(CFGS 尾扩 15 × 124 = 1860 字节,abi 5→6)
+//
+// 契约面:docs/STATE_SCHEMA.md §一/§三、docs/contract-changes/20260927-sl472-channel-config-persist.md。
+// 用户实测 J113:「配对、优先级、命名全部没有保存下来,主唱锁定也没有保存下来」。
+// 本组把**搬运层**钉死(往返 / 编码侧截断 / abi≤5 旧档七项默认不计回落 / 非法值逐字段回落并计数 /
+// 半截拒载);「保存路径真的读 runtime_」「加载路径真的写回 runtime_ 并推到广播区」两跳在 tests/host 的
+// `HOST SL472`。
+// ⚠ 本组**故意用字面量**钉规格值(5 / 0..10 / 0..7 / 24 码点 / 96 字节 / 记录 124 字节):断言取自被测
+// 常量会变成恒真(与 SL-411/SL-416 两组同一条纪律)。
+// 偏移口径("en" 语言,base = 26):channels 档起点 = 26 + 52 = 78;第 t 轨记录 = 78 + 124·t;
+// 记录内 +0 enabled / +4 participate / +8 priority / +12 lead_lock / +16 lead_vol_exempt / +20 pair_id /
+// +24 labelBytes / +28 label[96]。
+// ============================================================================
+namespace
+{
+constexpr std::size_t kSl472ChBase = 78u;
+constexpr std::size_t kSl472Rec = 124u;
+
+void sl472PutU32(std::vector<std::uint8_t>& v, std::size_t off, std::uint32_t x)
+{
+    v[off] = static_cast<std::uint8_t>(x & 0xFF);
+    v[off + 1] = static_cast<std::uint8_t>((x >> 8) & 0xFF);
+    v[off + 2] = static_cast<std::uint8_t>((x >> 16) & 0xFF);
+    v[off + 3] = static_cast<std::uint8_t>((x >> 24) & 0xFF);
+}
+
+std::string sl472Repeat(const char* unit, int n)
+{
+    std::string s;
+    for (int i = 0; i < n; ++i)
+    {
+        s += unit;
+    }
+    return s;
+}
+// 24 个「中」(U+4E2D,3 字节)= 72 字节;24 个 U+1F3A4(4 字节)= 96 字节,恰好顶满槽。
+const char* const kZhong = "\xE4\xB8\xAD"; // U+4E2D
+const char* const kMic = "\xF0\x9F\x8E\xA4"; // U+1F3A4(4 字节)
+const char* const kHarmonyL = "\xE5\x92\x8C\xE5\xA3\xB0 L"; // 「和声 L」
+const char* const kHarmonyR = "\xE5\x92\x8C\xE5\xA3\xB0 R"; // 「和声 R」
+
+scvb::state::OutputState sl472NonDefault()
+{
+    scvb::state::OutputState s;
+    // 每一项都至少在一条轨上取非默认值;不同轨取不同值,写串轨 / 共用槽会在逐项比对里现形。
+    s.channels[0].label = "Lead Vox";
+    s.channels[0].leadLock = true;
+    s.channels[0].priority = 10u;
+    s.channels[1].label = kHarmonyL;
+    s.channels[1].pairId = 3u;
+    s.channels[1].participateAutoPan = 0u; // 显式不参与
+    s.channels[2].label = kHarmonyR;
+    s.channels[2].pairId = 3u;
+    s.channels[2].participateAutoPan = 1u; // 显式参与(与「未显式设置」2 分开存)
+    s.channels[3].enabled = false;
+    s.channels[3].priority = 0u;
+    s.channels[4].leadVolExempt = true;
+    s.channels[4].pairId = 7u;
+    s.channels[13].label = sl472Repeat(kZhong, 24); // 24 码点 / 72 字节
+    s.channels[14].label = sl472Repeat(kMic, 24); // 24 码点 / 96 字节(槽上限)
+    s.channels[14].priority = 1u;
+    return s;
+}
+} // namespace
+
+TEST_CASE("OutputStateCodec:[SL-472] channels 七项往返 + 与前面几档互不串", "[output][state][sl472]")
+{
+    const scvb::state::OutputState s = sl472NonDefault();
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    REQUIRE(b.size() == 24u + 2u + 52u + 1860u); // 24 头 + "en" 2 + 前四档 52 + channels 15×124
+
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    for (std::size_t t = 0; t < 15u; ++t)
+    {
+        INFO("channel index " << t);
+        CHECK(d.channels[t].enabled == s.channels[t].enabled);
+        CHECK(d.channels[t].label == s.channels[t].label);
+        CHECK(d.channels[t].participateAutoPan == s.channels[t].participateAutoPan);
+        CHECK(d.channels[t].priority == s.channels[t].priority);
+        CHECK(d.channels[t].leadLock == s.channels[t].leadLock);
+        CHECK(d.channels[t].leadVolExempt == s.channels[t].leadVolExempt);
+        CHECK(d.channels[t].pairId == s.channels[t].pairId);
+    }
+    // 字面量再钉一遍几格(上面是「与输入相等」,这里是「与规格值相等」—— 夹具被改成默认值时上面恒真)。
+    CHECK(d.channels[0].label == "Lead Vox");
+    CHECK(d.channels[0].leadLock);
+    CHECK(d.channels[0].priority == 10u);
+    CHECK(d.channels[1].label == kHarmonyL);
+    CHECK(d.channels[1].pairId == 3u);
+    CHECK(d.channels[1].participateAutoPan == 0u);
+    CHECK(d.channels[2].participateAutoPan == 1u);
+    CHECK(d.channels[5].participateAutoPan == 2u); // 没动过的轨保持「未显式设置」
+    CHECK_FALSE(d.channels[3].enabled);
+    CHECK(d.channels[3].priority == 0u);
+    CHECK(d.channels[4].leadVolExempt);
+    CHECK(d.channels[4].pairId == 7u);
+    CHECK(d.channels[13].label.size() == 72u);
+    CHECK(d.channels[14].label.size() == 96u);
+    // 七项之外一个都不许被这一档搅动。
+    CHECK(d.loudnessMode == "kw_integrated");
+    CHECK(d.appliedCenterSlotPolicy == "priority_queue");
+    CHECK(d.segmentationMinSegmentMs == 120u);
+    CHECK(d.vadThresholdDb == -38.0f);
+    CHECK(d.transitionRampMs == 80u);
+    CHECK(d.unknownTail.empty());
+    CHECK(r.channelEnabledFallbacks == 0u);
+    CHECK(r.channelLabelFallbacks == 0u);
+    CHECK(r.channelParticipateFallbacks == 0u);
+    CHECK(r.channelPriorityFallbacks == 0u);
+    CHECK(r.channelLeadLockFallbacks == 0u);
+    CHECK(r.channelLeadVolExemptFallbacks == 0u);
+    CHECK(r.channelPairIdFallbacks == 0u);
+
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    CHECK(b == b2); // 逐字节往返
+}
+
+TEST_CASE("OutputStateCodec:[SL-472] label 编码侧截断:≤24 码点、≤96 字节、不切半个码点", "[output][state][sl472]")
+{
+    const auto roundTrip = [](const std::string& label) {
+        scvb::state::OutputState s;
+        s.channels[6].label = label;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        REQUIRE(b.size() == 24u + 2u + 52u + 1860u); // 定长槽:截不截都不改变档长
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        CHECK(r.channelLabelFallbacks == 0u); // 编码侧截出来的东西一定能被原样收回
+        return d.channels[6].label;
+    };
+    // 25 个「中」→ 24 个(码点上限先到)。
+    CHECK(roundTrip(sl472Repeat(kZhong, 25)) == sl472Repeat(kZhong, 24));
+    // 30 个 4 字节码点 → 24 个 = 96 字节(两个上限同时到)。
+    CHECK(roundTrip(sl472Repeat(kMic, 30)) == sl472Repeat(kMic, 24));
+    // 100 个 ASCII → 24 个。
+    CHECK(roundTrip(std::string(100, 'a')) == std::string(24, 'a'));
+    // 23 个 ASCII + 1 个 4 字节码点 = 24 码点 / 27 字节:恰好在上限内,原样保留。
+    CHECK(roundTrip(std::string(23, 'b') + kMic) == std::string(23, 'b') + kMic);
+    // 内存里出现坏字节(0xFF)时在那里截止,而不是整条写成一个解码时会被判非法的串。
+    std::string withBad = "ab";
+    withBad.push_back(static_cast<char>(0xFF));
+    withBad += "cd";
+    CHECK(roundTrip(withBad) == "ab");
+    // 空名原样空。
+    CHECK(roundTrip(std::string()).empty());
+}
+
+TEST_CASE("OutputStateCodec:[SL-472] abi≤5 旧 payload(无 channels 档)⇒ 七项构造默认且不计回落",
+          "[output][state][sl472]")
+{
+    // 与 [SL-411]/[SL-416] 同一条取舍(与 [SL-279] `applied := 当前值` **相反**):七项就是「当前设置」本身,
+    // 旧工程确实没存过 → 取构造默认(= 旧构建重开后 runtime_.channels 的值),且**不计回落**。
+    // 这一格也是 J113 的机检形态:修前用户存盘重开读到的就是这一组默认。
+    // 每一种更旧的形态(abi=5/4/3/2/1)都走一遍:channels 档的缺席判定不能依赖前面哪一档在不在。
+    for (const std::size_t tail : {52u, 28u, 16u, 8u, 0u})
+    {
+        const scvb::state::OutputState s = sl472NonDefault(); // 先写成非默认,好证明读到的默认不是「本来就没写」
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        b.resize(24u + 2u + tail);
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        INFO("tail bytes = " << tail);
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        for (std::size_t t = 0; t < 15u; ++t)
+        {
+            INFO("channel index " << t);
+            CHECK(d.channels[t].enabled);
+            CHECK(d.channels[t].label.empty());
+            CHECK(d.channels[t].participateAutoPan == 2u); // 未显式设置 ⇒ [J83] 一律参与
+            CHECK(d.channels[t].priority == 5u);
+            CHECK_FALSE(d.channels[t].leadLock);
+            CHECK_FALSE(d.channels[t].leadVolExempt);
+            CHECK(d.channels[t].pairId == 0u);
+        }
+        CHECK(r.channelEnabledFallbacks == 0u); // 缺席不算回落
+        CHECK(r.channelLabelFallbacks == 0u);
+        CHECK(r.channelParticipateFallbacks == 0u);
+        CHECK(r.channelPriorityFallbacks == 0u);
+        CHECK(r.channelLeadLockFallbacks == 0u);
+        CHECK(r.channelLeadVolExemptFallbacks == 0u);
+        CHECK(r.channelPairIdFallbacks == 0u);
+        CHECK(d.unknownTail.empty());
+    }
+}
+
+TEST_CASE("OutputStateCodec:[SL-472] 非法值 ⇒ 该轨该项单独回落默认并按字段计数", "[output][state][sl472]")
+{
+    struct BadU32
+    {
+        std::size_t field; // 记录内偏移
+        std::uint32_t value;
+    };
+    // 每个判据原子各打一格;边界本身(1 / 2 / 10 / 7)的「合法」由往返那一格覆盖。
+    const BadU32 bads[] = {
+        {0u, 2u}, // enabled 只认 0/1
+        {4u, 3u}, // participate 只认 0/1/2
+        {8u, 11u}, // priority > 10
+        {8u, 0xFFFFFFFFu}, // priority 哨兵(负数 static_cast 过来就是这个形态)
+        {12u, 2u}, // lead_lock
+        {16u, 7u}, // lead_vol_exempt
+        {20u, 8u}, // pair_id > 7
+    };
+    constexpr std::size_t kT = 4u; // 第 5 轨:它的 lead_vol_exempt / pair_id 在夹具里是非默认值
+    for (const auto& bad : bads)
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        sl472PutU32(b, kSl472ChBase + kSl472Rec * kT + bad.field, bad.value);
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        INFO("field offset " << bad.field << " = " << bad.value);
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r)); // 单项坏值不拒载整块
+        const auto& c = d.channels[kT];
+        // 被点中的那一项回落构造默认,同一轨其余项保持夹具值(不是整轨回落)。
+        CHECK(c.enabled == (bad.field == 0u ? true : s.channels[kT].enabled));
+        CHECK(c.participateAutoPan == (bad.field == 4u ? 2u : s.channels[kT].participateAutoPan));
+        CHECK(c.priority == (bad.field == 8u ? 5u : s.channels[kT].priority));
+        CHECK(c.leadLock == (bad.field == 12u ? false : s.channels[kT].leadLock));
+        CHECK(c.leadVolExempt == (bad.field == 16u ? false : s.channels[kT].leadVolExempt));
+        CHECK(c.pairId == (bad.field == 20u ? 0u : s.channels[kT].pairId));
+        // 计数器逐字段独立:被点中的 == 1,其余 == 0。
+        CHECK(r.channelEnabledFallbacks == (bad.field == 0u ? 1u : 0u));
+        CHECK(r.channelParticipateFallbacks == (bad.field == 4u ? 1u : 0u));
+        CHECK(r.channelPriorityFallbacks == (bad.field == 8u ? 1u : 0u));
+        CHECK(r.channelLeadLockFallbacks == (bad.field == 12u ? 1u : 0u));
+        CHECK(r.channelLeadVolExemptFallbacks == (bad.field == 16u ? 1u : 0u));
+        CHECK(r.channelPairIdFallbacks == (bad.field == 20u ? 1u : 0u));
+        CHECK(r.channelLabelFallbacks == 0u);
+        // 别的轨与前面几档不受牵连。
+        CHECK(d.channels[0].label == "Lead Vox");
+        CHECK(d.channels[1].pairId == 3u);
+        CHECK(d.vadThresholdDb == -38.0f);
+    }
+    // 计数按字段在 15 轨上累加:三条轨的 pair_id 都坏 ⇒ pair_id 计 3。
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        for (const std::size_t t : {1u, 2u, 14u})
+        {
+            sl472PutU32(b, kSl472ChBase + kSl472Rec * t + 20u, 99u);
+        }
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        CHECK(r.channelPairIdFallbacks == 3u);
+        CHECK(d.channels[1].pairId == 0u);
+        CHECK(d.channels[4].pairId == 7u);
+    }
+}
+
+TEST_CASE("OutputStateCodec:[SL-472] label 非法 ⇒ 该轨名回落空串并计数,不牵连同轨其余项", "[output][state][sl472]")
+{
+    // 每个输入只打中一个判据原子。
+    struct BadLabel
+    {
+        const char* what;
+        std::uint32_t labelBytes;
+        std::vector<std::uint8_t> bytes;
+    };
+    const std::vector<BadLabel> bads = {
+        {"labelBytes > 96", 97u, {0x61}},
+        {"lone continuation byte", 2u, {0x61, 0x80}},
+        {"invalid lead byte 0xFF", 1u, {0xFF}},
+        {"truncated 3-byte sequence", 2u, {0xE4, 0xB8}},
+        {"overlong encoding of slash", 2u, {0xC0, 0xAF}},
+        {"UTF-16 surrogate U+D800", 3u, {0xED, 0xA0, 0x80}},
+        {"above U+10FFFF", 4u, {0xF4, 0x90, 0x80, 0x80}},
+        {"embedded NUL", 3u, {0x61, 0x00, 0x62}},
+        {"25 code points", 25u, std::vector<std::uint8_t>(25u, 0x78)},
+    };
+    for (const auto& bad : bads)
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        const std::size_t rec = kSl472ChBase; // 第 1 轨:名字 "Lead Vox"、lead_lock 开、优先级 10
+        sl472PutU32(b, rec + 24u, bad.labelBytes);
+        for (std::size_t i = 0; i < bad.bytes.size(); ++i)
+        {
+            b[rec + 28u + i] = bad.bytes[i];
+        }
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        INFO("bad label: " << bad.what);
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        CHECK(d.channels[0].label.empty());
+        CHECK(r.channelLabelFallbacks == 1u);
+        CHECK(d.channels[0].leadLock); // 同轨其余项照常
+        CHECK(d.channels[0].priority == 10u);
+        CHECK(d.channels[1].label == kHarmonyL); // 别的轨照常
+        CHECK(r.channelPriorityFallbacks == 0u);
+    }
+    // 边界本身合法:恰好 24 码点 / 96 字节(夹具第 15 轨)与 labelBytes = 0(空名)。
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        CHECK(d.channels[14].label == sl472Repeat(kMic, 24));
+        CHECK(d.channels[7].label.empty());
+        CHECK(r.channelLabelFallbacks == 0u);
+    }
+}
+
+TEST_CASE("OutputStateCodec:[SL-472] channels 半截(52<remaining<1912)→ 拒载;边界 52 / 1912 可解",
+          "[output][state][sl472]")
+{
+    // 一整档 1860 字节是同一个构建写下去的,「只有前几条记录」不可能是任何真实构建的产物。
+    for (const std::size_t tail : {53u, 52u + 124u, 52u + 1859u})
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        b.resize(24u + 2u + tail);
+        scvb::state::OutputState d;
+        INFO("tail bytes = " << tail);
+        CHECK_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    }
+    for (const std::size_t tail : {52u, 1912u})
+    {
+        const scvb::state::OutputState s = sl472NonDefault();
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        b.resize(24u + 2u + tail);
+        scvb::state::OutputState d;
+        INFO("tail bytes = " << tail);
+        CHECK(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    }
+}
+
 TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[output][state]")
 {
     scvb::state::OutputState s;
@@ -964,7 +1311,8 @@ TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[ou
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // 模拟未来小版本追加:已知字段之后追加 4 字节未知尾部。
     // [SL-411] 起「已知字段」到 segmentation 那一档为止(尾长 28),[SL-416] 起推到 vad/ramp 那一档
-    // (尾长 52),所以这 4 个字节是**第五档**的未知尾部 —— 这正是 unknownTail 该生效的形态。
+    // (尾长 52),[SL-472] 起推到 channels[15] 那一档(尾长 1912),所以这 4 个字节是**第六档**的未知尾部
+    // (remaining = 1916)—— 这正是 unknownTail 该生效的形态。
     b.push_back(0xDE);
     b.push_back(0xAD);
     b.push_back(0xBE);
@@ -987,7 +1335,8 @@ TEST_CASE("OutputStateCodec:非 en 的 uiLanguage 偏移(base=24+langBytes)推�
     s.centerSlotPolicy = "lead_exclusive";
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 5u + 52u); // 24 头 + 5 语言 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
+    REQUIRE(b.size() == 24u + 5u + 52u + 1860u); // [SL-472] + channels 1860
+    // 24 头 + 5 语言 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
     scvb::state::OutputState d;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
     REQUIRE(d.uiLanguage == "zh-CN");
@@ -1002,7 +1351,7 @@ TEST_CASE("Output state 容器:旧版读新 CFGS(高 abi)→ RejectedNewer + 原
 {
     // 复评重要②:旧版(abi=1)读到含 loudness_mode/center_slot_policy 的新(abi=2)blob → RejectedNewer
     // + preservedOriginal 原样回写,绝不把用户 CFGS 覆盖成默认(CLAUDE.md §7.3 / STATE_SCHEMA)。
-    // 模拟「旧版读新」:当前 kCurrentAbi=4,把容器 abi 抬到 kCurrentAbi+1 代表未来/更高版本。
+    // 模拟「旧版读新」:把容器 abi 抬到 kCurrentAbi+1(相对量)代表未来/更高版本。
     scvb::state::OutputState s;
     s.groupId = 5;
     s.loudnessMode = "peak_dbfs";

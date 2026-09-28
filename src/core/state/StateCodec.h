@@ -13,7 +13,7 @@
 // 容器(定长头 + TLV 块,little-endian):
 //   偏移  字段
 //   0     u32 magic = 'SCVB' (0x42564353,小端内存序;与 ipc/SegmentLayout.h kScvbMagic 同源)
-//   4     u32 abi   = 4(与 IPC abi 独立计数)
+//   4     u32 abi   = kCurrentAbi(见下;与 IPC abi 独立计数)
 //   8     u32 flags = 0
 //   12    u32 chunkCount
 //   16..  TLV × N:{ u32 fourcc; u32 sizeBytes; u8 payload[sizeBytes](4 字节对齐,padding 置 0) }
@@ -24,14 +24,14 @@
 // 未知 fourcc 的块在 load 时原样保留、save 时原样回写(前向小版本兼容)。
 //
 // 【挂账 / 后续接线契约落点】(本卡不改代码,只记账):
-// 1. PRMS/CFGS 的 ValueTree 字段级编码(123 参数 + ui{…}、group_id/global/analysis/channels[15]
-//    的 source_channels/participate_in_auto_pan 回填与 auto_pan/auto_vol 丢弃)归 Output/JUCE 层
-//    的 getStateInformation/setStateInformation 接线卡(本层仅 opaque 承载 + fourcc 常量)。
+// 1. PRMS/CFGS 的字段级编码归 Output/JUCE 层的 getStateInformation/setStateInformation 与
+//    `OutputStateCodec`(本层仅 opaque 承载 + fourcc 常量)。[SL-472] 起 channels[15] 的七项已由
+//    `OutputStateCodec` 的第五档承载;source_channels 不落盘(每拍从音频环段头重测)。
 // 2. 同 abi 内 CRVS 的 minor 高于当前(kCrvsMinorVersion)时,decodeCrvs 只拒解本块,容器级 loadState
 //    仍返回 Ok —— Output 接线卡必须把「同 abi 但 CRVS minor 更高」按「等同拒载 + preservedOriginal
 //    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
 // 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
-//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3/4 是历史迁移基线,**abi=5 是当前格式锁**)。
+//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
 namespace scvb::state
 {
 
@@ -40,9 +40,10 @@ namespace scvb::state
 // 0x42564353):小端写盘后前 4 字节字面拼出 "SCVB",与 tests/golden/ipc-layout.txt 的 magic 0x42564353 一致。
 inline constexpr std::uint32_t kStateMagic = 0x42564353u; // 'SCVB'(小端内存序,与 SegmentLayout.h 同源)
 inline constexpr std::uint32_t kCurrentAbi =
-    5u; // abi 4→5:[SL-416] CFGS 再尾扩 analysis.vad 五字段 + analysis.transition_ramp_ms
-        // (见 migrate_4_to_5)。上一级 abi 3→4 是 [SL-411] 的 analysis.segmentation
-        // {mode,sensitivity,min_segment_ms};再上一级 abi 2→3 是 [SL-279] 的
+    6u; // abi 5→6:[SL-472] CFGS 再尾扩 channels[15] 七项(enabled / label / participate_in_auto_pan /
+        // priority / lead_lock / lead_vol_exempt / pair_id;见 migrate_5_to_6)。上一级 abi 4→5 是
+        // [SL-416] 的 analysis.vad 五字段 + analysis.transition_ramp_ms;abi 3→4 是 [SL-411] 的
+        // analysis.segmentation{mode,sensitivity,min_segment_ms};abi 2→3 是 [SL-279] 的
         // applied.{loudness_mode,center_slot_policy}。
 
 inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'

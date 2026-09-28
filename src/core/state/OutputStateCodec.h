@@ -6,7 +6,8 @@
 // payload 对容器而言是不透明字节(与 Input 的 CFGS 同为紧凑二进制,互不相扰)。
 //
 // T24 范围字段:group_id([J66],默认 1)、capture_enabled、output_enabled、version_active、ui。
-// 完整 Output state(analysis/channels[15]/versions[2]/features)由后续任务扩展本 codec。
+// 其后的 analysis 各档与 [SL-472] 的 channels[15] 七项由后续各卡逐档扩展(见下面的 payload 布局);
+// versions[2] 走 CRVS、features 走 FEAT,不在本 codec。
 // [J69/U24] analysis.loudness_mode / center_slot_policy 两字段由本 codec 持久化(评审遗留:
 // T35 #62 落盘缺口;STATE_SCHEMA 口径默认 kw_integrated / priority_queue)。
 //
@@ -31,9 +32,18 @@
 //   64+languageBytes  u32 vadPaddingPreMs([SL-416] 20..400,默认 120)
 //   68+languageBytes  u32 vadPaddingPostMs([SL-416] 50..400,默认 200)
 //   72+languageBytes  u32 transitionRampMs([SL-416] 20..300,默认 80)
-//   76+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
+//   76+languageBytes  channels[15]([SL-472] 第五档,定长 15 × 124 = 1860 字节;每条记录):
+//                       +0   u32 enabled(0|1,默认 1)
+//                       +4   u32 participateAutoPan(0=false,1=true,2=未显式设置 ⇒ [J83] 一律参与;默认 2)
+//                       +8   u32 priority(0..10,默认 5)
+//                       +12  u32 leadLock(0|1,默认 0)
+//                       +16  u32 leadVolExempt(0|1,默认 0)
+//                       +20  u32 pairId(0..7,默认 0 = 无配对)
+//                       +24  u32 labelBytes(0..96)
+//                       +28  u8  label[96](UTF-8,前 labelBytes 字节有效;其余字节**写侧**补 0,读侧不校验、不读)
+//   1936+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
 //
-// 兼容:**四级长度回退**,各对应一次 abi 升格 ——
+// 兼容:**五级长度回退**,各对应一次 abi 升格 ——
 //   · 旧版(abi=1)payload 无「当前」那两个 u32(24+languageBytes 即止)→ 两字段回落默认
 //     且不计未知回落(经 migrate_1_to_2 no-op + 本 codec 长度回退);
 //   · 旧版(abi=2)payload 有「当前」、无 applied 那两个 u32 → [SL-279] **applied := 当前值**,
@@ -48,6 +58,14 @@
 //   · 旧版(abi=4)payload 有 segmentation、无 vad 五字段与 transition_ramp_ms → [SL-416]
 //     **六字段同样回落规格默认且不计回落**(同一档语义:它们就是「当前设置」本身,
 //     A24 实测「存盘重开全回默认」正是这条缺席的后果)。migrate_4_to_5 同样是 no-op。
+//   · 旧版(abi=5)payload 有 vad/ramp、无 channels[15] 那一整档 → [SL-472] **七项 × 15 轨回落构造默认**
+//     (启用 / 空名 / 参与自动声像「未显式设置」/ 优先级 5 / 主唱锁定关 / 音量豁免关 / 无配对)
+//     且**不计回落** —— 与 [SL-411]/[SL-416] 同一档语义:它们就是「当前设置」本身,旧构建从来
+//     没存过,构造默认正是旧构建重开后 `runtime_.channels` 的值,于是旧工程打开后的行为与今天逐字相同
+//     (J113 用户实测的「命名 / 配对 / 优先级 / 主唱锁定全回默认」正是这条缺席的后果)。
+//     **在席且非法**的单项也回落同一组默认(并计数)—— 两种情况回落到同一个值是有意的:
+//     这七项没有 [SL-279] `applied` 那种「缺席时另有更可信的来源」,默认值就是「我不知道时最保守」的那一个
+//     (`participate` 的「未显式设置」档恰好保住 [J83] 的默认语义不被一次坏值钉死)。migrate_5_to_6 同样是 no-op。
 // ⚠ [SL-416] **本档起,「规格默认」不再是「旧构建里 runtime_ 的默认值」** —— 那两组值此前不一致
 //   (`OutputProcessor.h` 是 T29 遗留的 −45/3/200,而 02 §0.3 / U24 的出厂推荐值是 −38/6/250),
 //   本卡把**唯一真源收到本文件的 `kOutputVad*Default`**:`OutputProcessor.h` 的初值、
@@ -57,18 +75,28 @@
 //   ⚠ 分家的不是引擎侧:`src/core/analysis/EnergyVad.h:19-20` 的引擎默认**本来就是 6 / 250**,
 //   本卡收的是**桥面 / `runtime_` 那一份**(`OutputProcessor.h` 的 T29 遗留 −45/3/200)。
 // ⚠ [SL-279 复审 / SL-411 R8] 尾部长度纪律的准确措辞是「**档内不许半截**」,别写成「追加必须整档」——
-//   后者会让人以为尾部被完整地按档校验过,而实际语义是:**四个档内空洞** `(0,8)` / `(8,16)` /
-//   `(16,28)` / `(28,52)` 一律整块拒载,而**偏移 52 之后任意长度的尾巴都被接受**,由 `unknownTail`
-//   收下并原样回写(`tests/core/test_output_session.cpp` 那条 unknownTail 用例追的正是 4 字节,
-//   remaining = 56)。
-//   于是「未来小版本追加字段」有两条路:在**已知档之间**插字段必须升 abi 走迁移链;在**尾部**(≥52)
+//   后者会让人以为尾部被完整地按档校验过,而实际语义是:**五个档内空洞** `(0,8)` / `(8,16)` /
+//   `(16,28)` / `(28,52)` / `(52,1912)`([SL-472])一律整块拒载,而**偏移 1912 之后任意长度的尾巴
+//   都被接受**,由 `unknownTail` 收下并原样回写(`tests/core/test_output_session.cpp` 那条 unknownTail
+//   用例追的正是 4 字节,remaining = 1916)。
+//   于是「未来小版本追加字段」有两条路:在**已知档之间**插字段必须升 abi 走迁移链;在**尾部**(≥1912)
 //   追加任意长度都不必升 abi,靠 `unknownTail` 原样带走。上面那句「解码保留、编码原样回写、防静默
 //   丢字段」说的就是后一条路。
+//   ⚠ [SL-472] 这一档仍**升了 abi**(5→6),没有走「尾部追加不升 abi」那条路 —— 与 [SL-411]/[SL-416]
+//   两档同一个做法。代价写在变更文档 `docs/contract-changes/20260927-sl472-channel-config-persist.md`
+//   的「兼容性影响」:旧构建(abi=5)读到本档起的工程走整块 `RejectedNewer`(原样回写 + 升级横幅),
+//   而不是「读得懂的照读、这一档当 unknownTail 带走」。
+//   ⚠ 本档**记录定长**(label 占满 96 字节槽,不按 labelBytes 变长):长度回退只认「remaining 够不够
+//   一整档」,变长记录会让「这一档到哪里结束」依赖档内字段,档内一个坏长度就把后面的未知尾部也读歪。
 // ⚠ [SL-411] **尾字段的失败态是本 codec 里「值越界 → 回落默认」的唯一一族**(区别于头 five 字段的
 //   「越界即整块拒载」,也区别于 `ui.scale` 的「原样透出、由上层夹取」):项目文件里的越界值只可能来自
 //   损坏或更高版本,本构建无法兑现它 → 回落该字段的规格默认并**计一次回落**(`OutputDecodeReport`)。
 //   [SL-416] 起**四个尾档都在这一族里**(segmentation 三项 / vad 五项 / transition_ramp_ms 同理),
-//   判据与计数方式逐字段独立 —— 别把它读成「只有某一个字段这样」。
+//   判据与计数方式逐字段独立 —— 别把它读成「只有某一个字段这样」。[SL-472] 的 channels[15] 七项
+//   同在这一族:每轨每项独立判、独立回落,计数按**字段**累加(15 轨里坏了几格,那个字段的计数就是几)。
+//   label 的「越界」= labelBytes > 96、不是合法 UTF-8(含过长编码 / 代理区 / 超 U+10FFFF)、
+//   含 NUL、或超过 24 个码点(桥面 `setChannelConfig` 的 `substring(0, 24)` 同一上限 —— 本构建
+//   `JUCE_STRING_UTF_TYPE` = 8,`String::substring` 按 `CharPointer_UTF8` 逐**码点**前进,两侧单位相同)。
 //   **不做边界夹取**:夹取会把「这个值我没法兑现」伪装成「已经按它办了」,而宽值域的正确出路是升 abi
 //   走迁移链(同一个道理写在上面那段「档内不许半截」里)。回落**单个字段**而非整块拒载,是因为这些
 //   字段彼此独立、且老工程里它们本来就整档缺席 —— 一格坏值不该让整份工程的段表读不出来。
@@ -84,6 +112,8 @@
 //
 // decode 处理不可信字节:长度/范围字段先校验再用于分配或索引(CLAUDE.md §7.3)。
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -161,10 +191,42 @@ inline constexpr std::uint32_t kOutputVadPaddingPostMsDefault = 200;
 inline constexpr std::uint32_t kOutputTransitionRampMsMin = 20;
 inline constexpr std::uint32_t kOutputTransitionRampMsMax = 300;
 inline constexpr std::uint32_t kOutputTransitionRampMsDefault = 80;
+// [SL-472] channels[15] 七项(STATE_SCHEMA §一)。值域与默认值的真源:
+//   · 轨数 15 —— [J59];`OutputProcessor` 那边以 `static_assert` 与 `scvb::engine::kNumTracks` 对拍;
+//   · priority 0..10 / pair_id 0..7 —— 桥面 `OutputEditor::handleSetChannelConfig` 的两处 `jlimit`
+//     与广播区 `publishConfigBroadcast` 的同款夹取(本卡只读这两个值域,不改桥面);默认 5 / 0 与
+//     `OutputProcessor.h` 的 `Channel` 初值相同;
+//   · label 上限 24 码点 —— 桥面 `substring(0, 24)`;UTF-8 最坏 4 字节/码点 ⇒ 字节槽 96。
+//     (广播区给 Input 的镜像另有自己的 100 字节上限 `kCtrlLabelBytes`,与本处互不相干。)
+//   · participate 三态 —— `Channel` 用 `participateAutoPanSet` + `participateAutoPan` 两个 bool 表达
+//     「未显式设置 / false / true」;落盘保住三态,否则「用户从没动过」会被存成「用户选了 true」,
+//     [J83] 的默认档将来再变时,老工程就不再跟着默认走。
+inline constexpr std::size_t kOutputChannelCount = 15;
+inline constexpr std::uint32_t kOutputChannelLabelMaxBytes = 96;
+inline constexpr std::uint32_t kOutputChannelLabelMaxChars = 24;
+inline constexpr std::uint32_t kOutputChannelPriorityMax = 10; // 下限 0
+inline constexpr std::uint32_t kOutputChannelPriorityDefault = 5;
+inline constexpr std::uint32_t kOutputChannelPairIdMax = 7; // 0 = 无配对
+inline constexpr std::uint32_t kOutputParticipateFalse = 0;
+inline constexpr std::uint32_t kOutputParticipateTrue = 1;
+inline constexpr std::uint32_t kOutputParticipateUnset = 2; // 未显式设置 ⇒ [J83] 一律参与
 // [J75] T43:ui.master_chart_mode 独立 UICF chunk 载荷(u32,0/1);未知值解码回落 distribution。
 inline constexpr std::uint32_t kMasterChartModeDistribution = 0; // 默认档
 inline constexpr std::uint32_t kMasterChartModeTrajectory = 1;
 inline constexpr std::uint32_t kUiConfigBytes = 4; // UICF payload 定长 4 字节
+
+// [SL-472] channels[15] 每轨七项(source_channels **不存** —— 每拍由 `refreshSourceChannels` 从音频环段头
+// 重测,存了也会被下一拍覆盖)。默认值 = `OutputProcessor.h` 里 `Channel` 的构造初值。
+struct OutputChannelState
+{
+    bool enabled = true;
+    std::string label; // UTF-8;编码时截到 ≤24 码点且 ≤96 字节(不切半个码点)
+    std::uint32_t participateAutoPan = kOutputParticipateUnset; // 0/1/2(见 kOutputParticipate*)
+    std::uint32_t priority = kOutputChannelPriorityDefault; // 0..10
+    bool leadLock = false;
+    bool leadVolExempt = false;
+    std::uint32_t pairId = 0; // 0..7
+};
 
 struct OutputState
 {
@@ -198,6 +260,9 @@ struct OutputState
     std::uint32_t vadPaddingPreMs = kOutputVadPaddingPreMsDefault; // 20..400
     std::uint32_t vadPaddingPostMs = kOutputVadPaddingPostMsDefault; // 50..400
     std::uint32_t transitionRampMs = kOutputTransitionRampMsDefault; // 20..300
+    // [SL-472] channels[15] 七项 —— **自本版起随工程落盘**(此前只活在 `OutputProcessor` 的
+    // `runtime_.channels` 里:J113 用户实测「命名 / 配对 / 优先级 / 主唱锁定存盘重开全回默认」)。
+    std::array<OutputChannelState, kOutputChannelCount> channels{};
     std::vector<std::uint8_t> unknownTail; // 已知字段之后的未知尾部(未来小版本追加;解码保留、编码回写)
     // masterChartMode 不属 CFGS:由独立 UICF chunk(kFourccUiConfig)承载,见 encodeUiConfig/decodeUiConfig。
 };
@@ -226,6 +291,15 @@ struct OutputDecodeReport
     std::uint32_t vadPaddingPreMsFallbacks = 0;
     std::uint32_t vadPaddingPostMsFallbacks = 0;
     std::uint32_t transitionRampMsFallbacks = 0;
+    // [SL-472] channels[15] 七项:按**字段**计数、15 轨累加(同一纪律 —— 合并成一个「channels 回落了 N 次」
+    // 读日志的人分不出坏的是名字还是配对)。缺席(abi≤5 的旧工程)**不算回落**。
+    std::uint32_t channelEnabledFallbacks = 0;
+    std::uint32_t channelLabelFallbacks = 0;
+    std::uint32_t channelParticipateFallbacks = 0;
+    std::uint32_t channelPriorityFallbacks = 0;
+    std::uint32_t channelLeadLockFallbacks = 0;
+    std::uint32_t channelLeadVolExemptFallbacks = 0;
+    std::uint32_t channelPairIdFallbacks = 0;
 };
 
 // 编码;语言超长截断(≤kOutputLanguageMaxBytes)。返回 false = 无法分配。

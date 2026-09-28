@@ -854,9 +854,11 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(o, "analysis", analysis);
 
     juce::var channels = mkArray();
+    // [SL-472 R1] 持锁拷贝整节再读:setStateInformation 可能在宿主线程上整节改写(含 juce::String label)。
+    const auto channelCfg = processor_.channelsSnapshot();
     for (int t = 0; t < 15; ++t)
     {
-        const auto& c = rt.channels[static_cast<std::size_t>(t)];
+        const auto& c = channelCfg[static_cast<std::size_t>(t)];
         juce::var ch = obj();
         put(ch, "enabled", c.enabled);
         put(ch, "label", c.label);
@@ -1608,7 +1610,8 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
         return;
     }
 
-    const auto& cur = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+    // [SL-472 R2] 不再在这里不持锁地引用 runtime().channels:各分支入口都是 `hasProperty`,
+    // `getProperty` 的缺省值永远取不到,原来传的 `cur.*` 是死引用(行为零变化)。
 
     // 阶段1:先对全部 patch 字段做完整校验到局部临时量,绝不触碰 channel(PR#55 第4轮缺陷2)。
     bool hasEnabled = false;
@@ -1639,7 +1642,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("enabled"))
     {
-        if (!strictBool(patch.getProperty("enabled", cur.enabled), enabled))
+        if (!strictBool(patch.getProperty("enabled", juce::var()), enabled))
         {
             c(badArgResp());
             return;
@@ -1653,12 +1656,12 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("priority"))
     {
-        priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", cur.priority)));
+        priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", juce::var())));
         hasPriority = true;
     }
     if (patch.hasProperty("lead_lock"))
     {
-        if (!strictBool(patch.getProperty("lead_lock", cur.leadLock), leadLock))
+        if (!strictBool(patch.getProperty("lead_lock", juce::var()), leadLock))
         {
             c(badArgResp());
             return;
@@ -1667,7 +1670,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("lead_vol_exempt"))
     {
-        if (!strictBool(patch.getProperty("lead_vol_exempt", cur.leadVolExempt), leadVolExempt))
+        if (!strictBool(patch.getProperty("lead_vol_exempt", juce::var()), leadVolExempt))
         {
             c(badArgResp());
             return;
@@ -1685,7 +1688,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
     if (patch.hasProperty("pair_id"))
     {
-        pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", cur.pairId)));
+        pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", juce::var())));
         hasPairId = true;
     }
 
@@ -1697,47 +1700,24 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
 
     // 阶段2:全部通过后一次性应用,变化才 bump config_seq。
-    auto& channel = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
-    bool changed = false;
+    // [SL-472 R1] 经 processor 的持锁口应用(label 是 juce::String,与宿主线程上的 get/setStateInformation
+    // 同锁串行);比对、赋值、bump 的语义与此前在这里就地写的版本逐项相同。
+    ScvbOutputAudioProcessor::ChannelConfigPatch cfgPatch;
     if (hasEnabled)
-    {
-        changed |= enabled != channel.enabled;
-        channel.enabled = enabled;
-    }
+        cfgPatch.enabled = enabled;
     if (hasLabel)
-    {
-        changed |= label != channel.label;
-        channel.label = label;
-    }
+        cfgPatch.label = label;
     if (hasPriority)
-    {
-        changed |= priority != channel.priority;
-        channel.priority = priority;
-    }
+        cfgPatch.priority = priority;
     if (hasLeadLock)
-    {
-        changed |= leadLock != channel.leadLock;
-        channel.leadLock = leadLock;
-    }
+        cfgPatch.leadLock = leadLock;
     if (hasLeadVolExempt)
-    {
-        changed |= leadVolExempt != channel.leadVolExempt;
-        channel.leadVolExempt = leadVolExempt;
-    }
+        cfgPatch.leadVolExempt = leadVolExempt;
     if (hasParticipate)
-    {
-        changed |= participate != channel.participateAutoPan;
-        channel.participateAutoPan = participate;
-        channel.participateAutoPanSet = true;
-    }
+        cfgPatch.participate = participate;
     if (hasPairId)
-    {
-        changed |= pairId != channel.pairId;
-        channel.pairId = pairId;
-    }
-
-    if (changed)
-        ++processor_.runtime().configSeq; // 广播区整体版本号,值变化才 bump(PR#55 缺陷4)
+        cfgPatch.pairId = pairId;
+    (void)processor_.bridgeApplyChannelConfig(ch - 1, cfgPatch);
     c(okResp());
 }
 
@@ -2584,12 +2564,13 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
     scvb::suggest::ExportInput input;
     input.curves = &curves;
     input.sampleRate = processor_.sampleRate();
-    const auto& rt = processor_.runtime();
+    // [SL-472 R1] 持锁快照读 label(juce::String 跨线程,见 OutputProcessor.h `channelsSnapshot`)。
+    const auto channelCfg = processor_.channelsSnapshot();
     for (int t = 0; t < scvb::state::kNumTracks; ++t)
     {
         auto& meta = input.tracks[static_cast<std::size_t>(t)];
-        meta.label = rt.channels[static_cast<std::size_t>(t)].label.toStdString();
-        meta.sourceChannels = rt.channels[static_cast<std::size_t>(t)].sourceChannels;
+        meta.label = channelCfg[static_cast<std::size_t>(t)].label.toStdString();
+        meta.sourceChannels = channelCfg[static_cast<std::size_t>(t)].sourceChannels;
     }
     // width:参数面真值。取不到的格留哨兵 —— `kWidthUnknown` 的头注写明了为什么不能填 0
     // (0 在 stereo 轨上是「收成 mono」的有效建议,把「没装这一格」写成 0 是替用户下了反向决定)。
