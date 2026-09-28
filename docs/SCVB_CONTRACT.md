@@ -127,7 +127,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `g: 1..8`(UI 显示 A-H) |
-| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察) |
+| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察)或 `{ok:false, reason:"badArg"}`(`g` 不在 1..8;§0.8 第 2 条) |
 | 语义 | 写 state `group_id`;触发 01 §4.2 改组释放-重连:释放旧组 OutputSlot → Unmap 旧组全部段 → 新组 claim → 判定主/只读。成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新。**与 Input 侧 §3.3 同名同签名**,返回值不同(Output=`observer`,Input=`conflict`)。 |
 | 拒绝态 | PRINT 态由 UI 侧整组 disabled(05 §2.1 ⓪ tooltip「打印中不可切组」);C++ 侧不新增 `rejected` 码 |
 | 撤销 | 否 |
@@ -140,7 +140,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或字符串 `"all"`(同 `analyze`) |
 | 返回 | `{intervals:int, tracks:int, manualKept:int}` |
-| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
+| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**参与面**([J119],2026-09-28 用户批准;变更文档 `20260928-sl535-analysis-connected-only.md`):`coverage` 只计 scope 内 **`enabled` 且此刻已连接 Input** 的轨 —— 「已连接」= §2.3 `scvb.conn` 同轨 `slotState=2 ∧ heartbeatFresh`(与 UI「未连接」显示同一判据;宿主挂起 `suspended` 不算断开);没连上的轨的采集数据**保留不清**、`enabled` **不改**,连回来后下一次分析自动回到参与面。`tracks` 数的就是这个参与面;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
 | 拒绝态 | 无(空集合返回 `{0,0,0}`) |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步,目标 <10ms;UI 侧节流调用 |
@@ -153,7 +153,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或 `"all"`;`opts?`:`{clearManual?:bool=false}` |
 | 返回 | `{ok:bool, affected:{intervals:int, tracks:int, manualKept:int}}` 或 `{ok:false, reason:"busy"}` —— **受理回执 + 影响面**,不是最终结果 |
 | 语义 | 离线分析(秒级)。native function 只负责启动:[M] 提交 [W] job 后即 resolve;**结果一律经 `scvb.segments` 回推**,运行态经 `scvb.state.analysis_run` 下推(01 §6.4)。`clearManual:true` = 「重新识别(含手动段)」:仅把目标段 `origin` 重置为 `auto` 后重算;**`locked=true` 段不受影响,须先逐段解锁**(04 §4.4,J34);该分支须 UI 二次确认。默认(`clearManual:false`)只覆盖 `origin=auto` 段(ADR-008 v1.1)。 |
-| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled);已有分析在跑 → `{ok:false, reason:"busy"}` |
+| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled)。`coverage` 的参与面同 §1.5([J119]:只计 `enabled` 且此刻已连接 Input 的轨)⇒ 范围里有采集数据、但那些轨都没连上时同样落这一态,**不新增 reason**;已有分析在跑 → `{ok:false, reason:"busy"}` |
 | 撤销 | **是**([J89],2026-08-28 用户批准;变更文档 `20260827-sl209-analyze-undoable.md`)。一次分析(全量 / 选区 / 单轨重新识别)= **一条**撤销步:提交前把整个 CRVS 快照压进**既有** UndoManager(与段编辑同栈),撤销 = 恢复分析前的段表,重做 = 重放分析结果;撤销/重做各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8 枚举与行为均不变)。**与「重分析不覆盖 user 段」(ADR-008)天然共存**:快照的是整个 `CrvsData`,还原的是「分析前的那一刻」,那一刻本就含着这一轮会被保留的用户段与范围外 auto 段 —— 不需要另算「实际被替换面」。局部重分析同理(改的面更小,快照口径不变) |
 | 线程/频率 | [M] 启动 → [W] 执行;用户操作触发 |
 | 真源 | 05 §1.4 / §2.3;线程语义 01 §6.4 |
@@ -257,11 +257,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `ch: 1..15`;`panOrVol: "pan" \| "vol"`;`value: f32`(pan:-100..+100;vol:-24..+12 dB) |
-| 返回 | `{ok:true, replacedSegments:int, replacedLocked:int}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}`(`ch`/`panOrVol` 非法,或 `value` **非有限**——NaN/±Inf 一律拒绝,不得静默夹取:冻结维度上这个数就是 DSP 的音频目标值)。**`replacedSegments`/`replacedLocked` 只对手动接管通道有意义;冻结通道恒 0**(确实没替换任何段,如实统计,[J85] 变更文档裁定②) |
-| 语义 | 轨 `pan`/`vol` 的手动静态值。**[J85] 按调用时该维度的 `freeze` 位分成两条通道,写入面不同**(变更文档 `20260826-j85-freeze-param-plane.md`,PR #106):<br>**① 冻结通道**(该维度 `freeze` 对应位 = **1**)—— 静态值**只**写**当前激活版本**对应的 `v{v}_t{t:02d}_pan` / `_vol` 参数,**曲线真身一个字节都不动**、不产生任何段。**为什么不许写曲线**:整表烘焙成全时限常值之后,解冻回读曲线读到的仍是那条常值段,而重分析按 ADR-008 v1.1 不覆盖 `origin=user` 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到引擎分析曲线上(v5.3 A2 实测)。冻结按定义是**可逆的临时接管**,「解冻即回引擎分析曲线继续运动」是它的语义本身。<br>**② 手动接管通道**(该维度 `freeze` 对应位 = **0**)—— 用户主动「设为手动」。**编码 = 04 §1.5 方案 A**:向**当前激活版本**该轨曲线写入**覆盖全时间线的单段常值**,段标 `origin=user_edited`(J34),**不新增任何 state 字段**;写入常值段之后**追加**把同一个值写进同一对参数。重分析按 ADR-008 v1.1 不覆盖这条常值段(**只有本通道**会产生它);**会连 `locked` 段一并替换** —— J34 的 locked 保护只约束重分析。<br>**两条通道都落参数面、都包 `beginChangeGesture()` / `endChangeGesture()`**(变更文档 `20260825-t37-r3-track-manual-param-plane.md`,PR #87)。**为什么必须落参数面**:`DspArbiter` 对**冻结**维度读的是 host 参数而**不读曲线**,打印器对冻结车道也只把参数当前值重写成平直线(#68/J78)—— 冻结维度上没有任何读者会去看曲线。**为什么必须包 gesture**:裸 `setValueNotifyingHost` 在宿主看来是一次没有起止的孤立写入,Cubase 这类宿主要么记成孤立自动化点、要么在 Read 档下当场把值顶回去(那样这条写入根本不生效)。原文「零 gesture」以本条为准作废 —— 其原意「不要为手动值制造一串连续写入」仍然满足:UI 侧松手才发一次(`MANUAL_COMMIT_MS` 300ms 防抖),一次编辑 = 一对 begin/end。<br>**两条通道都按 §2.8 回推**:写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨**当前**段表 —— 冻结通道段表没变也照发(reason 枚举闭合不受影响;UI 用这一帧作为「已落地」信号清本地乐观值,不发会让乐观值挂死)。回推**之前**同步补一帧 `scvb.params`,两帧同拍到达 —— 冻结通道的新值只在参数面上,晚一拍会让 UI 先丢乐观值再读到旧参数值(旋钮回弹)。`value` 越界按 §1.16 的 `value` 域夹取,**非有限值不夹取、直接 badArg**。版本切换会换出另一版本的手动值。 |
+| 返回 | `{ok:true, replacedSegments:int, replacedLocked:int}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}`(`ch`/`panOrVol` 非法,或 `value` **非有限**——NaN/±Inf 一律拒绝,不得静默夹取:冻结维度上这个数就是 DSP 的音频目标值)。**`replacedSegments`/`replacedLocked` 只对手动接管通道有意义(= 该维被改写的段数 / 其中原本上锁的段数,[J131]);冻结通道恒 0**(确实没替换任何段,如实统计,[J85] 变更文档裁定②) |
+| 语义 | 轨 `pan`/`vol` 的手动静态值。**[J85] 按调用时该维度的 `freeze` 位分成两条通道,写入面不同**(变更文档 `20260826-j85-freeze-param-plane.md`,PR #106):<br>**① 冻结通道**(该维度 `freeze` 对应位 = **1**)—— 静态值**只**写**当前激活版本**对应的 `v{v}_t{t:02d}_pan` / `_vol` 参数,**曲线真身一个字节都不动**、不产生任何段。**为什么不许写曲线**:整表烘焙成全时限常值之后,解冻回读曲线读到的仍是那条常值段,而重分析按 ADR-008 v1.1 不覆盖 `origin=user` 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到引擎分析曲线上(v5.3 A2 实测)。冻结按定义是**可逆的临时接管**,「解冻即回引擎分析曲线继续运动」是它的语义本身。<br>**② 手动接管通道**(该维度 `freeze` 对应位 = **0**)—— 用户主动「设为手动」。**[J131] 起只固定被写的那一维**(变更文档 `20260928-j131-sl180-manual-one-dim.md`):**当前激活版本**该轨段表**非空**时,段数与每段 `t0`/`t1` 不变,**每一段**的该维度值改写为 `value`、**另一维逐段原样保留**(拖音量卡箍不再把 pan 曲线压平,反之亦然);段表**为空**时写入**覆盖全时间线的单段常值**(04 §1.5 方案 A 的编码),另一维取默认(pan 0 / vol 0 dB)。两种情形下被写的段一律标 `origin=user_edited`(J34)、`locked=false`,**不新增任何 state 字段**;写段表之后**追加**把同一个值写进同一对参数。重分析按 ADR-008 v1.1 不覆盖这些 `origin=user` 段;**会连 `locked` 段一并改写并摘锁** —— J34 的 locked 保护只约束重分析。「某一维是手动常值」的判定 = 该轨每段都是 `user_edited` 且该维各段值相等(`web/shared/readback.js` `manualDimOf`,native `DistReadback.h` 同名),读回逐维按它分叉;⚠ 这是按值**推断**,另一维各段碰巧全等时会被一并判成手动(已知近似,见变更文档「已知连带」)。⚠ 段内稳态值逐段保留,但段间过渡斜坡宽度按两维较大者反推(02 §8.2),被固定的那一维原先主导的边界上,另一维的斜坡会变窄。<br>**两条通道都落参数面、都包 `beginChangeGesture()` / `endChangeGesture()`**(变更文档 `20260825-t37-r3-track-manual-param-plane.md`,PR #87)。**为什么必须落参数面**:`DspArbiter` 对**冻结**维度读的是 host 参数而**不读曲线**,打印器对冻结车道也只把参数当前值重写成平直线(#68/J78)—— 冻结维度上没有任何读者会去看曲线。**为什么必须包 gesture**:裸 `setValueNotifyingHost` 在宿主看来是一次没有起止的孤立写入,Cubase 这类宿主要么记成孤立自动化点、要么在 Read 档下当场把值顶回去(那样这条写入根本不生效)。原文「零 gesture」以本条为准作废 —— 其原意「不要为手动值制造一串连续写入」仍然满足:UI 侧松手才发一次(`MANUAL_COMMIT_MS` 300ms 防抖),一次编辑 = 一对 begin/end。<br>**两条通道都按 §2.8 回推**:写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨**当前**段表 —— 冻结通道段表没变也照发(reason 枚举闭合不受影响;UI 用这一帧作为「已落地」信号清本地乐观值,不发会让乐观值挂死)。回推**之前**同步补一帧 `scvb.params`,两帧同拍到达 —— 冻结通道的新值只在参数面上,晚一拍会让 UI 先丢乐观值再读到旧参数值(旋钮回弹)。`value` 越界按 §1.16 的 `value` 域夹取,**非有限值不夹取、直接 badArg**。版本切换会换出另一版本的手动值。 |
 | 拒绝态 | 只读观察态 → `{observer:true}` |
 | 撤销 | **按通道分叉([J85])**。<br>**冻结通道:否** —— 它不产生任何 CRVS 变更,**一步都不往插件 UndoManager 里压**。⚠ 代价记在此处,不静默:用户在冻结态调了 pan 再按 Ctrl+Z,弹掉的是**上一笔不相干的 CRVS 事务**,看到的变化与刚做的操作无关。不压「空事务」是刻意的 —— 那只会让 Ctrl+Z 变成「按一下没反应、再按一下跳掉一笔旧编辑」。冻结通道唯一改的是自动化参数,而 §0.9 已明确「自动化参数不入插件 UndoManager」。<br>**手动接管通道:是**(仅回滚曲线真身)。⚠ 撤销事务(`commitCrvsTransaction`)只快照/还原 CRVS 段表,**参数面不回滚**。这是有意的:参数面是宿主的自动化面,插件自己的 UndoManager 去回滚它会与宿主撤销栈打架。<br>若将来要让冻结中调整也可撤销,唯一正路是走**宿主 gesture**,不是插件 undo |
-| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」两句对**冻结通道**都不成立(不替换任何段、不入撤销栈),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。i18n 文案未改(未冻结通道的语义原样成立)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
+| 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3)。**确认条只在未冻结的手动接管通道弹**([J85] 用户裁定 2026-08-27,方案 A):`tracks.manualOverwriteConfirm`「将以固定值替换该轨的全部分段结果,可撤销」(裁定时原文;[J131] 起改为「将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销」)两句对**冻结通道**都不成立(不替换任何段、不入撤销栈),拿它去拦一次只改旋钮值的操作是吓唬用户;**冻结维度直接执行,不弹**。05 §2.2 R3 的「无条件」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),不含「连不替换段的通道也要弹」,故不冲突。判定 = `web/output/tab-tracks.js` 的 `needsManualConfirm(freeze, dim, confirmed)`,**逐维**(只冻 pan 时拖 vol 仍弹);「每轨每会话一次」优先级最高。[J85] 时 i18n 文案未改;[J131] 起三语文案改为「只替换这一项、另一项保留」(key 不变)。详见变更文档 `20260826-j85-freeze-param-plane.md` 裁定② |
 | 真源 | 05 §1.4 / §2.2;编码 04 §1.5 |
 
 ### 1.17 `setPanCurve(points)`
@@ -366,7 +366,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的全部入栈操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |
@@ -450,7 +450,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:true}`(**幂等**:`pending` 已为 false 时仍返回 `{ok:true}`) |
-| 语义 | 加载守卫(04 §5.3)「继续引擎驱动」按钮的**唯一确认入口**:置 `print_guard.pending=false`(运行时态,不入 state chunk、不随工程持久化),本工程会话内横幅⑦不再出现;确认前引擎行为止于 ARMED(§1.3),确认后若满足 PRINT 三与条件(输出 ON ∧ 播放 ∧ 在 range 内)即恢复正常 PRINT。**零 gesture**;变更经 `scvb.state.print_guard` 回推。成例:R4 `setGuideSeen`(用户可见承诺须有唯一写入口)。 |
+| 语义 | 加载守卫(04 §5.3)「继续引擎驱动」按钮的**唯一确认入口**:置 `print_guard.pending=false`(运行时态,不入 state chunk、不随工程持久化),本工程会话内横幅⑦不再出现;确认前引擎行为止于 ARMED(§1.3),确认后若满足 PRINT 三与条件(输出 ON ∧ 播放 ∧ 在 range 内)即恢复正常 PRINT。**「本工程会话」的边界(J154)**:宿主对同一实例再次灌入插件状态(`setStateInformation` 恢复出 `output_enabled=ON`,如带插件状态的 DAW 撤销、A/B 对比、载入预设),就本条而言算作新的一次工程会话 —— 守卫重新置位,横幅⑦再次出现,须再次确认。**零 gesture**;变更经 `scvb.state.print_guard` 回推。成例:R4 `setGuideSeen`(用户可见承诺须有唯一写入口)。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M];横幅⑦按钮触发,每工程会话至多一次有效 |
@@ -570,7 +570,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 频率 | **`mBridgeReady` 后首帧一次(`snapshot`)+ 分析/阈值变化/段编辑/手动常值写入/撤销/重做/版本切换/版本复制后**(事件驱动,非周期) |
 | 载荷 | `{ version:1..2, reason:"analyze"\|"vad"\|"segmentation"\|"edit"\|"trackManual"\|"undo"\|"redo"\|"versionActive"\|"copyVersion"\|"snapshot",`<br>`  channels:[ { ch:1..15,`<br>`    segments:[ {segIdx:int, t0S:f64, t1S:f64, pan:f32(-100..100), volDb:f32(-24..+12), origin:"auto"\|"user_edited"\|"user_created", locked:bool, loudnessLufs:f32, openEnded:bool} ],`<br>`    stale:bool } ],`<br>`  diff:{ kept:int, changed:[ {ch:1..15, segIdx:int, panFrom:f32, panTo:f32, volDbFrom:f32, volDbTo:f32} ], added:int, removed:int } }` |
 | `reason` 十值与触发面 | `analyze`←`analyze()`(§1.6);`vad`←`setVadParams` 松手档(§1.18);`segmentation`←`setSegmentation` 松手档(§1.19);`edit`←`editSegment` 五 op(§1.22);`trackManual`←`setTrackManual`(§1.16;**[J85] 冻结通道段表未变也照发** —— 枚举闭合说的是「改动段表的函数必须落在某个 reason 上」,不等于「没改动就不许发」;UI 用这一帧作为「已落地」信号清本地乐观值,不发会让乐观值挂死。该帧**之前**同步补一帧 `scvb.params`,两帧同拍);`undo`←`undo()`、`redo`←`redo()`(§1.25/§1.26);`versionActive`←`setVersionActive`(§1.9,换出另一版本段表);`copyVersion`←`copyVersion`(§1.11);**`snapshot`←`mBridgeReady` 后首帧必发**(§0.4 第 3 条,全部轨全量段表)。**枚举闭合**:任何改动段表的函数都必须落在本表某个 `reason` 上,新增函数须同批扩本枚举与 §7 manifest 的 `enums.segmentsReason`(**T25 定名**,§9.2)。 |
-| 字段纪律 | `channels` 只含**受影响轨**(`reason:"snapshot"` 与 `reason:"versionActive"` 时为全部轨)。段表为该轨在 `version` 版本下的**完整段列表**(便于 UI 直接替换,不做段级增量)。`segIdx` = 段在该表内的 0 基下标,**每次事件后重新编号**,UI 的选中态须按事件重绑。`t0S`/`t1S` 为秒(state 真身为样本,换算在 C++ 侧,§0.2)。`loudnessLufs` = 段内积分响度(ADR-009,段检查器只读显示)。`diff.kept` = 本次「手动编辑/锁定段已保留」计数(05 词条 `wave.diffKept` 的 `{k}`)。`stale` = 该轨存在过期采集区间(fingerprint watchdog 语义预留)。**`openEnded`** = 该段在 state 真身里是「无末端」段(`setTrackManual` 的单段全时限常值,CRVS 的 `t1` = `1<<40` 哨兵,真末端由宿主时间线提供)。此时上桥的 **`t1S` 是一个保守下界**(工程级已知时间线末端;保证 `t1S > t0S`,段不坍缩、可点可切),**不是真末端** —— UI 判定「包含 / 相交 / 重叠」时须把这类段的右端当作 +∞,否则播放头走过该下界后会判成「不在任何段内」。哨兵**绝不原样上桥**(2^40 采样 ÷ 48k ≈ 265 天,曾被前端当成工程时长)。 |
+| 字段纪律 | `channels` 只含**受影响轨**(`reason:"snapshot"` 与 `reason:"versionActive"` 时为全部轨)。段表为该轨在 `version` 版本下的**完整段列表**(便于 UI 直接替换,不做段级增量)。`segIdx` = 段在该表内的 0 基下标,**每次事件后重新编号**,UI 的选中态须按事件重绑。`t0S`/`t1S` 为秒(state 真身为样本,换算在 C++ 侧,§0.2)。`loudnessLufs` = 段内积分响度(ADR-009,段检查器只读显示)。`diff.kept` = 本次「手动编辑/锁定段已保留」计数(05 词条 `wave.diffKept` 的 `{k}`)。`stale` = 该轨存在过期采集区间(fingerprint watchdog 语义预留)。**`openEnded`** = 该段在 state 真身里是「无末端」段(`setTrackManual` 在**空段表**上写入的单段全时限常值 —— [J131] 起非空段表保留原边界、不产生无末端段;CRVS 的 `t1` = `1<<40` 哨兵,真末端由宿主时间线提供)。此时上桥的 **`t1S` 是一个保守下界**(工程级已知时间线末端;保证 `t1S > t0S`,段不坍缩、可点可切),**不是真末端** —— UI 判定「包含 / 相交 / 重叠」时须把这类段的右端当作 +∞,否则播放头走过该下界后会判成「不在任何段内」。哨兵**绝不原样上桥**(2^40 采样 ÷ 48k ≈ 265 天,曾被前端当成工程时长)。 |
 | UI 消费 | 泳道 pan/vol 阶梯曲线叠加层、分段边界、段检查器、diff 变更列表(一次性反馈组件) |
 | 契约边界 | **段数据的唯一来源 = `mBridgeReady` 后首帧的本事件(`reason:"snapshot"`,含全部轨全量段表)+ 后续增量事件**;**`requestInitialState` 返回不含曲线真身**(§1.1 只给 `versions[]` 元数据与 `pan_curve`);**不新增拉取式段 API**(`listSegments` / `scvb.segmentList` 不存在,§8)。<br>**与真源字面的偏离(记 §8.3)**:05 §2.3a 与 01 §6.3 R2 写作「数据 = `requestInitialState` 全量快照 + `scvb.segments` 增量事件」,本契约把首帧全量段表明确路由到 `reason:"snapshot"` 事件,避免快照与事件两个入口各携一份段表(§0.1 第 4 条)。 |
 | 真源 | 05 §1.4 / §2.3a;J44/J67 |
@@ -631,9 +631,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `n: 0..10`(int) |
-| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned"}`(**T25 定名**,§9.2) |
+| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned" \| "busy"}`(前三个 **T25 定名**,§9.2)或 `{ok:false, reason:"badArg"}`(`n` 不是整数;§0.8 第 2 条) |
 | 语义 | 经 ctrl 命令环投递一条记录 `{seq:u32, channel:u32, op:kSetPriority(=1), value:u64(=n)}`(§6);Output [M] 消费后落 state(唯一真源,ADR-004)并经 `config_seq` 变化回执。**Input UI 只做本地乐观显示,以 `scvb.config` 回执为准**。满环时写方覆盖最旧记录 + 溢出计数,返回 `{queued:false, reason:"ringFull"}`,UI 提示「设置未送达,请重试」(01 §4.4-c)。 |
-| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"` |
+| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"`;命令没能写进环(ctrl 段没打开 / 打开失败)→ `{queued:false, reason:"busy"}`(临时、可重试);参数类型不符 → `{ok:false, reason:"badArg"}` |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §3;ipc §4;01 §4.4-c |
@@ -821,7 +821,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "OutputSnapshot"},
       {"name": "setCaptureEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
       {"name": "setOutputEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
-      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true}"},
+      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "previewAnalyze", "params": ["scope"], "returns": "{intervals,tracks,manualKept}"},
       {"name": "analyze", "params": ["scope", "opts"], "returns": "{ok,affected:{intervals,tracks,manualKept}} | {ok:false,reason:\"busy\"}"},
       {"name": "cancelAnalyze", "params": [], "returns": "{ok}"},
@@ -872,7 +872,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "InputSnapshot"},
       {"name": "setChannelId", "params": ["n"], "returns": "{ok} | {conflict:true} | {ok:false,reason:\"abiMismatch\"} | {ok:false,reason:\"unavailable\"} | {ok:false,reason:\"badArg\"}"},
       {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {conflict:true} | {ok:false,reason:\"abiMismatch\"} | {ok:false,reason:\"unavailable\"} | {ok:false,reason:\"badArg\"}"},
-      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?}"},
+      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?} | {ok:false,reason:\"badArg\"}"},
       {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "commitUiScale", "params": [], "returns": "{ok}"},
       {"name": "setLang", "params": ["code"], "returns": "{ok}"},

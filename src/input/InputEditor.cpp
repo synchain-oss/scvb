@@ -84,7 +84,9 @@ juce::var InputEditor::buildSnapshot()
     lastGroupsJson_.clear();
     lastErrorJson_.clear();
     lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
-    lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
+    // error 只发迁移边沿;启动即异常态一般由 scvb.state.claim 承载(§4.5)。例外是 conflict:
+    // [SL-462] 基线置空,下一拍补发一次 channelConflict(理由见 initialClaimErrorBaseline 头注)。
+    lastClaim_ = bridge::initialClaimErrorBaseline(claim);
     // [SL-446 第 2 轮补充] 边沿键的 channel 分量走 configuredChannelId(配置/请求值),不是
     // channelId(实际持有)——与 emitTick() 里那次判据同源,理由见 BridgeTickSnapshot 头注。
     lastErrorChannelId_ = snap.configuredChannelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
@@ -215,6 +217,29 @@ void InputEditor::emitTick()
             lastErrorInputSr_ = inputSr;
             lastErrorOutputSr_ = outputSr;
         }
+    }
+
+    // [SL-462] 载入工程时撞车、回滚到旧通道仍活着:claim 是 active,上面的边沿检测看不到;
+    // 载入路径也没有 RPC 返回值可挂。处理器记下了被拒的号,这里补发一次 channelConflict
+    // (契约 §5.1 触发条件「claim CAS 失败且占用方心跳新鲜」本来就成立,不是新事件、新字段)。
+    // 不经 emitIfChanged:它按 JSON 去重,与上一条同号同组的冲突事件会被判成「没变化」而一直
+    // 发不出去、也就一直 ack 不掉。隐藏时不发、不 ack,等可见后下一拍再发。
+    // 发之前再核一次仍然成立(占用方可能早已释放),不成立就直接确认掉、不发。
+    if (snap.loadConflictChannelId != 0 &&
+        !bridge::loadConflictStillHolds(snap.loadConflictChannelId, snap.loadConflictGroupId, snap.groupId,
+                                        snap.channelId, snap.conn.occupiedMask))
+    {
+        processor_.bridgeAckLoadConflict(snap.loadConflictSerial);
+    }
+    else if (snap.loadConflictChannelId != 0 && webView().isVisible())
+    {
+        auto* detail = new juce::DynamicObject();
+        detail->setProperty("groupId", snap.loadConflictGroupId);
+        const juce::var payload =
+            bridge::buildErrorPayload("channelConflict", snap.loadConflictChannelId, juce::var(detail), true);
+        webView().emitEventIfBrowserIsVisible(juce::Identifier(bridge::kEvError), payload);
+        lastErrorJson_ = juce::JSON::toString(payload);
+        processor_.bridgeAckLoadConflict(snap.loadConflictSerial);
     }
 }
 

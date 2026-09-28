@@ -546,3 +546,36 @@ TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")
     CHECK(version->getProperty("plugin").toString() == "0.1.0");
     CHECK(static_cast<int>(version->getProperty("abi")) == 1);
 }
+
+TEST_CASE("SL-462 initialClaimErrorBaseline:首帧基线只把 conflict 置空")
+{
+    using scvb::input::bridge::initialClaimErrorBaseline;
+    // conflict:基线置空 ⇒ 下一拍 claimErrorEdgeChanged 判「有变化」,补发一次 channelConflict。
+    // 编辑器晚于冲突打开(工程载入时通道被占)时,这是被拒的号唯一的上屏出口(scvb.state 里是 0)。
+    CHECK(initialClaimErrorBaseline("conflict").isEmpty());
+    CHECK(scvb::input::bridge::claimErrorEdgeChanged("conflict", 5, 1, 48000, 48000,
+                                                     initialClaimErrorBaseline("conflict"), 5, 1, 48000, 48000));
+    // 其余态照旧:已经处在的状态由 scvb.state.claim 承载,首帧不补发 error。
+    for (const char* c : {"unassigned", "idle", "active", "abiMismatch", "srMismatch"})
+    {
+        CHECK(initialClaimErrorBaseline(c) == juce::String(c));
+    }
+}
+
+TEST_CASE("SL-462 loadConflictStillHolds:载入冲突提示发出前再核一次")
+{
+    using scvb::input::bridge::loadConflictStillHolds;
+    const std::uint16_t bit5 = static_cast<std::uint16_t>(1u << 4);
+    const std::uint16_t bit3 = static_cast<std::uint16_t>(1u << 2);
+    // 成立:同组、本实例在 3 上、5 被别人新鲜占着。
+    CHECK(loadConflictStillHolds(5, 7, 7, 3, static_cast<std::uint16_t>(bit5 | bit3)));
+    // 占用方已释放(5 不再被占)⇒ 丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 7, 3, bit3));
+    // 用户改了组 ⇒ 丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 2, 3, static_cast<std::uint16_t>(bit5 | bit3)));
+    // 本实例自己已经持有 5(比如重试接管成功)⇒ occupiedMask 里那一位是自己的,丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 7, 5, bit5));
+    // 越界号 ⇒ 丢弃,不移位越界。
+    CHECK_FALSE(loadConflictStillHolds(0, 7, 7, 3, 0xFFFF));
+    CHECK_FALSE(loadConflictStillHolds(16, 7, 7, 3, 0xFFFF));
+}

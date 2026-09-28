@@ -70,15 +70,19 @@ Before you start, read these. Breaking any one of them does not make the result 
 > ⚠️ **Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.**
 >
 > 1. **Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output.** Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)
-> 2. **SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus.** Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see `docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)
+> 2. **SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus.** Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)
 > 3. **Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug.** That mute path is what preserves the "vocal tracks first, bus second" ordering in the DAW's dependency graph, and it still holds under offline rendering and REAPER's anticipative multithreading. **When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically**, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the "mute → passthrough" direction; "passthrough → mute" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)
 > 4. **Host pan must stay centred on both the vocal tracks and the bus.** SCVB pans internally with an equal-power law, independently of the host's pan law; an off-centre host pan stacks on top of it and produces a wrong stereo image. (ADR-010)
 > 5. **Each channel id is unique within one group, and a given vocal track may belong to only one group.** When two Inputs in the same group claim the same channel, the late arrival shows a "channel conflict" warning and stays inactive; the same channel number in a different group is a separate, unrelated path. (ADR-002 / J66)
 > 6. **Only one Output instance can be active in a group at any one time.** A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)
 > 7. **Every track takes part in automatic pan by default; if a stereo track should keep its existing stereo width and position, switch off "participate in auto pan" for that track on the Tracks page.** Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread), and once participation is switched off the stereo width you already have is preserved rather than overwritten by automatic assignment. (ADR-003 / J57 + J83)
 > 8. **SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)
-> 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
+> 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
+
+## Privacy
+
+SCVB does not use the network: no update check, no usage statistics, no account. The only web pages it opens are the documentation and WebView2 download links, in your default browser, when you click them. It stores a few cross-project preferences under `%APPDATA%\Synchain\SCVB` and the interface's browser cache under `%LOCALAPPDATA%\Synchain\SCVB`; everything else is saved in your project, apart from files you export yourself. The full list is in the [User Guide, "Privacy and files on disk"](docs/USER_GUIDE.md).
 
 ## Build from source
 
@@ -107,7 +111,7 @@ The nine hard rules have a **single source of truth**: the `## 硬约束` sectio
 
 ## License
 
-[GPL-3.0-or-later](LICENSE), with the JUCE and VST3 SDK dependencies declared in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+The source code in this repository is [GPL-3.0-or-later](LICENSE). The released `.vst3` binaries also contain GPLv3-only and AGPLv3 components, so they are distributed under GPLv3 as a whole (details in THIRD-PARTY-NOTICES.md). Third-party components built into the plugins (JUCE, the VST3 SDK, the libraries JUCE compiles in, the WebView2 loader, fonts) and their licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); full licence texts are in `LICENSES/`.
 
 ## Related projects
 

@@ -84,6 +84,20 @@ bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId
                            const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
                            int lastOutputSr);
 
+// [SL-462] 首帧快照(requestInitialState)时 error 边沿基线的起点。一般取当前 claim —— 已经
+// 处在的状态由 scvb.state.claim 承载,不补发 error;**唯独 "conflict" 返回空串**,让下一拍的
+// 边沿检测照常发一次 channelConflict:冲突的提示面(卡片抖动 + ch.occupied toast,契约 §5.1/§5.2)
+// 要知道**被拒的那个号**,而 conflict 态下 scvb.state.channel_id 恒为 0(§3.1),号只在
+// scvb.error 的 ch 里。典型场景:工程打开时通道被占,用户之后才打开 Input 界面 —— 此前基线
+// 直接吞掉这次冲突,界面只剩一个灰 pill「未选择通道」。
+juce::String initialClaimErrorBaseline(const juce::String& claim);
+
+// [SL-462] 载入冲突的一次性提示在**发出那一刻**是否仍然成立:组没变、本实例没持有这个号、
+// 这个号此刻被心跳新鲜的实例占着(occupiedMask 含本实例自己的位,故先排除「持有者就是自己」)。
+// 不成立(占用方已经释放、或用户已改组)就丢弃,不弹过期提示。
+bool loadConflictStillHolds(int requestedChannel, int noticeGroupId, int currentGroupId, int boundChannel,
+                            std::uint16_t occupiedMask);
+
 // §4.3 config_seq 基线推进(PR#54 R7,与 advanceEmitCache/claimEdgeConsumed 同口径):config_seq
 // 变化即需重发,仅当事件实际发出(emitted)时推进基线并返回 true;隐藏时保持基线返回 false,恢复
 // 可见后下一 tick 因 seq 仍 != 基线而重发。

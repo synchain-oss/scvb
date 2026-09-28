@@ -34,6 +34,7 @@ import {
 import { MONITOR_DESIGN } from "./monitor-box.js";
 import { backingFitFactor, installShellFit } from "../shared/shell-fit.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
+import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { GROUPS_JSON_KEY, VIZ_ABI } from "./viz-contract.js";
 import {
     CHANNEL_COUNT,
@@ -741,6 +742,11 @@ function onViz(raw) {
 // ============================================================================
 buildScaleOptions();
 refreshI18n();
+
+// [SL-207] 原生右键菜单抑制,与 Output/Input 两页同一个 helper、同样挂在 boot 之外
+// (首帧链路炸掉时露出来的是兜底面板,那上面右键冒出「查看网页源代码」更穿帮)。
+// 此前 Monitor 漏了这一句,右键照样弹 WebView 的「重新加载 / 另存为 / 查看源代码」。
+disableNativeContextMenu(document);
 
 // 与 Output/Input 两页同构:boot 链路炸掉 = 界面起不来,**显式上报**并带上角色化的
 // stage 标签。守卫的 `unhandledrejection` 本来也接得住这条 async IIFE 的 rejection,

@@ -169,7 +169,7 @@ export const T = {
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
         "tracks.manualOverwriteConfirm":
-            "将以固定值替换该轨(当前版本)的全部分段结果,可撤销",
+            "将以固定值替换该轨(当前版本)全部分段的这一项,另一项保留原曲线,可撤销",
         "tracks.manualOverwriteConfirm.locked": "(含 {l} 个锁定段)",
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
@@ -196,7 +196,7 @@ export const T = {
         "guide.rule1":
             "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
         "guide.rule2":
-            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
+            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
         "guide.rule3":
             '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条没有声音的轨道。(ADR-002 / J12 + J32)',
         "guide.rule4":
@@ -210,7 +210,7 @@ export const T = {
         "guide.rule8":
             'SCVB Output 不向 DAW 报告额外延迟。对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
         "guide.rule9":
-            '看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
+            '看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
         // END GENERATED hard-rules:zh
         "guide.dontShowAgain": "不再显示",
         "guide.start": "开始使用",
@@ -780,7 +780,9 @@ export const T = {
         "master.copyConfirmPrimary": "覆盖并复制",
         "master.captureOff": "采集 OFF",
         "master.step2.desc": "将影响 {n} 区段 / {m} 轨;{k} 处手动编辑将保留",
-        "master.step2.desc.noData": "当前范围内无采集数据——调整范围或先采集",
+        // [SL-535] 分析只认此刻连着 Input 的通道:有数据但都没连上时也显示这句,所以补上括号那半句。
+        "master.step2.desc.noData":
+            "当前范围内没有可用的采集数据(没连上 Input 的通道不计入)——调整范围、先采集,或连上 Input",
         "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
         "master.analyzing": "分析中…",
         "master.analyzeDone": "分析完成",
@@ -807,6 +809,9 @@ export const T = {
         "curve.side.out": "向外",
         "curve.side.left": "向左",
         "curve.side.right": "向右",
+        // [rc-misc i] 曲线浮条两组按钮的组名(读屏用 aria-label)
+        "curve.shapeGroup": "形状",
+        "curve.sideGroup": "方向",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "斜率",
         "curve.slope.opt6": "6 dB/oct",
@@ -889,11 +894,14 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
         // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
-        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
         // [SL-94 / J133] 回到契约 §5.1 逐字栏:不指路设置页(v1 那一行已收起,SL-415),
         // 不写内部排期词。v1 出厂态不可达(自动转存关闭,SL-395),文案为开关打开那天留着。
         "toast.sidecarSwitched":
             "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // [J125] toast③(05 §2.0;逗号按本字典既有风格用半角 —— 设计稿是全角,别当 bug 改回;
+        // {s} = 这次重采集的时长,一位小数,app.js 填)
+        "toast.recaptured": "已重采集 {s}s,建议重分析该范围",
+        "toast.recapturedGoto": "立即重分析",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
@@ -1073,8 +1081,11 @@ export const T = {
         // `{ok:false, reason:"busy"}`),两种拒绝在屏上都与「受理了」一模一样 —— 用户看到的
         // 是「点了没反应」。文案给的是**下一步动作**,不是「失败了」:这两件事用户都能自己解。
         // 跨页共用(波形与分段页 + 设置页的重分析确认框),所以不放 `wave.` 前缀。
+        // [SL-535] 分析只认**此刻连着 Input** 的通道:有旧采集数据、但 Input 已不在的通道也落这条
+        // 拒绝(§1.6 既有拒绝态,不另加 reason)。原句「所选范围没有采集数据」在那种情形下是假话,
+        // 所以补上括号那半句,并把「连上 Input」列进下一步动作。
         "analyze.refused":
-            "所选范围没有采集数据,先采集这段,或换一个有数据的范围再重分析",
+            "所选范围没有可用的采集数据(没连上 Input 的通道不计入),先采集这段或连上 Input,或换一个有数据的范围再重分析",
         "analyze.busy": "已有分析在进行,等它跑完再试",
     },
 
@@ -1196,7 +1207,7 @@ export const T = {
             "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
         "tracks.manualOverwriteConfirm":
-            "This replaces all analyzed segments of this track (current version) with a fixed value. Undoable.",
+            "This sets this control to a fixed value on all analyzed segments of this track (current version); the other control keeps its curve. Undoable.",
         "tracks.manualOverwriteConfirm.locked":
             "(includes {l} locked segments)",
         "in.pill.abiMismatch": "VERSION MISMATCH",
@@ -1220,7 +1231,7 @@ export const T = {
         "guide.rule1":
             "Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output. Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)",
         "guide.rule2":
-            "SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+            "SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
         "guide.rule3":
             'Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug. That mute path is what preserves the "vocal tracks first, bus second" ordering in the DAW\'s dependency graph, and it still holds under offline rendering and REAPER\'s anticipative multithreading. When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the "mute → passthrough" direction; "passthrough → mute" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)',
         "guide.rule4":
@@ -1234,7 +1245,7 @@ export const T = {
         "guide.rule8":
             'SCVB Output reports no additional latency to the DAW. Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)',
         "guide.rule9":
-            'Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track\'s audio is not being picked up correctly.',
+            'Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track\'s audio is not being picked up correctly.',
         // END GENERATED hard-rules:en
         "guide.dontShowAgain": "Don't show again",
         "guide.start": "Get started",
@@ -1717,7 +1728,7 @@ export const T = {
         "master.step2.desc":
             "Affects {n} intervals / {m} tracks; {k} manual edits will be kept",
         "master.step2.desc.noData":
-            "No captured data in the current range — adjust the range or capture first",
+            "No usable captured data in the current range (channels without a connected Input are not counted) — adjust the range, capture first, or connect the Input",
         "master.step2.coverage":
             "{p}% of the range is covered; uncovered parts stay as they are",
         "master.analyzing": "Analyzing…",
@@ -1746,6 +1757,8 @@ export const T = {
         "curve.side.out": "Out",
         "curve.side.left": "Left",
         "curve.side.right": "Right",
+        "curve.shapeGroup": "Shape",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Slope",
         "curve.slope.opt6": "6 dB/oct",
@@ -1810,6 +1823,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
         "toast.sidecarSwitched":
             "Capture data exceeded 8 MB and was moved to an external file — anyone you send the project to will need to capture again",
+        "toast.recaptured":
+            "Re-captured {s} s; re-analyzing this range is recommended",
+        "toast.recapturedGoto": "Re-analyze now",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
         "scale.keep": "Save",
         "master.printLock.group": "Can't switch group while writing automation",
@@ -1911,7 +1927,7 @@ export const T = {
         // [SL-396] analyze refusals (see the zh block for the why). Copy states the next
         // action rather than "failed": both are things the user can resolve themselves.
         "analyze.refused":
-            "No captured data in the selected range — capture this part first, or pick a range that has data",
+            "No usable captured data in the selected range (channels without a connected Input are not counted) — capture this part or connect the Input, or pick a range that has data",
         "analyze.busy":
             "An analysis is already running — try again once it finishes",
     },
@@ -2033,7 +2049,7 @@ export const T = {
             "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
         "tracks.manualOverwriteConfirm":
-            "Remplace tous les segments analysés de cette piste (version actuelle) par une valeur fixe. Annulable.",
+            "Fixe cette commande à une valeur constante sur tous les segments analysés de cette piste (version actuelle) ; l'autre commande garde sa courbe. Annulable.",
         "tracks.manualOverwriteConfirm.locked":
             "(dont {l} segments verrouillés)",
         "in.pill.abiMismatch": "VERSION INCOMPATIBLE",
@@ -2059,7 +2075,7 @@ export const T = {
         "guide.rule1":
             "Les pistes de voix doivent conserver leur routage DAW d'origine, vers le bus qui héberge SCVB Output. Ne redirigez pas une piste de voix directement vers la sortie principale et ne contournez pas le bus. (ADR-002)",
         "guide.rule2":
-            "SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+            "SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
         "guide.rule3":
             "Input ne coupe sa sortie aval que tant qu'un SCVB Output sain est détecté — c'est le comportement voulu, pas un bug. Ce chemin de coupure préserve l'ordre « pistes de voix d'abord, bus ensuite » dans le graphe de dépendances du DAW, et il reste valable en rendu hors ligne comme sous le multithreading anticipatif de REAPER. Si aucun Output sain n'est détecté (non installé, non connecté, pair quitté), Input repasse automatiquement en direct, via une rampe de 80 ms avec anti-rebond à hystérésis de 5 secondes (l'hystérésis ne s'applique qu'au sens « coupure → direct » ; « direct → coupure » suit une rampe de 80 ms dès la santé confirmée) : n'installer qu'un seul des deux plugins ne vous laissera donc jamais une piste muette. (ADR-002 / J12 + J32)",
         "guide.rule4":
@@ -2073,7 +2089,7 @@ export const T = {
         "guide.rule8":
             "SCVB Output ne déclare aucune latence supplémentaire au DAW. L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
         "guide.rule9":
-            "Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
+            "Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
         // END GENERATED hard-rules:fr
         "guide.dontShowAgain": "Ne plus afficher",
         "guide.start": "Commencer",
@@ -2569,7 +2585,7 @@ export const T = {
         "master.step2.desc":
             "Affecte {n} intervalles / {m} pistes ; {k} modifications manuelles seront conservées",
         "master.step2.desc.noData":
-            "Aucune donnée capturée dans la plage actuelle — ajustez la plage ou capturez d'abord",
+            "Aucune donnée capturée exploitable dans la plage actuelle (les canaux sans Input connecté ne comptent pas) — ajustez la plage, capturez d'abord ou connectez l'Input",
         "master.step2.coverage":
             "{p}% de la plage est couverte ; les parties non couvertes restent inchangées",
         "master.analyzing": "Analyse en cours…",
@@ -2600,6 +2616,8 @@ export const T = {
         "curve.side.out": "Extérieur",
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
+        "curve.shapeGroup": "Forme",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Pente",
         "curve.slope.opt6": "6 dB/oct",
@@ -2665,6 +2683,9 @@ export const T = {
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "toast.sidecarSwitched":
             "Les données de capture ont dépassé 8 Mo et ont été déplacées dans un fichier externe — toute personne à qui vous envoyez le projet devra refaire la capture",
+        "toast.recaptured":
+            "{s} s re-capturées ; il est conseillé de ré-analyser cette plage",
+        "toast.recapturedGoto": "Ré-analyser maintenant",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
         "scale.keep": "Enregistrer",
         "master.printLock.group":
@@ -2770,7 +2791,7 @@ export const T = {
         "wave.clearedCoverage": "{s} s de données capturées effacées",
         // [SL-396] refus d'analyze (voir le bloc zh pour le pourquoi).
         "analyze.refused":
-            "Aucune donnée capturée dans la plage choisie — capturez d'abord cette partie, ou choisissez une plage qui en contient",
+            "Aucune donnée capturée exploitable dans la plage choisie (les canaux sans Input connecté ne comptent pas) — capturez cette partie ou connectez l'Input, ou choisissez une plage qui en contient",
         "analyze.busy":
             "Une analyse est déjà en cours — réessayez quand elle sera terminée",
     },

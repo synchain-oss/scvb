@@ -62,8 +62,14 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     capInterleaved_.assign(static_cast<std::size_t>(2) * static_cast<std::size_t>(preparedMaxBlock_), 0.0f);
 
     const auto now = scvb::steadyNowMs();
-    session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
-                     static_cast<scvb::u32>(srcChannels_), now);
+    const int requestedBeforePrepare = static_cast<int>(session_.channelId());
+    const auto prepareResult =
+        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), now);
+    // [SL-462] 载入后的第一次 prepareToPlay() 也可能撞车后回滚成功(SL-455 那个窗口:首次
+    // prepareToPlay() 之前已交互式绑过通道、又载入了另一份工程)。这条路没有 RPC 返回值可挂,
+    // 回滚成功后 claim 又是 active,边沿检测看不到 ⇒ 记一次性冲突信号,见 noteLoadConflict()。
+    noteLoadConflict(prepareResult, requestedBeforePrepare);
     // [SL-446 第 2 轮] channelId_ 是**配置**镜像,不是**实际持有**镜像——两者在「配置了一个
     // channel 但这次 claim 没拿到」时会分叉(工程存 5、加载时 5 被别人占着:配置仍是 5,
     // 实际持有是 0)。`session_.boundChannel()` 是"现在真的绑定了哪个",广播
@@ -373,6 +379,7 @@ void ScvbInputAudioProcessor::timerCallback()
         session_.heartbeat(now);
         session_.reap(now);
         ctrl_.reapPendingReleases(now); // T30:命令环段延迟释放回收([M] 4Hz,与 session_.reap 同点)
+        retryConflictClaim(now);
     }
 
     // 健康判定 → C18 模式字([M] 25Hz 写)。
@@ -477,7 +484,9 @@ void ScvbInputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 成员去填同一个字段。两者绝大多数时候相等,只在"加载工程时这次触发的重新认领撞了车"
     // 这一个场景下会分叉,分叉时该记的是工程文件原本写的号,不是这次认领折腾出来的中间结果。
     s.channelId = static_cast<scvb::u32>(savedChannelId_);
-    s.groupId = static_cast<scvb::u32>(groupId_);
+    // [SL-458] 同理:存档记 savedGroupId_(工程原值/用户主动改组值),不记 groupId_(寻址组,
+    // 载入时目标组 ctrl 段打不开会回退到上一组)。字节布局与 abi 不变。
+    s.groupId = static_cast<scvb::u32>(savedGroupId_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
 
@@ -538,6 +547,8 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     }
 
     const int oldGroupId = groupId_;
+    // [SL-462] 新的一次载入:上一份工程留下、还没被界面取走的一次性冲突信号作废。
+    loadConflictChannelId_ = 0;
     channelId_ = static_cast<int>(s.channelId);
     // [SL-446 第 5 轮] 同一时刻两个都写、值相同,但落点不同:channelId_ 供寻址/scvb.error/
     // ensureCtrlOpen 等"配置"用途(下面 prepared_ 分支里 prepare() 之后还会被重新同步,可能
@@ -545,6 +556,8 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     // 碰它,直到用户下一次主动 setChannelId() 才会更新。
     savedChannelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
+    // [SL-458] 工程里的组号单独落一份;下面换组失败会把 groupId_ 回退到旧组,但不碰这一份。
+    savedGroupId_ = static_cast<int>(s.groupId);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
     // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
@@ -570,6 +583,7 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         if (ctrl_.changeGroup(s.groupId) != scvb::InitResult::kOk)
         {
             ctrl_.changeGroup(static_cast<scvb::u32>(oldGroupId)); // 尽力回退旧组段
+            // 只回退寻址组;savedGroupId_ 保持工程原值,保存时不把工程组号改写成旧组(SL-458)。
             groupId_ = oldGroupId;
             session_.setGroupId(static_cast<scvb::u32>(oldGroupId));
         }
@@ -578,8 +592,13 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     // 若已 prepare,立即 re-claim;否则由下一次 prepareToPlay 走 claim。
     if (prepared_)
     {
-        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
-                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+        const auto loadResult =
+            session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                             static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+        // [SL-462] 已绑定实例载入另一份工程、撞车后回滚成功:这里是唯一知道「这次载入的通道
+        // 被占了」的地方(本函数返回 void,回滚后 state() 又是 kActive),不记下来就一个信号都
+        // 不剩。见 noteLoadConflict()。
+        noteLoadConflict(loadResult, static_cast<int>(s.channelId));
         // ⚠ [SL-446 第 3/4/5 轮] 这一行**必须留着**,别再删第二次——第 3 轮删过一次,删的理由
         // 是"加载工程不该被回滚改写存的号",但删掉之后打破了一条更要紧的不变式:
         // `session_.state() == kActive ⟹ channelId_ == session_.boundChannel()`。
@@ -631,6 +650,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
     // 更新(两个源头都是这次同步后的 channelId_,值相同,但落点分开是为了不让"加载工程"
     // 那条路(setStateInformation())的重新认领意外污染存档,见那边的头注)。
     session_.setChannelId(static_cast<scvb::u32>(channelId));
+    loadConflictChannelId_ = 0; // [SL-462] 用户已主动选通道:载入时那次冲突的一次性提示作废
     if (channelId == 0)
     {
         ctrl_.release(); // channel_id=0 不 claim 任何段(T23 口径):命令环段随释放(PR#54 R9)
@@ -656,8 +676,13 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
 {
     groupId = juce::jlimit(1, kGroupIdMax, groupId);
     const juce::ScopedLock lock(lifecycleMutex_);
+    loadConflictChannelId_ = 0; // [SL-462] 用户已主动改组:载入时那次冲突的一次性提示作废
     if (groupId == groupId_)
     {
+        // [SL-458] 寻址上是 no-op,但调用方明确要这一组:载入回退后 savedGroupId_ 可能还是工程
+        // 原值,以这次调用为准。⚠ Input 页面的组胶囊对当前组直接早退、不调桥(web/input/app.js
+        // 组胶囊 click 处理),所以今天用户在界面上走不到这里;回退后要让存档跟上,得改到别的组。
+        savedGroupId_ = groupId;
         return session_.state(); // 同组 no-op:回会话当下的 claim 态(活跃/未分配 ⇒ {ok:true})
     }
     const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
@@ -680,6 +705,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
         }
     }
     groupId_ = groupId;
+    savedGroupId_ = groupId; // [SL-458] 用户主动改组成功:存档跟着走(换段失败的早退分支不碰它)
     // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
     stageMachine_.forcePassthrough();
     session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
@@ -777,7 +803,64 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     s.configSeq = s.broadcastValid ? s.broadcast.config_seq : 0u;
     s.localAbi = session_.localAbi();
     s.remoteAbi = session_.remoteAbi();
+    s.loadConflictChannelId = loadConflictChannelId_;
+    s.loadConflictGroupId = loadConflictGroupId_;
+    s.loadConflictSerial = loadConflictSerial_;
     return s;
+}
+
+void ScvbInputAudioProcessor::bridgeAckLoadConflict(scvb::u32 serial)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 只清「界面刚发出去的那一次」:发出之后、确认之前若又来了一次新的载入冲突(serial 已变),
+    // 不能把新的那次也一并吞掉。
+    if (serial == loadConflictSerial_)
+    {
+        loadConflictChannelId_ = 0;
+    }
+}
+
+void ScvbInputAudioProcessor::noteLoadConflict(scvb::input::InputClaimState result, int requestedChannel)
+{
+    // 调用方已持 lifecycleMutex_。只收「请求被占、但会话回滚到旧通道仍然活着」这一种组合:
+    // 请求没被占(result != kConflict)就没有冲突可报;会话没回滚成功(state() != kActive)时
+    // claim 会停在 "conflict" 上,边沿检测(以及界面打开时的首帧)自己就会报,不需要这条旁路。
+    if (result != scvb::input::InputClaimState::kConflict ||
+        session_.state() != scvb::input::InputClaimState::kActive || requestedChannel < 1 ||
+        requestedChannel > kChannelIdMax)
+    {
+        return;
+    }
+    loadConflictChannelId_ = requestedChannel;
+    loadConflictGroupId_ = groupId_;
+    ++loadConflictSerial_;
+}
+
+void ScvbInputAudioProcessor::retryConflictClaim(scvb::u64 now)
+{
+    // [SL-495] 调用方已持 lifecycleMutex_(timerCallback 的 4Hz 分支)。规格 01 §4.1:冲突态
+    // 1Hz 静默重试,与用户手动重选并列。此前 Input 侧没有任何周期重试(Output 侧 O3 有),
+    // 占用方删掉/改号之后,输掉的那个要用户手动重选一次才会接管。
+    // 只在 kConflict 上重试:未分配(没有要抢的号)、abi 不符(重试也不会变)、段不可用
+    // (打开段的路径最坏带 500ms sleep,不放进周期回调)都不碰。
+    // 配置号取 session_.channelId() —— prepare() 本来就按它抢,重试不会改写用户刚选的号,
+    // 也不碰 savedChannelId_(存档)。
+    if (!prepared_ || session_.state() != scvb::input::InputClaimState::kConflict || channelId_ < 1 ||
+        channelId_ > kChannelIdMax)
+    {
+        return;
+    }
+    if (lastClaimRetryMs_ != 0 && now - lastClaimRetryMs_ < kClaimRetryIntervalMs)
+    {
+        return;
+    }
+    lastClaimRetryMs_ = now;
+    session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                     static_cast<scvb::u32>(srcChannels_), now);
+    // 冲突态下 claimedChannel_==0,上面走的是「首次 claim」那条路(没有旧通道可回滚),
+    // 配置号不会被改;照 setChannelId() 的纪律仍重新同步一次镜像,保住
+    // `state()==kActive ⟹ channelId_==boundChannel()`。
+    channelId_ = static_cast<int>(session_.channelId());
 }
 
 std::uint8_t ScvbInputAudioProcessor::bridgeGroupsOnline()
