@@ -388,22 +388,63 @@ log("=== ④ 词条:T35 新增 set.* key ===");
         T.zh["set.usage.eyebrow"] !== T.zh["tab.settings"],
         "两处文案独立 key,不串用",
     );
-    // centerSlot.note 与 05 §5.2 / 02 §5.6 对拍:「不影响音量豁免」不是「参与音量调节」
+    // [SL-298 / J130] 音量那枚开关的用户可见叫法统一为「参与音量调节」(三语参与语义)。
+    // 此前这里钉的是反方向(「不影响音量豁免」、且**不得**出现「参与音量调节」)——
+    // 那是按 05 旧口径钉的,J130 用户裁定后与之相反,故同一 commit 改钉。参数本体
+    // `lead_vol_exempt` 不改名,只约束显示文案。
+    //   格 1:centerSlot.note 三语都是参与口径;
+    //   格 2:tour 第 24 步标题 = 同格 aria `tracks.colVolPart`(同一个词);
+    //   格 3:tour 第 24 步正文是「是否参与」极性,不是「不参与/被排除」;
+    //   格 4:全部词条值零「豁免 / exempt」字样(纯文案层;注释与参数名不在扫描面)。
     check(
-        /不影响音量豁免/.test(T.zh["set.centerSlot.note"]),
-        "zh centerSlot.note = 不影响音量豁免",
+        /不影响各轨是否参与音量调节/.test(T.zh["set.centerSlot.note"]),
+        "[J130] zh centerSlot.note 用参与口径",
     );
     check(
-        !/参与音量调节/.test(T.zh["set.centerSlot.note"]),
-        "zh centerSlot.note 不含旧误词「参与音量调节」",
+        /whether each track joins volume adjustment/.test(
+            T.en["set.centerSlot.note"],
+        ),
+        "[J130] en centerSlot.note 用参与口径",
     );
     check(
-        /Vol Exempt/.test(T.en["set.centerSlot.note"]),
-        "en centerSlot.note = Vol Exempt",
+        /participation de chaque piste à l'ajustement du volume/.test(
+            T.fr["set.centerSlot.note"],
+        ),
+        "[J130] fr centerSlot.note 用参与口径",
     );
+    for (const lang of ["zh", "en", "fr"]) {
+        eq(
+            T[lang]["tour.step24.title"],
+            T[lang]["tracks.colVolPart"],
+            `[J130] ${lang} tour 第 24 步标题 = tracks.colVolPart`,
+        );
+    }
     check(
-        /exemption de volume/.test(T.fr["set.centerSlot.note"]),
-        "fr centerSlot.note = exemption de volume",
+        /该轨是否参与音量平衡计算/.test(T.zh["tour.step24.body"]) &&
+            /whether this track joins level balancing/.test(
+                T.en["tour.step24.body"],
+            ) &&
+            /si la piste entre dans l'équilibrage/.test(
+                T.fr["tour.step24.body"],
+            ),
+        "[J130] tour 第 24 步正文三语都是「是否参与」极性",
+    );
+    {
+        const hits = [];
+        for (const lang of ["zh", "en", "fr"])
+            for (const [k, v] of Object.entries(T[lang]))
+                if (/豁免|exempt/i.test(String(v))) hits.push(`${lang}:${k}`);
+        eq(hits, [], "[J130] 词条值零「豁免 / exempt」字样");
+    }
+    //   格 5:用户手册轨道页那一行用同一个叫法(中英两份)。
+    check(
+        /主唱锁、参与音量调节、参与自动声像/.test(
+            src("docs/USER_GUIDE.zh-CN.md"),
+        ) &&
+            /lead lock, volume participation, auto-pan participation/.test(
+                src("docs/USER_GUIDE.md"),
+            ),
+        "[J130] USER_GUIDE 中英两份轨道页一行用参与口径",
     );
     // 选项正名:zh 无 LUFS-S 误称
     check(
@@ -759,6 +800,34 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
             oe.includes("uidefaults::setTourSeenGlobal"),
         "setGuideSeen / setTourSeen 的 alsoGlobal 真的落盘",
     );
+    // [SL-167b / J132] 契约里「全局位按侧分」那句要写实现真正用的键名:同一个落盘文件、
+    // 两个键(Output `guide_seen_global` / Input `guide_seen_global_input`)。此前契约写
+    // 「`input.*` / `output.*` 分键、命名空间本就按侧分」,实现里两样都没有。
+    {
+        const uds = stripComments(src("src/plugin-common/UiDefaultsStore.cpp"));
+        const contract = src("docs/SCVB_CONTRACT.md");
+        const schema = src("docs/STATE_SCHEMA.md");
+        check(
+            uds.includes('"guide_seen_global"') &&
+                uds.includes('"guide_seen_global_input"'),
+            "[J132] 实现侧确有两个键 guide_seen_global / guide_seen_global_input",
+        );
+        for (const [name, text] of [
+            ["SCVB_CONTRACT", contract],
+            ["STATE_SCHEMA", schema],
+        ]) {
+            check(
+                text.includes("`guide_seen_global_input`"),
+                `[J132] ${name} 写出 Input 侧真实键名 guide_seen_global_input`,
+            );
+            check(
+                !/命名空间本就按侧分|`input\.\*` \/ `output\.\*` 分键,/.test(
+                    text,
+                ),
+                `[J132] ${name} 不再写「命名空间按侧分 / input.* output.* 分键」`,
+            );
+        }
+    }
 
     // B:桥面 conn 必须来自 registry 实况,不得再有 T29 的占位常量。UI 的连接数口径是
     // 「slotState=2 ∧ heartbeatFresh」,heartbeatFresh 恒 false 则连接数恒 0 ——
