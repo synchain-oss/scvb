@@ -22,7 +22,8 @@
 - **渲染 A(参考)**:不装 SCVB,人声轨直接汇入 stereo 总线,导出 `ref_A.wav`。
 - **渲染 B(被测)**:装 SCVB(每条人声轨末格 Input + 总线首格 Output),Output 的 pan / vol / 每轨 width / 全局 width / MS Balance / Lead Select 全在默认值(不分析、输出开关 OFF、不写自动化),导出 `test_B.wav`。
 - **判据**(10 §1.1.3 S1-P1 / P2):样本偏移 0,残差峰值 < −120 dBFS(理想为按位相等)。
-- ⚠ **补偿口径待统筹定**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。按这个推:宿主 −3 dB Equal Power 时 mono 部分不用补偿;宿主 0 dB 时 test 要 +3.01 dB;stereo 轨(每轨 width 100、pan 0 时 L→L、R→R)不用补偿。`scripts/nulltest.ps1` 的 `-PanLawDb` 按 spike 口径把参数取反后作为 test 的增益。**以上是按源码推的,没实跑过。**
+- ⚠ **补偿口径待统筹定**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。按这个推:宿主 −3 dB Equal Power 时 mono 部分不用补偿;宿主 0 dB 时 mono 部分要 +3.01 dB;stereo 轨(每轨 width 100、pan 0 时 L→L、R→R)不用补偿。所以 **0 dB 档下 mono + stereo 的完整格用单一增益调不平**(`scvb_nulltest --gain-db` 只能对整份 test 乘一个数),完整格只能在 −3 dB Equal Power 下跑,0 dB 档只用于纯 mono 的定口径。Cubase 对居中 stereo 轨是否也施加 pan law(与 panner 类型有关)没实测,要记下 stereo 轨的 panner 类型。**以上是按源码推的,没实跑过。**
+- `scripts/nulltest.ps1` 的 `-PanLawDb` 按 spike 口径把参数取反后作为 test 的增益。成品口径下传进去的是「补偿量取反」,**不是宿主设置**,而脚本会把它原样写进原始记录的「宿主 pan law」那一行(同一行括号里的 `--gain-db` 才是实际施加的补偿)。原始记录不手改,**宿主的真实设置以 §2 汇总表为准**。
 - 建议先只放 mono 轨跑一遍定补偿,再加 stereo 轨跑完整格(10 §4.2),两次的宿主 pan law 都要记。
 
 ### 1.3 模式 B —— engine vs follow(发版清单 D2)
@@ -45,7 +46,7 @@
 
 ## 2. 汇总表
 
-每次跑完补一行;「原始记录」写 §3 里对应那节的时间戳。
+每次跑完补一行;「原始记录」写 §3 里对应那节的时间戳。「宿主 pan law」一列写宿主里的真实设置(模式 A 的原始记录里那一行不是它,见 §1.2),stereo 轨的 panner 类型写进「素材」或「结论」。
 
 | 日期 | 版本 / tag 提交 | DAW / 版本 | 模式 | 素材 | 宿主 pan law | 补偿(dB) | 样本偏移 | 残差峰值 L / R(dBFS) | 残差 RMS L / R(dBFS) | 判据 | 结论 | 原始记录 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

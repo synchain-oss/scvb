@@ -100,7 +100,7 @@
 
 - [ ] **B4 `[reference]` libebur128 对拍在本地跑通**
   - 查什么:K 加权与 libebur128 逐点对拍(KW-3,10 §4.4.2)。
-  - **CI 绿不算**:CI 的 cmake 行不开 `SCVB_TESTS_WITH_EBUR128`,此时 `tests/core/test_kweighting.cpp:197` 只是一条 `SUCCEED` 占位,**这条在 CI 里是空转的**。目前 `[reference]` 只有 KW-3 一条;10 §4.4.2 表里的 L0-b / L0-c(段响度对拍,`test_loudness_ref.cpp`)仓里没有。
+  - **CI 绿不算**:CI 的 cmake 行不开 `SCVB_TESTS_WITH_EBUR128`,此时编进去的是 `#else` 分支里那个 KW-3 用例(`tests/core/test_kweighting.cpp:197`),它只执行一条 `SUCCEED` 占位,**这条在 CI 里是空转的**。目前 `[reference]` 只有 KW-3 一条;10 §4.4.2 表里的 L0-b / L0-c(段响度对拍,`test_loudness_ref.cpp`)仓里没有。
   - 怎么查:§3 的 U-6。判据:`[reference]` 用例全过,且输出里**没有** `SCVB_TESTS_WITH_EBUR128=OFF` 那句占位文字。
   - 状态:⏳ 用户上机
 
@@ -142,7 +142,7 @@
 
 - [ ] **D1 模式 A null test**
   - 查什么:透明性 null;判据 10 §1.1.3 S1-P1 / P2(样本偏移 0、残差峰值 < −120 dBFS)。10 §6.1 要求「至少在 REAPER 上重跑一遍」;首发只验 Cubase(J124),用 Cubase 代替要统筹认可。
-  - ⚠ **补偿量要按成品重算**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。所以宿主 pan law 为 −3 dB 等功率(Cubase 默认)时 mono 部分理论上不用补偿,宿主为 0 dB 时 test 要 +3.01 dB。`scripts/nulltest.ps1` 的 `-PanLawDb` 也是按 spike 口径写的(补偿 = 取反)。**这段是按源码推的,没有实跑过。**
+  - ⚠ **补偿量要按成品重算**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。所以宿主 pan law 为 −3 dB 等功率(Cubase 默认)时 mono 部分理论上不用补偿,宿主为 0 dB 时 mono 部分要 +3.01 dB 而 stereo 部分不用 —— **0 dB 档下 mono + stereo 的完整格用单一增益调不平**,完整格只能在 −3 dB 等功率下跑。`scripts/nulltest.ps1` 的 `-PanLawDb` 也是按 spike 口径写的(补偿 = 取反),成品口径下传进去的是「补偿量取反」,不是宿主设置。**这段是按源码推的,没有实跑过。**
   - 怎么查:§3 的 U-3。
   - 状态:⏳ 用户上机(跑之前统筹先定补偿口径)
 
@@ -360,13 +360,14 @@ build-val\tests\tools\Release\scvb_diag.exe --out diag-rc1.csv --group 1
 
 ### U-3 模式 A null test(D1 / D5,等统筹定补偿口径后再做)
 
-1. 新建 48 kHz 工程,导入同一组人声(有 stereo 轨的话建议 13 mono + 2 stereo;先只放 mono 跑一遍,再加 stereo 跑完整格),全部 pan 居中、推子 0 dB,送同一条 stereo Group(VOX BUS),总线同样居中、0 dB。记下 Project → Project Setup 里的 Stereo Pan Law(Cubase 默认 −3 dB Equal Power)。
+1. 新建 48 kHz 工程,导入同一组人声(有 stereo 轨的话建议 13 mono + 2 stereo;先只放 mono 跑一遍,再加 stereo 跑完整格),全部 pan 居中、推子 0 dB,送同一条 stereo Group(VOX BUS),总线同样居中、0 dB。Project → Project Setup 里的 Stereo Pan Law **设为 −3 dB Equal Power(Cubase 默认)**:按推导只有这一档 mono 与 stereo 两部分都不用补偿;0 dB 档下 mono 要 +3.01 dB、stereo 要 0 dB,单一增益调不平,**0 dB 档只许用在纯 mono 的定口径跑**。另记下 stereo 轨用的是哪种 panner(Stereo Balance Panner / Stereo Combined Panner)—— Cubase 对居中 stereo 轨是否也施加 pan law 没实测。
 2. **不装 SCVB**,导出区间 → `ref_A.wav`(32-bit float)。
 3. 每条人声轨插件链最后一格插 SCVB Input,总线第一格插 SCVB Output。**不分析、输出开关保持 OFF、不写任何自动化**(此时 pan 0 / vol 0 dB / width 100 / MS Balance 0 / Lead Select 0 都是参数默认值,见 `tests/golden/params_v0.tsv`)。确认各 Input 显示已连接、Output 没有「时间线缺口」横幅,导出同一区间 → `test_B.wav`。
 4. 比对(补偿值以统筹定的为准;下面是按源码推的,没实跑过):
-   - 宿主 −3 dB Equal Power:`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb 0 -Align -BuildDir build-val`
-   - 宿主 0 dB:`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb -3.01 -Align -BuildDir build-val`
-5. 判据:样本偏移 0,残差峰值 < −120 dBFS(理想为按位相等)。**不过就把工具输出的逐声道残差与偏移原样回报,别凭听感调增益去凑**(10 §4.2 明令禁止)。汇总表的「宿主 pan law」一列写 Cubase 里的真实设置。
+   - 宿主 −3 dB Equal Power(完整格与纯 mono 都用这档):`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb 0 -Align -BuildDir build-val`
+   - 宿主 0 dB(**只限纯 mono 的定口径跑**):`pwsh scripts/nulltest.ps1 ref_A.wav test_B.wav -PanLawDb -3.01 -Align -BuildDir build-val`
+   - ⚠ 成品口径下 `-PanLawDb` 传的是「要施加给 test 的补偿量取反」,**不是宿主设置**;脚本会把这个数原样写进原始记录的「宿主 pan law」那一行(同一行括号里的 `--gain-db` 才是实际施加的补偿)。原始记录不手改,**宿主的真实设置以汇总表「宿主 pan law」一列为准**。
+5. 判据:样本偏移 0,残差峰值 < −120 dBFS(理想为按位相等)。**不过就把工具输出的逐声道残差与偏移原样回报,别凭听感调增益去凑**(10 §4.2 明令禁止)。汇总表的「宿主 pan law」一列写 Cubase 里的真实设置,备注写 stereo 轨的 panner 类型。
 
 ### U-4 性能基线 `scvb_bench`(E1,E2 的 PERF-1..4)
 
