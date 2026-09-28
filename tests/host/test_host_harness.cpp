@@ -2721,6 +2721,131 @@ TEST_CASE("HOST SL-393:掩码外的轨段表一个字节不动", "[host][sl393][
 }
 
 // ---------------------------------------------------------------------------
+// [SL-535] 没连上 Input 的轨,旧采集数据不进分析(J119 方案 B)。
+//
+// 用户实测:通道 10 的轨改到通道 1 之后,通道 10 已没有 Input,但它的旧采集数据还在
+// Output 的 FrameStore 里;点「分析」时它照样进了计算集,唯一出声的那条轨(通道 2)
+// 于是被当成「两条之一」分到一侧,而不是居中。
+//
+// 判据分四格,各钉一个落点(startAnalysis 的预扫 = 写回集、取样 = 计算集,previewAnalysis,
+// 以及「全都没连上 ⇒ 拒绝」):
+//   ① 计算集:只剩一条已连接轨时它必须居中(「独唱段居中」,AutoAssign 的设计行为)。
+//      拆掉取样那一处的连接判据 ⇒ 另两条的旧数据回到计算集 ⇒ 它回到三轨上下文里的那个值(|pan|>1)。
+//   ② 写回集:受理回执 tracks == 1;全都没连上时(④)照样受理 = 预扫那一处没了。
+//      拆掉预扫那一处 ⇒ tracks == 3、④ 的拒绝变成受理(删除式实测)。
+//      「未连接轨的段表逐字段不动」那条在这一格里**仍绿**:写回那一步对没进计算集的轨本来就
+//      不改写。它钉的是「不清数据」这件事本身,不是预扫这一处落点 —— 别把它读成 ② 的判据。
+//   ③ 干跑:previewAnalysis 的 tracks 与真跑同口径(== 1)。
+//   ④ 全都没连上 ⇒ 干跑 0 轨、真跑按 §1.6 既有拒绝态回 ok=false(不偷用旧数据跑)。
+// 最后把 Input 接回来:不改 enabled、不清数据,它们自动回到参与面(幸存轨重新离开正中)。
+//
+// 为什么用 MonoMultiRig 的三轨、并**挑一条全量分析下不在正中的轨**当幸存者:三轨的槽位是
+// 「左 / 中 / 右」,正好落在中间那条当幸存者时 ① 恒真,测不到任何东西(同 SL-393 那条的挑法)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-535:没连上 Input 的轨,旧采集数据不进分析", "[host][sl535][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // 参照系:三轨都连着时的全量分析。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+
+    int survivor = 0;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        const double p = r.firstPan(c);
+        if (std::isfinite(p) && std::abs(p) > 1.0)
+        {
+            survivor = c;
+            break;
+        }
+    }
+    // 挑不到就红,不跳过:三轨都在正中说明多轨指派本身坏了(HOST P0-1 那条同样会红)。
+    REQUIRE(survivor != 0);
+
+    // 之后不再采集:接下来推块只为让 Input 重新连上,不许顺带改写采集数据。
+    r.out.setCaptureEnabled(false);
+    r.pump(200);
+
+    std::vector<int> gone;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        if (c != survivor)
+        {
+            gone.push_back(c);
+        }
+    }
+    std::vector<std::vector<std::array<double, 5>>> before(static_cast<std::size_t>(MonoMultiRig::kCount));
+    for (int c : gone)
+    {
+        before[static_cast<std::size_t>(c - 1)] = r.segTableOf(c);
+        REQUIRE_FALSE(before[static_cast<std::size_t>(c - 1)].empty()); // 前提:有段可比,否则「没变」毫无意义
+        // 断开 = Input 释放 slot(用户场景:轨改到别的通道 / 删掉插件)。
+        r.ins[static_cast<std::size_t>(c - 1)]->releaseResources();
+    }
+    r.pump(200);
+
+    // 前提:连接态确实是「幸存轨连着、另两条没连」,且没连的那两条**旧采集数据还在**
+    // (本卡的前提就是数据还在;数据没了的话下面几格靠覆盖判据也会绿,测不到连接判据)。
+    {
+        const auto snap = r.out.connSnapshot();
+        REQUIRE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(survivor - 1)]));
+        for (int c : gone)
+        {
+            REQUIRE_FALSE(scvb::output::isConnectedForDisplay(snap.channels[static_cast<std::size_t>(c - 1)]));
+            REQUIRE(r.out.coverageOf(c, win.startS, win.endS).coveredS > 0.0);
+        }
+    }
+
+    // ③ 干跑与真跑同口径。
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == 1);
+
+    // ② 写回集 + ① 计算集。
+    const auto accepted = r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false);
+    REQUIRE(accepted.ok);
+    CHECK(accepted.tracks == 1);
+    bool done = false;
+    for (int waited = 0; waited < 20000 && !done; waited += 50)
+    {
+        r.pump(50);
+        done = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+    }
+    REQUIRE(done);
+
+    const double solo = r.firstPan(survivor);
+    REQUIRE(std::isfinite(solo));
+    CHECK(std::abs(solo) < 1.0); // ← 修复前:另两条的旧数据仍在计算集里,这里是三轨上下文的那个值
+    for (int c : gone)
+    {
+        CHECK(r.segTableOf(c) == before[static_cast<std::size_t>(c - 1)]);
+    }
+
+    // ④ 全都没连上:不偷用旧数据跑。
+    r.ins[static_cast<std::size_t>(survivor - 1)]->releaseResources();
+    r.pump(200);
+    REQUIRE_FALSE(
+        scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[static_cast<std::size_t>(survivor - 1)]));
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == 0);
+    CHECK_FALSE(r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false).ok);
+    CHECK_FALSE(r.out.analysisRunning());
+
+    // 接回来:enabled 没动、数据没清,它们自动回到参与面。
+    for (auto& p : r.ins)
+    {
+        p->prepareToPlay(kSr, kBlock);
+    }
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.out.previewAnalysis(0, win.startS, win.endS).tracks == MonoMultiRig::kCount);
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    CHECK(std::abs(r.firstPan(survivor)) > 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // P0-1 ③(消费链):段表 pan → CRVS → 打印器 → 宿主参数。
 // 用户报的另一半是「自动化零写入」。段表有值而参数不动 = 消费链断在打印这一跳。
 // ---------------------------------------------------------------------------
