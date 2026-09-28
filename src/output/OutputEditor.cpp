@@ -615,6 +615,20 @@ void OutputEditor::emitPlayhead()
         put(payload, "loopStartS", loopStartS);
         put(payload, "loopEndS", loopEndS);
     }
+    // [J147] 宿主速度 / 拍号 / 拍位置(§2.6 四个可选字段):Tab1 手动范围据此换算小节。
+    // bpm 与拍号同进同出(缺一样页面也换算不了);ppq 另要求本帧有时间线 —— 它与本载荷的
+    // timeS 出自同一次快照读,页面拿这一对当换算锚点。取值纪律见 hostTempoOf。
+    const scvb::engine::HostTempo tempo = scvb::engine::hostTempoOf(pod);
+    if (tempo.valid)
+    {
+        put(payload, "bpm", tempo.bpm);
+        put(payload, "timeSigNum", static_cast<int>(tempo.timeSigNum));
+        put(payload, "timeSigDen", static_cast<int>(tempo.timeSigDen));
+        if (tempo.ppqValid)
+        {
+            put(payload, "ppq", tempo.ppq);
+        }
+    }
 
     emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
 }

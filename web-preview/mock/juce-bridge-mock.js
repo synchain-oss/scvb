@@ -324,6 +324,13 @@ function makeContext(role, world) {
         // `requestRender` 都不排。只有 `ctl.setHostTimeAvailable` 写它(见那一条),
         // 页面与契约面一个字节都不知道它存在。
         hostTimeAvailable: true,
+        // [J147] **宿主报的速度 / 拍号**(契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。
+        // null = 宿主不给(页面按秒显示)。初值取 world.caps.hostTempo(`?tempo=` 可覆写,
+        // 见 state-driver 的 parsePreviewQuery);运行中只有 `ctl.setHostTempo` 写它。
+        // 拍位置按「从 0 秒起恒速」造:ppq = 秒 × bpm / 60 —— 运行中换速度时,新旧两帧的
+        // bpm 不同,页面据此判「速度变过」(真宿主换速度时偏移也会跟着变,那一路见
+        // host-tempo.js 头注;这里只需造得出「变过」这一态)。
+        hostTempo: world.caps.hostTempo ? { ...world.caps.hostTempo } : null,
         snapshot,
         // conn / config 与快照共用同一对象,写一处两处同步(契约 §1.1/§3.1 语义行:
         // 快照的 conn/config 子树与事件载荷不得各自漂移)。
@@ -839,6 +846,16 @@ function makeContext(role, world) {
         setHostTimeAvailable(on) {
             model.hostTimeAvailable = on !== false;
         },
+        /**
+         * [J147] **预览专用**开关(同 `setHostTimeAvailable`,不在桥面契约里):
+         * `{bpm, num, den}` = 宿主从下一帧起报这个速度与拍号;`null` = 宿主不报。
+         */
+        setHostTempo(t) {
+            model.hostTempo =
+                t && Number.isFinite(t.bpm)
+                    ? { bpm: t.bpm, num: t.num, den: t.den }
+                    : null;
+        },
         /** §2.6 的可选字段:宿主提供 loop 才出现,缺失即字段不存在(不发哨兵)。 */
         playheadOverrides(tS) {
             // 宿主不给走带位置时,native 侧 timeS 恒 0.0 —— 连同 inRange 一起按 0 算,
@@ -853,6 +870,20 @@ function makeContext(role, world) {
             if (loop) {
                 extra.loopStartS = loop.startS;
                 extra.loopEndS = loop.endS;
+            }
+            // [J147] 与 native `hostTempoOf` 同口径:bpm 与拍号同进同出;ppq 另要求本帧有
+            // 时间线(没有时 timeS 是填的 0,不能与它配对)。
+            const ht = model.hostTempo;
+            if (ht) {
+                extra.bpm = ht.bpm;
+                extra.timeSigNum = ht.num;
+                extra.timeSigDen = ht.den;
+                if (model.hostTimeAvailable) {
+                    // 与载荷里的 timeS 配对:makePlayhead 把 timeS 取整到毫秒,这里用同一个值算,
+                    // 否则「拍位置 − 秒 × bpm / 60」会带上取整残差。
+                    const tMs = Math.round(t * 1000) / 1000;
+                    extra.ppq = (tMs * ht.bpm) / 60;
+                }
             }
             return extra;
         },

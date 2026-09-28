@@ -139,11 +139,13 @@ export const T = {
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
         // app.js 里 footer 的填值处(`secondsToTimecode(range.start_s)`)把这两个占位符
         // 一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
-        // UI 只收秒);而**桥面没有宿主 tempo map 入口**(A17),小节值算不出来 ——
-        // 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
+        // UI 只收秒)—— 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
+        // [J147] 起桥面 `scvb.playhead` 带了宿主**当前位置**的速度 / 拍号,Tab1 手动范围已按它
+        // 换算小节(web/output/host-tempo.js);**footer 这个填值点没跟着换**(J147 只裁了 Tab1
+        // 手动范围),所以这里的理由照旧成立。
         // 加回单位词的后果是 footer 显示「写入自动化 V1 · 00:12.000–01:36.000 小节」:
         // 不带单位是**不精确但不撒谎**,带上就是**明确错标**。
-        // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),拿到 tempo map(T33)后回填。
+        // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),footer 改填小节之后再回填。
         // **同一个填值点还填着 `footer.printDone`**(紧随其后的
         // `fillKeyed($("footer-print-done"), …)`,同一对 `secondsToTimecode`),它三语也带
         // `{x}–{y}`、且本就在推迟的 4 条里 —— 同理,别给它加单位词。
@@ -822,6 +824,12 @@ export const T = {
         "master.rangeEnd": "终点",
         "master.setToPlayhead": "设为播放头",
         "master.barsEstimateNote": "小节为估算值,播放该区域后校准",
+        // [J147] 手动范围的小节换算行与另两种注释(tab-master.js renderRangeBars)。
+        // `{x}`/`{y}` 填「小节.拍」(如 33.1);精确时注释行隐藏。
+        "master.rangeBars": "小节 {x} → {y}",
+        "master.barsMeterNote": "拍号有变化,小节号为估算值",
+        "master.rangeSecondsNote":
+            "未读到宿主速度与拍号,范围按秒显示,±4 为 4 秒",
         "footer.defaultHint":
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
@@ -1175,9 +1183,9 @@ export const T = {
         //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
         //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
         //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
-        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
-        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
-        //   tempo map 后再回填,三语一起动。
+        //   填的是 **mm:ss.mmm**(footer 这个填值点不换算小节;[J147] 只给 Tab1 手动范围接了宿主速度)。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定、footer 改填
+        //   小节之后再回填,三语一起动。
         //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
         //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
@@ -1761,6 +1769,11 @@ export const T = {
         "master.setToPlayhead": "Set to playhead",
         "master.barsEstimateNote":
             "Bar numbers are estimates; they calibrate after playing this area",
+        "master.rangeBars": "Bars {x} → {y}",
+        "master.barsMeterNote":
+            "Time signature changed — bar numbers are estimates",
+        "master.rangeSecondsNote":
+            "No host tempo or time signature yet — range shown in seconds, ±4 = 4 s",
         "footer.defaultHint":
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
@@ -2008,9 +2021,9 @@ export const T = {
         //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
         //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
         //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
-        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
-        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
-        //   tempo map 后再回填,三语一起动。
+        //   填的是 **mm:ss.mmm**(footer 这个填值点不换算小节;[J147] 只给 Tab1 手动范围接了宿主速度)。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定、footer 改填
+        //   小节之后再回填,三语一起动。
         //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
         //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
@@ -2611,6 +2624,11 @@ export const T = {
         "master.setToPlayhead": "Définir sur la tête de lecture",
         "master.barsEstimateNote":
             "Les numéros de mesure sont estimés ; ils se calibrent après lecture de cette zone",
+        "master.rangeBars": "Mesures {x} → {y}",
+        "master.barsMeterNote":
+            "Le chiffrage de mesure a changé — numéros de mesure estimés",
+        "master.rangeSecondsNote":
+            "Tempo et chiffrage de l'hôte pas encore reçus — plage en secondes, ±4 = 4 s",
         "footer.defaultHint":
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",

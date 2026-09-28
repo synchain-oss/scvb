@@ -104,7 +104,12 @@ public:
         {
             p.setBpm(bpm);
         }
-        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0));
+        // [J147] 拍号默认**不给**:既有用例的快照一个字段都不变,只有 J147 那几格显式打开。
+        if (haveTimeSig)
+        {
+            p.setTimeSignature(TimeSignature{timeSigNum, timeSigDen});
+        }
+        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0) + ppqOffset);
         if (haveLoop)
         {
             LoopPoints lp;
@@ -124,6 +129,10 @@ public:
     double bpm = 120.0;
     double loopStartPpq = 0.0;
     double loopEndPpq = 0.0;
+    bool haveTimeSig = false; // [J147] 见 getPosition
+    int timeSigNum = 4;
+    int timeSigDen = 4;
+    double ppqOffset = 0.0; // [J147] 让 ppq 与「秒×bpm/60」错开,证明发出去的是宿主的 ppq 而不是自己算的
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
@@ -320,6 +329,119 @@ TEST_CASE("HOST L-5:宿主循环区经 playhead 快照可见并可换算成秒",
     r.ph.looping = false;
     r.runBlocks(4);
     CHECK((r.out.playheadSnapshot().flags & scvb::engine::kPlayheadCycleValid) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [J147] Tab1 手动范围按小节显示:宿主 AudioPlayHead 的 bpm / 拍号 / 拍位置 →
+// processBlock 发布进 playhead 快照 → hostTempoOf 取成 `scvb.playhead` 的四个可选字段
+// (契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。OutputEditor::emitPlayhead 只是把
+// hostTempoOf 的结果逐项 put 出去(不在任何测试目标里;字段名与契约的对拍归
+// check-bridge-parity 的载荷对拍一节)。
+// 断言一律用 CHECK:同一格里几条互相独立,REQUIRE 一红会把后面「仍绿」的那几条一起藏掉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.playhead 的速度字段", "[host][j147]")
+{
+    Rig r;
+    // 停在 8 s 处(停带时宿主照样给速度与位置 —— J147「停带时用最后一次读到的值」的来源)。
+    r.ph.playing = false;
+    r.ph.timeSamples = static_cast<std::int64_t>(8.0 * kSr);
+    r.ph.bpm = 120.0;
+    r.ph.haveTimeSig = true;
+    r.ph.timeSigNum = 3;
+    r.ph.timeSigDen = 4;
+    // ppq 故意不等于「秒 × bpm / 60」:发出去的必须是宿主给的拍位置,不是插件自己推的。
+    r.ph.ppqOffset = 0.5;
+
+    SECTION("① bpm + 拍号 + 拍位置齐全 ⇒ 四个字段都在,且 ppq 与 timeS 出自同一块")
+    {
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u);
+        CHECK(pod.timeSigNum == 3);
+        CHECK(pod.timeSigDen == 4);
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod);
+        CHECK(t.valid);
+        CHECK(t.bpm == 120.0);
+        CHECK(t.timeSigNum == 3);
+        CHECK(t.timeSigDen == 4);
+        CHECK(t.ppqValid);
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr));
+        CHECK(t.ppq == Catch::Approx(16.5)); // 8 s × 2 拍/s + 0.5
+    }
+
+    SECTION("② 宿主只给 bpm、不给拍号 ⇒ 四个字段都不发(页面按秒显示)")
+    {
+        r.ph.haveTimeSig = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) == 0u);
+        CHECK((pod.flags & scvb::engine::kPlayheadTempoValid) != 0u); // 对照:bpm 本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod).valid);
+    }
+
+    SECTION("③ 宿主只给拍号、不给 bpm ⇒ 四个字段都不发")
+    {
+        r.ph.haveBpm = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u); // 对照:拍号本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod).valid);
+    }
+
+    SECTION("④ 宿主不给时间线 ⇒ bpm/拍号照发,ppq 不发(timeS 此时是填的 0,不能当锚点)")
+    {
+        r.ph.haveTime = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples < 0);
+        CHECK((pod.flags & scvb::engine::kPlayheadMusicValid) != 0u); // 对照:ppq 本身是到了的
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod);
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+    }
+}
+
+TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「宿主没给」处理", "[host][j147]")
+{
+    scvb::engine::PlayheadPod ok;
+    ok.flags =
+        scvb::engine::kPlayheadTempoValid | scvb::engine::kPlayheadTimeSigValid | scvb::engine::kPlayheadMusicValid;
+    ok.bpm = 97.5;
+    ok.timeSigNum = 6;
+    ok.timeSigDen = 8;
+    ok.timeSamples = 0;
+    ok.ppq = 0.0;
+    REQUIRE(scvb::engine::hostTempoOf(ok).valid); // 对照格:下面每一格只改一个字段
+
+    auto withBpm = [&](double v) {
+        auto p = ok;
+        p.bpm = v;
+        return scvb::engine::hostTempoOf(p).valid;
+    };
+    CHECK_FALSE(withBpm(0.0));
+    CHECK_FALSE(withBpm(-120.0));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::infinity()));
+    CHECK_FALSE(withBpm(scvb::engine::kHostTempoMaxBpm + 1.0));
+    CHECK(withBpm(scvb::engine::kHostTempoMaxBpm));
+
+    auto withSig = [&](int n, int d) {
+        auto p = ok;
+        p.timeSigNum = n;
+        p.timeSigDen = d;
+        return scvb::engine::hostTempoOf(p).valid;
+    };
+    CHECK_FALSE(withSig(0, 4));
+    CHECK_FALSE(withSig(4, 0));
+    CHECK_FALSE(withSig(-3, 4));
+    CHECK_FALSE(withSig(scvb::engine::kHostTimeSigMax + 1, 4));
+    CHECK_FALSE(withSig(4, scvb::engine::kHostTimeSigMax + 1));
+    CHECK(withSig(scvb::engine::kHostTimeSigMax, scvb::engine::kHostTimeSigMax));
+
+    auto nanPpq = ok;
+    nanPpq.ppq = std::numeric_limits<double>::quiet_NaN();
+    CHECK(scvb::engine::hostTempoOf(nanPpq).valid); // bpm/拍号照发
+    CHECK_FALSE(scvb::engine::hostTempoOf(nanPpq).ppqValid); // ppq 不发
 }
 
 // ---------------------------------------------------------------------------

@@ -119,6 +119,21 @@ The first time you open an Output you get, in order: the language card, then the
 - The tour is a spotlight-style walkthrough. **Left-click anywhere to advance**, it is purely visual and textual with no audio, and it runs on demo data — **nothing is written into your project**.
 - In the Settings tab, **"Show guide again"** replays the tour at any time, **"Show all nine"** reopens the rules page, and **"View workflow"** opens the workflow overview card.
 
+## Engine range (Range)
+
+The RANGE card on the Overview tab decides which stretch of the timeline capture and the output engine work on. Three modes: **Follow** (default — capture follows wherever you play), **Loop** (follows the DAW loop region) and **Manual** (you set the start and end).
+
+In Manual mode:
+
+- The start and end boxes take `minutes:seconds.milliseconds`; the line below also shows the **bar and beat** the range falls on (for example "Bars 33.1 → 49.1"), and **−4 / +4** move the end by **4 bars**.
+- Bars are converted from the **tempo, time signature and current beat position** the host reports. The plugin can only read the host's tempo **at the current moment** — it cannot read the whole tempo map — so:
+  - **Constant tempo, one time signature**: the bars are exact and no note is shown;
+  - **Tempo changes**: places you have not played are estimated from the most recent tempo, with the note "Bar numbers are estimates; they calibrate after playing this area". Play (or park the playhead) around the start and the end once and they calibrate to the positions the host reports; the note goes away;
+  - **Time signature changes**: bar numbers depend on the whole meter history, which the plugin cannot read. The note says "Time signature changed — bar numbers are estimates"; playing does not calibrate them — go by the DAW ruler;
+  - **The host reports no tempo** (or the plugin window has only just opened and nothing has arrived yet): the range is shown in seconds only, with a note, and −4 / +4 move by 4 seconds.
+- The plugin only knows about a tempo change once it has **seen** it: the playhead passing the change, or being parked somewhere after it, both count. Until then it converts the whole range as if the tempo were constant, without a note.
+- While the transport is stopped the last tempo read is kept. This tempo information lives in memory only while the plugin window is open and is not saved with the project; close and reopen the window and it starts observing again.
+
 ## Capture
 
 - **When it writes**: capture switch ON **and** transport rolling. Stop the transport and writing stops.

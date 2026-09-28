@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 
 // PlayheadShot:音频线程([A])→ 消息线程([M]) 的 playhead 快照通道唯一真源定义
@@ -23,6 +24,7 @@ enum PlayheadFlag : uint32_t
     kPlayheadCycleValid = 1u << 2,
     kPlayheadTempoValid = 1u << 3,
     kPlayheadMusicValid = 1u << 4,
+    kPlayheadTimeSigValid = 1u << 5, // [J147] 宿主给了拍号(timeSigNum/timeSigDen 有效)
 };
 
 // POD 载荷,一次性整体发布。字段并集已含 04 的 range 跟随 / tempo 采样点表需求。
@@ -36,6 +38,8 @@ struct PlayheadPod
     double sampleRate = 48000.0;
     uint32_t epoch = 0; // 时间线跳变代数(Output [A] 在 processBlock 按跳变检测递增)
     uint32_t flags = 0; // PlayheadFlag 位组合
+    int32_t timeSigNum = 0; // [J147] kTimeSigValid 时有效(拍号分子)
+    int32_t timeSigDen = 0; // [J147] kTimeSigValid 时有效(拍号分母)
 };
 
 // seq 版本号包裹的双缓冲快照(进程内,非 IPC)。
@@ -69,5 +73,46 @@ struct PlayheadShot
 };
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "PlayheadShot.seq 必须无锁(CLAUDE.md §8)");
+
+// [J147] 宿主速度 / 拍号 / 拍位置 → 桥事件 `scvb.playhead` 的四个可选字段(契约 §2.6)。
+// 纯函数,只读一份已经读出来的 pod([M] 侧调用;音频线程只管 publish,不调它)。
+// 取值纪律:
+//   · `valid` = bpm 与拍号**同时**可用且落在合理域内 —— 页面换算小节两样缺一不可,
+//     只给一样等于没给(web 按「秒」显示并明说);
+//   · `ppqValid` 另要求 `timeSamples >= 0`:`scvb.playhead.timeS` 在宿主不给时间线时
+//     填的是 0.0,那时把 ppq 发出去,页面会拿它与一个假的 0 秒配对当换算锚点。
+struct HostTempo
+{
+    bool valid = false;
+    double bpm = 0.0;
+    int32_t timeSigNum = 0;
+    int32_t timeSigDen = 0;
+    bool ppqValid = false;
+    double ppq = 0.0;
+};
+
+inline constexpr double kHostTempoMaxBpm = 999.0; // 宿主给出超过它的值按「没给」处理
+inline constexpr int32_t kHostTimeSigMax = 64; // 拍号分子/分母上界(同上)
+
+inline HostTempo hostTempoOf(const PlayheadPod& p) noexcept
+{
+    HostTempo t;
+    const bool tempoOk =
+        (p.flags & kPlayheadTempoValid) != 0u && std::isfinite(p.bpm) && p.bpm > 0.0 && p.bpm <= kHostTempoMaxBpm;
+    const bool meterOk = (p.flags & kPlayheadTimeSigValid) != 0u && p.timeSigNum >= 1 &&
+                         p.timeSigNum <= kHostTimeSigMax && p.timeSigDen >= 1 && p.timeSigDen <= kHostTimeSigMax;
+    if (!tempoOk || !meterOk)
+        return t;
+    t.valid = true;
+    t.bpm = p.bpm;
+    t.timeSigNum = p.timeSigNum;
+    t.timeSigDen = p.timeSigDen;
+    if ((p.flags & kPlayheadMusicValid) != 0u && p.timeSamples >= 0 && std::isfinite(p.ppq))
+    {
+        t.ppqValid = true;
+        t.ppq = p.ppq;
+    }
+    return t;
+}
 
 } // namespace scvb::engine

@@ -548,9 +548,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 频率 | **30 Hz**(05 §1.4 逐字;同 §2.5,**A-28**:逐类频率为准,基准 Timer 不入契约) |
-| 载荷 | `{ timeS:f64, isPlaying:bool, loopStartS?:f64, loopEndS?:f64, inRange:bool }` |
-| 字段纪律 | `loopStartS`/`loopEndS` 仅在宿主提供且有效(`kCycleValid`)时出现;缺失即字段不存在(**不发哨兵值**)。宿主仅提供 PPQ 时按 §1.8 同款 best-effort 近似换算。`inRange` = 播放头是否落在 `global.range` 内(`mode="follow"` 时恒 true——follow 无界,05 §2.1 ②)。UI 侧 rAF 插值平滑。 |
-| UI 消费 | 播放头竖线、采集中/出范围提示、PRINT 态判定(`output_enabled ∧ isPlaying ∧ inRange`) |
+| 载荷 | `{ timeS:f64, isPlaying:bool, loopStartS?:f64, loopEndS?:f64, inRange:bool, bpm?:f64, timeSigNum?:i32, timeSigDen?:i32, ppq?:f64 }` |
+| 字段纪律 | `loopStartS`/`loopEndS` 仅在宿主提供且有效(`kCycleValid`)时出现;缺失即字段不存在(**不发哨兵值**)。宿主仅提供 PPQ 时按 §1.8 同款 best-effort 近似换算。`inRange` = 播放头是否落在 `global.range` 内(`mode="follow"` 时恒 true——follow 无界,05 §2.1 ②)。UI 侧 rAF 插值平滑。**[J147] `bpm`/`timeSigNum`/`timeSigDen`/`ppq`**:宿主 AudioPlayHead 在**本帧播放位置**报的速度、拍号分子/分母、拍位置(四分音符数)。`bpm` 与两项拍号**同进同出**:宿主同时给了速度(`kTempoValid`,有限且 `0 < bpm ≤ 999`)与拍号(`kTimeSigValid`,分子分母都在 `1..64`)才出现,缺一样三项都不发(页面只拿一样换算不了小节,按秒显示)。`ppq` 另要求本帧有时间线(`timeInSamples` 有效)且宿主给了拍位置(`kProjectTimeMusicValid`,有限)—— 它与同一载荷的 `timeS` 出自**同一次快照读**,是页面换算小节的锚点;没有时间线时 `timeS` 填的是 0.0,所以那时不发 `ppq`。四项都是「此刻」的值,**不是**宿主的整张速度表(VST3 不提供);变速工程上页面据此只能估算,口径见 05 §2.1 ② 与 `web/output/host-tempo.js` 头注。 |
+| UI 消费 | 播放头竖线、采集中/出范围提示、PRINT 态判定(`output_enabled ∧ isPlaying ∧ inRange`);**[J147]** Tab1 手动范围的小节换算行与 ±4 小节步进(`bpm`/`timeSigNum`/`timeSigDen`/`ppq`) |
 | 真源 | 05 §1.4 / §2.1 |
 
 ### 2.7 `scvb.captureProgress`
@@ -1079,7 +1079,7 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 | `scvb.state` | 变化时 | 组 / 缩放 / 语言 / **viz 三态与 fresh**(段级状态的唯一真源) |
 | `scvb.groups` | **1 Hz** | **逐字复用** §2.4 的既有形状:`{groups_online}` 位图,组胶囊绿点 |
 | `scvb.viz` | **≤25 Hz**(基准 tick 上限;数据面 30 Hz,值未变不发) | viz 帧:每轨当前值每帧刷;降采样车道按 `lane_revision` 变化才带(形状见 `web/monitor/viz.js` 头注;数据面 = ipc §6)。**SL-192**:段侧发布 30 Hz,而桥面受 WebViewHost 基准 tick(25 Hz)封顶 —— 两者不同是故意的:基准 tick 有 50→25 减负裁定,不因本卡重开 |
-| `scvb.playhead` | **25 Hz** | **逐字复用** §2.6 的既有载荷形状(WebViewHost 定时器上限) |
+| `scvb.playhead` | **25 Hz** | **逐字复用** §2.6 的既有载荷形状(WebViewHost 定时器上限);§2.6 的 [J147] 四个可选字段(`bpm`/`timeSigNum`/`timeSigDen`/`ppq`)Monitor **不发** —— 它们只供 Output Tab1 手动范围换算小节,Monitor 没有这个消费者;可选字段缺席仍是合法的 §2.6 载荷 |
 
 后两个之所以逐字复用 Output 侧的形状而不另立一套:轨迹图的 `onPlayhead(ev)` 与组胶囊的消费代码因此**一行不改**。
 
