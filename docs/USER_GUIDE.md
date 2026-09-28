@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-08-24 (for version v0.1.0)
+> Last updated: 2026-09-28
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -14,6 +14,8 @@ SCVB (Synchain Vocal Balancer) is a **pair** of VST3 plugins that automatically 
 - **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and writes the result back as DAW automation.
 
 Both plugins must be **installed together and used as a pair**. Installing only one will not leave you with a track that has no sound (see hard rule 3), but it will not give you any balancing either.
+
+A third plugin, **SCVB Monitor**, ships in the same zip and is **optional**: a read-only window for watching a whole group's pan and level movement. It passes audio through untouched, has no automation parameters, and never changes what Input and Output do.
 
 > **How to change the nine hard rules**: the `## 硬约束` section of `docs/USER_GUIDE.zh-CN.md` is the **single source of truth** for all nine. They also appear in this file, in both READMEs' Quick start, and in the plugin UI's three language dictionaries — 7 places in total. **None of them may be transcribed by hand.** To change the wording, edit that section only (translations live in `docs/hard-rules.i18n.json`), then run `node scripts/gen-hard-rules.mjs`; the other 6 places follow the generator. `node scripts/gen-hard-rules.mjs --check` is the gate.
 
@@ -34,6 +36,35 @@ Breaking any one of these does not give you a slightly worse result — it gives
 > 8. **SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)
 > 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
+
+## Install
+
+Everything comes in one zip, `SCVB-v<version>-win64.zip`, containing three plugins:
+
+| Plugin | Where it goes | Needed? |
+|---|---|---|
+| **SCVB Input** | The last slot of every vocal track | Yes |
+| **SCVB Output** | The first slot of the vocal bus | Yes |
+| **SCVB Monitor** | Any track (it passes audio through untouched) | Optional — a read-only window for watching a whole group |
+
+### Download and verify
+
+1. Download `SCVB-v<version>-win64.zip` and the matching `.sha256` from the [Releases page](https://github.com/synchain-oss/scvb/releases).
+2. Check the zip. In PowerShell, in the folder you downloaded to: `Get-FileHash .\SCVB-v<version>-win64.zip -Algorithm SHA256`. The result must match the SHA-256 in the Release notes (that value is produced by CI and is the authoritative one). **If it does not match, do not install it, and tell us.**
+
+### Unblock the zip (the plugins are not code-signed)
+
+SCVB is not code-signed, so Windows and your browser treat it as coming from an unknown publisher:
+
+- **The browser may warn about the download** ("not commonly downloaded" / "unknown publisher"). If the SHA-256 matched, choose to keep the file — in Microsoft Edge: **…** → **Keep** → **Show more** → **Keep anyway**.
+- **Clear the downloaded-from-the-internet mark before unzipping.** Windows copies that mark onto every file extracted from a marked zip. Right-click the zip → **Properties** → on the **General** tab tick **Unblock** → **OK**. If there is no Unblock checkbox, the file is not marked and there is nothing to do. The PowerShell equivalent is `Unblock-File .\SCVB-v<version>-win64.zip`.
+
+### Copy the plugins
+
+1. Unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and (if you want it) `SCVB Monitor.vst3` — **the whole bundle folder** in each case — into `C:\Program Files\Common Files\VST3\` (Windows asks for administrator permission).
+2. Rescan plugins in your DAW.
+
+**Upgrade every SCVB plugin together.** Input and Output share one version number. If the two sides speak different versions of the shared-memory protocol they refuse to connect, on purpose; even when they do connect, an old Input next to a new Output (or the other way round) is not supported (with a new Output and an old Input, an offline render can sum the vocals twice).
 
 ## Five-minute start
 
@@ -57,6 +88,8 @@ Turn on **Capture** in the Output, then play back as usual. Capture writes only 
 
 Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing**, because what capture stores is features rather than audio or decisions.
 
+**Only channels whose Input is connected right now take part in analysis** (the same check the UI uses for "not connected"). After you move a track to another channel, or remove / disable its Input, the data captured on the old channel is kept but no longer counted (the automatic re-segmentation after you release a VAD / segmentation slider does not update its segments either); once the Input is back, the next analysis picks it up again. The check matches the UI: an Input whose heartbeat has not updated for more than 2 seconds (for example while the host is stalled) also counts as not connected. If none of the channels with data in the selected range is connected, the analysis does not run (it never falls back to stale data): the impact preview line under **Analyse** on the Overview page shows the reason instead, and the re-analyse buttons on the Waveform and Settings pages show a message too.
+
 ### Output
 
 Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next.
@@ -72,7 +105,7 @@ Set the DAW's automation mode to **Write** or **Latch** and play through once mo
 | Tab | What it is for |
 |---|---|
 | **Overview** | The capture / analyse / output switches, engine Range, group selection, version chip, global Width and MS Balance, Lead Select, pan and level distribution charts |
-| **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, level exemption, auto-pan participation, freeze, ST marker |
+| **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, volume participation, auto-pan participation, freeze, ST marker |
 | **Waveform** | Timeline lanes: VAD colouring, segments, the segment inspector (edit pan/vol on a selected segment), selections and partial recapture / re-analysis |
 | **Settings** | Usage notes (including the nine hard rules), loudness basis, centre-slot policy, UI scale, language, version number, diagnostics |
 
@@ -98,7 +131,7 @@ The first time you open an Output you get, in order: the language card, then the
 ## Analysis
 
 - **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview. **These five settings and the transition time on Tab 1 are saved with the project** — reopen the project and they still show the values you saved (since v5.6.15; [SL-416]).
-- **Segmentation**: energy-valley detection plus a minimum segment length (the wave page's **MIN SEG** slider, **50–2000 ms**, default 120 ms) and a breath tolerance. Automatic segments shorter than it are dropped, or merged into a **touching** neighbouring segment; manually edited segments are unaffected. **After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour**; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a scope or range re-analysis, and the leftover of a neighbour dropped wholesale because it clashed with a manual segment). **These settings are saved with the project** (mode / sensitivity / minimum segment length have been persisted since v5.6.14 — see `docs/contract-changes/20260914-sl411-segmentation-persist.md`): reopen the project and the sliders still show the values you saved, and **the minimum segment length and sensitivity are what the analysis runs with**; the segmentation **mode** is a **reserved slot in v1** — there is no control for it anywhere in the UI (**there never was** one; this release did not hide it), and the engine does not consume it (it always runs energy-valley detection), so it is only carried through the project file so the value is not lost (the `vad_only` setting is kept for the card that wires it up — see `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`).
+- **Segmentation**: energy-valley detection plus a minimum segment length (the wave page's **MIN SEG** slider, **50–2000 ms**, default 120 ms) and a breath tolerance. Automatic segments shorter than it are dropped, or merged into a **touching** neighbouring segment; manually edited segments are unaffected. **After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour**; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a selection or range re-analysis, and the leftover of a neighbour dropped wholesale because it clashed with a manual segment). **These settings are saved with the project** (mode / sensitivity / minimum segment length have been persisted since v5.6.14 — see `docs/contract-changes/20260914-sl411-segmentation-persist.md`): reopen the project and the sliders still show the values you saved, and **the minimum segment length and sensitivity are what the analysis runs with**; the segmentation **mode** is a **reserved slot in v1** — there is no control for it anywhere in the UI (**there never was** one; this release did not hide it), and the engine does not consume it (it always runs energy-valley detection), so it is only carried through the project file so the value is not lost (the `vad_only` setting is kept for the card that wires it up — see `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`).
 - **Segment loudness basis**: Settings offers **K-weighted segment integration (default) / RMS / peak dBFS**; changing it requires a re-analysis.
 - **Centre-slot policy**: the fallback rule for when several tracks compete for the centre position — **priority queue (default) / lead exclusive / evenly nudged apart**, also a "re-analyse after changing" setting.
 - **Lead Select feeds the analysis**: the track picked in Lead Select on the Overview tab is treated as the lead when you re-analyse — it sits in the centre without taking another voice's position, the other voices are spread left and right around it, and level balancing counts it as the centred track. Output records the Lead Select value **as playback passes over each moment** (it can be automated in your DAW, even switching lead line by line), so after changing Lead Select or its automation, **play the section once and then re-analyse** for the new layout to reach the segment table. Until you re-analyse, the selected track is still pulled to the centre in real time as before; only the other voices keep their old layout.

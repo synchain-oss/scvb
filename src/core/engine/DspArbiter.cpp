@@ -22,6 +22,8 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
 
     m_initialized = false;
     m_prevSnapshot = nullptr;
+    m_prevSnapshotSeq = 0;
+    m_prevLutSeq = 0;
     m_panCurveLut = nullptr; // 下个 processBlock 会从快照重新锁定;此处与其余音频线程独占态同批清
     m_prevPanCurveLut = nullptr;
     m_panCurveMix = 1.0f;
@@ -33,13 +35,14 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
     m_prevLeadSelect = 0;
     m_prevFrz.fill(0);
     m_lastAnySwitch = false;
-    // 注意:m_snapshot 原子不在此重置 —— 由消息线程 publish 独占管理。prepare(音频线程)与
+    // 注意:m_snapshot 原子不在此重置 —— 由消息线程 publish 独占管理。m_oldestHeldSeq 也不重置:
+    // 它只会让发布方少放、不会多放,下一块 processBlock 会按新状态重报。prepare(音频线程)与
     // publish(消息线程)经原子安全并置;首个 processBlock 因 m_initialized=false 走硬置位。
 }
 
 void DspArbiter::publish(const Snapshot* snapshot)
 {
-    // 消息线程:release-store。发布前快照须已完整构造;旧快照由发布方保活(进程寿命)。
+    // 消息线程:release-store。发布前快照须已完整构造;旧快照由发布方保活,何时可放见头文件 oldestHeldSeq。
     m_snapshot.store(snapshot, std::memory_order_release);
 }
 
@@ -99,6 +102,7 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
     const std::atomic<float>* rawLead = (snap != nullptr) ? snap->rawLeadSelect : nullptr;
     // G 的查表与本块 TrackValues 取自**同一份** snap —— 分两次 load 就可能一半旧一半新。
     const scvb::PanCurveLut* const lutNow = (snap != nullptr) ? snap->panCurveLut.get() : nullptr;
+    const std::uint64_t seqNow = (snap != nullptr) ? snap->seq : 0;
 
     // 换表 → 开 30ms 交叉淡入窗口(曲线编辑与版本切换共用这一条路径,不为版本切换另写一份)。
     // 判的是 **LUT 对象指针**:段编辑会造一堆新快照但不换表,那时这里不触发(见头文件的注)。
@@ -113,6 +117,7 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
         // 窗口内再次换表:拿当时正在淡向的那张当新的旧表并重启窗口。残留不连续 ≤ 本次残差,
         // 远小于完全不淡入时的整跳;真要消掉它得在音频线程合成一张中间表(禁止分配),不做。
         m_prevPanCurveLut = m_panCurveLut;
+        m_prevLutSeq = m_prevSnapshotSeq; // [SL-445] 旧表属于上一块那份快照:窗口开着就得留着它
         m_xfadeRemaining = m_xfadeSamples;
         m_panCurveMix = 0.0f;
     }
@@ -184,10 +189,15 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
     }
 
     m_prevSnapshot = snap;
+    m_prevSnapshotSeq = seqNow;
     m_prevEngineAuthority = engineAuthority;
     m_prevLeadSelect = lead;
     m_initialized = true;
     m_lastAnySwitch = authorityChanged || leadChanged || versionChanged || anyFrzChanged;
+
+    // [SL-445] 回收确认(见头文件 oldestHeldSeq):放在本块全部读快照之后,release 把这些读排在它前面。
+    // 窗口开着 ⇒ 旧表那份(更老)也还要;窗口在 nextSample 里关上后,下一块才会把数往前推 —— 晚一块放,不会早放。
+    m_oldestHeldSeq.store((m_xfadeRemaining > 0) ? m_prevLutSeq : seqNow, std::memory_order_release);
 
     return m_targets;
 }

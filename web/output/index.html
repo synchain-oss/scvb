@@ -5603,7 +5603,7 @@
                             data-t="banner.staleCapture"
                             data-gb="banner-staleCapture-text"
                             >{m}
-                            轨的上游音频与已采集特征不一致,建议重新采集</span
+                            轨的已采集特征已过期(上游音频或采样率与采集时不同),建议重新采集</span
                         >
                         <button
                             type="button"
@@ -5977,7 +5977,9 @@
                                     data-when="nodata"
                                     data-gb="master-analyze-preview-nodata"
                                     data-t="master.step2.desc.noData"
-                                    >当前范围内无采集数据——调整范围或先采集</span
+                                    >当前范围内没有可用的采集数据(没连上 Input
+                                    的通道不计入)——调整范围、先采集,或连上
+                                    Input</span
                                 >
                                 <button
                                     class="an-btn"
@@ -9071,7 +9073,8 @@
                         <span class="sc-toast__dot"></span>
                         <!-- toast②(05 §2.0 逐字;词条 toast.sidecarSwitched 为 T31 Wave 2 新增,04 §5.4) -->
                         <span data-t="toast.sidecarSwitched"
-                            >采集数据已转存外部文件(>8MB),位置见设置页(路径管理与导入导出待功能卡)</span
+                            >采集数据已超过
+                            8MB,已转存外部文件——发给他人需重新采集</span
                         >
                     </div>
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>

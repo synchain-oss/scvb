@@ -26,7 +26,7 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with: { fetch-depth: 1 }
       - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main, Claude Code 2.1.280
         with:

@@ -104,7 +104,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 | 持久化 | 是,随工程走 |
 
 - **编码落点**:`InputStateCodec` 的 `InputState`(当前 = `channelId` / `groupId` / `uiScale` / `uiLanguage`)**尾部追加 `u32 uiGuideSeen`** —— 向后兼容的**追加段**:老工程按旧长度解码、该位取默认 0。
-- **全局默认位** `guide_seen_global`(§3.1 快照顶层,只读、不属工程 state):**Input 与 Output 各存一份**(`UiDefaultsStore` 命名空间本就按侧分)。两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导。
+- **全局默认位** `guide_seen_global`(§3.1 快照顶层,只读、不属工程 state):**Input 与 Output 各存一份**:同一个落盘文件(`UiDefaultsStore` 的 `ui-defaults.settings`)里的两个键 —— Output `guide_seen_global`、Input `guide_seen_global_input`([J132] 以实现为准改写,变更文档 `docs/contract-changes/20260928-j132-guide-seen-global-keys.md`)。两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导。
 - **迁移语义**:读到没有该键的旧工程 → 默认 `false`(引导弹一次,弹完置位),不丢数据;若用户此前已在别的工程看过,全局默认位会替他挡住。**不需要迁移函数**,`abi` 不因它递增。
 - **反向兼容**:新工程被旧版本读到 → 旧版按「忽略未知键」丢弃 → 引导多弹一次,无其它影响。
 
