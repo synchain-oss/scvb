@@ -70,7 +70,7 @@ import {
     labelPlaceholder,
     tt,
 } from "./tab-tracks.js";
-import { format, outputPhase } from "./tab-master.js";
+import { connectedChannels, format, outputPhase } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -714,9 +714,11 @@ export function reanalyzeBlockReason(o) {
     if (s.blocked) return "wave.armReason.readOnly";
     if (!s.picked) return "wave.armReason.noTracks";
     if (!s.hasSel) return "wave.armReason.noSelection";
-    // 全局空态与「本选区无覆盖」共用同一句(「当前范围内无采集数据——调整范围或先采集」):
+    // 全局空态与「本选区无覆盖」共用同一句(`master.step2.desc.noData`):
     // 对用户而言要做的下一步逐字相同,分成两句只是让人多读一行。
     if (!s.hasData) return "master.step2.desc.noData";
+    // [SL-535] dry-run 只数已连接的轨:「有数据但那些轨都没连上 Input」也落这里,
+    // 所以 `master.step2.desc.noData` 的文案把这种情形一起说了。
     if (s.previewTracks === 0) return "master.step2.desc.noData";
     return null;
 }
@@ -5056,12 +5058,25 @@ export function createTabWave(opts) {
         onPlayhead(local.playheadEv);
     }
 
+    /**
+     * [SL-535] `scvb.conn` 到达:已连接轨号集合变了就重取 dry-run。
+     * 预览的 `tracks` 只数已连接的轨,「重分析选区」灰不灰、灰的理由都读它 —— Input 接回来之后
+     * 不重取,按钮会一直灰到选区恰好又变一次。
+     */
+    function onConn(conn) {
+        const key = connectedChannels(conn).join(",");
+        if (key === local.connKey) return;
+        local.connKey = key;
+        schedulePreview();
+    }
+
     return {
         mount,
         render,
         onSegments,
         onCaptureProgress,
         onPlayhead,
+        onConn,
         // tour 视图层增强(T36b 第四轮:步 28 放大泳道 / 步 29 示例选区;只动渲染,不写 state)
         zoomLanes,
         showDemoSelection,
