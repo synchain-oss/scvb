@@ -9,7 +9,7 @@
 // 跑什么:
 //   ① J69 两设置块常量:三档 value/key 单一真源 + 默认档(契约 §1.21 桥面枚举字符串);
 //   ② 纯函数:heartbeatAgeText / formatMegabytes / versionString / storageOf /
-//     docsUrl(另在 R3 增补段真跑,[SL-220]) /
+//     docsUrl(另在 R3 增补段真跑,[J149] 固定指向 prod) /
 //     analysisConfigOf / diagRowsOf / diagText;
 //   ③ mock 端到端:setAnalysisConfig 写入 + badArg(含 02/03 拼写不互认)+ save/load 往返不丢;
 //   ④ 词条:T35 新增 set.* key 三语齐、占位符三语一致、05 §5 禁词零命中;
@@ -974,70 +974,125 @@ log(
         /window\.open\(url, "_blank", "noopener"\)/.test(app),
         "SL-214 走 window.open(→ WebView2 NewWindowRequested → JUCE 外链通道)",
     );
-    // ---- SL-220:手册地址 pin 到与插件同号的 tag(纯函数真跑,不看字面)----
-    // 版本号用合成值,不与仓库当前版本挂钩(版本唯一真源在 CMakeLists.txt)。
+    // ---- J149:插件内文档链接固定指向 prod 分支(纯函数真跑,不看字面)----
+    // [J149] 推翻了 [SL-220] 的「按插件版本号 pin 到同号 tag」:地址与快照、版本号无关。
     {
+        const PROD = "https://github.com/synchain-oss/scvb/blob/prod/";
         const snap = (plugin) => ({ version: { plugin, abi: 1 } });
-        const B = "https://github.com/synchain-oss/scvb/blob/";
         eq(
-            TS.docsUrl("zh", snap("9.8.7")),
-            B + "v9.8.7/docs/USER_GUIDE.zh-CN.md",
-            "SL-220 中文界面 → 同号 tag 下的中文手册",
+            TS.docsUrl("zh"),
+            PROD + "docs/USER_GUIDE.zh-CN.md",
+            "J149 中文界面 → prod 上的中文手册",
         );
         eq(
-            TS.docsUrl("en", snap("9.8.7")),
-            B + "v9.8.7/docs/USER_GUIDE.md",
-            "SL-220 英文界面 → 同号 tag 下的英文手册",
+            TS.docsUrl("en"),
+            PROD + "docs/USER_GUIDE.md",
+            "J149 英文界面 → prod 上的英文手册",
         );
         eq(
-            TS.docsUrl("fr", snap("9.8.7")),
-            B + "v9.8.7/docs/USER_GUIDE.md",
-            "SL-220 法文界面 → 英文手册(无法文手册)",
+            TS.docsUrl("fr"),
+            PROD + "docs/USER_GUIDE.md",
+            "J149 法文界面 → prod 上的英文手册(无法文手册)",
         );
-        eq(
-            TS.docsUrl("en", snap("9.8.7-rc.2")),
-            B + "v9.8.7-rc.2/docs/USER_GUIDE.md",
-            "SL-220 带预发布后缀的版本串原样拼进 tag",
-        );
-        // 回退:快照没到 / 缺 version / 版本串不合形态 ⇒ 默认分支,绝不拼出 `vundefined` 这类死链
+        // 反向:就算调用方照旧把快照递进来,也不许拼出 tag / 回退到 dev(SL-220 的旧形态)。
         for (const [label, s] of [
+            ["快照带正式版本号", snap("9.8.7")],
+            ["快照带预发布版本号", snap("9.8.7-rc.2")],
             ["无快照", null],
-            ["快照缺 version", {}],
-            ["plugin 非字符串", snap(7)],
-            ["plugin 空串", snap("")],
-            ["plugin 不是 X.Y.Z", snap("dev-build")],
-            ["plugin 夹路径字符", snap("1.2.3/../x")],
         ]) {
             eq(
                 TS.docsUrl("zh", s),
-                B + "dev/docs/USER_GUIDE.zh-CN.md",
-                `SL-220 回退默认分支:${label}`,
+                PROD + "docs/USER_GUIDE.zh-CN.md",
+                `J149 地址不随快照变:${label}`,
             );
         }
-        // 接线:openDocsInBrowser 真的用快照版本号去算地址(剥注释后看代码)。
+        // 接线:openDocsInBrowser 真的用 docsUrl(lang) 去算地址(剥注释后看代码)。
         // 纯函数全绿而这一跳没接上 = 按钮仍开旧地址,所以接线单独钉。
         const appCode = stripComments(app);
         const body = (appCode.match(
             /function openDocsInBrowser\(\)\s*\{([\s\S]*?)\n\}/,
         ) || [, ""])[1];
         check(
-            /const url = docsUrl\(lang, store\.snapshot\);/.test(body) &&
+            /const url = docsUrl\(lang\);/.test(body) &&
                 /window\.open\(url, "_blank", "noopener"\)/.test(body),
-            "SL-220 openDocsInBrowser 用 docsUrl(lang, store.snapshot) 算地址再 window.open",
+            "J149 openDocsInBrowser 用 docsUrl(lang) 算地址再 window.open",
         );
         check(
             /import \{[^}]*\bdocsUrl\b[^}]*\} from "\.\/tab-settings\.js"/.test(
                 appCode,
             ),
-            "SL-220 app.js 从 tab-settings.js 引入 docsUrl",
+            "J149 app.js 从 tab-settings.js 引入 docsUrl",
         );
-        check(
-            !/blob\/dev\/docs\/USER_GUIDE/.test(appCode),
-            "SL-220 app.js 不再写死 blob/dev 手册地址",
-        );
-        // 源头:docsUrl 拼的是快照里的 version.plugin,而那个值由 native 下发。Output 侧此前是
-        // 字面量 "0.1.0"(#298 复审【重要】)——改了 CMakeLists 的版本号它照旧自报旧版本,
-        // 按钮就会指向一个不存在的 tag。mock 里的版本号是另一份,页面侧的格看不见这一跳,只能在源码级钉。
+        // 全插件面:web/ 下任何一处代码(剥注释)里的仓库 blob 链接都只许走 prod。
+        // 扫整个 web/ 而不是只看 tab-settings.js —— 以后谁在别的页面再加一个文档外链,
+        // 照 SL-220 的旧写法 pin 到 tag 或写死 dev,这一格就红。
+        {
+            const webFiles = [];
+            (function walk(dir) {
+                for (const ent of readdirSync(dir, { withFileTypes: true })) {
+                    const p = join(dir, ent.name);
+                    if (ent.isDirectory()) walk(p);
+                    else if (/\.(m?js|html)$/.test(ent.name)) webFiles.push(p);
+                }
+            })(join(ROOT, "web"));
+            const blobRe = /synchain-oss\/scvb\/blob\/([^/"'`\s]+)\//g;
+            let prodHits = 0;
+            const offProd = [];
+            for (const f of webFiles) {
+                const text = readFileSync(f, "utf8");
+                const code = f.endsWith("js") ? stripComments(text) : text;
+                for (const m of code.matchAll(blobRe)) {
+                    if (m[1] === "prod") prodHits++;
+                    else
+                        offProd.push(
+                            relative(ROOT, f).split("\\").join("/") +
+                                " → blob/" +
+                                m[1],
+                        );
+                }
+            }
+            check(
+                webFiles.length > 0 && prodHits > 0,
+                `J149 扫到 web/ 下的 prod 链接(文件 ${webFiles.length} 个,prod 链接 ${prodHits} 处;为 0 说明这一格在空跑)`,
+            );
+            check(
+                offProd.length === 0,
+                "J149 web/ 下的仓库 blob 链接一律指向 prod,不 pin tag、不写 dev:" +
+                    offProd.join(" / "),
+            );
+        }
+        // 九条红字(生成物,真源 docs/USER_GUIDE.zh-CN.md#硬约束):凡提到 DAW 兼容表的条目,
+        // 三语都必须给 prod 上的完整地址 —— 插件里的用户拿到一句仓内相对路径 `docs/…` 是找不到的。
+        {
+            const DAW = PROD + "docs/DAW_COMPATIBILITY.md";
+            let mentions = 0;
+            for (let n = 1; n <= 9; n++) {
+                const langs = [];
+                for (const lang of ["zh", "en", "fr"]) {
+                    const v = T[lang]["guide.rule" + n] || "";
+                    if (!v.includes("DAW_COMPATIBILITY")) continue;
+                    langs.push(lang);
+                    mentions++;
+                    check(
+                        v.includes(DAW),
+                        `J149 ${lang}.guide.rule${n} 提到 DAW 兼容表时给的是 prod 上的完整地址`,
+                    );
+                }
+                check(
+                    langs.length === 0 || langs.length === 3,
+                    `J149 guide.rule${n} 三语要么都提 DAW 兼容表、要么都不提,实得 [${langs.join(", ")}]`,
+                );
+            }
+            // 非空跑:为 0 说明 key 名、字典路径或红字措辞变了,上面几格全在空转。
+            check(
+                mentions > 0,
+                `J149 三语红字里至少有一条提到 DAW 兼容表(实得 ${mentions} 处)`,
+            );
+        }
+        // 下面三格与文档地址已无关(J149 起地址不读版本号),留着是因为页脚版本号仍取自
+        // 快照的 version.plugin,而那个值由 native 下发。Output 侧此前是字面量 "0.1.0"
+        // (#298 复审【重要】)——改了 CMakeLists 的版本号它照旧自报旧版本。
+        // mock 里的版本号是另一份,页面侧的格看不见这一跳,只能在源码级钉。
         const outEd = stripComments(src("src/output/OutputEditor.cpp"));
         check(
             /put\(version, "plugin", JucePlugin_VersionString\);/.test(outEd),

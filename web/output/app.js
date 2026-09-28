@@ -575,8 +575,8 @@ langStart.mount();
 // ------------------------------------------------------------- 查看工作流程大卡(与 tour 步 2 同一张大卡)
 // 设置页「查看工作流程」入口:独立 overlay,渲染 workflow.* 五节点 + 优先级;零桥、零 state。
 // ---------------------------------------------------- 说明文档外链(SL-214)
-// 地址由 tab-settings.js 的 docsUrl() 按「界面语言 + 快照里的插件版本号」算出([SL-220]:
-// pin 到与插件同号的 tag,快照没到或版本串不合形态时回退默认分支),规则与已知边界写在那里。
+// 地址由 tab-settings.js 的 docsUrl() 按界面语言取([J149]:固定指向 prod 分支上的手册,
+// 不随插件版本号变),取舍与已知边界写在那里。
 
 /**
  * 在**系统浏览器**里打开说明文档。
@@ -591,7 +591,7 @@ langStart.mount();
  * WebView2 不会自己弹窗。
  */
 function openDocsInBrowser() {
-    const url = docsUrl(lang, store.snapshot);
+    const url = docsUrl(lang);
     // noopener:被打开方拿不到 window.opener,标准外链纪律
     window.open(url, "_blank", "noopener");
 }

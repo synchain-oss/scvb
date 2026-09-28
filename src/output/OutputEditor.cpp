@@ -212,7 +212,7 @@ juce::var OutputEditor::buildSnapshot()
     put(o, "session_guid", juce::var(processor_.sessionGuid()));
     juce::var version = obj();
     // 版本串取 JUCE 由 CMake project(VERSION) 生成的宏,与 Input / Monitor 同形。此前是字面量 "0.1.0",
-    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚与「说明文档」按钮都跟着错)。
+    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚版本号跟着错)。
     put(version, "plugin", JucePlugin_VersionString);
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);

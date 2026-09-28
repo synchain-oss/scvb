@@ -101,36 +101,29 @@ export function versionString(snapshot) {
     return "v" + v.plugin + " · abi " + v.abi;
 }
 
-/** 仓库 blob 前缀;后面拼 `<ref>/<手册路径>`。 */
-export const DOCS_BLOB_BASE = "https://github.com/synchain-oss/scvb/blob/";
-/** 版本串拼不出 tag 时回退的分支(仓库默认分支)。 */
-export const DOCS_FALLBACK_REF = "dev";
+/** 中文手册在 `prod` 分支上的固定地址([J149])。 */
+export const DOCS_URL_ZH =
+    "https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md";
+/** 英文手册在 `prod` 分支上的固定地址([J149])。 */
+export const DOCS_URL_EN =
+    "https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md";
 
 /**
- * 设置页「说明文档」的地址([SL-214] 接线,[SL-220] 改为按版本 pin)。
+ * 设置页「说明文档」的地址([SL-214] 接线;[J149] 固定指向 `prod` 分支)。
  *
- * 中文界面给中文手册,其余(en / fr)给英文手册。
- * **pin 到与插件同号的 tag**:`blob/v<version.plugin>/docs/…` —— 用户读到的手册与手上
- * 的插件同版,不会读到 dev 上已经改过的说明;与 docs/RELEASE.md 发布说明模板里的链接同一口径。
- * 版本号来自契约 §1.1 快照 `version.plugin`(真源 = CMakeLists.txt 的 `project(VERSION)`),
- * 这里不写死任何版本。
- * 回退到 `DOCS_FALLBACK_REF` 的两种情形:快照还没到;版本串不是 `X.Y.Z`(可带 `-后缀`)形态。
- * ⚠ 已知边界:插件的版本号只有 `X.Y.Z`(CMake 的 project(VERSION) 不带预发布后缀),所以
- * 以 `vX.Y.Z-rc.N` 这类预发布 tag 发出的构建会链到 `vX.Y.Z`,这个 tag 打出来之前是 404;
- * 没打过 tag 的开发构建同理。
+ * 中文界面给中文手册,其余(en / fr)给英文手册(没有法文手册)。
+ * **固定指向 `prod` 分支上的固定路径,不随插件版本号变**:用户裁定 [J149]
+ * (「prod 是稳定正式版的 branch,dev 是研发 branch」)。它取代了 [SL-220] / #298 的
+ * 「按插件版本号 pin 到同号 tag」,所以这里**不读快照、不拼版本号**。
+ * prod 只在发正式版时前移(见 docs/RELEASE.md),所以用户读到的是**最新正式版**的手册;
+ * 旧版插件点开的也是它,不是自己那一版的手册 —— 这是 J149 的取舍。
+ * ⚠ prod 前移到首个正式版之前,prod 上还没有这两份手册,这两个地址是 404。
+ * 九条红字里 DAW 兼容表的地址同一口径,写在红字真源 docs/USER_GUIDE.zh-CN.md#硬约束 里。
  *
- * @param {string} lang       界面语言 zh / en / fr
- * @param {object} snapshot   §1.1 快照(可为 null)
+ * @param {string} lang 界面语言 zh / en / fr
  */
-export function docsUrl(lang, snapshot) {
-    const file =
-        lang === "zh" ? "docs/USER_GUIDE.zh-CN.md" : "docs/USER_GUIDE.md";
-    const v = snapshot && snapshot.version && snapshot.version.plugin;
-    const ref =
-        typeof v === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)
-            ? "v" + v
-            : DOCS_FALLBACK_REF;
-    return DOCS_BLOB_BASE + ref + "/" + file;
+export function docsUrl(lang) {
+    return lang === "zh" ? DOCS_URL_ZH : DOCS_URL_EN;
 }
 
 /**

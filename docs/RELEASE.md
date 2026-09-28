@@ -64,7 +64,14 @@ semver 语义(音频插件特化):
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号(该步当前解析错行,见上方现状表第 2 条)。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
-9. **发布后**:**若官网下载页已上线**(是否上线待定,见下「分发渠道」),把**同一份** zip 与 `.sha256` 上传过去,逐字核对官网哈希与 Release 正文里的 SHA-256 一致,并同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
+9. **发布后**:**正式版先把 `prod` 前移到本次 tag**:`git push origin vX.Y.Z^{commit}:refs/heads/prod`(不加 `--force`;推不上说明 `prod` 不是这次 tag 的祖先,先查清再动)。插件里的文档链接都指向 `prod`(见下「文档链接」),`prod` 不前移,用户在插件里点开的就还是上一个正式版的手册。预发布(`-rc.N`)是否也前移 `prod` 由维护者决定;不前移时,rc 构建里的文档链接打开的是上一个正式版的手册,而**首个正式版之前 `prod` 上还没有这些文件,是 404**。然后:**若官网下载页已上线**(是否上线待定,见下「分发渠道」),把**同一份** zip 与 `.sha256` 上传过去,逐字核对官网哈希与 Release 正文里的 SHA-256 一致,并同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
+
+## 文档链接:插件里指向 `prod`,发布说明指向 tag
+
+- **插件里的文档链接一律指向 `prod` 分支上的固定路径**(用户裁定 J149:`prod` 是稳定正式版分支,`dev` 是研发分支)。设置页「说明文档」按钮打开 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md`(中文界面)或 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md`(英文、法文界面);九条使用规则里 DAW 兼容表的地址是 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。这些地址**不随插件版本号变,也不 pin 到 tag** —— 此前「按插件版本号 pin 到同号 tag」的做法(SL-220 / #298)已由 J149 取代,不要改回去。代价照实写:旧版插件打开的是最新正式版的手册,不是它自己那一版的。
+- 地址写在 `web/output/tab-settings.js` 的 `docsUrl()` 与红字真源 `docs/USER_GUIDE.zh-CN.md#硬约束` 里(后者经 `scripts/gen-hard-rules.mjs` 生成到插件词条);`web-preview/tests/smoke-tab4-settings.mjs` 扫 `web/` 下的仓库 `blob/` 链接,指向 `prod` 以外的分支或 tag 即红。
+- **插件一旦发出去,里面的地址就改不了了。** 所以 `docs/USER_GUIDE.md`、`docs/USER_GUIDE.zh-CN.md`、`docs/DAW_COMPATIBILITY.md` 在 `prod` 上不要改名、不要挪位置 —— 改了,已经发出去的每一版插件里的这几个链接都会一起失效。
+- **发布说明(GitHub Release 正文)里的链接仍固定在本次的 tag 上**(见下方模板与模板后的说明):那是这一版自己的记录,不跟着 `prod` 走。
 
 ## zip 内必须携带的合规文件组
 
@@ -98,7 +105,7 @@ SCVB-vX.Y.Z-win64.zip
   <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
-- 本说明里的文档链接都固定在 `v{X.Y.Z}` 这个 tag 上;插件设置页「说明文档」按钮打开的也是与插件版本同号 tag 下的手册。
+- 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「说明文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是最新正式版的手册。
 
 ## 本次更新
 ### ⚠️ 契约变更
