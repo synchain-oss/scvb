@@ -2,10 +2,14 @@
 // =============================================================================
 // SCVB Output web 侧状态同步 —— **页面级**冒烟(无头 Chrome + CDP;批 2-C)
 // -----------------------------------------------------------------------------
-// 七张卡的行为面,全部只在真 DOM / 真键 / 真指针上分辨得出来:
+// 下列各卡的行为面,全部只在真 DOM / 真键 / 真指针上分辨得出来:
 //   ② [SL-469] Tab2 音量卡箍方向键的 300ms 防抖:Ctrl+Z / 切版本之前**冲刷**(那一发先于
 //      undo / setVersionActive 到桥面,且之后不再补发);按住拖动中 Ctrl+Z ⇒ 中止、松手零提交。
 //      (曲线编辑器那一半 [SL-460] 在 smoke-undo-scope-page.mjs 的 ④b / ⑥ 里,与 SL-450 同套。)
+//   ②b [SL-537][J117] Tab2 音量卡箍**不接滚轮**:CDP 真滚轮打在卡箍上 ⇒ 不发 setTrackManual、
+//      读数不变、事件没被 preventDefault,且向下那一格真的把表体滚动了。
+//      删除式三格(注入未提交,见 PR 描述):补回「卡箍滚轮调音量 + preventDefault」⇒ (w5)(w5b)(w6)(w7) 红;
+//      只调音量不拦截 ⇒ (w6)(w7) 红;只拦截不调音量 ⇒ (w5)(w5b) 红。
 //   ③ [SL-492] 段检查器乐观回声:同轨事件落在「移动 ↔ 松手」之间不清在拖那一维
 //      (松手照常提交);提交在途时别的轨来事件不动回声;拖动中 Ctrl+Z ⇒ 中止。
 //   ④ [SL-496] 七滑杆键盘档「视为松手」按杆计时(A 杆 250ms 内去按 B 杆,两根脏位都清);
@@ -753,6 +757,125 @@ try {
         );
     }
     assertClean("② Tab2 防抖冲刷");
+
+    // =========================================================================
+    // [SL-537][J117] 用户裁定:轨道页音量卡箍**不接滚轮**(滚轮要上下滚页面,接了容易误触音量)。
+    // 放在 ② 之后、⑥ 之前:此时轨 1 已点掉过手动首写确认(同轨后续操作直接落),且还不是只读态 ——
+    // 在只读态或确认条挡着时「零提交」会恒成立,这一格就成了空转。
+    log("=== ②b [SL-537] Tab2 音量卡箍上滚滚轮:音量不变、不拦截页面滚动 ===");
+    newBucket("Tab2 卡箍滚轮");
+    {
+        check(await clickGb("tabnav-tracks"), "(w0)切到 Tab2");
+        await sleep(300);
+        const COLLAR = '[data-gb="tracks-row-1-vol-collar"]';
+        const cw = await centerOf(COLLAR);
+        check(
+            cw && cw.w > 2 && cw.h > 2,
+            `(w1)卡箍有真实尺寸(实得 ${JSON.stringify(cw)})`,
+        );
+        // 落点必须是卡箍本身:打在管体或别的格子上,下面「音量不变」恒成立。
+        eq(
+            await evaluate(
+                IN(`const fr = f.getBoundingClientRect();
+                    const el = d.elementFromPoint(${cw.x} - fr.left, ${cw.y} - fr.top);
+                    return !!el && el === q(${JSON.stringify(COLLAR)});`),
+            ),
+            true,
+            "(w2)滚轮落点**就是卡箍本身**",
+        );
+        // 探针挂在 iframe 的 window 上(冒泡末端):读的是所有监听器跑完之后的
+        // defaultPrevented,且只记目标在卡箍上的那几次。
+        check(
+            await evaluate(
+                IN(`w.__wheelProbe = [];
+                    const col = q(${JSON.stringify(COLLAR)});
+                    w.addEventListener("wheel", (e) => {
+                        if (col.contains(e.target)) {
+                            w.__wheelProbe.push({ prevented: e.defaultPrevented });
+                        }
+                    });
+                    return true;`),
+            ),
+            "(w3)滚轮探针已挂",
+        );
+        const volBefore = await evaluate(
+            IN(
+                `return q(${JSON.stringify(COLLAR)}).getAttribute("aria-valuenow");`,
+            ),
+        );
+        // 卡箍所在的滚动区(轨道表体):「页面照常滚动」要看它的 scrollTop 真的动了。
+        const SCROLLER = `const col = q(${JSON.stringify(COLLAR)});
+            let sc = col && col.parentElement;
+            while (sc && !(sc.scrollHeight > sc.clientHeight + 1 &&
+                   /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;`;
+        const scrollTop = () =>
+            evaluate(IN(`${SCROLLER} return sc ? sc.scrollTop : null;`));
+        check(
+            await evaluate(
+                IN(
+                    `${SCROLLER} if (!sc) return false; sc.scrollTop = 0; return true;`,
+                ),
+            ),
+            "(w3b)卡箍在一个可滚动的区域里(已回到顶端)",
+        );
+        await sleep(200);
+        const wheelAt = (dy) =>
+            cdp.send("Input.dispatchMouseEvent", {
+                type: "mouseWheel",
+                x: cw.x,
+                y: cw.y,
+                deltaX: 0,
+                deltaY: dy,
+                pointerType: "mouse",
+            });
+        const i0 = await logLen();
+        await mouse("mouseMoved", cw.x, cw.y);
+        // 先向上滚三格:已在顶端、区域不动,卡箍始终在指针下 —— 三格都落在卡箍上。
+        for (let k = 0; k < 3; k++) {
+            await wheelAt(-120);
+            await sleep(40);
+        }
+        // 再向下滚一格:这一格应当把表体往下滚(卡箍随之移走,所以只滚一格)。
+        const top0 = await scrollTop();
+        await wheelAt(120);
+        await sleep(600); // 走完 300ms 防抖窗:接了防抖提交的话这里一定已经发出
+        const top1 = await scrollTop();
+        const probe = await evaluate(IN(`return w.__wheelProbe;`));
+        check(
+            Array.isArray(probe) && probe.length === 4,
+            `(w4)四格滚轮都打到了卡箍上(实得 ${JSON.stringify(probe)})`,
+        );
+        eq(
+            (probe || []).filter((p) => p.prevented).length,
+            0,
+            "(w5)**卡箍上的滚轮没有被 preventDefault**",
+        );
+        check(
+            typeof top0 === "number" && typeof top1 === "number" && top1 > top0,
+            `(w5b)**向下那一格真的把表体滚动了**(scrollTop ${top0} -> ${top1})`,
+        );
+        eq(
+            count(await logSince(i0), "setTrackManual"),
+            0,
+            "(w6)**卡箍上滚滚轮不发 setTrackManual**(音量不经滚轮改动)",
+        );
+        eq(
+            await evaluate(
+                IN(
+                    `return q(${JSON.stringify(COLLAR)}).getAttribute("aria-valuenow");`,
+                ),
+            ),
+            volBefore,
+            "(w7)**卡箍读数不变**(本地回声也没动)",
+        );
+        log(
+            `  (表体 scrollTop ${top0} -> ${top1};卡箍上共收到 ${(probe || []).length} 格滚轮)`,
+        );
+        await evaluate(
+            IN(`${SCROLLER} if (sc) sc.scrollTop = 0; return true;`),
+        );
+    }
+    assertClean("②b Tab2 卡箍滚轮");
 
     // =========================================================================
     log(
