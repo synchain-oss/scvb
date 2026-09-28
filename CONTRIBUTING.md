@@ -1,9 +1,9 @@
 # Contributing to SCVB
 
-感谢你的关注。SCVB(Synchain Vocal Balancer)是一对协同工作的 VST3 插件:**SCVB Input** 装在每条人声轨、**SCVB Output** 装在人声总线,两者经共享内存完成多轨人声的自动声像与电平平衡。
+感谢你的关注。SCVB(Synchain Vocal Balancer)是三个协同工作的 VST3 插件:**SCVB Input** 装在每条人声轨、**SCVB Output** 装在人声总线,两者经共享内存完成多轨人声的自动声像与电平平衡;可选的 **SCVB Monitor** 是只读的旁观窗口,只读共享数据、不改变前两者的行为。
 issue 与 PR 都欢迎。开工之前请把本文读完 —— 尤其是 **§8 冻结契约**,那一节列的改动无论质量多高都会被直接关闭。
 
-新贡献者从零搭环境到构建出两个 `.vst3`,请走 [docs/CONTRIBUTOR_ONBOARDING.md](./docs/CONTRIBUTOR_ONBOARDING.md)。
+新贡献者从零搭环境到构建出三个 `.vst3`,请走 [docs/CONTRIBUTOR_ONBOARDING.md](./docs/CONTRIBUTOR_ONBOARDING.md)。
 
 ## 0. 语言政策
 
@@ -115,4 +115,4 @@ npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md do
 
 ## 9. 发布流程(仅维护者)
 
-版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 两个插件打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。
+版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 三个插件打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。

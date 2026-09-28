@@ -80,6 +80,10 @@ Before you start, read these. Breaking any one of them does not make the result 
 > 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
 
+## Privacy
+
+SCVB does not use the network: no update check, no usage statistics, no account. The only web pages it opens are the documentation and WebView2 download links, in your default browser, when you click them. It stores a few cross-project preferences under `%APPDATA%\Synchain\SCVB` and the interface's browser cache under `%LOCALAPPDATA%\Synchain\SCVB`; everything else is saved in your project, apart from files you export yourself. The full list is in the [User Guide, "Privacy and files on disk"](docs/USER_GUIDE.md).
+
 ## Build from source
 
 ```powershell
@@ -107,7 +111,7 @@ The nine hard rules have a **single source of truth**: the `## 硬约束` sectio
 
 ## License
 
-[GPL-3.0-or-later](LICENSE), with the JUCE and VST3 SDK dependencies declared in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[GPL-3.0-or-later](LICENSE). Third-party components built into the plugins (JUCE, the VST3 SDK, the libraries JUCE compiles in, the WebView2 loader, fonts) and their licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); full licence texts are in `LICENSES/`.
 
 ## Related projects
 
