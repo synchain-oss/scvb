@@ -147,7 +147,11 @@ struct OutputRuntimeState
     //   · confirmPrintGuard(桥面 §1.34 唯一确认入口):置 false;
     //   · applyOutputEnabled(false):输出一关,「随工程恢复的 ON」这个条件就不在了,守卫随之解除
     //     (契约未写这一格;不解除的话横幅会在开关 OFF 时仍说「输出开关处于写入自动化状态」)。
-    // 唯一读方是 timerCallback 的三态求值:为真时即便「播放中 ∧ 在区间内」也只给 ARMED。
+    // 行为读方 = timerCallback 的三态求值(为真时即便「播放中 ∧ 在区间内」也只给 ARMED);
+    // 展示读方 = 桥面 emit(scvb.state.print_guard,经 printGuardPending())。
+    // 同一实例上宿主再次 setStateInformation(带插件状态的宿主撤销、A/B 对比、载入预设)也会
+    // 重新置位 —— 有意如此:processor 分不出「重开工程」与「宿主重灌状态」,宁可多要一次确认
+    // 也不在状态被换掉之后照旧打印。代价是这类操作后横幅⑦会再出现一次(USER_GUIDE 已写)。
     // atomic:setStateInformation 可在宿主线程上跑,桥面 emit 在消息线程 25Hz 读(同 guideSeen 的理由)。
     std::atomic<bool> printGuardPending{false};
     bool recaptureArmed = false;
