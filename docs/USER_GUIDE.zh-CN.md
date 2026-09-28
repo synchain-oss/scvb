@@ -26,14 +26,14 @@ SCVB(Synchain Vocal Balancer)是**一对**配套的 VST3 插件,用来给多人�
 > ⚠️ **必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。**
 >
 > 1. **人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。** 不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)
-> 2. **SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。** 位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 `docs/DAW_COMPATIBILITY.md`。(ADR-002 / J45)
+> 2. **SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。** 位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。(ADR-002 / J45)
 > 3. **只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。** 这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。**检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通**,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条没有声音的轨道。(ADR-002 / J12 + J32)
 > 4. **人声轨与总线的宿主 pan 必须保持居中。** SCVB 内部用 equal-power pan,与宿主 pan law 无关;宿主 pan 不居中会叠加出错误声像。(ADR-010)
 > 5. **每个 channel id 在同一个组内唯一,而同一条人声轨只能属于一个组。** 同组内两个 Input 抢同一个 channel 时,后来者会看到"channel 冲突"警告并且不会生效;不同组的同号 channel 是两条互不相干的通路。(ADR-002 / J66)
 > 6. **同一个组同一时间只能有一个生效的 Output 实例。** 同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)
 > 7. **所有轨默认参与自动声像;立体声轨如需保留原有声像宽度与位置,请在轨道页关闭该轨的「参与自动声像」。** mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),关闭参与后保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J83)
 > 8. **SCVB Output 不向 DAW 报告额外延迟。** 对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)
-> 9. **看到"时间线缺口 / 重叠"警告时,不要继续导出。** 先按 `docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
+> 9. **看到"时间线缺口 / 重叠"警告时,不要继续导出。** 先按 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
 
 ## 安装
 
@@ -178,7 +178,7 @@ Input 是单页:channel 选择、组选择、连接状态、电平、直通/静�
 - 引擎只打印 **30 条**(15 轨 × pan/vol)。width / MS Balance / Lead Select 你可以自己自动化,引擎不打印它们,也不会去改写它们 —— **这三条始终以你 DAW 里的值为准**。
 - 输出开关 **ON** 时,那 30 条的 DSP 直接用引擎值(参数只是对外的打印头);**OFF** 时 DSP 用宿主参数值。
 - 切版本、复制版本、改段值、关输出开关,**都不会**产生宿主自动化事件。
-- 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续写入自动化"之前,插件只备而不发,**一个 gesture 都不会写出去**。
+- 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续写入自动化"之前,插件只备而不发,**一个 gesture 都不会写出去**。把输出开关关掉也会解除这道守卫:之后再手动打开,就和平常手动打开一样,播放一进已分析区间就开始写。宿主重新载入一份输出开关为开的插件状态时(例如带插件状态的 DAW 撤销、A/B 对比、载入预设),也算重开了一次工程:横幅会再出现,需要再确认。
 - 逐 DAW 的坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等)见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md)。
 
 ## Pan 曲线编辑器
@@ -224,7 +224,7 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 | **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某条人声轨没声音** | 该轨 Input 连上了健康 Output,但 Output 侧没拿到它的数据(channel 没选 / 组选错 / channel 冲突) | 检查该 Input 的 channel 与组;看 Output 轨道页该轨是否在线 |
 | **装了 Input 就整轨没声音** | 不应该发生 | 检测不到健康 Output 时 Input 自动直通(硬约束 3)。若该轨确实没有声音,收集设置页"复制诊断信息"的输出并提 issue |
-| **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel | 改其中一个的 channel id,或把它换到别的组 |
+| **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel(打开工程时通道已被占用也会提示) | 改其中一个的 channel id,或把它换到别的组。占用的那个释放通道(删轨或改号)后,等着的那个约一秒内会自己接上 |
 | **"组 X 已有主 Output,本实例只读观察"** | 同组已经有一个生效的 Output | 一个组只能有一个生效 Output(硬约束 6)。删掉多余的那个,或把它换到别的组 |
 | **"时间线缺口 / 重叠"警告计数上涨** | 人声轨路由被改过 / 有轨没被接管 | **先别导出**(硬约束 9)。按 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) 的通用坑清单排查路由 |
 | **声像整体偏了** | 人声轨或总线的宿主 pan 没居中 | 把宿主 pan 全部回中(硬约束 4) |

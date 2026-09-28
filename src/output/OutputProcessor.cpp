@@ -1051,7 +1051,11 @@ void ScvbOutputAudioProcessor::timerCallback()
         scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
         if (outputEnabled_)
         {
-            mode = (playing && inRange) ? scvb::engine::AuthorityMode::Print : scvb::engine::AuthorityMode::Armed;
+            // 加载守卫未确认 ⇒ 行为止于 ARMED(契约 §1.3 / §1.34):零 gesture、零写入;DSP 仍由
+            // 引擎驱动(authority_.processBlock 读的是 session_.outputEnabled(),不看守卫),试听不受影响。
+            const bool guardPending = runtime_.printGuardPending.load(std::memory_order_acquire);
+            mode = (playing && inRange && !guardPending) ? scvb::engine::AuthorityMode::Print
+                                                         : scvb::engine::AuthorityMode::Armed;
         }
         printer_.setMode(mode);
     }
@@ -2185,6 +2189,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 要采集就再点一次 §1.2 setCaptureEnabled。
     captureEnabled_ = false;
     outputEnabled_ = s.outputEnabled != 0;
+    // [加载守卫] 04 §5.3:恢复出 output_enabled=ON ⇒ 待确认,确认前打印器止于 ARMED(见 timerCallback
+    // 三态求值)。恢复 OFF ⇒ 清掉(上一个工程残留的待确认不该带进这个工程)。
+    // 此前这一位**没有任何写 true 的地方**:横幅⑦与确认钮都在,引擎却照常进 PRINT,
+    // 重开工程一按播放就把 DAW 车道(常留在 Latch)上已录的自动化覆盖掉。
+    runtime_.printGuardPending.store(outputEnabled_, std::memory_order_release);
     versionActive_ = static_cast<int>(s.versionActive);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
@@ -2580,6 +2589,12 @@ void ScvbOutputAudioProcessor::applyOutputEnabled(bool on)
     // 调用方须已持 lifecycleMutex_。与 applyCaptureEnabled 对称的**内部**写点:不触发 J92a 互斥。
     outputEnabled_ = on;
     session_.setOutputEnabled(on);
+    // [加载守卫] 输出一关即解除(见 OutputRuntimeState::printGuardPending 的头注)。桥面 OFF 与
+    // [J92a] 手动开采集连带关输出都走这里。只清不置:再打开时走的是 UI 的 OFF→ON 一次性确认。
+    if (!on)
+    {
+        runtime_.printGuardPending.store(false, std::memory_order_release);
+    }
 }
 
 void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
@@ -2667,6 +2682,13 @@ void ScvbOutputAudioProcessor::disarmRecaptureLocked()
     }
     runtime_.recaptureAutoEnabledCapture = false;
     applyFeatureGates(); // 门控当拍回落到 global.range
+}
+
+void ScvbOutputAudioProcessor::confirmPrintGuard()
+{
+    // 契约 §1.34:幂等;只动这一位,不碰输出开关、不开 gesture。下一拍 25Hz tick 若满足
+    // PRINT 三与条件即恢复正常打印。
+    runtime_.printGuardPending.store(false, std::memory_order_release);
 }
 
 void ScvbOutputAudioProcessor::setOutputEnabled(bool on)
@@ -3048,8 +3070,9 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     // ① 该维度**已冻结**(freeze 对应位=1)= 冻结中调整。静态值只存**参数面 + 冻结位**,
     //    曲线真身一个字节都不动。引擎权威下 DspArbiter 对冻结维度读的就是 rawPan/rawVol
     //    (DspArbiter.cpp §2.3),所以只写参数面照样出声 —— 那正是「写入自动化前的 preview」。
-    // ② 该维度**未冻结** = 用户主动「设为手动」接管。照旧写常值段(04 §1.5 方案 A)+ 参数面,
-    //    UI 随后把 freeze 位置 1(tab-tracks.js「拖动 = 接管手动」)。这条通道不受本次改动影响。
+    // ② 该维度**未冻结** = 用户主动「设为手动」接管。把该轨**每一段的这一维**改写为常值、另一维
+    //    原样保留([J131] / SL-180;此前是压成单段常值)+ 参数面,UI 随后把 freeze 位置 1
+    //    (tab-tracks.js「拖动 = 接管手动」)。
     //
     // 为什么冻结通道必须停手:整表烘焙成「单段全时限常值」之后,解冻回曲线读到的仍是那条常值段,
     // 而再分析按 ADR-008 不覆盖 origin=user 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到
@@ -3075,14 +3098,14 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             if (scvb::state::segmentLocked(s.flags))
                 ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
 
-        // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
-        // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
-        const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
-        applied = isPan ? seg.pan : seg.volDb;
+        // [J131] / SL-180:只改被拖的那一维,另一维**逐段**保留原曲线(段边界不动)。此前压成
+        // 单段常值、另一维从首段继承,拖一下音量卡箍就把整条 pan 曲线压平。构造与钳制口径见
+        // makeManualDimSegments 头注(单测 SERVICE-5..8 直接断言该纯函数,接线格 HOST SL-180)。
+        std::vector<scvb::state::Segment> next = scvb::output::makeManualDimSegments(track.segments, isPan, value);
 
         scvb::output::commitCrvsTransaction(
             authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
-            [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+            [&] { track.segments = std::move(next); }, [this] { rebuildAllCurves(); });
     }
 
     // 手动值还必须落到**参数面**,否则冻结维度上它根本驱动不了声音。

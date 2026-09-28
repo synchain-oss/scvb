@@ -5,6 +5,8 @@
 // ⚠ 第一版写成 `from "./tab-wave.js"`:tab-wave 是**工厂函数**,内部函数 export 不出去,
 // 那是一个 `SyntaxError`(整页起不来)。别再那样指。
 import { analyzeRefusalNote } from "../shared/analyze-note.js";
+// [rc-misc e] 组号字母表的唯一真源(页头 badge 同用),诊断文本首行要报组号。
+import { GROUP_IDS } from "./tab-master.js";
 // =============================================================================
 // SCVB Output · Tab4「设置」—— 状态机与桥接线(T35 交付物)。
 // -----------------------------------------------------------------------------
@@ -101,36 +103,29 @@ export function versionString(snapshot) {
     return "v" + v.plugin + " · abi " + v.abi;
 }
 
-/** 仓库 blob 前缀;后面拼 `<ref>/<手册路径>`。 */
-export const DOCS_BLOB_BASE = "https://github.com/synchain-oss/scvb/blob/";
-/** 版本串拼不出 tag 时回退的分支(仓库默认分支)。 */
-export const DOCS_FALLBACK_REF = "dev";
+/** 中文手册在 `prod` 分支上的固定地址([J149])。 */
+export const DOCS_URL_ZH =
+    "https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md";
+/** 英文手册在 `prod` 分支上的固定地址([J149])。 */
+export const DOCS_URL_EN =
+    "https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md";
 
 /**
- * 设置页「说明文档」的地址([SL-214] 接线,[SL-220] 改为按版本 pin)。
+ * 设置页「说明文档」的地址([SL-214] 接线;[J149] 固定指向 `prod` 分支)。
  *
- * 中文界面给中文手册,其余(en / fr)给英文手册。
- * **pin 到与插件同号的 tag**:`blob/v<version.plugin>/docs/…` —— 用户读到的手册与手上
- * 的插件同版,不会读到 dev 上已经改过的说明;与 docs/RELEASE.md 发布说明模板里的链接同一口径。
- * 版本号来自契约 §1.1 快照 `version.plugin`(真源 = CMakeLists.txt 的 `project(VERSION)`),
- * 这里不写死任何版本。
- * 回退到 `DOCS_FALLBACK_REF` 的两种情形:快照还没到;版本串不是 `X.Y.Z`(可带 `-后缀`)形态。
- * ⚠ 已知边界:插件的版本号只有 `X.Y.Z`(CMake 的 project(VERSION) 不带预发布后缀),所以
- * 以 `vX.Y.Z-rc.N` 这类预发布 tag 发出的构建会链到 `vX.Y.Z`,这个 tag 打出来之前是 404;
- * 没打过 tag 的开发构建同理。
+ * 中文界面给中文手册,其余(en / fr)给英文手册(没有法文手册)。
+ * **固定指向 `prod` 分支上的固定路径,不随插件版本号变**:用户裁定 [J149]
+ * (「prod 是稳定正式版的 branch,dev 是研发 branch」)。它取代了 [SL-220] / #298 的
+ * 「按插件版本号 pin 到同号 tag」,所以这里**不读快照、不拼版本号**。
+ * prod 只在发正式版时前移(见 docs/RELEASE.md),所以用户读到的是**最新正式版**的手册;
+ * 旧版插件点开的也是它,不是自己那一版的手册 —— 这是 J149 的取舍。
+ * ⚠ prod 前移到首个正式版之前,prod 上还没有这两份手册,这两个地址是 404。
+ * 九条红字里 DAW 兼容表的地址同一口径,写在红字真源 docs/USER_GUIDE.zh-CN.md#硬约束 里。
  *
- * @param {string} lang       界面语言 zh / en / fr
- * @param {object} snapshot   §1.1 快照(可为 null)
+ * @param {string} lang 界面语言 zh / en / fr
  */
-export function docsUrl(lang, snapshot) {
-    const file =
-        lang === "zh" ? "docs/USER_GUIDE.zh-CN.md" : "docs/USER_GUIDE.md";
-    const v = snapshot && snapshot.version && snapshot.version.plugin;
-    const ref =
-        typeof v === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)
-            ? "v" + v
-            : DOCS_FALLBACK_REF;
-    return DOCS_BLOB_BASE + ref + "/" + file;
+export function docsUrl(lang) {
+    return lang === "zh" ? DOCS_URL_ZH : DOCS_URL_EN;
 }
 
 /**
@@ -255,13 +250,42 @@ export function diagRowsOf(store) {
     }));
 }
 
-/** 诊断区可复制文本(「复制诊断信息」按钮的目标内容;extraLines = 未知 code 降级行)。 */
-export function diagText(rows, extraLines) {
+/**
+ * 诊断文本的首行:插件版本 · abi · 组号(契约 §1.1 snapshot.version 与 §2.1 group_id)。
+ * [rc-misc e] 此前复制出去的诊断信息只有五列表格,用户贴过来分不出是哪个版本、哪个组,
+ * 排查时还得再追问一轮。拿不到版本(首帧前)时只报组号;组号缺省(state 还没到)按 1,
+ * 与页头 badge 同口径。组号**不在 1..8** 时原样写出「group ?<值>」而不是兜成 A —— 诊断信息
+ * 不该把异常值藏掉(#315 第 1 轮复审【建议】5)。
+ * 版本段与设置页的「v… · abi …」逐字同源(versionString)。
+ * @param {object} store app.js 事件仓({snapshot, state})
+ */
+export function diagInfoLine(store) {
+    const st = store || {};
+    const ver = versionString(st.snapshot);
+    const raw = (st.state || {}).group_id;
+    const gid = raw === undefined || raw === null ? 1 : raw;
+    const letter = Number.isInteger(gid) ? GROUP_IDS[gid - 1] : undefined;
+    const group = "group " + (letter || "?" + String(gid));
+    return ["SCVB Output", ver, group].filter(Boolean).join(" · ");
+}
+
+/**
+ * 诊断区可复制文本(「复制诊断信息」按钮的目标内容)。
+ * @param {object[]} rows diagRowsOf 的行模型
+ * @param {string[]} [extraLines] 未知 code 降级行(排在表格之后)
+ * @param {string[]} [headLines] 表格之前的行([rc-misc e]:版本 / abi / 组号,见 diagInfoLine)
+ */
+export function diagText(rows, extraLines, headLines) {
     const head = ["CH", "HB", "MIS", "GEN", "SEQ"];
     const body = (rows || []).map((r) =>
         [r.ch, r.hb, r.mis, r.gen, r.seq].join(" "),
     );
-    return [head.join(" "), ...body, ...(extraLines || [])].join("\n");
+    return [
+        ...(headLines || []),
+        head.join(" "),
+        ...body,
+        ...(extraLines || []),
+    ].join("\n");
 }
 
 // =============================================================================
@@ -623,7 +647,7 @@ export function createTabSettings(opts) {
         const unknown = ((getStore() && getStore().unknownCodes) || []).map(
             (c) => "unknown: " + c,
         );
-        const payload = diagText(rows, unknown);
+        const payload = diagText(rows, unknown, [diagInfoLine(getStore())]);
         let ok = false;
         try {
             if (

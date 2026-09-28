@@ -100,7 +100,10 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
             {
                 // 会话确实还活着(只是回到了旧 channel):心跳/采集布防等内部逻辑都该按
                 // "活跃"走;但这次用户请求的那个新 channel 本身没有拿到,报给调用方的
-                // 仍然是 failure,UI 的冲突提示(抖动 + 红 toast)不受回滚影响。
+                // 仍然是 failure。⚠ **只对点击路径**:那里 UI 的冲突提示(抖动 + 红 toast)
+                // 靠 setChannelId 的 RPC 返回值,不受回滚影响。载入工程那条路没有 RPC 返回值,
+                // 而 state_ 此刻是 kActive、scvb.error 的边沿检测看不到 —— 那条路的提示由
+                // InputProcessor 按返回值另记一次性信号补上([SL-462],见 noteLoadConflict())。
                 state_ = InputClaimState::kActive;
                 return failure;
             }

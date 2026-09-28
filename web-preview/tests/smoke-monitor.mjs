@@ -3540,6 +3540,33 @@ log(
     );
 }
 // =============================================================================
+// [rc-misc c] Monitor 的 setLang / commitUiScale 写系统级全局默认(与 Output/Input 同口径)。
+// MonitorEditor.cpp 编不进任何测试目标(要真 WebView2),读默认那一半由 scvb_monitor_tests 的
+// 「新实例读语言/缩放的系统级全局默认」用例钉;这里钉写的那一半(行形态锚,注释掉即不匹配)。
+// =============================================================================
+{
+    const me = src("src/monitor/MonitorEditor.cpp");
+    const bodyOf = (name) => {
+        const start = me.indexOf(`void MonitorEditor::${name}(`);
+        if (start < 0) return "";
+        const rest = me.slice(start);
+        const end = rest.indexOf("\nvoid MonitorEditor::", 1);
+        return end < 0 ? rest : rest.slice(0, end);
+    };
+    const lang = bodyOf("handleSetLang");
+    check(
+        /^[ \t]*scvb::uidefaults::setLangGlobal\(lang\(\)\);/m.test(lang) &&
+            /^[ \t]*scvb::uidefaults::setLangChosenGlobal\(true\);/m.test(lang),
+        "[rc-misc c] MonitorEditor::handleSetLang 写语言全局默认(与 Output/Input 同一份)",
+    );
+    check(
+        /^[ \t]*scvb::uidefaults::setUiScalePercentMonitor\(percent\);/m.test(
+            bodyOf("persistUiScaleAsDefault"),
+        ),
+        "[rc-misc c] MonitorEditor::persistUiScaleAsDefault 写 Monitor 缩放全局默认(按角色分键)",
+    );
+}
+// =============================================================================
 if (fail > 0) {
     console.error(`\n=== 失败 ${fail} 条 ===`);
     process.exit(1);

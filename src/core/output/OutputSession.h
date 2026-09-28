@@ -50,6 +50,9 @@ struct ChannelConnInfo
     u32 heartbeatAgeMs = kHeartbeatAgeUnknown; // 哨兵 = 无数据
     bool capturing = false; // InputSlot.flags bit0(kFlagCapturing)
     bool srMismatch = false; // 该轨 Input 采样率 ≠ 本 Output 采样率(ipc §5,该轨禁用)
+    // 该轨 Input 报的采样率(InputSlot.sample_rate;0 = 未知/槽空闲)。只为 `scvb.error{srMismatch}`
+    // 的 `detail.inputSr`(契约 §5.1)而带出来,`scvb.conn` 载荷不发它(§2.3 字段集不变)。
+    u32 inputSampleRate = 0;
     // CH_SUSPENDED:写方停在那儿(宿主在无信号段挂起 Input / 用户 bypass / 轨未激活)。
     // 与 misalign **是两件事**,必须分开呈现 —— 见 misalignCountRecent 的头注。
     bool suspended = false;

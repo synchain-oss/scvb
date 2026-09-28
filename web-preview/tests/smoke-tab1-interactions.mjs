@@ -1456,6 +1456,55 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         null,
         "(a8) 纯 auto 段表 ⇒ manual 为 null",
     );
+    // [J131] / SL-180:拖过音量卡箍的轨 = 多段 user_edited、vol 全等、pan 仍是曲线 ⇒ **逐维**判定:
+    // vol 读手动常值(不看输出档),pan 按播放头读曲线段(两维共用一个判定时 pan 会读成首段)。
+    const volManual = {
+        ch: 1,
+        segments: [
+            { t0S: 0, t1S: 10, pan: -70, volDb: -9, origin: "user_edited" },
+            { t0S: 10, t1S: 20, pan: 40, volDb: -9, origin: "user_edited" },
+        ],
+    };
+    eq(
+        [
+            RB.readbackSegsOf(volManual, NONE, true, 15).pan.pan,
+            RB.readbackSegsOf(volManual, NONE, true, 15).vol.volDb,
+        ],
+        [40, -9],
+        "(a9) vol 手动、pan 曲线 ⇒ pan 取播放头所在段(不是首段)",
+    );
+    eq(
+        [
+            RB.readbackSegsOf(volManual, NONE, false, 15).pan,
+            RB.readbackSegsOf(volManual, NONE, false, 15).vol.volDb,
+        ],
+        [null, -9],
+        "(a9) 输出 OFF:pan 回落参数面、vol 手动常值不看输出档",
+    );
+    check(
+        RB.readbackSegsOf(volManual, NONE, true, 15).manual !== null,
+        "(a9) 任一维手动 ⇒ 行上的「手动接管」标仍亮",
+    );
+    // ⚠ **已知近似 —— (a10) 钉的是现行行为,不是期望行为**(#302 复审【重要】,登记于变更文档
+    // `20260928-j131-sl180-manual-one-dim.md`「已知连带」)。拖过音量卡箍、pan 各段**碰巧全等**的轨:
+    // 判据只能从「值全等」推断,pan 也被判成手动常值,输出 OFF 时 pan 读回停在段值、不回落参数面。
+    // 将来改成显式标记、或让手动维也受输出档约束时,这两格**应当翻过来**,连同变更文档那条一起改。
+    // native 同款格:`tests/core/test_viz_plane.cpp` `DistReadback` 用例「已知近似」块。
+    const panFlat = {
+        ch: 1,
+        segments: [
+            { t0S: 0, t1S: 10, pan: 0, volDb: -9, origin: "user_edited" },
+            { t0S: 10, t1S: 20, pan: 0, volDb: -9, origin: "user_edited" },
+        ],
+    };
+    check(
+        RB.manualDimOf(panFlat, "pan") === panFlat.segments[0],
+        "(a10) ⚠ 已知近似(钉现行行为):pan 各段碰巧全等 ⇒ pan 也被判成手动常值",
+    );
+    check(
+        RB.readbackSegsOf(panFlat, NONE, false, 15).pan === panFlat.segments[0],
+        "(a10) ⚠ 已知近似(钉现行行为):输出 OFF 时 pan 读回停在段值(期望行为应是 null = 回落参数面)",
+    );
 
     // ---- (b) mock/native 对拍:复制版本 → 切过去,参数面必须是**出厂默认**
     const sl241 = await openSession("fixture=fifteen-tracks");
@@ -2371,6 +2420,74 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             `(c5) tooltip 词条仍在:${lang}`,
         );
     }
+}
+
+// =============================================================================
+log(
+    "=== [rc-misc h] Header 连接 pill:「· 采集中」后缀 + 点击跳 Tab2(05 §2.0 第 1 行)===",
+);
+{
+    const on = { global: { capture_enabled: true } };
+    const off = { global: { capture_enabled: false } };
+    const playIn = { isPlaying: true, inRange: true };
+    const playOut = { isPlaying: true, inRange: false };
+    const stopped = { isPlaying: false, inRange: true };
+    const m = (n, st, ph) => TM.connPillModel(n, st, ph);
+
+    eq(
+        m(3, off, playIn),
+        {
+            tone: "green",
+            pulse: true,
+            key: "state.connected",
+            capturing: false,
+        },
+        "有连接、采集关 ⇒ 绿、无后缀(与此前逐字同款)",
+    );
+    eq(
+        m(0, off, null),
+        {
+            tone: "gray",
+            pulse: false,
+            key: "state.notConnected",
+            capturing: false,
+        },
+        "零连接 ⇒ 灰「未连接」",
+    );
+    check(
+        m(3, on, playIn).capturing,
+        "采集开 + 播放 + 在 range 内 ⇒ 挂「· 采集中」",
+    );
+    check(!m(3, on, stopped).capturing, "采集开但停着(已布防)⇒ 不挂");
+    check(
+        !m(3, on, playOut).capturing,
+        "采集开、播放但出了 range(不写特征)⇒ 不挂",
+    );
+    check(m(0, on, playIn).pulse, "采集中即使零连接也脉冲");
+
+    // 接线:渲染真的按模型切后缀;pill 真的挂了点击 / 键盘跳 Tab2。
+    const appJs = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+    const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    check(
+        /const pm = connPillModel\(/.test(appJs) &&
+            /capSuffix\.hidden = !pm\.capturing;/.test(appJs),
+        "render:pill 走 connPillModel,后缀按 capturing 显隐",
+    );
+    check(
+        /const goTracks = \(\) => activateTab\("tracks"\);\s*connPill\.addEventListener\("click", goTracks\);/.test(
+            appJs,
+        ),
+        "pill 点击跳 Tab2(tracks)",
+    );
+    check(
+        /data-gb="header-conn-pill"\s+role="button"\s+tabindex="0"/.test(
+            html,
+        ) &&
+            /data-gb="header-conn-capturing" hidden[\s\S]{0,40}data-t="capturing"/.test(
+                html,
+            ),
+        "index.html:pill 可聚焦(role=button)+ 后缀节点默认隐藏、文案走词条 capturing",
+    );
 }
 
 // =============================================================================

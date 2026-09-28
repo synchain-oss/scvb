@@ -119,6 +119,22 @@ bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId
            outputSr != lastOutputSr;
 }
 
+juce::String initialClaimErrorBaseline(const juce::String& claim)
+{
+    return claim == "conflict" ? juce::String() : claim;
+}
+
+bool loadConflictStillHolds(int requestedChannel, int noticeGroupId, int currentGroupId, int boundChannel,
+                            std::uint16_t occupiedMask)
+{
+    if (requestedChannel < 1 || requestedChannel > static_cast<int>(kMaxChannels) || noticeGroupId != currentGroupId ||
+        boundChannel == requestedChannel)
+    {
+        return false;
+    }
+    return (occupiedMask & (1u << (requestedChannel - 1))) != 0;
+}
+
 bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq)
 {
     if (!emitted)
