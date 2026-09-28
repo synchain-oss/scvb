@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map> // [SL-536] uiGestures_
 #include <memory>
 #include <utility>
 #include <vector>
@@ -23,6 +24,7 @@
 #include "output/StateRestoreDiag.h" // [SL-218] 未恢复节位图(JUCE-free)
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
+#include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
@@ -542,7 +544,66 @@ public:
     bool undo();
     bool redo();
 
+    // ---- [SL-536 / J140] UI 的 gesture 三段式(契约 §1.12-§1.14)经这三个口落地 ----
+    // 桥面(OutputEditor::handle*ParamGesture / handleSetParam)先按白名单校验 id,再转到这里;
+    // 这里做宿主那一半(begin/setValueNotifyingHost/end,与此前桥面就地写的逐字同款),外加
+    // **记撤销步**:begin 记起点、set 记末值,end 时起点 ≠ 末值才压一步(拖动 = 一步,
+    // 键盘 / 滚轮连按在 kUndoCoalesceMs 窗内并成一步,冻结开关不并)。返回 false = 参数不存在。
+    bool uiBeginParamGesture(const juce::String& id);
+    bool uiSetParam(const juce::String& id, float engineeringValue); // 工程值 → 归一化(§1.13)
+    bool uiEndParamGesture(const juce::String& id);
+
+    // 同键编辑相距不超过它就并成一步(ms)。取 UI 侧 `MANUAL_COMMIT_MS` 同一个数:那是既有的
+    // 「键盘 / 滚轮连按提交一次」的窗,两边口径对齐(契约 §0.9「合并」一句)。
+    static constexpr std::uint32_t kUndoCoalesceMs = 300;
+    // 「起点 == 末值 ⇒ 不压步」的归一化容差(0..1 域):工程值 ↔ 归一化往返不保证逐位复原。
+    // 1e-6 远小于任何一个参数的一步(最细的 ms_balance 一步 = 1/200)。
+    static constexpr float kUndoSameNormEps = 1.0e-6f;
+
 private:
+    // [SL-536] 通道配置(§1.15)的撤销动作;定义在 .cpp(要调下面的 applyChannelFields)。
+    class ChannelConfigAction;
+    // 按 mask(patch 里给了哪些字段)把 src 的那几个字段写回 channels[index];值变了才 ++configSeq。
+    // 调用方须已持 lifecycleMutex_(undo()/redo() 与 bridgeApplyChannelConfig 都持着)。
+    void applyChannelFields(int index, const ChannelConfigPatch& mask, const OutputRuntimeState::Channel& src);
+    // 一次「与用户拖旋钮同形」的宿主写:begin → setValueNotifyingHost → end,中间置打印器自写位
+    // (§3.5 层 2;车道参数 pan/vol 的撤销不被记成 hostEcho,非车道参数本来就不记)。
+    scvb::output::ParamWriteAction::Writer paramWriter(const juce::String& id);
+    // 压一步(或并进上一步):key 非空、与上一步同键、相距 ≤ kUndoCoalesceMs、且栈顶仍是上一步
+    // (事务名逐字相同、没有可重做的)才并。调用方须已持 lifecycleMutex_。
+    void pushUndoStep(std::unique_ptr<scvb::output::CoalescibleUndoAction> action, const juce::String& name,
+                      const juce::String& coalesceKey);
+    // 载入工程 / 撤销 / 重做后把下面三份记账清掉(它们指向的栈顶已经不是原来那一步)。
+    void resetUndoTracking();
+
+    struct UiGesture
+    {
+        float startNorm = 0.0f;
+        float lastNorm = 0.0f;
+        bool set = false; // 这次 gesture 里有没有 setParam(没有 = 不压步)
+    };
+    std::map<juce::String, UiGesture> uiGestures_; // [M] 持 lifecycleMutex_
+    struct LastUndoStep
+    {
+        juce::String key; // 合并键(空 = 不可并)
+        juce::String txn; // 事务名(带流水号,全局唯一 —— 靠它判「栈顶还是不是这一步」)
+        std::uint32_t atMs = 0;
+        scvb::output::CoalescibleUndoAction* action = nullptr; // 由 UndoManager 持有;只在 txn 核对通过后解引用
+    };
+    LastUndoStep lastUndoStep_;
+    // [SL-536 ③] 首次接管:接管那一步里压了一个冻结位占位动作,UI 随后把该维度冻结位置 1 的
+    // 那次 gesture 并进这一步(而不是另起一步),于是一次 Ctrl+Z 连段表、参数面、冻结位一起回滚。
+    struct PendingTakeover
+    {
+        juce::String freezeId; // 接管时的 v{v}_tNN_freeze(UI 的跟进写的是同一个 id,见 tab-tracks.js sendManual)
+        int oldFreeze = 0;
+        int dimBit = 0; // 1 = pan / 2 = vol
+        juce::String txn;
+        scvb::output::ParamWriteAction* action = nullptr; // 同上:只在 txn 核对通过后解引用
+    };
+    PendingTakeover pendingTakeover_;
+    std::uint32_t undoSerial_ = 0;
+
     // 25Hz [M] 定时器:心跳(4Hz 折半)+ session tick(per-channel 判定/看门狗/全局小节)。
     void timerCallback() override;
 

@@ -1618,13 +1618,8 @@ void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->beginChangeGesture();
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    // [SL-536] 宿主那一半 + 撤销记账都在 processor(host harness 直接驱动同一份实现)。
+    c(processor_.uiBeginParamGesture(id) ? okResp() : badArgResp());
 }
 
 void OutputEditor::handleSetParam(const ArgList& a, Completion c)
@@ -1641,13 +1636,7 @@ void OutputEditor::handleSetParam(const ArgList& a, Completion c)
         return;
     }
     const float value = a.size() > 1 ? static_cast<float>(a[1]) : 0.0f;
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->setValueNotifyingHost(p->convertTo0to1(value)); // 工程值 → 归一化(§1.13)
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    c(processor_.uiSetParam(id, value) ? okResp() : badArgResp()); // 工程值 → 归一化(§1.13)
 }
 
 void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
@@ -1663,13 +1652,7 @@ void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->endChangeGesture();
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    c(processor_.uiEndParamGesture(id) ? okResp() : badArgResp()); // [SL-536] 起点 ≠ 末值才压撤销步
 }
 
 void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
@@ -2396,7 +2379,14 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
+    {
+        // [SL-536] 撤掉的可能是参数 / 通道配置(不改段表)或首次接管(段表 + 参数面 + 冻结位一起)。
+        // 参数面与 state 先于段表同拍补一帧,理由同 handleSetTrackManual:段表帧一到 UI 就丢乐观值,
+        // 这时参数面若还是旧的,冻结位 / 旋钮会先弹一下再跳到撤销后的值。两者都自带 diff 门。
+        emitParams(/*forceFull=*/false);
+        emitState(/*forceFull=*/false);
         emitSegments("undo", kAllTracksMask); // 全量段表(PR#55 建议①)
+    }
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
@@ -2411,7 +2401,11 @@ void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
+    {
+        emitParams(/*forceFull=*/false); // [SL-536] 同 handleUndo
+        emitState(/*forceFull=*/false);
         emitSegments("redo", kAllTracksMask); // 全量段表(PR#55 建议①)
+    }
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
