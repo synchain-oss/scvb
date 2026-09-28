@@ -22,6 +22,7 @@
 //   D14 只删判据③(旁边旧锚点推不出)          ⇒ ⑧②⑤ 红
 //   D15 只删判据①(同一时刻速度变了)          ⇒ ⑧③ 红
 //   D12 外推基点用 latest 而不是 latestPpq     ⇒ ⑨ 红(12 s 退回 7.1)
+//   D16 预卷帧的拍位置照收                   ⇒ ⑩「预卷之后仍记得变过速」「60 s 仍是估算」红
 //
 // 用法:node web-preview/tests/smoke-host-tempo.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败。
@@ -322,6 +323,38 @@ log("=== ⑨ 没有时间线的帧不替换外推基点(PR #325 复审②)===");
     const m = fed(frame(42, 120, 4, 4, 86), frame(0, 120, 4, 4));
     eq(bb(m, 12), "7.3", "外推仍从 42 s / 86 拍出发(不退回按秒推的 7.1)");
     eq(HT.hasTempo(m), true, "速度仍在");
+}
+
+// =============================================================================
+log("=== ⑩ 预卷:样本位置被夹在 0、拍位置照走负数 ⇒ 不当锚点 ===");
+{
+    // 变速工程(10 s 前 120、之后 100 BPM)先播过 0–20 s:锚点铺满、「变过」已知。
+    // 再从 −2 拍起预卷:JUCE 的 VST3 包装把负的样本位置夹到 0,于是连着几帧都是
+    // 「0 s / −2、−1.93、−1.87… 拍」,之后正常从 0 s 往后走 1 s。
+    // 不丢这些拍位置的话,每一帧都像「同一时刻拍位置变了」⇒ 整份作废;回到正常帧后又从头
+    // 观察,0–1 s 恒速 ⇒ 「变过」被抹掉 —— 60 s 处会被当成精确值(实际是按 120 BPM 推错的)。
+    const mapAt = (t) =>
+        t < 10 ? steady(t) : frame(t, 100, 4, 4, 20 + ((t - 10) * 100) / 60);
+    let m = HT.emptyTempo();
+    for (let t = 0; t <= 20; t += 0.033) m = HT.observeTempo(m, mapAt(t));
+    for (let q = -2; q < 0; q += 0.066)
+        m = HT.observeTempo(m, frame(0, 120, 4, 4, q));
+    for (let t = 0.001; t <= 1; t += 0.033) m = HT.observeTempo(m, mapAt(t));
+    eq(m.tempoVaried, true, "预卷之后仍记得这个工程变过速");
+    eq(HT.barBeatAt(m, 60).exact, false, "60 s(没播过)仍是估算");
+    eq(HT.barBeatAt(m, 15).exact, true, "15 s 的锚点还在、仍是已校准");
+    eq(
+        HT.readTempoFields(frame(0, 120, 4, 4, -2)).ppq,
+        null,
+        "(0 s, −2 拍)只丢拍位置",
+    );
+    eq(HT.readTempoFields(frame(0, 120, 4, 4, -2)).bpm, 120, "…bpm 照收");
+    // 对照:0 s / 0 拍 是正常的一对锚点
+    eq(
+        HT.readTempoFields(frame(0, 120, 4, 4, 0)).ppq,
+        0,
+        "对照:0 s / 0 拍照常当锚点",
+    );
 }
 
 if (fail > 0) {

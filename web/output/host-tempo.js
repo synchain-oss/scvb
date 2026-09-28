@@ -79,7 +79,13 @@ export function readTempoFields(p) {
     if (!(Number.isInteger(num) && num >= 1)) return null;
     if (!(Number.isInteger(den) && den >= 1)) return null;
     const timeS = Number.isFinite(p.timeS) ? p.timeS : 0;
-    const ppq = Number.isFinite(p.ppq) ? p.ppq : null;
+    let ppq = Number.isFinite(p.ppq) ? p.ppq : null;
+    // 预卷(pre-roll / count-in):JUCE 的 VST3 包装把负的样本位置夹到 0
+    // (`jmax(0, projectTimeSamples)`),拍位置却照着负数往前走 —— 这时「0 s ↔ 负拍位置」不是
+    // 一对锚点,当成锚点会让每一帧都像「同一时刻拍位置变了」而把观察整份作废。只丢拍位置,
+    // bpm 与拍号照收。
+    if (ppq !== null && timeS <= SAME_SPOT_S && ppq < -OFFSET_TOL_QN)
+        ppq = null;
     return { bpm, num, den, ppq, timeS };
 }
 
