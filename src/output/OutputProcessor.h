@@ -344,6 +344,7 @@ public:
     scvb::state::CrvsData crvsSnapshot();
 
     // [SL-216] lead_select 时间线记录的快照(先排干音频线程队列;持 lifecycleMutex_)。
+    // [SL-545] 每段带 `automated`(宿主写的 = true),见 leadOrigin_。
     std::vector<scvb::analysis::LeadRun> leadTimelineSnapshot();
 
     // [SL-279] 当前 + 「上次全量分析所用」**四个值一次锁读全**。
@@ -821,6 +822,26 @@ private:
     // 分析按区间取它的多数值,选中轨在该区间并入集合 C(见 AnalysisPipeline.h `leadRuns`)。
     scvb::analysis::LeadRecorder leadRecorder_;
     scvb::analysis::LeadTimeline leadTimeline_;
+    // [SL-545 / J143b] lead_select 最近一次改值是谁写的(插件自己 / 宿主);processBlock 每块连同值一起
+    // record,分析只把宿主写的记录当自动化。插件自己写 lead_select 的三处都包
+    // `LeadWriteOrigin::ScopedPluginWrite`:uiSetParam(插件界面)、paramWriter(撤销 / 重做)、
+    // setStateInformation 的 replaceState(载入工程 / 预设)。**再加第四处写 lead_select 的路径,必须同样包上**,
+    // 否则那一路写的值会被记成宿主写的 —— 一截凭空的自动化证据。
+    // 监听器构造期挂到 APVTS 的 lead_select 上、析构时摘下;JUCE 只在值真的变了时调它。
+    scvb::analysis::LeadWriteOrigin leadOrigin_;
+    class LeadOriginListener final : public juce::AudioProcessorValueTreeState::Listener
+    {
+    public:
+        explicit LeadOriginListener(scvb::analysis::LeadWriteOrigin& origin) noexcept : origin_(origin) {}
+        void parameterChanged(const juce::String& /*parameterID*/, float /*newValue*/) override
+        {
+            origin_.noteValueChanged();
+        }
+
+    private:
+        scvb::analysis::LeadWriteOrigin& origin_;
+    };
+    LeadOriginListener leadOriginListener_{leadOrigin_};
     // 读到更高 minor 的 LEAD chunk:本构建不解,保存时原样回写这份字节(与 preservedFeatChunk_
     // 同一条纪律,也同样不能指望 loadedChunks_ —— 只带 PRMS 的预设载入会把它整个换掉)。
     bool leadChunkNewer_ = false;

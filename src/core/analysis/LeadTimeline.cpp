@@ -7,7 +7,7 @@
 namespace scvb::analysis
 {
 
-bool LeadTimeline::write(std::int64_t t0, std::int64_t t1, int lead)
+bool LeadTimeline::write(std::int64_t t0, std::int64_t t1, int lead, bool automated)
 {
     if (t1 <= t0 || t0 < 0 || lead < 0 || lead > kLeadMaxValue)
     {
@@ -32,7 +32,7 @@ bool LeadTimeline::write(std::int64_t t0, std::int64_t t1, int lead)
             prev->second.t1 = t0; // prev->first < t0,截后仍非空
             if (whole.t1 > t1)
             {
-                runs_[t1] = Run{whole.t1, whole.lead};
+                runs_[t1] = Run{whole.t1, whole.lead, whole.automated};
             }
         }
     }
@@ -50,10 +50,12 @@ bool LeadTimeline::write(std::int64_t t0, std::int64_t t1, int lead)
         it = runs_.erase(it);
     }
 
-    // 3) 与两侧**相接且同值**的段合并(播放是逐块连续写入的,不合并的话一首歌就是几万段)。
+    // 3) 与两侧**相接且同值同来源**的段合并(播放是逐块连续写入的,不合并的话一首歌就是几万段)。
+    // [SL-545 / J143b] 来源不同不合并:同一个值,宿主写的那截算自动化、插件写的那截不算。
     std::int64_t nt0 = t0;
     std::int64_t nt1 = t1;
-    if (auto next = runs_.find(t1); next != runs_.end() && next->second.lead == lead)
+    if (auto next = runs_.find(t1);
+        next != runs_.end() && next->second.lead == lead && next->second.automated == automated)
     {
         nt1 = next->second.t1;
         runs_.erase(next);
@@ -62,13 +64,13 @@ bool LeadTimeline::write(std::int64_t t0, std::int64_t t1, int lead)
     if (after != runs_.begin())
     {
         auto prev = std::prev(after);
-        if (prev->second.t1 == t0 && prev->second.lead == lead)
+        if (prev->second.t1 == t0 && prev->second.lead == lead && prev->second.automated == automated)
         {
             nt0 = prev->first;
             runs_.erase(prev);
         }
     }
-    runs_[nt0] = Run{nt1, lead};
+    runs_[nt0] = Run{nt1, lead, automated};
     return true;
 }
 
@@ -78,7 +80,7 @@ std::vector<LeadRun> LeadTimeline::runs() const
     out.reserve(runs_.size());
     for (const auto& [t0, r] : runs_)
     {
-        out.push_back(LeadRun{t0, r.t1, r.lead});
+        out.push_back(LeadRun{t0, r.t1, r.lead, r.automated});
     }
     return out;
 }
@@ -101,7 +103,7 @@ std::vector<LeadRun> LeadTimeline::runsOverlapping(std::int64_t t0, std::int64_t
     }
     for (; it != runs_.end() && it->first < t1; ++it)
     {
-        out.push_back(LeadRun{it->first, it->second.t1, it->second.lead});
+        out.push_back(LeadRun{it->first, it->second.t1, it->second.lead, it->second.automated});
     }
     return out;
 }
@@ -111,7 +113,7 @@ void LeadTimeline::assign(const std::vector<LeadRun>& runs)
     runs_.clear();
     for (const auto& r : runs)
     {
-        runs_[r.t0] = Run{r.t1, r.lead};
+        runs_[r.t0] = Run{r.t1, r.lead, r.automated};
     }
 }
 
@@ -151,27 +153,20 @@ int majorityLead(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t
     return best;
 }
 
-int distinctLeadValues(const std::vector<LeadRun>& runs, std::int64_t t0, std::int64_t t1)
+std::vector<LeadRun> automatedLeadRuns(const std::vector<LeadRun>& runs)
 {
-    std::array<bool, kLeadMaxValue + 1> seen{};
-    int n = 0;
+    std::vector<LeadRun> out;
     for (const auto& r : runs)
     {
-        // 与 majorityLead 同一把尺子:值域外的不算,与窗没有交集(没有已记录样本落在窗里)的不算。
-        if (r.lead < 0 || r.lead > kLeadMaxValue || std::min(r.t1, t1) <= std::max(r.t0, t0))
+        if (r.automated)
         {
-            continue;
-        }
-        if (!seen[static_cast<std::size_t>(r.lead)])
-        {
-            seen[static_cast<std::size_t>(r.lead)] = true;
-            ++n;
+            out.push_back(r);
         }
     }
-    return n;
+    return out;
 }
 
-void LeadRecorder::record(std::int64_t t0, std::int64_t t1, int lead) noexcept
+void LeadRecorder::record(std::int64_t t0, std::int64_t t1, int lead, bool automated) noexcept
 {
     const std::uint32_t w = writePos_.load(std::memory_order_relaxed);
     const std::uint32_t r = readPos_.load(std::memory_order_acquire);
@@ -180,7 +175,7 @@ void LeadRecorder::record(std::int64_t t0, std::int64_t t1, int lead) noexcept
         dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    ring_[w & (kCapacity - 1)] = Rec{t0, t1, static_cast<std::int32_t>(lead)};
+    ring_[w & (kCapacity - 1)] = Rec{t0, t1, static_cast<std::int32_t>(lead), automated};
     writePos_.store(w + 1, std::memory_order_release);
 }
 
@@ -192,7 +187,7 @@ std::size_t LeadRecorder::drainInto(LeadTimeline& timeline)
     while (r != w)
     {
         const Rec& rec = ring_[r & (kCapacity - 1)];
-        (void)timeline.write(rec.t0, rec.t1, rec.lead);
+        (void)timeline.write(rec.t0, rec.t1, rec.lead, rec.automated);
         ++r;
         ++n;
     }
@@ -273,6 +268,7 @@ void encodeLeadChunk(const std::vector<LeadRun>& runs, std::vector<std::uint8_t>
         putI64(out, r.t0);
         putI64(out, r.t1);
         putU32(out, static_cast<std::uint32_t>(r.lead));
+        putU32(out, r.automated ? kLeadRunFlagAutomated : 0u);
     }
 }
 
@@ -292,10 +288,11 @@ LeadDecodeStatus decodeLeadChunk(const std::uint8_t* data, std::size_t size, std
     {
         return LeadDecodeStatus::Malformed;
     }
+    // [SL-545 / J143b] minor 1 的记录没有 flags 字段(20 字节),读成 automated = false。
+    const std::size_t recordBytes = (minor == 1) ? kLeadChunkRecordBytesMinor1 : kLeadChunkRecordBytes;
     const std::uint32_t count = getU32(data + 4);
     // 长度先于分配校验(不可信字节,CLAUDE.md §7.3)。
-    if (count > LeadTimeline::kMaxRuns ||
-        size != kLeadChunkHeaderBytes + static_cast<std::size_t>(count) * kLeadChunkRecordBytes)
+    if (count > LeadTimeline::kMaxRuns || size != kLeadChunkHeaderBytes + static_cast<std::size_t>(count) * recordBytes)
     {
         return LeadDecodeStatus::Malformed;
     }
@@ -304,17 +301,21 @@ LeadDecodeStatus decodeLeadChunk(const std::uint8_t* data, std::size_t size, std
     std::int64_t prevT1 = 0;
     for (std::uint32_t i = 0; i < count; ++i)
     {
-        const std::uint8_t* rec = data + kLeadChunkHeaderBytes + static_cast<std::size_t>(i) * kLeadChunkRecordBytes;
+        const std::uint8_t* rec = data + kLeadChunkHeaderBytes + static_cast<std::size_t>(i) * recordBytes;
         LeadRun r;
         r.t0 = getI64(rec);
         r.t1 = getI64(rec + 8);
         const std::uint32_t lead = getU32(rec + 16);
-        // 升序、互不重叠、非空、值域 0..15 —— 任何一条不满足整块不用(段表是整体,不挑着信)。
-        if (r.t0 < 0 || r.t1 <= r.t0 || r.t0 < prevT1 || lead > static_cast<std::uint32_t>(kLeadMaxValue))
+        const std::uint32_t flags = (minor == 1) ? 0u : getU32(rec + 20);
+        // 升序、互不重叠、非空、值域 0..15、flags 只有已定义的位 —— 任何一条不满足整块不用
+        // (段表是整体,不挑着信)。
+        if (r.t0 < 0 || r.t1 <= r.t0 || r.t0 < prevT1 || lead > static_cast<std::uint32_t>(kLeadMaxValue) ||
+            (flags & ~kLeadRunFlagAutomated) != 0u)
         {
             return LeadDecodeStatus::Malformed;
         }
         r.lead = static_cast<int>(lead);
+        r.automated = (flags & kLeadRunFlagAutomated) != 0u;
         prevT1 = r.t1;
         runs.push_back(r);
     }

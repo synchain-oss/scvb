@@ -210,9 +210,11 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
     std::array<std::vector<AnalysisSegment>, kPipelineTracks> assigned;
 
-    // [SL-545 / J143a] 计算窗里的 lead_select 记录只有 ≤ 1 个不同的值 ⇒ 不算自动化,整窗取当前值
-    // (cfg.leadFallback);≥ 2 个 ⇒ 按记录逐区间取多数值。判据的理由见 AnalysisPipeline.h `leadFallback`。
-    const bool leadAutomated = distinctLeadValues(cfg.leadRuns, cfg.rangeStartSample, cfg.rangeEndSample) >= 2;
+    // [SL-545 / J143b] 只有宿主写进来的 lead_select 记录算自动化(判据与理由见 AnalysisPipeline.h
+    // `leadFallback`)。区间都在计算窗里:窗里一条宿主记录都没有 ⇒ 每个区间都盖不到 ⇒ 都落到
+    // cfg.leadFallback = 整窗取点分析那一刻的值。所以不另设「窗里有没有自动化」的分支 —— 它与下面这一句
+    // 结果恒同,删了也不会有用例变红。
+    const std::vector<LeadRun> automatedRuns = automatedLeadRuns(cfg.leadRuns);
 
     for (std::size_t i = 0; i < intervals.size(); ++i)
     {
@@ -234,10 +236,9 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         // 恒 P=0、不占槽;lead_exclusive 档据此剔除中心),其余声部按剩下的轨数排槽,平衡把它当
         // 居中那一轨算。不另造一条「主唱」分支:C 的语义(02 §5.2/§5.6)原样适用,包括
         // 「pair 成员被锁 → pair 忽略」「冻结 pan 也让位」这两条既有优先级。
-        // [SL-545 / J143 + J143a] 不是自动化 → 本区间取点分析那一刻的 lead_select(cfg.leadFallback);
-        // 是自动化 → 按记录多数值,本区间一个已记录样本都没有时才取 cfg.leadFallback。
-        const int intervalLead =
-            leadAutomated ? majorityLead(cfg.leadRuns, gi.t0, gi.t1, cfg.leadFallback) : cfg.leadFallback;
+        // [SL-545 / J143 + J143b] 按宿主记录的多数值;本区间一个宿主记录样本都没有 → 点分析那一刻的
+        // lead_select(cfg.leadFallback)。插件自己写的记录(界面 / 撤销 / 载入)不参与。
+        const int intervalLead = majorityLead(automatedRuns, gi.t0, gi.t1, cfg.leadFallback);
 
         // 本区间的活跃轨 → TrackMeta(z 取该区间内的平均能量)。
         std::vector<TrackMeta> metas;

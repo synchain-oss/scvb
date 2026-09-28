@@ -24,6 +24,8 @@ namespace
 constexpr int kGroupIdMax = 8; // [J66] 1..8
 constexpr int kVersionMax = 2; // [J59] 1..2
 constexpr int kTimelineInvalidTicks = 12; // 25Hz × 0.5s(§4.2 连续无效判定)
+// [SL-545] 插件自己写它的地方要标来源(leadOrigin_);ParamID 冻结(docs/PARAMETERS.md index 2)。
+constexpr const char* kLeadSelectId = "lead_select";
 } // namespace
 
 ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
@@ -65,6 +67,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
     printer_.installHostEchoShield(apvts);
+    apvts.addParameterListener(kLeadSelectId, &leadOriginListener_); // [SL-545 / J143b] 析构时摘
 
     // CRVS 段真身默认版本名([J05]:空值回落 V{n};加载 CRVS 时会被覆盖)。
     crvsData_.versions[0].meta.name = "V1";
@@ -73,6 +76,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
 
 ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
 {
+    apvts.removeParameterListener(kLeadSelectId, &leadOriginListener_); // [SL-545] 构造期挂的
     stopTimer();
     vizTimer_.reset(); // [SL-192] viz 独立定时器:先拆,免得析构过程中还有一拍打进来
     // 顺序不可倒:先 cancelAnalysis() 把工作线程 signal + join 掉 —— join 返回即保证 run() 已经
@@ -649,13 +653,18 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     // [SL-216 / J136] 记下这一块的 lead_select —— 分析据此知道「这段时间谁是主唱」。
     // 只在走带播放且时间线有效时记:停住时宿主给的是定位点上的值,不代表那段时间被「经过」过。
     // 取值口径与 DspArbiter::readLeadSelect 同(截断取整 + 夹到 0..15),听到的与记下的是同一个数。
+    // [SL-545 / J143b] 连同来源一起记(宿主写的才算自动化,见 leadOrigin_)。先读值后读来源:插件写的那一侧
+    // 先预置来源、后落值(LeadWriteOrigin::ScopedPluginWrite),这样最坏读到的是 (旧值, 插件) 而不是
+    // (新值, 宿主)。值用 acquire 读,与 JUCE 落值那一笔(APVTS 的 raw atomic,seq_cst store)配对,
+    // 读到新值就一定看得见它之前的预置。宿主那一路的监听器就在本线程、本次 process 里先于 processBlock
+    // 跑完,两个量同步到位。
     if (playing && haveT0 && t0 >= 0)
     {
         const int lead = handles_.rawLeadSelect != nullptr
-                             ? std::clamp(static_cast<int>(handles_.rawLeadSelect->load(std::memory_order_relaxed)), 0,
+                             ? std::clamp(static_cast<int>(handles_.rawLeadSelect->load(std::memory_order_acquire)), 0,
                                           scvb::analysis::kLeadMaxValue)
                              : 0;
-        leadRecorder_.record(t0, t0 + total, lead);
+        leadRecorder_.record(t0, t0 + total, lead, leadOrigin_.byHost());
     }
 
     for (int offset = 0; offset < total; offset += preparedMaxBlock_)
@@ -2173,7 +2182,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             {
                 sessionGuid_ = loadedGuid;
             }
-            apvts.replaceState(loaded);
+            {
+                // [SL-545 / J143b] 载入工程 / 预设恢复出来的 lead_select 是插件自己写的,不是宿主自动化。
+                const scvb::analysis::LeadWriteOrigin::ScopedPluginWrite leadScope(leadOrigin_, /*active=*/true);
+                apvts.replaceState(loaded);
+            }
             handles_ = scvb::params::collectParamHandles(apvts);
             // [SL-536] 参数刚被覆盖 ⇒ 就地清栈,不等末尾那处:下面 CFGS 缺失 / 解不开的两处早退走不到
             // 末尾,而只带 PRMS 的轨道 / 参数预设走的正是缺失那一支(#311 复审【重要】)。栈里的
@@ -2229,7 +2242,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             }
             else
             {
-                // 坏块:按「没有记录」处理(分析整窗取点分析那一刻的 lead_select,[SL-545 / J143a];
+                // 坏块:按「没有记录」处理(分析整窗取点分析那一刻的 lead_select,[SL-545 / J143b];
                 // 播放期覆盖层照常),下次保存以
                 // 内存里的记录为准。它是可以重新播一遍补回来的派生数据,不值得为它整份拒载工程。
                 DBG("SCVB Output: LEAD chunk malformed, ignored");
@@ -3018,6 +3031,8 @@ scvb::output::ParamWriteAction::Writer ScvbOutputAudioProcessor::paramWriter(con
             p->beginChangeGesture();
         {
             const scvb::output::AutomationPrinter::ScopedSelfWriteFlag selfWrite(printer_);
+            // [SL-545 / J143b] 撤销 / 重做写回 lead_select:插件自己写的,不算宿主自动化。
+            const scvb::analysis::LeadWriteOrigin::ScopedPluginWrite leadScope(leadOrigin_, id == kLeadSelectId);
             p->setValueNotifyingHost(normalised);
         }
         if (!printerHolds)
@@ -3077,6 +3092,9 @@ bool ScvbOutputAudioProcessor::uiSetParam(const juce::String& id, float engineer
         return false;
     // 与此前桥面就地写的逐字同款:**不**置自写位 —— 这里写的是 width / freeze / 全局三件,
     // 都不是打印车道,HostEchoListener 层 1a 本来就短路(见 AutomationPrinter.h)。
+    // [SL-545 / J143b] 但 lead_select 要标来源:插件界面上改的值不算宿主自动化(用户拧完旋钮试听一段,
+    // 那段记录不许让分析以为「有自动化」)。
+    const scvb::analysis::LeadWriteOrigin::ScopedPluginWrite leadScope(leadOrigin_, id == kLeadSelectId);
     p->setValueNotifyingHost(p->convertTo0to1(engineeringValue));
     auto it = uiGestures_.find(id);
     if (it != uiGestures_.end())
@@ -4229,9 +4247,9 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 写回窗外的上下文区间也要按同一份主唱来排,否则范围分析与全量分析在窗内的解会不一样。
     leadRecorder_.drainInto(leadTimeline_);
     cfg.leadRuns = leadTimeline_.runsOverlapping(cfg.rangeStartSample, cfg.rangeEndSample);
-    // [SL-545 / J143 + J143a] **点分析这一刻**的 lead_select:计算窗里的记录只有一个值(或没有)时整窗用它,
-    // 记录有 ≥ 2 个值时只补没有记录的区间(判据在管线里,见 AnalysisPipeline.h `leadFallback`)。
-    // ⚠ 计算窗是整条已采集时间线,所以「只有一个值」判的是**全部已记录部分**,不只是这次 scope。
+    // [SL-545 / J143 + J143b] **点分析这一刻**的 lead_select:计算窗里没有宿主写的记录时整窗用它,
+    // 有时只补宿主记录盖不到的区间(判据在管线里,见 AnalysisPipeline.h `leadFallback`)。
+    // ⚠ 计算窗是整条已采集时间线,所以「有没有宿主记录」判的是**全部已记录部分**,不只是这次 scope。
     // 取值口径与 processBlock 记录那一句同(截断取整 + 夹到 0..15),记下的与回落的是同一把尺子。
     cfg.leadFallback = handles_.rawLeadSelect != nullptr
                            ? std::clamp(static_cast<int>(handles_.rawLeadSelect->load(std::memory_order_relaxed)), 0,

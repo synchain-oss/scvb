@@ -13047,6 +13047,9 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
 // ===========================================================================
 namespace
 {
+// 宿主那条写入路径:直接 setValueNotifyingHost,不经插件的任何写入口 —— 与 VST3 wrapper 把宿主的参数写入
+// (自动化回放 / 宿主参数面板)转交插件时的 setValueAndNotifyIfChanged 是同一个调用。[SL-545] 起它记下的那段
+// 算「宿主写的」(`LeadRun::automated`);插件界面那条见 `setLeadSelectFromUi`。
 void setLeadSelect(ScvbOutputAudioProcessor& out, int v)
 {
     auto* p = out.getAPVTS().getParameter("lead_select");
@@ -13107,7 +13110,8 @@ bool sameRuns(const std::vector<scvb::analysis::LeadRun>& a, const std::vector<s
     }
     for (std::size_t i = 0; i < a.size(); ++i)
     {
-        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead)
+        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead ||
+            a[i].automated != b[i].automated) // [SL-545] 来源位也随工程存取
         {
             return false;
         }
@@ -13425,16 +13429,138 @@ TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不�
 }
 
 // ===========================================================================
-// [SL-545 / J143 + J143a] 点分析那一刻的 Lead Select 进分析。
+// [SL-545 / J143 + J143b] 点分析那一刻的 Lead Select 进分析;自动化证据按**写入来源**判。
 //
-// J143:没有记录的区间用点分析那一刻的 lead_select。J143a(统筹 2026-09-28):计算窗里的记录只有一个值
-// (全 0 / 全是同一轨)⇒ 不算自动化,整窗用当前值;≥ 2 个值 ⇒ 按记录逐区间,没有记录的区间才用当前值。
-// J143 单独不够的原因就是下面第一格的前提:采集本身就是走带播放,采集过的地方全有记录(值是采集那会儿的
-// lead_select,通常 0)⇒ 「采完改了 Lead Select、不重播直接点分析」在只有 J143 时仍按记录的 0 分析。
-// 纯算法那半在 tests/core/test_lead_timeline.cpp 的 [sl545];这里钉**接线**:startAnalysis 真的把参数面上的
-// lead_select 交给了管线,判据看的是 Output 真实记下的那份记录(计算窗 = 整条已采集时间线,从 0 起)。
+// J143:没有记录的区间用点分析那一刻的 lead_select。J143b(统筹 2026-09-28,取代 J143a):只有**宿主写进来的**
+// 值记下的那几段(`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用当前值;有 ⇒ 宿主记录盖到的区间
+// 按记录,其余用当前值。插件界面改的、撤销重做写回的、载入工程恢复的值记下的那几段不看。
+// J143a(「记录里有 ≥ 2 个不同的值才算自动化」)被推翻的原因就是下面「试听一小段」那一格(#317 复审【重要】1):
+// 采集把整窗记成 0,用户在插件里改成主唱轨再试听一小段 ⇒ 窗里有 0 和主唱轨两个值 ⇒ 被当成自动化,只有试听
+// 那段居中。
+// 纯算法那半在 tests/core/test_lead_timeline.cpp 的 [sl545];这里钉**接线**:① 每条写入路径把来源标对了、
+// 记录带着来源存取;② startAnalysis 真的只按宿主记录取、把参数面上的当前值交给了管线。
+// 两条写入路径:`setLeadSelect`(宿主那条 —— 直接 setValueNotifyingHost,与 VST3 wrapper 转交宿主写入的
+// setValueAndNotifyIfChanged 是同一个调用)、`setLeadSelectFromUi`(插件界面那条 —— 桥面 setParam 三段式
+// 落到的 uiBeginParamGesture / uiSetParam / uiEndParamGesture)。
 // ===========================================================================
-TEST_CASE("HOST SL-545:改了 Lead Select 不重播直接分析 —— 记录恒定用当前值,记录有两个值按记录",
+namespace
+{
+void setLeadSelectFromUi(ScvbOutputAudioProcessor& out, int v)
+{
+    REQUIRE(out.uiBeginParamGesture("lead_select"));
+    REQUIRE(out.uiSetParam("lead_select", static_cast<float>(v)));
+    REQUIRE(out.uiEndParamGesture("lead_select"));
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(60);
+}
+} // namespace
+
+TEST_CASE("HOST SL-545:每条写入路径的来源 —— 界面 / 撤销重做 / 载入工程 = 插件,宿主参数写入 = 宿主", "[host][sl545]")
+{
+    Rig r;
+    r.ph.playing = true;
+    const auto lastRun = [&] {
+        const auto runs = r.out.leadTimelineSnapshot();
+        REQUIRE_FALSE(runs.empty());
+        return runs.back();
+    };
+
+    // 起点:还没人改过 lead_select ⇒ 插件(默认值不是自动化)。
+    r.runBlocks(8);
+    CHECK_FALSE(lastRun().automated);
+
+    SECTION("插件界面(uiSetParam)写的 → 不算自动化;随后宿主改值 → 算")
+    {
+        setLeadSelectFromUi(r.out, 3);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated); // ★ 界面那条路
+        setLeadSelect(r.out, 4);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 4);
+        CHECK(lastRun().automated); // ★ 宿主那条路
+    }
+
+    SECTION("撤销 / 重做写回 lead_select → 不算自动化(即使上一笔是宿主写的)")
+    {
+        setLeadSelectFromUi(r.out, 3); // 压一步撤销:0 → 3
+        setLeadSelect(r.out, 5); // 宿主改成 5:来源 = 宿主(宿主写入不进插件撤销栈)
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        REQUIRE(r.out.undo()); // 撤销:经 paramWriter 写回 0
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 0);
+        CHECK_FALSE(lastRun().automated); // ★ 撤销
+        setLeadSelect(r.out, 5);
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        REQUIRE(r.out.redo()); // 重做:经 paramWriter 写回 3
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated); // ★ 重做
+    }
+
+    SECTION("载入工程恢复出来的 lead_select → 不算自动化")
+    {
+        setLeadSelectFromUi(r.out, 6);
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved); // PRMS 里 lead_select = 6
+        setLeadSelect(r.out, 2); // 宿主改成 2
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        r.out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize())); // replaceState 恢复成 6
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 6);
+        CHECK_FALSE(lastRun().automated); // ★ 载入
+    }
+
+    SECTION("插件界面写一次同值 → 来源也改成插件(ScopedPluginWrite 的预置;监听器这次不会来)")
+    {
+        setLeadSelect(r.out, 3);
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        setLeadSelectFromUi(r.out, 3); // 同值:JUCE 不调监听器,只剩预置在起作用
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated);
+    }
+
+    SECTION("宿主写进来的值与此刻相同 → 监听器不来,来源保持上一次改值时的(已知边,USER_GUIDE 写明)")
+    {
+        // 钉住现行行为,不是判据:自动化的第一个值恰好等于播放前的值时,那一截记成插件写的。
+        setLeadSelectFromUi(r.out, 3);
+        setLeadSelect(r.out, 3);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated);
+    }
+
+    SECTION("来源随工程存取(LEAD minor 2):界面那段与宿主那段分开存、原样读回")
+    {
+        setLeadSelectFromUi(r.out, 3);
+        r.runBlocks(8);
+        setLeadSelect(r.out, 5);
+        r.runBlocks(8);
+        const auto before = r.out.leadTimelineSnapshot();
+        REQUIRE(before.size() == 3); // 起点那段 0 / 界面 3 / 宿主 5
+        REQUIRE_FALSE(before[1].automated);
+        REQUIRE(before[2].automated);
+
+        juce::MemoryBlock full;
+        r.out.getStateInformation(full);
+        const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+        r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+        Rig::pumpMessages(60);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        r.out.setStateInformation(full.getData(), static_cast<int>(full.getSize()));
+        Rig::pumpMessages(60);
+        CHECK(sameRuns(r.out.leadTimelineSnapshot(), before)); // sameRuns 连来源位一起比
+    }
+}
+
+TEST_CASE("HOST SL-545:插件界面改的值不算自动化、宿主写的才按记录 —— 改完旋钮试听一小段,不再只有那段居中",
           "[host][sl545][analyze]")
 {
     MonoMultiRig r;
@@ -13446,11 +13572,12 @@ TEST_CASE("HOST SL-545:改了 Lead Select 不重播直接分析 —— 记录恒
     const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
     const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
 
-    // 事实前提(不是本卡造的):采集就是走带播放 ⇒ 从时间线起点到采集末尾全有记录,值都是 0、只有这一个值。
+    // 事实前提(不是本卡造的):采集就是走带播放 ⇒ 从时间线起点到采集末尾全有记录,值都是 0;
+    // 采集期间没人改过 lead_select ⇒ 全是插件来源,一条宿主记录都没有。
     {
         const auto runs = r.out.leadTimelineSnapshot();
-        REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 1);
         REQUIRE(scvb::analysis::majorityLead(runs, s0, s1, /*fallback=*/7) == 0); // 7 当哨兵:取到 0 = 窗里有记录
+        REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty());
     }
 
     // 基线:Lead Select = 0。挑离开正中的段最多的那条轨当主唱 —— 这样下面「它每段都在正中」只能来自本卡。
@@ -13490,16 +13617,16 @@ TEST_CASE("HOST SL-545:改了 Lead Select 不重播直接分析 —— 记录恒
         }
     };
 
-    SECTION("记录全是 0、改 Lead Select 不重播 → 主唱居中,其余围绕它")
+    SECTION("记录全是 0、界面改 Lead Select 不重播 → 主唱居中,其余围绕它")
     {
         const auto before = r.out.leadTimelineSnapshot();
-        setLeadSelect(r.out, leadCh); // 只改参数,不走带
+        setLeadSelectFromUi(r.out, leadCh); // 只改参数,不走带
         REQUIRE(sameRuns(r.out.leadTimelineSnapshot(), before)); // 前提:记录没变,居中只能来自当前值
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
         checkLeadCentredOthersAround();
     }
 
-    SECTION("旧工程(没有 LEAD 块)、Lead Select = 主唱轨、不播放 → 主唱居中,其余围绕它")
+    SECTION("旧工程(没有 LEAD 块)、界面选主唱轨、不播放 → 主唱居中,其余围绕它")
     {
         juce::MemoryBlock full;
         r.out.getStateInformation(full);
@@ -13507,42 +13634,76 @@ TEST_CASE("HOST SL-545:改了 Lead Select 不重播直接分析 —— 记录恒
         r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
         MonoMultiRig::pump(100);
         REQUIRE(r.out.leadTimelineSnapshot().empty());
-        setLeadSelect(r.out, leadCh);
+        setLeadSelectFromUi(r.out, leadCh);
         REQUIRE(r.out.leadTimelineSnapshot().empty());
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
         checkLeadCentredOthersAround();
     }
 
-    SECTION("记录有两个值(前 2/3 主唱轨、其余 0)、Lead Select 换成另一轨、不重播 → 按记录,当前值说了不算")
+    SECTION("★ 记录全是 0、界面改成主唱轨、试听开头一小段再分析 → 主唱居中(整窗用当前值,不只是试听那段)")
     {
-        // 本机台每轨只切出**一段**(六个爆发之间的静音短于换气容忍,整窗并成一段)⇒ 整窗只有一个全局区间,
-        // 它的主唱是记录的多数值。重播前 2/3 让主唱轨占多数、其余仍是采集时记下的 0 —— 记录里就有两个值。
+        // #317 复审【重要】1 的原样:本机台每轨只切出**一段**(六个爆发之间的静音短于换气容忍,整窗并成一段)
+        // ⇒ 整窗只有一个全局区间。试听开头 1/4:窗里有 0 与主唱轨两个值、0 占多数 —— J143a 判成自动化,
+        // 这个区间按多数值 0,主唱不居中。J143b:两种值都是插件写的,整窗按当前值 = 主唱轨。
+        setLeadSelectFromUi(r.out, leadCh);
+        const std::int64_t cut = s0 + ((s1 - s0) / 4 / kBlock) * kBlock;
+        r.ph.timeSamples = s0;
+        r.runBlocks(static_cast<int>((cut - s0) / kBlock), 0.5f);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::majorityLead(runs, s0, cut, /*fallback=*/7) == leadCh); // 前提:试听那段记下了
+            REQUIRE(scvb::analysis::majorityLead(runs, s0, s1) == 0); // 前提:整窗仍是 0 占多数
+            REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty()); // 前提:全是插件来源
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("宿主写的记录前 2/3 是主唱轨、界面随后换成另一轨不重播 → 按宿主记录,当前值说了不算")
+    {
         const std::int64_t cut = s0 + ((s1 - s0) * 2 / 3 / kBlock) * kBlock;
-        setLeadSelect(r.out, leadCh);
+        setLeadSelect(r.out, leadCh); // 宿主那条路(自动化回放)
         r.ph.timeSamples = s0;
         r.runBlocks(static_cast<int>((cut - s0) / kBlock), 0.5f);
         const int otherCh = leadCh % MonoMultiRig::kCount + 1;
-        setLeadSelect(r.out, otherCh); // 停下后换成另一轨,不播
+        setLeadSelectFromUi(r.out, otherCh); // 停下后在插件里换成另一轨,不播
         {
-            const auto runs = r.out.leadTimelineSnapshot();
-            REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 2); // 前提:真自动化
-            REQUIRE(scvb::analysis::majorityLead(runs, s0, s1) == leadCh); // 前提:主唱轨占多数
-            REQUIRE(scvb::analysis::majorityLead(runs, cut, s1, /*fallback=*/7) == 0);
+            const auto automated = scvb::analysis::automatedLeadRuns(r.out.leadTimelineSnapshot());
+            REQUIRE_FALSE(automated.empty()); // 前提:有自动化证据
+            REQUIRE(scvb::analysis::majorityLead(automated, s0, s1, /*fallback=*/7) == leadCh);
+            REQUIRE(scvb::analysis::majorityLead(automated, cut, s1, /*fallback=*/7) == 7); // 后 1/3 盖不到
         }
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
         INFO("leadCh=" << leadCh << " otherCh=" << otherCh);
-        checkLeadCentredOthersAround(); // 其中含「当前值那一轨离开正中」:它没把记录盖掉
+        checkLeadCentredOthersAround(); // 其中含「当前值那一轨离开正中」:它没把宿主记录盖掉
     }
 
-    SECTION("记录恒为主唱轨、Lead Select 改回 0 → 不居中,与基线逐位同解")
+    SECTION("宿主写的记录恒为主唱轨、界面改回 0 → 仍按记录居中")
     {
         setLeadSelect(r.out, leadCh);
-        r.ph.timeSamples = 0; // 从时间线起点重播到采集末尾:计算窗里只剩主唱轨这一个值
+        r.ph.timeSamples = 0; // 从时间线起点重播到采集末尾:计算窗里全是宿主写的主唱轨
         r.runBlocks(static_cast<int>(s1 / kBlock) + 2, 0.5f);
-        setLeadSelect(r.out, 0);
+        setLeadSelectFromUi(r.out, 0);
         {
             const auto runs = r.out.leadTimelineSnapshot();
-            REQUIRE(scvb::analysis::distinctLeadValues(runs, 0, s1) == 1);
+            const auto automated = scvb::analysis::automatedLeadRuns(runs);
+            REQUIRE(automated.size() == runs.size()); // 前提:全是宿主来源
+            REQUIRE(scvb::analysis::majorityLead(automated, 0, s1) == leadCh);
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("界面写的记录恒为主唱轨、界面改回 0 → 不居中,与基线逐位同解")
+    {
+        // 与上一格只差「重播前是谁把 Lead Select 改成主唱轨的」。
+        setLeadSelectFromUi(r.out, leadCh);
+        r.ph.timeSamples = 0;
+        r.runBlocks(static_cast<int>(s1 / kBlock) + 2, 0.5f);
+        setLeadSelectFromUi(r.out, 0);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty()); // 前提:全是插件来源
             REQUIRE(scvb::analysis::majorityLead(runs, 0, s1) == leadCh);
         }
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
