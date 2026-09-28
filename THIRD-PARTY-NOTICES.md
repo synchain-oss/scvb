@@ -72,6 +72,9 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
   本项目按 **GPLv3** 使用它,不签 Steinberg 的专有许可协议(JUCE 自己的 `LICENSE.md` 对这一版也写
   「Proprietary Steinberg VST3 License/GPLv3」)。本行此前写的「MIT」不是这一版 SDK 的许可证,已订正;
   将来 JUCE 升级换了内置 SDK,以新 SDK 自带的 `LICENSE.txt` 为准改本行。
+  **由此带来的分发口径**:本仓自己写的源码仍是 GPL-3.0-or-later;但发布的 `.vst3` 里同时编进了按 GPLv3
+  (only)使用的 VST3 SDK 与按 AGPLv3 使用的 JUCE,所以**二进制整体按 GPLv3 分发**(连同 JUCE 那部分的
+  AGPLv3 条款,见上一条),不能按「GPLv3 或更高版本」再授权。
 - **JUCE 实际编进 `.vst3` 的第三方库**:三个插件用到的 JUCE 模块只有 `juce_audio_basics` / `juce_audio_processors` /
   `juce_core` / `juce_data_structures` / `juce_events` / `juce_graphics` / `juce_gui_basics` / `juce_gui_extra`,
   外加 `juce_add_plugin` 自动带上的插件封装 `juce_audio_plugin_client`(直接链接的只有
@@ -84,6 +87,9 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
   CHOC / QuickJS 在 `juce_javascript`,Box2D 在 `juce_box2d`(这四个模块都没链);AudioUnitSDK / AAX /
   Oboe 属于没构建的格式或平台;LV2 / ARA 宿主代码只在开启插件宿主功能时编译,本项目没开。
   `pslextensions` 头文件随 VST3 封装一起被包含,属公有领域(public domain),无随附义务。
+  HarfBuzz 的 `COPYING` 说子目录里另有 `COPYING` 的部分按各自许可证;已核对 JUCE 8.0.8 内置副本
+  (`juce_graphics/fonts/harfbuzz/`):全树只有顶层这一份 `COPYING`,没有另行授权的子目录。
+  `hb-unicode-emoji-table.hh` 的文件头转载了生成它所用的 Unicode 数据文件的版权行与使用条款链接,原样留在 JUCE 源码里。
 - **WebView2 Runtime(Evergreen)不随本仓库分发。** 插件通过上表的静态 loader 加载宿主机器上已安装的
   WebView2 Runtime(Windows 平台组件,由微软 Evergreen 引导器安装),故 Runtime 本身不进第三方声明闭包。
   这与 U2「不附 `LICENSE-EXCEPTION.md`,依赖 GPLv3 系统库例外的默认解释」一致。
