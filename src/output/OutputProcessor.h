@@ -543,6 +543,8 @@ public:
     //
     // 代价:每轨把「与参数无关的那一半」(VAD 基准 = 两次整段排序 + ℓ 包络的 log10)缓存住,
     // 按 `ChannelFrames::mutationSeq()` + 计算窗判有效;命中时单次调用只剩 O(n) 的状态机与后处理。
+    // 边播边采时特征一直在变,重建限频 `kVadPreviewRebuildMinMs`(1s)一次,期间沿用旧缓存按当前参数照跑
+    // (理由与代价见实现处头注「重建限频」)。
     // 缓存与覆盖层**有界**(≈ 每轨每 hop 8B 缓存 + 1B 覆盖层 + 计算窗 4B 后验暂存;4 分钟 15 轨
     // ≈ 3.2MB,与拖动时长无关),预览结束即整份释放(见 `dropVadPreviewLocked`)。
     //
@@ -1085,6 +1087,9 @@ private:
     std::vector<float> vadPreviewPosterior_; // 计算窗长的后验暂存(复用,不每次重分配)
     std::int64_t vadPreviewLastUseMs_ = 0;
     static constexpr std::int64_t kVadPreviewIdleMs = 1500;
+    // [J146 复审①] 与参数无关那一半的重建限频(边播边采时特征每 25Hz 都在变,见实现处头注)。
+    std::int64_t vadPreviewLastRebuildMs_ = 0;
+    static constexpr std::int64_t kVadPreviewRebuildMinMs = 1000;
     // 结束预览:清覆盖层 / 段 / 缓存(整份释放内存);原本 active 才 seq +1(让 editor 发收尾帧)。
     void dropVadPreviewLocked() noexcept;
     // [M] 25Hz;调用方已持 lifecycleMutex_。空闲结束条件见 previewVadSegmentation 的头注。

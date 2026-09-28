@@ -13055,7 +13055,8 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
 //   D5 timerCallback 不跑空闲收尾 ⇒ ★I 红;
 //   D6 缓存命中判据删掉(每次重建)⇒ ★C 红;
 //   D7 段不裁写回窗 ⇒ ★R 红;
-//   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红。
+//   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红;
+//   D9 重建不限频 ⇒ ★T 红。
 // ===========================================================================
 namespace
 {
@@ -13190,7 +13191,7 @@ TEST_CASE("HOST J146:松手那一趟落地 ⇒ 预览收尾、内存归零,VAD �
     CHECK(r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad == vadPreviewed);
 }
 
-TEST_CASE("HOST J146:缓存命中 —— 连拖 40 次只建一次基准、占用不随次数涨;特征一改就重建", "[host][j146]")
+TEST_CASE("HOST J146:缓存命中 —— 连拖 40 次只建一次基准、占用不随次数涨;特征一改,限频 1s 后重建", "[host][j146]")
 {
     Rig r;
     const double extentS = j146Prepare(r);
@@ -13207,11 +13208,25 @@ TEST_CASE("HOST J146:缓存命中 —— 连拖 40 次只建一次基准、占�
     INFO("bytes after 2 drags = " << bytesAfter2 << ", after 40 = " << r.out.vadPreviewBytes());
     CHECK(r.out.vadPreviewBytes() == bytesAfter2); // 占用只随时间线 × 轨数,不随拖动次数
 
-    // 特征变了(清掉一小段覆盖 = 采集面被改)⇒ 下一次预览必须按新特征重建,不能拿旧缓存。
+    // 特征变了(清掉一小段覆盖 = 采集面被改,边播边采时每 25Hz 就是这样)。
     REQUIRE(r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), extentS * 0.5,
                                 extentS * 0.5 + 0.5) > 0.0);
-    REQUIRE(r.out.previewVadSegmentation().active);
-    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 2);
+    // [J146 复审①] 距上次重建不足 1s ⇒ **不重建**,沿用旧缓存按**当前参数**照跑 —— 虚影仍随拖动变。
+    const auto seqBefore = r.out.vadPreview().seq;
+    const auto spansAt20 = r.out.vadPreview().spans[kTestChannel - 1].size(); // 上一拍停在 −20
+    r.out.runtime().vadThresholdDb = -60.0f;
+    const auto& pvT = r.out.previewVadSegmentation();
+    REQUIRE(pvT.active);
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 1); // ★T 限频期不重建
+    CHECK(pvT.seq == seqBefore + 1); // 仍然当场出了一帧
+    CHECK(pvT.spans[kTestChannel - 1].size() > spansAt20); // 而且是按新参数(−60 判得出轻的那几段)
+    // 过了 1s:下一次拖动调用按新特征重建。中间每 400ms 拖一下,别让空闲收尾把预览收掉。
+    for (int i = 0; i < 3; ++i)
+    {
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.previewVadSegmentation().active);
+    }
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 2); // ★C 特征一改就重建(限频之后)
 }
 
 TEST_CASE("HOST J146:丢弃事件(撤销 / 真切版本)收尾预览", "[host][j146][sl531]")

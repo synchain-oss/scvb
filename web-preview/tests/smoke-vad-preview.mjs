@@ -285,9 +285,8 @@ log("=== ③ C++ 接线的源码钉子(OutputEditor 编不进测试目标)===");
     check(
         emitFn.includes("processor_.vadPreviewSnapshot()") &&
             emitFn.includes("processor_.vadPreviewHead()") &&
-            !emitFn.includes("processor_.vadPreview()") &&
-            !tick.includes("processor_.vadPreview()"),
-        "(D-S4) emitVadPreview / emitTick 只走加锁的 vadPreviewHead / vadPreviewSnapshot",
+            !code(src).includes("processor_.vadPreview()"),
+        "(D-S4) editor 全文件只走加锁的 vadPreviewHead / vadPreviewSnapshot(无锁引用只给 host 用例)",
     );
 }
 
