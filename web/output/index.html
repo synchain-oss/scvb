@@ -9224,9 +9224,12 @@
                         </div>
                         <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28;bridge.commitUiScale() —— §1.29
              (10 秒防呆倒计时 / 取消 / 超时回退 / 超屏档位灰显 tooltip 全在 Wave 2) -->
-                        <span class="footer-version" data-gb="footer-version"
-                            >v0.1.0</span
-                        >
+                        <!-- [SL-558] 版本号不写占位:此前这里写死 `v0.1.0`,首个快照到之前页脚先显示一个错的版本。
+             留空,由 app.js 在快照带 version.plugin 时填入(契约 §1.1)。 -->
+                        <span
+                            class="footer-version"
+                            data-gb="footer-version"
+                        ></span>
                     </div>
                 </footer>
 

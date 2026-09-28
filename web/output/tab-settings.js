@@ -96,7 +96,7 @@ export function formatMegabytes(bytes) {
     return (Math.round(mb * 10) / 10).toFixed(1);
 }
 
-/** 版本号 mono 串(契约 §1.1 snapshot.version:{plugin,abi};同 footer「v0.1.0 · abi 1」)。 */
+/** 版本号 mono 串(契约 §1.1 snapshot.version:{plugin,abi}),形如「v<plugin> · abi <abi>」;页脚只显示「v<plugin>」。 */
 export function versionString(snapshot) {
     const v = snapshot && snapshot.version;
     if (!v || typeof v.plugin !== "string") return "";
