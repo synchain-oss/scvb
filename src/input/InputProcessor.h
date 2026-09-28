@@ -103,8 +103,17 @@ public:
         scvb::u32 configSeq = 0;
         scvb::u32 localAbi = scvb::kScvbAbi;
         scvb::u32 remoteAbi = 0; // abi 不符时探测到的对端 abi(0 = 未探测到)
+        // [SL-462] 载入工程时的一次性冲突信号:载入要的那个通道被占、会话回滚到旧通道仍活着
+        // (claim 因此是 active,边沿检测看不到这次冲突,载入路径也没有 RPC 返回值可挂)。
+        // loadConflictChannelId==0 = 没有待报的;非 0 = 请求被拒的那个号(载入的工程写的号)。
+        // 编辑器发出 scvb.error{channelConflict} 后调 bridgeAckLoadConflict(loadConflictSerial)。
+        int loadConflictChannelId = 0;
+        int loadConflictGroupId = 1;
+        scvb::u32 loadConflictSerial = 0;
     };
     BridgeTickSnapshot bridgeTickSnapshot(); // 25Hz emitTick 单次持锁采集(含 ctrl 段懒打开)
+    // [SL-462] 界面已把那次载入冲突发出去了:serial 与当前一致才清(期间又来一次新的就不清)。
+    void bridgeAckLoadConflict(scvb::u32 serial);
     std::uint8_t bridgeGroupsOnline(); // 1Hz:本组位 + 跨组只读探测(01 §4.5/J70)
     PriorityResult bridgeRemoteSetPriority(int n); // remoteSetPriority(§3.4;内部 clamp 0..10)
     void bridgeSetUiLanguage(const juce::String& lang); // setLang 落 state(normalize 由桥层做)
@@ -129,6 +138,17 @@ private:
     // [M] 25Hz:把 [A] 攒下的 fingerprint 上报转投本 slot 的 ctrl 命令环(04 §4.5)。
     // 调用方已持 lifecycleMutex_ 且已 ensureCtrlOpen()。
     void drainFpReports();
+
+    // [SL-495] 冲突态 1Hz 静默重试 claim(调用方已持 lifecycleMutex_;timerCallback 4Hz 分支内)。
+    void retryConflictClaim(scvb::u64 now);
+    scvb::u64 lastClaimRetryMs_ = 0;
+    static constexpr scvb::u64 kClaimRetryIntervalMs = 1000;
+
+    // [SL-462] 载入路径上 prepare() 撞车但回滚成功时,记一次待报的冲突(调用方已持锁)。
+    void noteLoadConflict(scvb::input::InputClaimState result, int requestedChannel);
+    int loadConflictChannelId_ = 0; // 0 = 无待报
+    int loadConflictGroupId_ = 1;
+    scvb::u32 loadConflictSerial_ = 0;
     // 每拍排水上限:稳态 1 条/秒/轨,25Hz 下留足余量(宿主卡顿后一次补投也够)。
     static constexpr std::uint32_t kFpDrainMax = 16;
 

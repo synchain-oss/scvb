@@ -580,6 +580,80 @@ try {
         "⑤ channel_id=1 但 maskBit=false ⇒ 远程摘要行隐藏(闸若退回 channel_id>=1 会显示)",
     );
     assertClean("⑤ passthrough");
+
+    // =========================================================================
+    // [SL-462] 载入路径的冲突提示:没有 setChannelId 的返回值可挂,唯一出口是 scvb.error
+    // {channelConflict}(C++ 侧:首帧基线置空后的边沿补发 / 回滚成功时的一次性信号)。
+    // 页面收到 active:true ⇒ 按 §5.1 的落点抖卡 + 红 toast,号取载荷里的 ch(conflict 态下
+    // scvb.state.channel_id 是 0,不能从那里取);active:false(冲突解除)不弹。
+    // 事件从壳页 driver 会话推(`__SCVB_PREVIEW__.ctl.emit`,理由见 smoke-group-lock-page ⑥),
+    // 所以求值在壳页上下文,不包 IN()。
+    // 删除式(未提交,人工核过):删掉 web/input/app.js scvb.error 处理里 channelConflict 那一支,
+    // 本段「active:true ⇒ toast 上屏 / 文案 / 卡 5 抖动」三条红;把 `e.active !== false` 改成恒真,
+    // 「active:false 不弹」那条红。
+    log(
+        "=== ⑥ scvb.error{channelConflict} ⇒ 抖卡 + 红 toast(SL-462 载入路径)===",
+    );
+    const emitConflict = (ch, groupId, active) =>
+        `(() => {
+            const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+            if (!s || !s.ctl || typeof s.ctl.emit !== "function") return false;
+            s.ctl.emit("scvb.error", {
+                code: "channelConflict",
+                ch: ${ch},
+                detail: { groupId: ${groupId} },
+                active: ${active ? "true" : "false"},
+            });
+            return true;
+        })()`;
+    const TOAST_SHOWN = IN(`const t = gb("input.toast.occupied");
+        return !!t && t.hidden === false;`);
+    // 用默认场景(已连上、没有冲突):`scenario=occupied` 的夹具首帧就会推一条 channelConflict
+    // (它模拟的正是「载入时就被拒」),toast 一上来就在,读不出下面「不弹」那条。
+    await open("");
+    check(
+        (await evaluate(TOAST_SHOWN)) === false,
+        "⑥ 前置:新页面 toast 未显示(否则下面两条读不出东西)",
+    );
+    check(
+        await evaluate(emitConflict(5, 2, false)),
+        "⑥ 推一帧 channelConflict{ch:5, groupId:2, active:false}",
+    );
+    await sleep(600);
+    check(
+        (await evaluate(TOAST_SHOWN)) === false,
+        "⑥ active:false(冲突解除)不弹 toast",
+    );
+    check(
+        await evaluate(
+            IN(`const c = card(5);
+                if (!c) return false;
+                window.__sl462Shaken = false;
+                new (w.MutationObserver)(() => {
+                    if (c.getAttribute("data-shake") === "1") window.__sl462Shaken = true;
+                }).observe(c, { attributes: true, attributeFilter: ["data-shake"] });
+                return true;`),
+        ),
+        "⑥ 在通道卡 5 上挂好 data-shake 闩锁",
+    );
+    check(
+        await evaluate(emitConflict(5, 2, true)),
+        "⑥ 推一帧 channelConflict{ch:5, groupId:2, active:true}",
+    );
+    check(await waitFor(TOAST_SHOWN, 6000), "⑥ active:true ⇒ 红 toast 上屏");
+    eq(
+        await evaluate(
+            IN(`const t = gb("input.toast.occupied.text");
+                return t ? t.textContent : null;`),
+        ),
+        String(T.zh["ch.occupied"]).replace("{n}", "5").replace("{g}", "B"),
+        "⑥ toast 文案逐字等于 ch.occupied(n 取载荷 ch=5,g 取 detail.groupId=2 ⇒ B)",
+    );
+    check(
+        await waitFor(IN(`return window.__sl462Shaken === true;`), 6000),
+        "⑥ 通道卡 5 曾经拿到过 data-shake=1",
+    );
+    assertClean("⑥ channelConflict 事件");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
@@ -602,5 +676,7 @@ if (fail > 0) {
     console.log(`\n❌ ${fail} 条断言失败`);
     process.exit(1);
 }
-console.log("\n✅ Input 通道冲突反馈(SL-19)+ 远程摘要闸(SL-465)页面级冒烟全绿");
+console.log(
+    "\n✅ Input 通道冲突反馈(SL-19)+ 远程摘要闸(SL-465)+ 冲突事件提示(SL-462)页面级冒烟全绿",
+);
 process.exit(0);

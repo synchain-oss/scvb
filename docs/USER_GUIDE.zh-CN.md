@@ -203,7 +203,7 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 | **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某条人声轨没声音** | 该轨 Input 连上了健康 Output,但 Output 侧没拿到它的数据(channel 没选 / 组选错 / channel 冲突) | 检查该 Input 的 channel 与组;看 Output 轨道页该轨是否在线 |
 | **装了 Input 就整轨没声音** | 不应该发生 | 检测不到健康 Output 时 Input 自动直通(硬约束 3)。若该轨确实没有声音,收集设置页"复制诊断信息"的输出并提 issue |
-| **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel | 改其中一个的 channel id,或把它换到别的组 |
+| **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel(打开工程时通道已被占用也会提示) | 改其中一个的 channel id,或把它换到别的组。占用的那个释放通道(删轨或改号)后,等着的那个约一秒内会自己接上 |
 | **"组 X 已有主 Output,本实例只读观察"** | 同组已经有一个生效的 Output | 一个组只能有一个生效 Output(硬约束 6)。删掉多余的那个,或把它换到别的组 |
 | **"时间线缺口 / 重叠"警告计数上涨** | 人声轨路由被改过 / 有轨没被接管 | **先别导出**(硬约束 9)。按 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) 的通用坑清单排查路由 |
 | **声像整体偏了** | 人声轨或总线的宿主 pan 没居中 | 把宿主 pan 全部回中(硬约束 4) |

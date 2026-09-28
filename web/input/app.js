@@ -999,11 +999,24 @@ if (bridge) {
 
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
-        // §4.5:Input 实际 code = channelConflict / srMismatch;冲突反馈已由
-        // setChannelId/setGroupId 的返回 + ch.occupied toast 承担,这里不重复弹。
+        // §4.5:Input 实际 code = channelConflict / srMismatch。
         if (e.code === "srMismatch" && store.state.claim !== "srMismatch") {
             store.state = { ...store.state, claim: "srMismatch" };
             render();
+        }
+        // [SL-462] 点击路径的冲突反馈靠 setChannelId/setGroupId 的返回值;**载入工程**那条路
+        // 没有返回值可挂 —— 工程打开时通道被占(或占着被拒、回滚到旧通道),唯一的出口就是这条
+        // 事件。按 §5.1 的落点照样抖卡 + 红 toast;被拒的号只在 `ch` 里(conflict 态下
+        // scvb.state.channel_id 为 0)。点击路径上同一次冲突可能也会走到这里,toast 内容相同,
+        // 只是计时重置,不会叠两条。`active:false`(冲突解除)不弹。
+        if (e.code === "channelConflict" && e.active !== false) {
+            const ch = Number(e.ch) || 0;
+            const g =
+                (e.detail && Number(e.detail.groupId)) ||
+                store.state.group_id ||
+                1;
+            if (ch >= 1) shake(channelCardEl(ch));
+            showOccupiedToast(ch, g);
         }
     });
 }
