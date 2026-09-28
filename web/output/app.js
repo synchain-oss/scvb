@@ -1042,14 +1042,9 @@ function endRename(commit) {
     if (!commit || !v) return;
     const raw = verUi.renameInput ? verUi.renameInput.value : "";
     // 契约 §1.10:≤16 由 C++ 截断、空串/纯空白回落默认 "V{v}";返回回显实际落盘名。
-    const oldName = ((store.state.versions || [])[v - 1] || {}).name;
     call("setVersionName", v, raw).then((res) => {
         // [rc-misc g] 改名入栈的证据只有回执(§2.8 不为改名发段表事件),判据见 historyAfterRename。
-        store.session.history = historyAfterRename(
-            store.session.history,
-            oldName,
-            res,
-        );
+        store.session.history = historyAfterRename(store.session.history, res);
         if (res && typeof res.name === "string") {
             const versions = (store.state.versions || []).slice();
             if (versions[v - 1]) {

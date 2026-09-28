@@ -6,6 +6,8 @@
 // 编译时定义 SCVB_MONITOR_HEADLESS —— 不实例化 WebView2 编辑器(真机 GUI 归 gate 8)。
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <cstring>
 #include <memory>
@@ -72,6 +74,44 @@ bool bitwiseEqual(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<flo
     return true;
 }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// [rc-misc c] 整个测试二进制都不读写开发机上真实的 UI 全局默认文件。
+//
+// MonitorProcessor 构造时会读 `%APPDATA%/Synchain/SCVB/ui-defaults.settings`(语言 / 缩放默认)。
+// 只在新用例里切临时目录的话,其余用例(直通 / 段 / 组 / state 往返 / playhead / harness)照样
+// 打开真实文件 —— 眼下它们不断言默认值,但一旦有人补一条「出厂 zh / 100」,结果就取决于跑在
+// 哪台机器上(#315 第 1 轮复审【重要】2)。这里给**每个测试用例**切一个独立临时目录,结束即删。
+// 用例体内若自己再切(见「新实例读语言/缩放的系统级全局默认」),以用例体内的为准。
+// ---------------------------------------------------------------------------
+namespace
+{
+class UiDefaultsIsolation final : public Catch::EventListenerBase
+{
+public:
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testCaseStarting(Catch::TestCaseInfo const&) override
+    {
+        dir_ =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("scvb-mon-uidefaults-iso-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        dir_.createDirectory();
+        scvb::uidefaults::setStorageDirForTesting(dir_);
+    }
+
+    void testCaseEnded(Catch::TestCaseStats const&) override
+    {
+        scvb::uidefaults::setStorageDirForTesting({});
+        dir_.deleteRecursively();
+    }
+
+private:
+    juce::File dir_;
+};
+} // namespace
+
+CATCH_REGISTER_LISTENER(UiDefaultsIsolation)
 
 TEST_CASE("Monitor:0 自动化参数(123 参数面一个不动)", "[monitor][params]")
 {

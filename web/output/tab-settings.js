@@ -260,15 +260,19 @@ export function diagRowsOf(store) {
 /**
  * 诊断文本的首行:插件版本 · abi · 组号(契约 §1.1 snapshot.version 与 §2.1 group_id)。
  * [rc-misc e] 此前复制出去的诊断信息只有五列表格,用户贴过来分不出是哪个版本、哪个组,
- * 排查时还得再追问一轮。拿不到版本(首帧前)时只报组号;组号缺省按 1(与页头 badge 同口径)。
+ * 排查时还得再追问一轮。拿不到版本(首帧前)时只报组号;组号缺省(state 还没到)按 1,
+ * 与页头 badge 同口径。组号**不在 1..8** 时原样写出「group ?<值>」而不是兜成 A —— 诊断信息
+ * 不该把异常值藏掉(#315 第 1 轮复审【建议】5)。
  * 版本段与设置页的「v… · abi …」逐字同源(versionString)。
  * @param {object} store app.js 事件仓({snapshot, state})
  */
 export function diagInfoLine(store) {
     const st = store || {};
     const ver = versionString(st.snapshot);
-    const gid = ((st.state || {}).group_id || 1) - 1;
-    const group = "group " + (GROUP_IDS[gid] || GROUP_IDS[0]);
+    const raw = (st.state || {}).group_id;
+    const gid = raw === undefined || raw === null ? 1 : raw;
+    const letter = Number.isInteger(gid) ? GROUP_IDS[gid - 1] : undefined;
+    const group = "group " + (letter || "?" + String(gid));
     return ["SCVB Output", ver, group].filter(Boolean).join(" · ");
 }
 

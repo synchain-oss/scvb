@@ -278,18 +278,23 @@ log("=== ②b [rc-misc g] setPanCurve / setVersionName 的回执点亮撤销钮 
     eq(historyAfterPanCurve(grey, { observer: true }), grey, "observer ⇒ 不动");
     eq(historyAfterPanCurve(grey, null), grey, "桥没接上(null)⇒ 不动");
 
-    // setVersionName:名字没变 C++ 不压事务 ⇒ 只有落盘名变了才算入栈。
+    // setVersionName:C++ 名字没变不压事务,但它比的是自己的权威名,web 的旧名会晚一拍
+    // (#315 第 1 轮【重要】1)⇒ web 判断不了压没压步:只置亮 undo、**不碰 redo**。
     eq(
-        historyAfterRename(grey, "V1", { ok: true, name: "Lead" }),
+        historyAfterRename(grey, { ok: true, name: "Lead" }),
+        { undo: true, redo: true },
+        "改名被受理 ⇒ undo 亮,redo 原样(不做不可自愈的置灰)",
+    );
+    eq(
+        historyAfterRename(
+            { undo: false, redo: false },
+            { ok: true, name: "V1" },
+        ),
         { undo: true, redo: false },
-        "改名回执 name 变了 ⇒ undo 亮、redo 灰",
+        "redo 本来就灰的也不会被点亮(只动 undo 这一向)",
     );
-    eq(
-        historyAfterRename(grey, "V1", { ok: true, name: "V1" }),
-        grey,
-        "改名后落盘名没变(空串回落默认 / 原样提交)⇒ 两向不动",
-    );
-    eq(historyAfterRename(grey, "V1", null), grey, "桥没接上 ⇒ 不动");
+    eq(historyAfterRename(grey, null), grey, "桥没接上 ⇒ 不动");
+    eq(historyAfterRename(grey, { ok: false }), grey, "回执不带落盘名 ⇒ 不动");
 
     // mock 端到端:两个桥函数的回执真长这样(回执形状改了,上面的判据就接不上)。
     const s = driver.createPreviewSession({
@@ -307,9 +312,9 @@ log("=== ②b [rc-misc g] setPanCurve / setVersionName 的回执点亮撤销钮 
     );
     const rn = await bridge.setVersionName(1, "Lead");
     eq(
-        historyAfterRename(grey, "V1", rn),
-        { undo: true, redo: false },
-        `mock setVersionName 回执 ${JSON.stringify(rn)} 能点亮`,
+        historyAfterRename(grey, rn),
+        { undo: true, redo: true },
+        `mock setVersionName 回执 ${JSON.stringify(rn)} 能点亮 undo`,
     );
 
     // 接线:两个调用点真的把回执喂给了判据(纯函数对、没人调也白搭)。
@@ -328,7 +333,7 @@ log("=== ②b [rc-misc g] setPanCurve / setVersionName 的回执点亮撤销钮 
         "curve-editor.js:setPanCurve 回执交给 onPanCurveCommitted",
     );
     check(
-        /call\("setVersionName", v, raw\)\.then\(\(res\) => \{\s*(?:\/\/[^\n]*\n\s*)*store\.session\.history = historyAfterRename\(\s*store\.session\.history,\s*oldName,\s*res,\s*\);/.test(
+        /call\("setVersionName", v, raw\)\.then\(\(res\) => \{\s*(?:\/\/[^\n]*\n\s*)*store\.session\.history = historyAfterRename\(\s*store\.session\.history,\s*res,?\s*\);/.test(
             appJs,
         ),
         "app.js:改名回执走 historyAfterRename",

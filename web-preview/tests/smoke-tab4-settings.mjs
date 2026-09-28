@@ -247,6 +247,11 @@ log("=== ② 纯函数 ===");
         "SCVB Output · group A",
         "首帧前拿不到版本:只报组号(缺省组 1 = A)",
     );
+    eq(
+        TS.diagInfoLine({ state: { group_id: 9 } }),
+        "SCVB Output · group ?9",
+        "组号越界原样写出,不兜成 A(诊断不藏异常值)",
+    );
     check(
         TS.diagText([], ["unknown: x"], ["HEAD"]) ===
             "HEAD\nCH HB MIS GEN SEQ\nunknown: x",

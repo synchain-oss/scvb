@@ -600,25 +600,37 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
                 /^[ \t]*const auto snap = processor_\.connSnapshot\(\);/m.test(
                     body,
                 ) &&
-                    /^[ \t]*const auto plan = scvb::output::planSrMismatchEmit\(scvb::output::firstSrMismatchOf\(snap\.channels\),\s*webView\(\)\.isVisible\(\), srMismatchShownCh_, srMismatchShownSr_\);/m.test(
+                    /^[ \t]*const scvb::output::SrMismatchTarget shown\{srMismatchShownCh_, srMismatchShownInSr_, srMismatchShownOutSr_\};/m.test(
+                        body,
+                    ) &&
+                    /^[ \t]*const auto plan = scvb::output::planSrMismatchEmit\(scvb::output::firstSrMismatchOf\(snap\.channels, outputSr\),\s*webView\(\)\.isVisible\(\), shown\);/m.test(
                         body,
                     ),
-                "[rc-misc a] 条件取 connSnapshot 的每轨 srMismatch,判定走纯函数",
+                "[rc-misc a] 条件取 connSnapshot 的每轨 srMismatch,判定走纯函数(记账三个数都进比较)",
             );
             check(
-                /^[ \t]*emitError\("srMismatch", plan\.ch, detail, plan\.active\);/m.test(
+                /^[ \t]*emitError\("srMismatch", plan\.payload\.ch, detail, plan\.active\);/m.test(
                     body,
                 ) &&
-                    /^[ \t]*put\(detail, "inputSr",/m.test(body) &&
-                    /^[ \t]*put\(detail, "outputSr",/m.test(body),
-                "[rc-misc a] 载荷按 §2.9 信封发出(轨级带 ch,detail = {inputSr, outputSr})",
-            );
-            check(
-                /^[ \t]*srMismatchShownCh_ = plan\.nextShownCh;/m.test(body) &&
-                    /^[ \t]*srMismatchShownSr_ = plan\.nextShownSr;/m.test(
+                    /^[ \t]*put\(detail, "inputSr", static_cast<juce::int64>\(plan\.payload\.inputSr\)\);/m.test(
+                        body,
+                    ) &&
+                    /^[ \t]*put\(detail, "outputSr", static_cast<juce::int64>\(plan\.payload\.outputSr\)\);/m.test(
                         body,
                     ),
-                "[rc-misc a] 闩锁按 plan 回填",
+                "[rc-misc a] 载荷按 §2.9 信封发出(轨级带 ch,detail = {inputSr, outputSr},都取 plan 的载荷)",
+            );
+            check(
+                /^[ \t]*srMismatchShownCh_ = plan\.nextShown\.ch;/m.test(
+                    body,
+                ) &&
+                    /^[ \t]*srMismatchShownInSr_ = plan\.nextShown\.inputSr;/m.test(
+                        body,
+                    ) &&
+                    /^[ \t]*srMismatchShownOutSr_ = plan\.nextShown\.outputSr;/m.test(
+                        body,
+                    ),
+                "[rc-misc a] 闩锁三个数都按 plan 回填",
             );
         }
     }

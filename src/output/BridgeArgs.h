@@ -407,16 +407,28 @@ inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibl
 //   · 不可见 ⇒ 一律不发、不推进记账。
 // **为什么不逐轨发 active:true/false**:web 按裸 code 删,撤掉轨 3 那一帧会把仍不一致的轨 5
 // 的横幅一起撤掉。
+// 横幅③ 的「一条」由三个数确定:哪一轨、该轨 Input 的 SR、Output 的 SR(后两个是 §5.1 的
+// `detail`)。三者任一变了都要重发 —— 否则不一致一直持续、只是某一端换了采样率时,屏上
+// `detail` 会停在旧值(#315 第 1 轮复审【建议】2)。同一个结构既当「目标」也当「屏上记账」。
 struct SrMismatchTarget
 {
     int ch = 0; // 1..15;0 = 当前没有不一致的轨
     std::uint32_t inputSr = 0;
+    std::uint32_t outputSr = 0;
 };
+
+inline bool sameSrMismatch(const SrMismatchTarget& a, const SrMismatchTarget& b) noexcept
+{
+    if (a.ch != b.ch)
+        return false;
+    return a.ch == 0 || (a.inputSr == b.inputSr && a.outputSr == b.outputSr);
+}
 
 // 15 轨连接实况 → 编号最小的不一致轨。模板化只为不把 `OutputSession.h` 拖进本头文件
 // (元素需有 `srMismatch` 与 `inputSampleRate` 两个成员,即 `ChannelConnInfo`)。
+// `outputSr` = 本 Output 当前采样率(调用方传入;没有不一致的轨时不写进结果)。
 template<typename Channels>
-inline SrMismatchTarget firstSrMismatchOf(const Channels& channels) noexcept
+inline SrMismatchTarget firstSrMismatchOf(const Channels& channels, std::uint32_t outputSr) noexcept
 {
     SrMismatchTarget t;
     int ch = 0;
@@ -427,6 +439,7 @@ inline SrMismatchTarget firstSrMismatchOf(const Channels& channels) noexcept
         {
             t.ch = ch;
             t.inputSr = info.inputSampleRate;
+            t.outputSr = outputSr;
             return t;
         }
     }
@@ -437,37 +450,23 @@ struct SrMismatchEmitPlan
 {
     bool send = false;
     bool active = true;
-    int ch = 0; // 载荷的 ch(撤销帧取屏上那一轨)
-    std::uint32_t inputSr = 0;
-    int nextShownCh = 0; // 记账:只在 send 为真时才会与入参不同
-    std::uint32_t nextShownSr = 0;
+    SrMismatchTarget payload; // 载荷的 ch / detail(撤销帧取屏上那一条)
+    SrMismatchTarget nextShown; // 记账:只在 send 为真时才会与入参不同
 };
 
-inline SrMismatchEmitPlan planSrMismatchEmit(SrMismatchTarget target, bool visibleNow, int shownCh,
-                                             std::uint32_t shownSr) noexcept
+inline SrMismatchEmitPlan planSrMismatchEmit(const SrMismatchTarget& target, bool visibleNow,
+                                             const SrMismatchTarget& shown) noexcept
 {
     SrMismatchEmitPlan p;
-    p.nextShownCh = shownCh;
-    p.nextShownSr = shownSr;
+    p.nextShown = shown;
     if (!visibleNow)
         return p; // 丢弃态:不发也不记账
-    if (target.ch == shownCh && (target.ch == 0 || target.inputSr == shownSr))
+    if (sameSrMismatch(target, shown))
         return p; // 屏上已是这一态(含「没有且本来就没有」)
     p.send = true;
-    if (target.ch == 0)
-    {
-        p.active = false;
-        p.ch = shownCh;
-        p.inputSr = shownSr;
-    }
-    else
-    {
-        p.active = true;
-        p.ch = target.ch;
-        p.inputSr = target.inputSr;
-    }
-    p.nextShownCh = target.ch;
-    p.nextShownSr = target.ch == 0 ? 0u : target.inputSr;
+    p.active = target.ch != 0;
+    p.payload = p.active ? target : shown;
+    p.nextShown = p.active ? target : SrMismatchTarget{};
     return p;
 }
 

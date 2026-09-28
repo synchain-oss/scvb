@@ -690,86 +690,103 @@ struct FakeConnCh
 };
 } // namespace
 
-TEST_CASE("firstSrMismatchOf:取编号最小的不一致轨,带上它的 inputSr", "[output][bridge][rcmisc]")
+TEST_CASE("firstSrMismatchOf:取编号最小的不一致轨,带上它的 inputSr 与 Output SR", "[output][bridge][rcmisc]")
 {
     std::array<FakeConnCh, 15> chans{};
-    auto t = scvb::output::firstSrMismatchOf(chans);
+    auto t = scvb::output::firstSrMismatchOf(chans, 48000u);
     CHECK(t.ch == 0);
     CHECK(t.inputSr == 0u);
+    CHECK(t.outputSr == 0u); // 没有不一致的轨时不带 SR(与「屏上没有」的记账同形)
 
     chans[6] = {true, 44100u}; // ch 7
     chans[2] = {true, 96000u}; // ch 3
-    t = scvb::output::firstSrMismatchOf(chans);
+    t = scvb::output::firstSrMismatchOf(chans, 48000u);
     CHECK(t.ch == 3);
     CHECK(t.inputSr == 96000u);
+    CHECK(t.outputSr == 48000u);
 }
 
-TEST_CASE("planSrMismatchEmit:srMismatch 的边沿/换轨/撤销/去重/丢弃", "[output][bridge][rcmisc]")
+TEST_CASE("planSrMismatchEmit:srMismatch 的边沿/换轨/换 SR/撤销/去重/丢弃", "[output][bridge][rcmisc]")
 {
     using scvb::output::planSrMismatchEmit;
     using scvb::output::SrMismatchTarget;
+    const SrMismatchTarget none{};
+    const SrMismatchTarget ch5{5, 44100u, 48000u};
 
-    SECTION("R1 出现不一致 + 屏上没有 ⇒ 发 active:true(带轨号与 inputSr)并记账")
+    SECTION("R1 出现不一致 + 屏上没有 ⇒ 发 active:true(带轨号与两个 SR)并记账")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, true, 0, 0u);
+        const auto p = planSrMismatchEmit(ch5, true, none);
         CHECK(p.send);
         CHECK(p.active);
-        CHECK(p.ch == 5);
-        CHECK(p.inputSr == 44100u);
-        CHECK(p.nextShownCh == 5);
-        CHECK(p.nextShownSr == 44100u);
+        CHECK(p.payload.ch == 5);
+        CHECK(p.payload.inputSr == 44100u);
+        CHECK(p.payload.outputSr == 48000u);
+        CHECK(p.nextShown.ch == 5);
+        CHECK(p.nextShown.inputSr == 44100u);
+        CHECK(p.nextShown.outputSr == 48000u);
     }
 
-    SECTION("R2 同轨同 inputSr 持续 ⇒ 不重复发")
+    SECTION("R2 同轨同两 SR 持续 ⇒ 不重复发")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, true, 5, 44100u);
+        const auto p = planSrMismatchEmit(ch5, true, ch5);
         CHECK_FALSE(p.send);
-        CHECK(p.nextShownCh == 5);
+        CHECK(p.nextShown.ch == 5);
     }
 
     SECTION("R3 同轨但 inputSr 变了 ⇒ 重发(detail 里的数要跟着变)")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 96000u}, true, 5, 44100u);
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 96000u, 48000u}, true, ch5);
         CHECK(p.send);
         CHECK(p.active);
-        CHECK(p.inputSr == 96000u);
-        CHECK(p.nextShownSr == 96000u);
+        CHECK(p.payload.inputSr == 96000u);
+        CHECK(p.nextShown.inputSr == 96000u);
+    }
+
+    SECTION("R3b 同轨但 Output SR 变了 ⇒ 同样重发(#315 第 1 轮【建议】2)")
+    {
+        const auto p = planSrMismatchEmit(SrMismatchTarget{5, 44100u, 96000u}, true, ch5);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.payload.outputSr == 96000u);
+        CHECK(p.nextShown.outputSr == 96000u);
     }
 
     SECTION("R4 换成另一轨 ⇒ 发 active:true 覆盖,而不是撤销(web 按裸 code 存)")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{9, 44100u}, true, 5, 44100u);
+        const auto p = planSrMismatchEmit(SrMismatchTarget{9, 44100u, 48000u}, true, ch5);
         CHECK(p.send);
         CHECK(p.active);
-        CHECK(p.ch == 9);
-        CHECK(p.nextShownCh == 9);
+        CHECK(p.payload.ch == 9);
+        CHECK(p.nextShown.ch == 9);
     }
 
-    SECTION("R5 全部恢复一致且屏上挂着 ⇒ 发 active:false 撤横幅,ch 取屏上那一轨")
+    SECTION("R5 全部恢复一致且屏上挂着 ⇒ 发 active:false 撤横幅,载荷取屏上那一条")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{}, true, 5, 44100u);
+        const auto p = planSrMismatchEmit(none, true, ch5);
         CHECK(p.send);
         CHECK_FALSE(p.active);
-        CHECK(p.ch == 5);
-        CHECK(p.nextShownCh == 0);
-        CHECK(p.nextShownSr == 0u);
+        CHECK(p.payload.ch == 5);
+        CHECK(p.nextShown.ch == 0);
+        CHECK(p.nextShown.inputSr == 0u);
+        CHECK(p.nextShown.outputSr == 0u);
     }
 
     SECTION("R6 没有不一致且屏上本来就没有 ⇒ 不发空撤销帧")
     {
-        const auto p = planSrMismatchEmit(SrMismatchTarget{}, true, 0, 0u);
+        const auto p = planSrMismatchEmit(none, true, none);
         CHECK_FALSE(p.send);
     }
 
     SECTION("R7 不可见 ⇒ 一律不发,且不推进记账")
     {
-        const auto raise = planSrMismatchEmit(SrMismatchTarget{5, 44100u}, false, 0, 0u);
+        const auto raise = planSrMismatchEmit(ch5, false, none);
         CHECK_FALSE(raise.send);
-        CHECK(raise.nextShownCh == 0);
+        CHECK(raise.nextShown.ch == 0);
 
-        const auto retract = planSrMismatchEmit(SrMismatchTarget{}, false, 5, 44100u);
+        const auto retract = planSrMismatchEmit(none, false, ch5);
         CHECK_FALSE(retract.send);
-        CHECK(retract.nextShownCh == 5);
-        CHECK(retract.nextShownSr == 44100u);
+        CHECK(retract.nextShown.ch == 5);
+        CHECK(retract.nextShown.inputSr == 44100u);
+        CHECK(retract.nextShown.outputSr == 48000u);
     }
 }

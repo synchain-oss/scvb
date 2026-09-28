@@ -257,7 +257,9 @@ void OutputEditor::emitTick()
     if (first || (tickCount_ % 6 == 0))
     {
         emitConn(); // ~4Hz(25Hz 6 分频)
-        emitSrMismatchError(); // [rc-misc a] 横幅③ 与 conn 同源同节拍
+        // [rc-misc a] 横幅③:与 conn 同一数据源(connSnapshot)、同一节拍;两者各取一次快照,
+        // 中间隔一次取锁,极端情况下行灯与横幅会差一拍(下一拍即对齐)。
+        emitSrMismatchError();
     }
     if (first || (tickCount_ % 25 == 0))
         emitGroups(); // 1Hz(25Hz 25 分频)
@@ -808,16 +810,19 @@ void OutputEditor::emitNoTimelineError()
 void OutputEditor::emitSrMismatchError()
 {
     const auto snap = processor_.connSnapshot();
-    const auto plan = scvb::output::planSrMismatchEmit(scvb::output::firstSrMismatchOf(snap.channels),
-                                                       webView().isVisible(), srMismatchShownCh_, srMismatchShownSr_);
+    const auto outputSr = static_cast<std::uint32_t>(juce::jmax(0, juce::roundToInt(processor_.sampleRate())));
+    const scvb::output::SrMismatchTarget shown{srMismatchShownCh_, srMismatchShownInSr_, srMismatchShownOutSr_};
+    const auto plan = scvb::output::planSrMismatchEmit(scvb::output::firstSrMismatchOf(snap.channels, outputSr),
+                                                       webView().isVisible(), shown);
     if (!plan.send)
         return;
     juce::var detail = obj();
-    put(detail, "inputSr", static_cast<juce::int64>(plan.inputSr));
-    put(detail, "outputSr", static_cast<juce::int64>(juce::roundToInt(processor_.sampleRate())));
-    emitError("srMismatch", plan.ch, detail, plan.active);
-    srMismatchShownCh_ = plan.nextShownCh;
-    srMismatchShownSr_ = plan.nextShownSr;
+    put(detail, "inputSr", static_cast<juce::int64>(plan.payload.inputSr));
+    put(detail, "outputSr", static_cast<juce::int64>(plan.payload.outputSr));
+    emitError("srMismatch", plan.payload.ch, detail, plan.active);
+    srMismatchShownCh_ = plan.nextShown.ch;
+    srMismatchShownInSr_ = plan.nextShown.inputSr;
+    srMismatchShownOutSr_ = plan.nextShown.outputSr;
 }
 
 // ============================================================================

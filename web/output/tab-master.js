@@ -260,8 +260,9 @@ export function applySegmentsEvent(prev, next) {
 //        C++ 侧对它**无条件**压一条事务(`commitCrvsTransaction`),所以回执 `{ok:true}` 就是
 //        「撤销栈长了一条、重做栈被清」的第一手证据 ⇒ `historyAfterPanCurve`;
 //      • `setVersionName`(§1.10,[J82] 入栈):C++ 先做「名字未变则不产生空撤销事务」的短路,
-//        所以证据是回执里的落盘名 `name` **与改名前不同** ⇒ `historyAfterRename`。
-//        名字没变 = 没压步,两向都不动。
+//        比的是它自己的**权威名**;web 手里的名字经 `scvb.state` 异步回声,会晚一拍(SL-357),
+//        所以 web **判断不了**这次到底压没压步 ⇒ `historyAfterRename` 只置亮 undo、不碰 redo,
+//        与分析那一族同一条原则(拿可自愈的假亮,换掉不可自愈的假灰;#315 第 1 轮复审【重要】1)。
 //
 // 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
 // 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的
@@ -372,17 +373,20 @@ export function historyAfterPanCurve(prev, res) {
 /**
  * `setVersionName` 回执 → 新可用性(证据③,[rc-misc g])。
  *
- * C++ 在落盘名未变时**不**压事务,所以只有回执的 `name` 与改名前的名字不同才算入栈。
+ * C++ 在落盘名未变时**不**压事务,但它比的是自己的权威名,web 这边的旧名经 `scvb.state`
+ * 回声会晚一拍 —— 拿 store 里的旧名去比,撤销一次改名后紧接着再改名时会判错
+ * (#315 第 1 轮复审【重要】1)。所以这里不比名字:只要回执带回了落盘名(改名被受理),
+ * 就**只置亮 undo、不碰 redo**:
+ *   · 真压了步:undo 亮是对的;redo 其实已被清空而钮还亮着 —— 点一下拿 `ok:false` 自愈;
+ *   · 没压步(名字没变):undo 可能是假亮 —— 同样点一下自愈;redo 没动,不会被错灰。
+ * 置灰 redo 才是不可自愈的那种错(灰掉的钮点不动),证据不足时不做。
  * @param {{undo:boolean,redo:boolean}|null|undefined} prev
- * @param {string|undefined} oldName 改名前 store 里的名字
  * @param {object|null} res `setVersionName` 的回执(§1.10:`{ok, name}`)
  */
-export function historyAfterRename(prev, oldName, res) {
+export function historyAfterRename(prev, res) {
     const cur = prev || HISTORY_AVAIL_INIT;
-    if (!res || typeof res.name !== "string" || res.name === oldName) {
-        return cur;
-    }
-    return { undo: true, redo: false };
+    if (!res || typeof res.name !== "string") return cur;
+    return { ...cur, undo: true };
 }
 
 /**
