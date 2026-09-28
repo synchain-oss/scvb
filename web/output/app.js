@@ -2030,7 +2030,8 @@ function renderFooter() {
         armed && (!!g.output_enabled || !!store.session.recapOutputOpened),
     );
 
-    // 版本号(§1.1 快照的 version.plugin;快照没到之前保持 HTML 里的占位)
+    // 版本号(§1.1 快照的 version.plugin;快照没到之前保持 HTML 里的原样 —— 空的,
+    // [SL-558] 起那里不写版本占位)
     const ver = $("footer-version");
     if (ver && vs.snapshot && vs.snapshot.version) {
         ver.textContent = "v" + vs.snapshot.version.plugin;

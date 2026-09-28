@@ -30,6 +30,9 @@
 //      A2 那个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在**下一帧**跑(+1),内层再等
 //      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
 //      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
+//   ④ [SL-558] 顺带:同一时刻(本套没有 mock 后端,首个快照永远不会来)页面上不出现写死的
+//      版本号 —— output 页脚版本位为空、三页渲染文字里都没有 `0.1.0`。借这一套是因为它恰好
+//      停在「页面画出来了、快照还没到」这一刻;理由与删除式见 A 段里那两格的注释。
 //
 // 【B. [SL-437] 撤网必须落在 postMessage **之后**,不能落在守卫检查之前】
 //   三份 index.html 的 signal() 曾经把 `sent = true` / `clearTimeout(guard)` 写在
@@ -558,6 +561,57 @@ for (const role of ["input", "output", "monitor"]) {
         )
     )
         continue;
+
+    // [SL-558] 首个快照到之前,页面上不许出现写死的版本号。
+    // 本套没有 mock 后端,app.js 拿不到桥,快照永远不会来 —— 所以此刻读到的,正是开窗后、首个
+    // 快照到之前那段时间页面上的文字。Output 页脚此前在 HTML 里写死 `v0.1.0` 占位,快照一到才被
+    // app.js 改写,而插件早已不是 0.1.0。
+    //   · 页脚版本位(只有 output 有):先断元素取到了 —— 选择器写错时读回 null,「不含版本号」
+    //     会恒真(「比对轴会静默变空」那一族);再断它的 textContent 里没有任何「数字.数字」形态
+    //     的串(写死别的版本号同样是错的,不只 0.1.0)。用 textContent,不受可见性影响。
+    //   · 整页渲染文字(body.innerText)里没有 `0.1.0`。
+    // 删除式(未提交,记录见 PR 描述):页脚占位写回 `v0.1.0` ⇒ output 这两格都红;
+    // 写成 `v0.9.0` ⇒ 只有页脚那格红。
+    const pre = await evaluate(`(() => {
+        const el = document.querySelector('[data-gb="footer-version"]');
+        return {
+            path: location.pathname,
+            found: !!el,
+            footer: el ? el.textContent : null,
+            body: document.body ? document.body.innerText : null,
+        };
+    })()`);
+    if (
+        check(
+            pre &&
+                String(pre.path).indexOf(`/web/${role}/`) >= 0 &&
+                typeof pre.body === "string",
+            `${role}:[SL-558] 读到的是本页的渲染文字(实得 path=${pre && pre.path})`,
+        )
+    ) {
+        // 实得值照打:绿的时候也看得出这两格真的读到了东西(页脚为 null ⇒ 元素没取到)。
+        log(
+            `  ${role}:[SL-558] 页脚版本位=${JSON.stringify(pre.footer)};` +
+                `整页渲染文字 ${pre.body.length} 字符`,
+        );
+        if (
+            role === "output" &&
+            check(
+                pre.found,
+                `${role}:[SL-558] 页脚版本位 [data-gb="footer-version"] 取到了`,
+            )
+        ) {
+            check(
+                !/\d+\.\d+/.test(pre.footer),
+                `${role}:[SL-558] 首个快照之前页脚版本位不带版本号(实得 ` +
+                    `${JSON.stringify(pre.footer)};index.html 里写死了一个版本占位)`,
+            );
+        }
+        check(
+            pre.body.indexOf("0.1.0") < 0,
+            `${role}:[SL-558] 首个快照之前整页文字里没有 0.1.0`,
+        );
+    }
 
     const ff = probe.signals.filter((m) => m.id === "__scvb__firstFrame");
     check(

@@ -25,7 +25,11 @@ public:
     {
         juce::String role; // Init::Role:"input" | "output" | "monitor"([J75])
         juce::String userDataFolderName; // WebView2 user-data 目录名(Input/Output 各一)
-        juce::String version = "0.1.0"; // 首帧 version seed(插件侧传 JucePlugin_VersionString)
+        // 首帧 version seed。三个编辑器(Input / Output / Monitor)都显式传 JucePlugin_VersionString。
+        // [SL-558] 默认值留空,不写版本字面量(此前是 "0.1.0",漏传时会报一个像真的旧版本号);
+        // 也不能引用 JucePlugin_VersionString:本头文件还被非插件 target(scvb_plugin_common_tests)
+        // 包含,那里没有这个宏。
+        juce::String version;
         juce::String lang = "zh";
         float uiScale = 1.0f;
         int channelLimit = 15; // [J59]

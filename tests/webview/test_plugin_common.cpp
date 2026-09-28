@@ -573,6 +573,15 @@ TEST_CASE("Watchdog budgets give cold start more room than a warm reopen")
     // 事件名是 web 侧 index.html boot 守卫的逐字引用面(smoke-embedded-resources.mjs 对拍)。
     CHECK(juce::String(WebViewHost::kBootErrorEventId) == "__scvb__bootError");
 }
+
+// [SL-558] Config::version 的默认值不带版本号。三个编辑器都显式传 JucePlugin_VersionString,
+// 默认值只在漏传时生效 —— 此前它是 "0.1.0",漏传时首帧 seed 报一个像真的旧版本号,没有任何
+// 东西会红。钉成空串:漏传时看到的是「没有版本」,不是一个错的版本。
+TEST_CASE("[SL-558] WebViewHost::Config version default carries no hardcoded release number")
+{
+    const scvb::webview::WebViewHost::Config config{};
+    CHECK(config.version.isEmpty());
+}
 TEST_CASE("normalizeLang accepts {zh,en,fr} and falls back to zh (§1.30)")
 {
     using scvb::bridge::normalizeLang;
