@@ -662,6 +662,29 @@ export function analyzeScope(state) {
     return { tracksMask: mask, startS: g.range.start_s, endS: g.range.end_s };
 }
 
+/**
+ * [SL-535] Tab1 影响预览(`previewAnalyze`)的重取指纹:三样变了任一样才重新问。
+ *   · scope —— 范围档 / 范围 / 启用轨(原有);
+ *   · 已连接轨号 —— dry-run 只数已连接的轨,Input 连上 / 断开后旧数不再成立;
+ *   · 有覆盖的轨号(`coverage[ch] > 0`)—— 首次采集时覆盖从无到有,旧的 `tracks: 0` 不再成立。
+ *     只看「有没有」、不看百分比:百分比每帧都涨,拼进去就等于每帧问一次。
+ * 后两样是 #292 复审加的:dry-run 的 `tracks` 进了「无数据」判据(`analyzeNoData` 第三参),
+ * 指纹少一样,那一样变了之后原因句就会按陈旧的 0 继续亮着。
+ */
+export function previewFingerprint(state, conn, coverage) {
+    const covered = Object.keys(coverage || {})
+        .filter((ch) => Number(coverage[ch]) > 0)
+        .map(Number)
+        .sort((a, b) => a - b);
+    return (
+        JSON.stringify(analyzeScope(state)) +
+        "|" +
+        connectedChannels(conn).join(",") +
+        "|" +
+        covered.join(",")
+    );
+}
+
 /** write 确认条的词条 key(follow 档走 .follow 变体,无 {x}–{y} 空洞)。 */
 export function writeConfirmKey(rangeMode) {
     return rangeMode === "follow"
@@ -921,6 +944,7 @@ export function createTabMaster(opts) {
         preview: null, // previewAnalyze 的最近一次返回
         previewTimer: 0,
         previewKey: "", // scope 指纹,变了才重新 previewAnalyze
+        previewFor: "", // [SL-535] local.preview 是按哪个指纹取回来的
         gesture: null, // 拖动中的 ParamID(灰显判定要排除自己)
         paramEcho: {}, // 本地乐观值(gesture 期间先行显示;由 onParams 逐帧失效,见 nextParamEcho)
         rampLocal: null, // 过渡拖动中的本地 ms
@@ -1761,7 +1785,12 @@ export function createTabMaster(opts) {
         else if (isWriteBlocked()) an = "disabled";
         el.flow.setAttribute("data-analyze", an);
         // [SL-535] 第三参 = dry-run 的轨数(只数已连接的轨),见 analyzeNoData 头注。
-        const previewTracks = local.preview ? local.preview.tracks : null;
+        // 只认**当前指纹**取回来的那份:指纹变了、新回包还在路上时按「未取」(null)处理,
+        // 不拿上一个 scope / 连接态 / 覆盖态的轨数去判原因句。
+        const previewTracks =
+            local.preview && local.previewFor === local.previewKey
+                ? local.preview.tracks
+                : null;
         el.flow.setAttribute(
             "data-analyze-nodata",
             analyzeNoData(p, totals.n, previewTracks) ? "1" : "0",
@@ -2385,13 +2414,11 @@ export function createTabMaster(opts) {
      * scope 指纹没变就不重复问 —— previewAnalyze 虽便宜,但它是 [M] 同步调用。
      */
     function refreshPreview() {
-        const scope = analyzeScope(getStore().state);
-        // [SL-535] dry-run 只数**已连接**的轨 ⇒ 指纹里要带连接集合,否则 Input 连上 / 断开之后
-        // 预览数(与上面的原因句)会停在旧值,直到 scope 恰好又变一次。app.js 的 scvb.conn 订阅会调本函数。
-        const key =
-            JSON.stringify(scope) +
-            "|" +
-            connectedChannels(getStore().conn).join(",");
+        const st = getStore();
+        const scope = analyzeScope(st.state);
+        // [SL-535] 指纹见 previewFingerprint(连接集合 + 有覆盖的轨号)。app.js 的 scvb.conn 与
+        // scvb.captureProgress 订阅都会调本函数,集合没变就在这里早退、不发请求。
+        const key = previewFingerprint(st.state, st.conn, st.coverage);
         if (key === local.previewKey) return;
         local.previewKey = key;
         if (local.previewTimer) clearTimeout(local.previewTimer);
@@ -2399,6 +2426,7 @@ export function createTabMaster(opts) {
             const res = await call("previewAnalyze", scope);
             if (res && Number.isFinite(res.intervals)) {
                 local.preview = res;
+                local.previewFor = key; // 这份回包属于哪个指纹(render 据此判陈旧)
                 render();
             }
         }, 200);

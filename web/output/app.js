@@ -2149,6 +2149,8 @@ if (bridge) {
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
+        // [SL-535] 有覆盖的轨号集合变了(首次采集)⇒ Tab1 重取 dry-run;集合没变在指纹比对处早退。
+        tabMaster.refreshPreview();
         requestRender();
     });
 
