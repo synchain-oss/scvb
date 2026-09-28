@@ -470,13 +470,16 @@ try {
             IN(`const c = card(3);
                 if (!c) return false;
                 window.__sl19Shaken = false;
+                window.__sl19ShakeCount = 0;
                 new (w.MutationObserver)((muts) => {
                     for (const m of muts) {
                         if (
                             m.type === "attributes" &&
                             c.getAttribute("data-shake") === "1"
-                        )
+                        ) {
                             window.__sl19Shaken = true;
+                            window.__sl19ShakeCount++;
+                        }
                     }
                 }).observe(c, {
                     attributes: true,
@@ -532,6 +535,15 @@ try {
         "释放确认条已被收起(证明 claimChannel 跑完了最后那句 render(),不只是跑到 shake/toast)",
     );
 
+    // [SL-462 复审] 点击撞车的反馈有两条来路(RPC 返回值 + scvb.error 边沿,mock 里事件先到),
+    // 同一次冲突只能抖一次卡。删除式(未提交,人工核过):把 app.js 两处
+    // `claimConflictShakeDue(...)` 改成恒真 ⇒ 本条读到 2。
+    await sleep(300);
+    eq(
+        await evaluate(IN(`return window.__sl19ShakeCount;`)),
+        1,
+        "③ 点击撞车只抖一次卡(RPC 返回值与 channelConflict 事件去重)",
+    );
     assertClean("③ 通道冲突反馈");
 
     // =========================================================================

@@ -65,6 +65,7 @@ const store = {
         pendingRelease: false, // 释放确认条展开
         priorityLocal: null, // 优先级本地乐观值(等 scvb.config 回执让位)
         toastTimer: 0,
+        lastConflictFx: null, // [SL-462] 最近一次冲突抖卡 {ch,g,t},去重用
     },
     // 本会话一次性判定([J80]:不入 state chunk、零桥、零契约)。
     // guideClosed 是首启链的**会话级**闸门:保证本次会话里语言卡与 mini tour 不重弹,
@@ -166,6 +167,24 @@ function shake(node) {
 }
 
 /** 一次性 toast(占用冲突反馈 ch.occupied;自动消失)。 */
+/**
+ * [SL-462 复审] 同一次冲突的抖卡去重。点击撞车时反馈有两条来路:setChannelId 的返回值
+ * ({conflict:true})与随后一拍的 scvb.error{channelConflict}(先后顺序不定,mock 里事件在前)。
+ * 同号同组、1.5s 内的第二次只刷新 toast,不再抖一次卡。返回 true = 这次该抖。
+ */
+const CONFLICT_FX_DEDUPE_MS = 1500;
+function claimConflictShakeDue(ch, g) {
+    const now = Date.now();
+    const last = store.local.lastConflictFx;
+    store.local.lastConflictFx = { ch, g, t: now };
+    return !(
+        last &&
+        last.ch === ch &&
+        last.g === g &&
+        now - last.t < CONFLICT_FX_DEDUPE_MS
+    );
+}
+
 function showOccupiedToast(channel, group) {
     const toast = $("input.toast.occupied");
     const text = $("input.toast.occupied.text");
@@ -399,9 +418,9 @@ async function claimChannel(ch) {
     // 契约 §3.2:claim 本组 InputSlot[n-1];已被心跳新鲜实例占 → {conflict:true}
     const res = await call("setChannelId", ch);
     if (res && res.conflict === true) {
-        const card = channelCardEl(ch);
-        shake(card);
-        showOccupiedToast(ch, store.state.group_id || 1);
+        const g = store.state.group_id || 1;
+        if (claimConflictShakeDue(ch, g)) shake(channelCardEl(ch));
+        showOccupiedToast(ch, g);
     }
     render();
 }
@@ -1007,15 +1026,16 @@ if (bridge) {
         // [SL-462] 点击路径的冲突反馈靠 setChannelId/setGroupId 的返回值;**载入工程**那条路
         // 没有返回值可挂 —— 工程打开时通道被占(或占着被拒、回滚到旧通道),唯一的出口就是这条
         // 事件。按 §5.1 的落点照样抖卡 + 红 toast;被拒的号只在 `ch` 里(conflict 态下
-        // scvb.state.channel_id 为 0)。点击路径上同一次冲突可能也会走到这里,toast 内容相同,
-        // 只是计时重置,不会叠两条。`active:false`(冲突解除)不弹。
+        // scvb.state.channel_id 为 0)。点击路径上同一次冲突也会走到这里:toast 内容相同、只重置
+        // 计时;抖卡经 claimConflictShakeDue() 去重,不抖两下。`active:false`(冲突解除)不弹。
         if (e.code === "channelConflict" && e.active !== false) {
             const ch = Number(e.ch) || 0;
             const g =
                 (e.detail && Number(e.detail.groupId)) ||
                 store.state.group_id ||
                 1;
-            if (ch >= 1) shake(channelCardEl(ch));
+            if (ch >= 1 && claimConflictShakeDue(ch, g))
+                shake(channelCardEl(ch));
             showOccupiedToast(ch, g);
         }
     });
