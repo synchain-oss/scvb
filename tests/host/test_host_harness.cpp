@@ -2767,6 +2767,108 @@ TEST_CASE("HOST P0-4:已采集区间的波形瓦片带真实包络", "[host][t37
 }
 
 // ---------------------------------------------------------------------------
+// [J145] requestWaveform 的 `valleys[]`(边界拖拽吸附的数据面)。
+// 此前 OutputEditor 回的是一个**从不填**的空数组,tab-wave 的 snapBoundary 读的就是它 ⇒
+// tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,web 冒烟一直绿)。
+// 这里走整条链:Input 真采一段「响 · 静 · 响」→ IPC → Output FrameStore → waveformOf 的瓦片。
+// 再往下一跳:瓦片 → §1.27 回包(`waveformResponse`,OutputEditor::handleRequestWaveform 原样 resolve 它)。
+// 编辑器那一行 `c(waveformResponse(waveformOf(...)))` 本身要真 WebView2,不在本套件 TU 清单里;
+// 页面拿到回包之后「拖动吸附 / Alt 关吸附」那一半走 mock:smoke-valley-snap-page.mjs。
+// 判据:窗里**恰有一个**谷点、落在静音段内、离静音段中心不超过 kTolS;回包里的 valleys 与之逐个相同。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:采一段响-静-响,瓦片的 valleys 恰有一个谷点落在静音段中心", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    const std::int64_t quietT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.0f); // 30 × 512 / 48k = 320 ms 数字静音
+    const std::int64_t quietT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(quietT0) / kSr;
+    const double q1 = static_cast<double>(quietT1) / kSr;
+    const double mid = 0.5 * (q0 + q1);
+    // 前置:窗两侧都真被采到了(否则「没谷」与「没数据」分不开)。
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    const auto tile = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("quiet=[" << q0 << "," << q1 << ") mid=" << mid << " valleys=" << tile.valleys.size()
+                   << " first=" << (tile.valleys.empty() ? -1.0 : tile.valleys.front()));
+    REQUIRE(tile.valleys.size() == 1); // ← 修复前恒 0
+    CHECK(tile.valleys[0] > q0);
+    CHECK(tile.valleys[0] < q1);
+    // 容差 kTolS 的来历:静音一开始,K 加权滤波器的余振还要衰减一段才落到量化地板 −120 dB,
+    // 谷底平坦区因此整体偏后(谷点 = 平坦区中心)。实测(本机 Release)谷点比静音段中心**晚 27 ms**
+    // (静音段 [1.088, 1.408) s、中心 1.248、谷点 1.275)。60 ms 约为静音段中间三分之一的半宽:
+    // 盖得住余振,又能把「谷点落在静音段边缘(±160 ms)/ 落到响段里」判红。
+    constexpr double kTolS = 0.06;
+    CHECK(std::abs(tile.valleys[0] - mid) <= kTolS);
+
+    // 回包:七个字段都在,六列与 cols 等长,valleys 与瓦片逐个相同(修复前回包里恒是空数组)。
+    const juce::var resp = ScvbOutputAudioProcessor::waveformResponse(tile);
+    for (const char* key : {"minDb", "maxDb", "vad", "covered", "stale", "passId"})
+    {
+        INFO("key=" << key);
+        REQUIRE(resp[key].isArray());
+        CHECK(resp[key].size() == 256);
+    }
+    REQUIRE(resp["valleys"].isArray());
+    REQUIRE(resp["valleys"].size() == static_cast<int>(tile.valleys.size()));
+    for (int i = 0; i < resp["valleys"].size(); ++i)
+    {
+        CHECK(static_cast<double>(resp["valleys"][i]) == tile.valleys[static_cast<std::size_t>(i)]);
+    }
+
+    // 对照:只看响段(静音段整个在窗外)⇒ 没有谷 —— 证明上面那个谷来自静音段,而不是窗边。
+    const auto loudOnly = r.out.waveformOf(kTestChannel, q1 + 0.1, q1 + 0.8, 256);
+    CHECK(loudOnly.valleys.empty());
+}
+
+// ---------------------------------------------------------------------------
+// [J145] 吸附谷的门槛跟着**分段灵敏度**走(与 S1 候选谷同一条 minDepth = 6·2^((50−s)/50))。
+// waveformOf 里 `sp.sensitivity = runtime_.segmentationSensitivity` 那一行是接线;默认档 50 下
+// 删掉它也照样是 50 —— 所以这里造一个**只有高灵敏度才认**的浅谷:0.5 → 0.3 → 0.5 的正弦,
+// 落差 20·log10(0.3/0.5) = −4.44 dB,夹在 minDepth(50)=6 与 minDepth(100)=3 之间。
+// (440 Hz × 10 ms hop = 4.4 周,5 个 hop 恰 22 周 ⇒ 逐 hop 能量以 5 hop 为周期,5 hop 平滑后是平的,
+//  平台上不会冒出别的极小。)
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:吸附谷门槛随分段灵敏度 —— 4.4 dB 的浅谷只在高灵敏度下出现", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f);
+    const std::int64_t dipT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.3f);
+    const std::int64_t dipT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(dipT0) / kSr;
+    const double q1 = static_cast<double>(dipT1) / kSr;
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    r.out.runtime().segmentationSensitivity = 50.0f; // minDepth 6 dB
+    const auto atDefault = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    CHECK(atDefault.valleys.empty());
+
+    r.out.runtime().segmentationSensitivity = 100.0f; // minDepth 3 dB
+    const auto atMax = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("dip=[" << q0 << "," << q1 << ") valleys=" << atMax.valleys.size()
+                 << " first=" << (atMax.valleys.empty() ? -1.0 : atMax.valleys.front()));
+    REQUIRE(atMax.valleys.size() == 1);
+    CHECK(atMax.valleys[0] > q0);
+    CHECK(atMax.valleys[0] < q1);
+}
+
+// ---------------------------------------------------------------------------
 // P0-5:prepareToPlay **之后**才灌工程 chunk 时,viz 段必须跟着换组。
 // 宿主(Cubase)的真实次序就是「先激活组件、再推工程/预设 chunk」;离线测试恒是
 // 「先 setState 再 prepare」,于是这条路径从没被走到 —— Output 把 viz 段发布在旧组、

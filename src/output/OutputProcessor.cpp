@@ -12,6 +12,7 @@
 #include "UiDefaultsStore.h"
 #include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径(与分析入口共用)
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
+#include "analysis/WaveValleys.h" // [J145] §1.27 valleys[]:吸附谷点
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
@@ -526,7 +527,59 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
         tile.minDb[k] = std::min(mn, mx);
         tile.vad[k] = voiced ? 1 : 0;
     }
+
+    // [J145] 吸附谷点(§1.27 `valleys[]`)。同一把锁里算:谷点与包络必须来自同一刻的 FrameStore,
+    // 否则两者可能一个是采集前、一个是采集后。代价与已覆盖 hop 数同阶并有上限
+    // (`kSnapValleyMaxScanHops`),与请求跨度无关 —— 上面 P0-A 那段注释的同一条纪律。
+    // 门槛与分析同源:`startAnalysis` 装配 `cfg.segmentation.sensitivity` 用的也是这一个值。
+    scvb::analysis::SegmentationParams sp;
+    sp.sensitivity = static_cast<double>(runtime_.segmentationSensitivity);
+    tile.valleys = scvb::analysis::snapValleysSeconds(frames, startS, endS, hopS, sp, static_cast<std::size_t>(cols));
     return tile;
+}
+
+juce::var ScvbOutputAudioProcessor::waveformResponse(const WaveformTile& tile)
+{
+    // 列数 = 瓦片自己的列数:waveformOf 一进门就把四列按 cols 铺满(提前返回的也是满长哨兵),
+    // 四列恒等长 —— 与原先编辑器里 `for (i < cols)` 直接下标的写法同一个前提。
+    const std::size_t cols = tile.minDb.size();
+    juce::Array<juce::var> minDb;
+    juce::Array<juce::var> maxDb;
+    juce::Array<juce::var> vad;
+    juce::Array<juce::var> covered;
+    juce::Array<juce::var> stale;
+    juce::Array<juce::var> passId;
+    for (std::size_t k = 0; k < cols; ++k)
+    {
+        minDb.add(tile.minDb[k]);
+        maxDb.add(tile.maxDb[k]);
+        vad.add(tile.vad[k]);
+        covered.add(tile.covered[k]);
+        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
+        // [J145] passId 这一版仍恒 0(没做):FrameStore 只记「覆盖了哪些 hop」,不记「哪一轮采的」,
+        // 要填它得先给覆盖记账加采集轮次 —— 那是存储面的改动,不是这里一行的事。契约 §9.3 附注
+        // 本就允许首版回退常量(「值填充不触发契约变更」)。
+        stale.add(0);
+        passId.add(0);
+    }
+    // [J145] 吸附谷点(§1.27):此前回包里这一项是一个**从不填**的空数组,tab-wave 的 snapBoundary
+    // 读的就是它 ⇒ tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,
+    // 所以 web 侧的冒烟一直是绿的)。
+    juce::Array<juce::var> valleys;
+    for (const double v : tile.valleys)
+    {
+        valleys.add(v);
+    }
+
+    auto* o = new juce::DynamicObject();
+    o->setProperty("minDb", minDb);
+    o->setProperty("maxDb", maxDb);
+    o->setProperty("vad", vad);
+    o->setProperty("covered", covered);
+    o->setProperty("stale", stale);
+    o->setProperty("passId", passId);
+    o->setProperty("valleys", valleys);
+    return juce::var(o);
 }
 
 double ScvbOutputAudioProcessor::capturedExtentSeconds()
