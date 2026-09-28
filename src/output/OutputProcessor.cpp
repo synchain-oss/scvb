@@ -1550,6 +1550,12 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
         crvsPreserved_ = false; // 解除后不再恢复
         preservedCrvsChunk_.clear();
         crvsAtRejectEncoded_.clear();
+        // [SL-218 #307 复审] 横幅⑪ 那句「原数据会原样保留」从这一刻起不再成立 ⇒ 撤下。与保留态同一时机:
+        // 容器编码成功、新表确实写出去之后(编码失败什么都没写出,原数据仍在,横幅照旧成立)。
+        // 只在 CRVS 位是「rejected」时清:那正是保留态对应的那一支。CRVS 位是「missing」
+        // (之后又载了一份只带 PRMS 的预设)时,那条横幅说的是那份预设,不归这里管。
+        if ((stateNotRestoredMask_.load(std::memory_order_acquire) & scvb::output::kNotRestoredCrvsRejected) != 0)
+            stateNotRestoredMask_.store(0, std::memory_order_release);
     }
     destData.append(blob.data(), blob.size());
 }
@@ -2047,6 +2053,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         stateAbiMismatch_ = true;
         stateAbiSeen_ = scvb::state::parseHeader(bytes, size, hdr) ? hdr.abi : 0u;
         preservedStateBlob_.assign(bytes, bytes + size);
+        // [SL-218 #307 复审] 上一份工程留下的横幅⑪ 撤掉:此后保存写回的是这份更高 abi 的原始 blob,
+        // 上一份工程的 CRVS 留底不会再写出去,⑪ 说的已不是当前工程(这一支由横幅④ 提示)。
+        // 容器损坏那一支不清:什么都没载入,上一份工程仍是当前工程,保存照旧写它的留底。
+        stateNotRestoredMask_.store(0, std::memory_order_release);
         DBG("SCVB Output: state abi " << stateAbiSeen_ << " > current " << scvb::state::kCurrentAbi
                                       << "; refusing load (upgrade required)");
         return;

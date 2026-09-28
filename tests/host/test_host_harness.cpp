@@ -4955,6 +4955,58 @@ TEST_CASE("HOST SL-219②:CFGS 解不开的早退点也置诊断位,CRVS 原样�
     CHECK(crvsPayloadOf(saved) == user);
 }
 
+// [SL-218 #307 复审第 1 轮] 横幅⑪ 的清位 / 不清位时机,各一格:
+//   E1 用户改过段表后的那次保存 ⇒ 清(「原样保留」从此不成立);没改之前保存不清;
+//   E2 载入更高 abi 的工程 ⇒ 清(上一份工程的留底不再写出);
+//   E3 容器损坏 ⇒ 不动(什么都没载入,上一份工程仍是当前工程)。
+TEST_CASE("HOST SL-218:横幅条件的清位时机(改段后保存 / 更高 abi / 容器损坏)", "[host][sl219][sl218]")
+{
+    Rig r;
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto rejected = rejectedCrvsPayload(base, r.out.versionActive());
+    const auto bad = blobWithCrvsPayload(base, rejected);
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+
+    SECTION("E1 改段后保存 ⇒ 清;没改之前保存不清")
+    {
+        juce::MemoryBlock untouched;
+        r.out.getStateInformation(untouched);
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected); // 原样写回期间照旧亮
+        int replaced = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        REQUIRE(crvsPayloadOf(saved) != rejected); // 前提:这次确实写了新表
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E2 载入更高 abi 的工程 ⇒ 清")
+    {
+        std::vector<std::uint8_t> newer(static_cast<const std::uint8_t*>(base.getData()),
+                                        static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        const std::uint32_t abi = scvb::state::kCurrentAbi + 1u;
+        for (int i = 0; i < 4; ++i)
+            newer[static_cast<std::size_t>(4 + i)] = static_cast<std::uint8_t>((abi >> (8 * i)) & 0xFFu);
+        r.out.setStateInformation(newer.data(), static_cast<int>(newer.size()));
+        Rig::pumpMessages(100);
+        REQUIRE(r.out.hasStateAbiMismatch()); // 前提:确实走了更高 abi 那一支
+        CHECK(r.out.stateNotRestoredMask() == 0);
+    }
+    SECTION("E3 容器损坏 ⇒ 不动")
+    {
+        std::vector<std::uint8_t> corrupt(static_cast<const std::uint8_t*>(base.getData()),
+                                          static_cast<const std::uint8_t*>(base.getData()) + base.getSize());
+        corrupt[0] ^= 0xFFu; // magic 坏
+        r.out.setStateInformation(corrupt.data(), static_cast<int>(corrupt.size()));
+        Rig::pumpMessages(100);
+        REQUIRE_FALSE(r.out.hasStateAbiMismatch());
+        CHECK(r.out.stateNotRestoredMask() == scvb::output::kNotRestoredCrvsRejected);
+    }
+}
+
 // ===========================================================================
 // [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
 //

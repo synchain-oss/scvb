@@ -306,9 +306,10 @@ public:
     // [SL-219] CFGS 缺失或解不开、在读 CRVS 之前就早退了)。此时段表被**保留**而不是清空
     // (§7.3 不得静默丢数据)。
     // [SL-218] 上桥走下面的位图:编辑器按它发 §5.1 `stateNotFullyRestored`(琥珀横幅)。
-    // 两条整份拒载的早退(容器损坏 / 更高 abi)**不改**这两个值:那两支什么都没载入,更高 abi
-    // 另有 `newerState` 横幅;容器损坏那支保存时写的是 live 状态、并不原样保留原字节,
-    // 在那一支亮这条横幅(「原数据会原样保留」)就是一句假话。
+    // 两条整份拒载的早退都**不置位**:更高 abi 另有 `newerState` 横幅;容器损坏那支保存时写的是
+    // live 状态、并不原样保留原字节,在那一支亮这条横幅(「原数据会原样保留」)就是一句假话。
+    // 清位:更高 abi 那一支清成 0(上一份工程的留底此后不会写出去);容器损坏那一支不动。
+    // 另一处清位在 getStateInformation:保留态因用户改过段表而解除时,CRVS 位为 rejected 就清成 0。
     bool hasCrvsNotRestored() const noexcept
     {
         return (stateNotRestoredMask() & scvb::output::kNotRestoredCrvsAny) != 0;
@@ -704,6 +705,7 @@ private:
     bool stateAbiMismatch_ = false;
     // [SL-217/SL-218] 最近一次载入没恢复的节(段表已保留,不清空);位定义见 StateRestoreDiag.h。
     std::atomic<std::uint8_t> stateNotRestoredMask_{0};
+    static_assert(std::atomic<std::uint8_t>::is_always_lock_free, "stateNotRestoredMask_ must be lock-free");
     scvb::u32 stateAbiSeen_ = 0;
     std::vector<std::uint8_t> preservedStateBlob_; // 拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写)
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
