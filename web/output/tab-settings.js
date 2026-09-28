@@ -101,6 +101,38 @@ export function versionString(snapshot) {
     return "v" + v.plugin + " · abi " + v.abi;
 }
 
+/** 仓库 blob 前缀;后面拼 `<ref>/<手册路径>`。 */
+export const DOCS_BLOB_BASE = "https://github.com/synchain-oss/scvb/blob/";
+/** 版本串拼不出 tag 时回退的分支(仓库默认分支)。 */
+export const DOCS_FALLBACK_REF = "dev";
+
+/**
+ * 设置页「说明文档」的地址([SL-214] 接线,[SL-220] 改为按版本 pin)。
+ *
+ * 中文界面给中文手册,其余(en / fr)给英文手册。
+ * **pin 到与插件同号的 tag**:`blob/v<version.plugin>/docs/…` —— 用户读到的手册与手上
+ * 的插件同版,不会读到 dev 上已经改过的说明;与 docs/RELEASE.md 发布说明模板里的链接同一口径。
+ * 版本号来自契约 §1.1 快照 `version.plugin`(真源 = CMakeLists.txt 的 `project(VERSION)`),
+ * 这里不写死任何版本。
+ * 回退到 `DOCS_FALLBACK_REF` 的两种情形:快照还没到;版本串不是 `X.Y.Z`(可带 `-后缀`)形态。
+ * ⚠ 已知边界:插件的版本号只有 `X.Y.Z`(CMake 的 project(VERSION) 不带预发布后缀),所以
+ * 以 `vX.Y.Z-rc.N` 这类预发布 tag 发出的构建会链到 `vX.Y.Z`,这个 tag 打出来之前是 404;
+ * 没打过 tag 的开发构建同理。
+ *
+ * @param {string} lang       界面语言 zh / en / fr
+ * @param {object} snapshot   §1.1 快照(可为 null)
+ */
+export function docsUrl(lang, snapshot) {
+    const file =
+        lang === "zh" ? "docs/USER_GUIDE.zh-CN.md" : "docs/USER_GUIDE.md";
+    const v = snapshot && snapshot.version && snapshot.version.plugin;
+    const ref =
+        typeof v === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)
+            ? "v" + v
+            : DOCS_FALLBACK_REF;
+    return DOCS_BLOB_BASE + ref + "/" + file;
+}
+
 /**
  * 存储状态行模型(契约 §1.1 features:{embedded,bytes})。
  *

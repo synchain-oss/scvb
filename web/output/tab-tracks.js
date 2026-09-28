@@ -409,8 +409,8 @@ export function leadLockCount(channels) {
 }
 
 /**
- * §2.8 里 `stale` 为真的轨数(04 §4.5 fingerprint watchdog:该轨上游音频与已采集特征
- * 不一致,建议重新采集)。横幅 ⑧ 与 tab 导航琥珀点共用它。
+ * §2.8 里 `stale` 为真的轨数(该轨已采集特征过期,建议重新采集;成因是上游改动 ——
+ * 04 §4.5 fingerprint watchdog —— 或 [SL-485] 采样率与采集时不同)。横幅 ⑧ 与 tab 导航琥珀点共用它。
  *
  * **必须读合并后的段表视图,不能读单个事件的 `channels`** —— §2.8 的 `channels` 只含
  * 受影响轨(一次段编辑只带一轨),拿事件当全量算会把其余轨的 stale 一起抹掉。

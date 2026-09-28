@@ -17,11 +17,11 @@ T45 早期在这里放过一个占位页(`index.html` + `app.js`),用途是开�
 - 设计盒 **960×720、七档缩放**,真源 = `web/shared/design-box.js` 的 `DESIGN.monitor`
   (C++ 侧 `src/core/DesignBox.h` 由 `scripts/gen-design-box.py` 从它生成,gate 3d 逐值对拍)。
 
-## 资源尚未嵌入(现状,非缺陷)
+## 资源嵌入
 
-`MonitorEditor` 传的是 `resourceSource = {}` —— 与 `web/input`、`web/output` 的**现状同口径**:
-仓内还没有 `juce_add_binary_data` 接线,三个插件的 web 资源都尚未编进二进制。
-所以本目录的文件目前**不会**被插件加载,只由 `web-preview` 消费。
+本目录的文件经 `cmake/ScvbWebAssets.cmake`(`juce_add_binary_data`)编进 Monitor 插件二进制,
+`MonitorEditor` 的 `resourceSource` 从生成的 `ScvbMonitorWebData` 取;`web-preview` 也直接消费同一份文件。
+「页面真会去取的每个文件都进了包」由 ctest 的 `test_web_assets_embedded` 兜。
 
 ## native 侧接口真源
 
@@ -32,16 +32,14 @@ T45 早期在这里放过一个占位页(`index.html` + `app.js`),用途是开�
 | viz 段布局与降采样口径 | `src/core/ipc/VizPlane.h` + `docs/contract-changes/20260825-viz-segment.md` |
 | 段布局逐行冻结 | `tests/golden/ipc-layout.txt` |
 
-**两侧不是靠信件同步**(⚠ 下面这套机检**随 #90 落地** —— 本仓 `web-preview/tests/` 目前还没有
-`smoke-monitor.mjs`,这一段是对 #90 的转述,本 PR 单独合入时它指向的文件尚不存在):
-T46 的 `web/monitor/viz-contract.js` 是段契约的 JS 侧镜像,`web-preview/tests/smoke-monitor.mjs`
+**两侧不是靠信件同步**:T46 的 `web/monitor/viz-contract.js` 是段契约的 JS 侧镜像,`web-preview/tests/smoke-monitor.mjs`
 把它同时对拍上表的 golden(段字段名 + 偏移升序)与 `MonitorEditor.cpp` 的 `setProperty` 名
 (按函数切开比,并有反向断言:桥送出而镜像表没有的字段当场红)。
 **改名字会在对方的机检上立刻现形;但改语义不会** —— 同一个字段名换含义两面都是绿的,那种改动必须在信里明说。
 
-## 桥面尚未进冻结契约
+## 桥面已进冻结契约
 
-`MonitorBridgeApi.h` 与 T46 的 `monitor-bridge.js` 都**尚未**进 `docs/SCVB_CONTRACT.md §7 manifest`,
-也不在 `scripts/check-bridge-parity.mjs` 的抽取路径(该脚本只扫 `src/input` 与 `src/output` 两个显式路径)。
-等 ipc v1.6 修宪落地后同批转正:契约加 `manifest.monitor` → `web/shared/bridge.js` 加名表 →
-parity 加抽取路径 → `monitor-bridge.js` 退化成薄封装或删除。
+Monitor 桥面已随 [J81] 转正:`docs/SCVB_CONTRACT.md §7` 有 `manifest.monitor`(正文 §10),
+`web/shared/bridge.js` 有 `BRIDGE_FUNCTIONS.monitor` / `BRIDGE_EVENTS.monitor`,
+`scripts/check-bridge-parity.mjs` 的 [M] 块把 manifest、`bridge.js` 与 `src/monitor/MonitorBridgeApi.h` 三向比对。
+`monitor-bridge.js` 里的两张名表已不是比对面,以 `bridge.js` 为准;它按文件头自陈应退化成薄封装或删除(T46 后续小项)。

@@ -1,7 +1,7 @@
 [English](USER_GUIDE.md) | **简体中文**
 
 > 状态: 演进中
-> 最后更新: 2026-08-24(对应版本 v0.1.0)
+> 最后更新: 2026-09-28
 > 真源: 本文件(`## 硬约束` 小节是九条红字的唯一真源,见下)
 
 # SCVB 用户手册
@@ -14,6 +14,8 @@ SCVB(Synchain Vocal Balancer)是**一对**配套的 VST3 插件,用来给多人�
 - **SCVB Output** 插在人声总线上,负责分析、平衡、求和,并把结果写回 DAW 的自动化。
 
 两个插件必须**同时安装、成对使用**。只装一个不会让你得到一条没有声音的轨道(见硬约束第 3 条),但也不会得到任何平衡结果。
+
+同一个 zip 里还有第三个插件 **SCVB Monitor**,**可选**:一个只读窗口,用来看整组的声像与音量变化。它原样直通音频,没有任何自动化参数,也不会改变 Input 与 Output 的行为。
 
 > **九条红字的改法**:本文件 `## 硬约束` 小节是这九条的**唯一真源**。它们另外还出现在 `docs/USER_GUIDE.md`、两份 README 的快速上手、以及插件 UI 的三语词条里,共 7 处。**任何一处都不许手抄** —— 改文案只改本小节(译文改 `docs/hard-rules.i18n.json`),然后跑 `node scripts/gen-hard-rules.mjs`,其余 6 处随生成物更新;`node scripts/gen-hard-rules.mjs --check` 是门禁。
 
@@ -32,6 +34,35 @@ SCVB(Synchain Vocal Balancer)是**一对**配套的 VST3 插件,用来给多人�
 > 7. **所有轨默认参与自动声像;立体声轨如需保留原有声像宽度与位置,请在轨道页关闭该轨的「参与自动声像」。** mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),关闭参与后保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J83)
 > 8. **SCVB Output 不向 DAW 报告额外延迟。** 对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)
 > 9. **看到"时间线缺口 / 重叠"警告时,不要继续导出。** 先按 `docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
+
+## 安装
+
+所有东西都在一个 zip 里:`SCVB-v<版本号>-win64.zip`,内含三个插件:
+
+| 插件 | 放在哪里 | 要不要装 |
+|---|---|---|
+| **SCVB Input** | 每条人声轨插件链的最后一格 | 必装 |
+| **SCVB Output** | 人声总线的第一格 | 必装 |
+| **SCVB Monitor** | 任意一条轨(它原样直通音频) | 可选 —— 用来看整组情况的只读窗口 |
+
+### 下载与校验
+
+1. 从 [Releases 页](https://github.com/synchain-oss/scvb/releases)下载 `SCVB-v<版本号>-win64.zip` 与对应的 `.sha256`。
+2. 校验 zip。在下载目录打开 PowerShell,运行 `Get-FileHash .\SCVB-v<版本号>-win64.zip -Algorithm SHA256`,结果必须与 Release 正文里的 SHA-256 一致(那个值由 CI 产出,以它为准)。**对不上就不要安装,并告诉我们。**
+
+### 解除锁定(插件未做代码签名)
+
+SCVB 没有做代码签名,所以 Windows 与浏览器会把它当作「未知发布者」的文件:
+
+- **浏览器可能拦下载**(提示「不常下载」或「未知发布者」)。SHA-256 校验一致的话,选择保留文件 —— Microsoft Edge 里是 **…** → **保留** → **显示更多** → **仍然保留**。
+- **解压之前先去掉「来自网络」的标记。** 带标记的 zip 解压出来的每个文件都会带上同样的标记。右键 zip → **属性** → **常规** 页勾选 **解除锁定** → **确定**。如果没有「解除锁定」这个勾选框,说明文件没带标记,不用做任何事。PowerShell 的等价命令是 `Unblock-File .\SCVB-v<版本号>-win64.zip`。
+
+### 复制插件
+
+1. 解压,把 `SCVB Input.vst3`、`SCVB Output.vst3` 与(需要的话)`SCVB Monitor.vst3` **整个 bundle 文件夹**复制到 `C:\Program Files\Common Files\VST3\`(Windows 会要求管理员权限)。
+2. 在 DAW 里重新扫描插件。
+
+**所有 SCVB 插件一起升级。** Input 与 Output 共用同一个版本号。两侧的共享内存协议版本不同时会刻意拒绝连接;即便能连上,「旧 Input + 新 Output」(或反过来)的混装也不受支持(新 Output 配旧 Input 时,离线渲染的人声可能被叠加两次)。
 
 ## 5 分钟上手
 

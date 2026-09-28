@@ -63,7 +63,7 @@ import {
 import { createTabWave } from "./tab-wave.js";
 import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
-import { createTabSettings } from "./tab-settings.js";
+import { createTabSettings, docsUrl } from "./tab-settings.js";
 import {
     createTour,
     shouldShowTourAsk,
@@ -575,18 +575,8 @@ langStart.mount();
 // ------------------------------------------------------------- 查看工作流程大卡(与 tour 步 2 同一张大卡)
 // 设置页「查看工作流程」入口:独立 overlay,渲染 workflow.* 五节点 + 优先级;零桥、零 state。
 // ---------------------------------------------------- 说明文档外链(SL-214)
-/**
- * 文档地址(中文界面给中文手册,其余给英文)。
- *
- * **分支 pin 而不是版本 pin**:docs/RELEASE.md 里发布说明的写法是
- * `blob/v{X.Y.Z}/docs/…` —— 那是对**已发过 tag** 的版本才成立的写法。眼下唯一的
- * tag 是 v0.1.0(空壳骨架),按版本拼出来的链接对当前每一个构建都是 404。
- * 故先 pin 默认分支;**发版时应按 RELEASE.md 的 tag 口径改回来**,改这一处即可。
- */
-const DOCS_URL = {
-    zh: "https://github.com/synchain-oss/scvb/blob/dev/docs/USER_GUIDE.zh-CN.md",
-    en: "https://github.com/synchain-oss/scvb/blob/dev/docs/USER_GUIDE.md",
-};
+// 地址由 tab-settings.js 的 docsUrl() 按「界面语言 + 快照里的插件版本号」算出([SL-220]:
+// pin 到与插件同号的 tag,快照没到或版本串不合形态时回退默认分支),规则与已知边界写在那里。
 
 /**
  * 在**系统浏览器**里打开说明文档。
@@ -601,7 +591,7 @@ const DOCS_URL = {
  * WebView2 不会自己弹窗。
  */
 function openDocsInBrowser() {
-    const url = DOCS_URL[lang] || DOCS_URL.en;
+    const url = docsUrl(lang, store.snapshot);
     // noopener:被打开方拿不到 window.opener,标准外链纪律
     window.open(url, "_blank", "noopener");
 }
