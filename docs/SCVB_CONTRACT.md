@@ -41,7 +41,7 @@
 2. 电平/失准等高频数据带阈值(电平 0.3 dB 阈值,镜像 Bridge)。
 3. `scvb.groups`、`scvb.config` 为「按频率探测/轮询、**变化才发**」;`mBridgeReady` 后的**首帧必发**按事件类别分三档,保证 UI 不停在空态:
    - **状态类**(`scvb.state` / `scvb.params` / `scvb.conn` / `scvb.config` / `scvb.groups` / `scvb.meters` / `scvb.playhead` / `scvb.segments`)—— **首帧各必发一次**(`scvb.segments` 以 `reason:"snapshot"` 发全部轨全量段表,§2.8);
-   - **采集类**(`scvb.captureProgress`)—— **只在播放中发**(§2.7),首启非播放时不发,空态由 `scvb.state` 承载;
+   - **采集类**(`scvb.captureProgress`)—— **周期帧只在播放中发**(§2.7);**例外([J152])**:`mBridgeReady` 后首帧、`clearCoverage` 受理后(§1.24)**各补发一次全量**(15 轨全带),**不看走带** —— 停着打开面板时覆盖率由首帧这一次承载。空态判定仍以 `scvb.state` 为准(全量帧到达之前那一拍覆盖仍是空的);
    - **条件类**(`scvb.error`)—— **只在条件成立时发**(§2.9/§4.5),**不发空 error**。
 4. 波形按视口拉取,LRU 缓存归 UI 侧(05 §6.3),C++ 不为波形维护推送状态。
 
@@ -362,7 +362,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `tracksMask: u16`;`startS: f64`;`endS: f64` |
 | 返回 | `{ok:true, clearedS:f64}`(实际清除的总时长秒数,供 UI 反馈)或 `{observer:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 显式清除选中轨×区间的采集特征数据(04 §1.1「被用户显式清除」的唯一入口),UI 侧须二次确认。清除后经 `scvb.captureProgress`/`scvb.state` 回推覆盖率变化;波形侧由 UI 重新 `requestWaveform`。 |
+| 语义 | 显式清除选中轨×区间的采集特征数据(04 §1.1「被用户显式清除」的唯一入口),UI 侧须二次确认。清除后经 `scvb.captureProgress`(受理后补发一次 15 轨全量,**不看走带**,§2.7 [J152])/`scvb.state` 回推覆盖率变化;波形侧由 UI 重新 `requestWaveform`。 |
 | 拒绝态 | `tracksMask=0` 或 `startS>=endS` → `{ok:false, reason:"badArg"}`;只读观察态 → `{observer:true}` |
 | 撤销 | 否(**不入撤销栈**:采集数据不属曲线真身) |
 | 线程/频率 | [M];用户确认后触发 |
@@ -565,11 +565,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 | 项 | 定义 |
 |---|---|
-| 频率 | **播放中 2 Hz**(非播放不发) |
+| 频率 | **周期帧:播放中 2 Hz**(非播放不发)。**例外帧([J152])**:`mBridgeReady` 后首帧、`clearCoverage` 受理后(§1.24)**各补发一次全量**,**不看走带**,不占 2 Hz 节拍 |
 | 载荷 | `{ channels:[ { ch:1..15, addedRanges:[{startS:f64, endS:f64}], coveragePct:f32 } ] }` |
-| 字段纪律 | **增量**:**`addedRanges`**(**T25 定名**,§9.2)= 自上一帧新增覆盖的区间(合并后)——它是宪法字段 `features.per_channel[].coverage_ranges[]`(params-v0 §二)的**增量投影**,与 state 真身**语义不同故不同名**(真身是全量区间表,本字段是本帧增量),按 §0.2 规则②取 lowerCamelCase;05 §1.4 该行原文为「每轨 `coverage_ranges` 增量」。`coveragePct` = 该轨在 `global.range`(follow 态取全时间线已分析域)内的覆盖百分比 0..100(**T25 定名**,§9.2,供 Tab3 轨头「覆盖率」显示)。仅包含**本帧有变化**的轨。 |
-| UI 消费 | 泳道底部 2px 覆盖条实时延伸、Tab3 轨头覆盖率 |
-| 真源 | 05 §1.4 / §2.3 |
+| 字段纪律 | **增量**:**`addedRanges`**(**T25 定名**,§9.2)= 自上一帧新增覆盖的区间(合并后)——它是宪法字段 `features.per_channel[].coverage_ranges[]`(params-v0 §二)的**增量投影**,与 state 真身**语义不同故不同名**(真身是全量区间表,本字段是本帧增量),按 §0.2 规则②取 lowerCamelCase;05 §1.4 该行原文为「每轨 `coverage_ranges` 增量」。`coveragePct` = 该轨在 `global.range` 内的覆盖百分比 0..100(**T25 定名**,§9.2,供 Tab3 轨头「覆盖率」显示);follow 态没有显式范围,取已知时间线:**播放中** = [0, 播放头),**停着**(只会是例外帧)= [0, max(播放头, 已采集时间线末端))(已采集末端 = 全轨覆盖的最大终点,与 §1.6 follow 档「分析全部」的终点同一个量)。周期帧仅包含**本帧有变化**的轨。<br>**例外帧**([J152]):`channels` 含**全部 15 轨**(本帧无变化、从未采集的轨也在,报 `coveragePct:0`);`addedRanges` 仍是相对上一帧的增量 —— 首帧与 `clearCoverage` 之后增量基线为空,故为窗口内的全部覆盖区间;分母窗口为空时(follow 态、从未采集、播放头在 0)各轨照发 `coveragePct:0`、`addedRanges:[]`。 |
+| UI 消费 | 泳道底部 2px 覆盖条实时延伸、Tab3 轨头覆盖率、Tab1 分析行「范围内 {p}% 已覆盖」 |
+| 真源 | 05 §1.4 / §2.3;例外帧:[J152] |
 
 ### 2.8 `scvb.segments`
 

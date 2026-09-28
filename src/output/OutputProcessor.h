@@ -24,6 +24,7 @@
 #include "output/StateRestoreDiag.h" // [SL-218] 未恢复节位图(JUCE-free)
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
+#include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
@@ -134,8 +135,13 @@ struct OutputRuntimeState
     std::array<Channel, scvb::engine::kNumTracks> channels;
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)
-    juce::String activeTab = "master";
-    // 首启已读位是本结构里**唯一跨线程**的两个字段:自 T37 起它们随 PRMS 持久化,
+    //
+    // [J148] active_tab 自本版起随 PRMS 持久化(§1.31「重开面板恢复上次 tab」),于是它与下面
+    // 几位一样跨线程:宿主线程的 get/setStateInformation 读写、消息线程的 setActiveTab 桥入口写、
+    // 25Hz 的 buildStateSubtree 读。故存**序号**进 atomic(juce::String 装不进 atomic),名字 ⇄ 序号
+    // 的换算只在 OutputUiState.h 一处。单字段、无跨字段不变式,写方不需要持 lifecycleMutex_。
+    std::atomic<scvb::output::OutputActiveTab> activeTab{scvb::output::OutputActiveTab::kMaster};
+    // 首启已读位同样跨线程:自 T37 起它们随 PRMS 持久化,
     // 于是宿主线程的 setStateInformation 会写、消息线程 25Hz 的 buildStateSubtree 会读。
     // 用 atomic 而不是让读方去抢 lifecycleMutex_ —— 25Hz 的 emit 路径不该为两个 bool
     // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。
@@ -417,6 +423,39 @@ public:
         std::vector<scvb::analysis::HopRange> ranges; // 覆盖区间(hop 域;秒换算用 featHopSeconds)
     };
     CoverageInfo coverageOf(int channel, double startS, double endS);
+
+    // [M] §2.7 `scvb.captureProgress` 的一帧(这一帧该带哪些轨、各带什么)。
+    //
+    // 放在 processor 而不是 editor:editor 编不进任何 C++ 测试目标(要真 WebView2),
+    // 放这里 host harness 才能拿真采集、真存盘重开的数据直接断言帧内容([J152])。
+    // editor 只管「什么时候要一帧」(周期 / 两个例外)与序列化。
+    //
+    // 增量基线归调用方持有(editor 一份;测试自己一份),本函数按本帧结果推进它。
+    struct CaptureProgressBaseline
+    {
+        std::array<std::vector<scvb::analysis::HopRange>, 15> ranges{}; // 上一帧已报过的覆盖区间
+        std::array<float, 15> pct{}; // 上一帧已报过的覆盖率
+        // clearCoverage 之后作废:否则下一帧的差集会把已被清掉的区间当成仍在,覆盖条撤不下去。
+        // pct 落哨兵 −1:与任何真实百分比都不等。
+        void reset()
+        {
+            for (auto& r : ranges)
+                r.clear();
+            pct.fill(-1.0f);
+        }
+    };
+    struct CaptureProgressTrack
+    {
+        int ch = 0; // 1..15
+        std::vector<scvb::analysis::HopRange> added; // 相对基线新增的区间(hop 域)
+        float pct = 0.0f; // 0..100
+    };
+    // forceFull=false:周期帧 —— **只在播放中**出帧,且只带本帧有变化的轨(§2.7)。
+    // forceFull=true :[J152] 两个例外帧(mBridgeReady 后首帧 / clearCoverage 受理后)——
+    //   **不看走带**,15 轨全带;分母窗口为空(follow 档、从未采集、播放头在 0)时各轨 0% 照发,
+    //   否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    // 返回空 = 这一拍不发。分母窗口见 `AnalyzeScopeMath.h` 的 `captureProgressWindow`。
+    std::vector<CaptureProgressTrack> captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull);
 
     // [SL-252 / SL-257] 某段的**上报响度** L_seg(§2.8 `loudnessLufs`),emit 时按 FEAT 重算。
     // 此前上桥恒为 `0.0`:`applyAnalysisSegments` 把 `AnalysisSegment` 抄进 `state::Segment`

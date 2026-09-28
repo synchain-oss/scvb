@@ -396,7 +396,7 @@ log("=== ① 契约映射的纯函数 ===");
     );
     check(
         !TM.analyzeNoData(null, 327),
-        "重开工程未播放(§2.7 无覆盖帧,段表有货)⇒ 可分析",
+        "覆盖帧还没到(null)、段表有货 ⇒ 可分析",
     );
     check(TM.analyzeNoData(null, 0), "双空 ⇒ 禁用(真无数据)");
     // [SL-535] 第三参 = dry-run 轨数(只数已连接的轨)。删掉 analyzeNoData 里那一行,第一格红。
@@ -526,6 +526,46 @@ log("=== ② Wave 1 静态填数 → 事件驱动,同一 fixture 下数字不变
         "一轨都没报到 ⇒ null(调用方隐掉整行,不显示假 0%)",
     );
     eq(TM.coveragePercent({ 3: 80, 7: 90 }), 85, "分母取已报到轨数,首帧即稳定");
+    // [J152] 就绪首帧 / 清除之后是 15 轨全量帧,没采过的轨报 0。只用 4 轨、4 轨采满的工程:
+    // 分母若取「已报到的轨」(15)就成了 27% —— 没采过的轨不许稀释这个数。
+    // ← 把 coveragePercent 改回「已报到轨的均值」即红。
+    {
+        const full = {};
+        for (let ch = 1; ch <= 15; ch++) full[ch] = ch <= 4 ? 100 : 0;
+        eq(
+            TM.coveragePercent(full),
+            100,
+            "[J152] 全量帧里没采过的轨(0%)不进分母:4 轨采满 ⇒ 100%,不是 27%",
+        );
+        full[2] = 50;
+        eq(
+            TM.coveragePercent(full),
+            88,
+            "[J152] 有覆盖的轨照常平均:(100+50+100+100)/4 = 87.5 ⇒ 88",
+        );
+        // 停着把第 4 轨整轨清光:例外帧里它报 0。它**采过**(seen 记着),必须留在分母里 ——
+        // (100+50+100+0)/4 = 62.5 ⇒ 63。← 分母改回只看「此刻 > 0」即红(会显示 83)。
+        full[4] = 0;
+        const seen = { 1: true, 2: true, 3: true, 4: true };
+        eq(
+            TM.coveragePercent(full, seen),
+            63,
+            "[J152] 采过、后来被整轨清光的轨仍在分母里:清光 1 轨数字要降(63,不是 83)",
+        );
+        // 没采过的轨即使在 seen 之外报 0 也不进分母(seen 只收报过 > 0 的轨)。
+        eq(
+            TM.coveragePercent({ 1: 100, 2: 0 }, { 1: true }),
+            100,
+            "[J152] seen 之外的 0% 轨不进分母",
+        );
+    }
+    // 已报到的轨全是 0:范围里确实一格覆盖都没有 ⇒ 0(不是 null —— 那是「一轨都没报到」)。
+    // ← 改成「全 0 也回 null」即红(整行被隐掉,少了一句真话)。
+    eq(
+        TM.coveragePercent({ 1: 0, 2: 0, 3: 0 }),
+        0,
+        "[J152] 已报到的轨全是 0 ⇒ 0(不是 null)",
+    );
     check(
         totals.n > 0 && totals.m > 0,
         "fifteen-tracks 下影响面非空(否则分析按钮会误判 disabled)",
@@ -824,6 +864,53 @@ async function openSession(params) {
         { ok: false, reason: "badArg" },
         "未知 tab ⇒ badArg",
     );
+    // [J148] native 侧 §1.31 的两跳**接线钉子**。为什么落在 web 冒烟里:`OutputEditor.cpp`
+    // 编不进任何 C++ 测试目标(要真 WebView2;host 套件给 createEditor 一个空实现),理由与
+    // smoke-tab2-interactions 的 [SL-199] 那组相同。落盘 / 载入那一半在 scvb_host_tests 的
+    // 「HOST J148」里真跑,这里只守它够不着的两跳:
+    //   ① setActiveTab 把解析出的 tab **写进** runtime().activeTab —— 退化形态是只校验不写,
+    //      回执照样 {ok:true},而工程里永远存 master;
+    //   ② §2.1 快照的 ui.active_tab **读的是同一个** atomic —— 退化形态是写死一个字面量,
+    //      重开工程时 C++ 恢复了 tab、页面却收到 master。
+    // ⚠ 文本级:守的是「这几行还在、还连着那个字段」,不守语义。正则带 `^\s+…$`(m 标志)的
+    // 行形态,注释行(以 `//` 起头)匹配不上 —— 注释里写着这几行的样子也顶替不了真代码。
+    {
+        const oe = readFileSync(
+            join(ROOT, "src/output/OutputEditor.cpp"),
+            "utf8",
+        );
+        // 取**这一个函数自己的**体:从定义处到第一个行首的 `}`(本文件函数体一律在第 0 列收尾)。
+        const fnBody = (sig) => {
+            const start = oe.indexOf(sig);
+            if (start < 0) return "";
+            const end = oe.indexOf("\n}\n", start);
+            return end < 0 ? "" : oe.slice(start, end);
+        };
+        const setTab = fnBody("void OutputEditor::handleSetActiveTab(");
+        const snap = fnBody("juce::var OutputEditor::buildStateSubtree(");
+        check(
+            setTab.length > 0 && snap.length > 0,
+            "[J148] 找到 handleSetActiveTab 与 buildStateSubtree 两个函数体(锚点变了就回来同步)",
+        );
+        check(
+            /^\s+if \(a\.size\(\) < 1 \|\| !scvb::output::parseActiveTab\(a\[0\]\.toString\(\), tab\)\)$/m.test(
+                setTab,
+            ),
+            "[J148] ① setActiveTab 用 parseActiveTab 判四值(与加载侧同一张表)",
+        );
+        check(
+            /^\s+processor_\.runtime\(\)\.activeTab\.store\(tab, std::memory_order_relaxed\);$/m.test(
+                setTab,
+            ),
+            "[J148] ① setActiveTab 把 tab 写进 runtime().activeTab(不写 ⇒ 工程里永远存 master)",
+        );
+        check(
+            /^\s+put\(ui, "active_tab",\s*juce::String\(scvb::output::activeTabName\(rt\.activeTab\.load\(std::memory_order_relaxed\)\)\)\);$/m.test(
+                snap,
+            ),
+            "[J148] ② 快照的 ui.active_tab 读 runtime().activeTab(写死字面量 ⇒ 重开工程页面收不到恢复值)",
+        );
+    }
 
     // 缩放:档位表外 ⇒ badArg(§1.28)
     eq((await bridge.setUiScale(1.25)).ok, true, "setUiScale(1.25) 在档位表内");

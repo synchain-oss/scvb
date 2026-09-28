@@ -148,6 +148,9 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
+    // [J152] ch → true:本会话里报过 > 0 的轨。Tab1 覆盖率的分母(见 tab-master coveragePercent):
+    // 全量帧里从没采过的轨报 0 不进分母,**采过、后来被清光**的轨仍在分母里 —— 否则整轨清光后数字不降。
+    coverageSeen: {},
     // §2.9 code → payload(active:false 即删)。键 = 裸 code,同一 code 的后一帧覆盖
     // 前一帧。轨级的 srMismatch / channelConflict(载荷带 ch)也不例外 —— srMismatch 的
     // 横幅 ③ 口径就是一次只显示一个轨号(05 §2.0),这是既定行为,不是漏了复合键。
@@ -2289,6 +2292,7 @@ if (bridge) {
         // `addedRanges` 是本帧新增区间 —— Tab1 只消费前者(泳道底部的 2px 覆盖条归 T33)。
         for (const c of (cp && cp.channels) || []) {
             store.coverage[c.ch] = c.coveragePct;
+            if (c.coveragePct > 0) store.coverageSeen[c.ch] = true; // [J152] 见 store 头注
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
