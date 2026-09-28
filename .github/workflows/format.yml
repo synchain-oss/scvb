@@ -261,6 +261,49 @@ jobs:
         # 手抄两边会各自漂移,而漂移方向恰好是「测试还绿着,CI 已经不编了」。
         # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
         run: node scripts/check-native-paths.mjs
+      - name: Actions pinned to 40-hex commit SHA (CLAUDE.md §0 安全铁律第 3 条)
+        # [SL-538] 铁律第 3 条此前没有机检:compliance.yml 与 release.yml 的 `actions/checkout@v4`
+        # 就这样一直留着,直到有人人工翻到。这里逐个取 workflow 与 `.github/actions/` 下复合 action
+        # 里 `uses:` 后面的值,分两类判:
+        # 本地引用只放行 `./.github/actions/` 与 `./.github/workflows/` 下的(被指向的文件都在
+        # 本步扫描集里;路径含 `..` 不放行),其余必须是 `<ref>@<40 位小写十六进制>`。
+        # 指向别处的 `./…` 判红:那份 action.yml 不在扫描集里,放行就等于不查。
+        # 不查 `# vX.Y.Z` 注释(它是给人和 dependabot 看的,钉住执行内容的是 SHA)。
+        # 形态上宁红勿漏:加引号、值写在下一行、`docker://` 这类判据没见过的写法一律判红,
+        # 真要用再来改这里;`run:` 块里不以 `#` 开头的行出现这个键名,同样按引用判。
+        # 零 `uses:` 也判红 —— 那说明 glob 或匹配本身坏了,不是「全都合规」。
+        # 零依赖(bash + awk),不联网、无 secrets。
+        run: |
+          shopt -s nullglob globstar
+          files=(.github/workflows/*.yml .github/workflows/*.yaml)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow files under .github/workflows"; exit 1; }
+          # 放行 `./.github/actions/…` 的前提是那里的复合 action 自己也被查;目录不存在时 nullglob 给空
+          files+=(.github/actions/**/action.yml .github/actions/**/action.yaml)
+          # 键名拼出来而不写字面量:本文件也在被扫的集合里,这段脚本自己若含那个字面量就会扫到自己
+          awk -v key="use""s:" '
+            /^[[:space:]]*#/ { next }
+            $0 ~ (key "[[:space:]]*$") { print FILENAME ":" FNR ": value not on the same line as the key"; n++; bad++; next }
+            {
+              s = $0
+              while (match(s, key "[[:space:]]*[^[:space:]]+")) {
+                adv = RSTART + RLENGTH
+                v = substr(s, RSTART + length(key), RLENGTH - length(key)); sub(/^[[:space:]]*/, "", v); n++
+                if (v ~ /^\./) {
+                  # 本地引用先单独判:它没有 SHA 可钉,不能落进下面的 SHA 判据(`./x@<40 hex>` 会被放行)
+                  if (v !~ /^\.\/\.github\/(actions|workflows)\// || v ~ /\.\./) { print FILENAME ":" FNR ": local ref outside ./.github/actions or ./.github/workflows: " v; bad++ }
+                } else {
+                  at = index(v, "@"); sha = substr(v, at + 1)
+                  if (at == 0 || length(sha) != 40 || sha ~ /[^0-9a-f]/) { print FILENAME ":" FNR ": not pinned to a 40-hex SHA: " v; bad++ }
+                }
+                s = substr(s, adv)
+              }
+            }
+            END {
+              print "checked " (n + 0) " action refs, " (bad + 0) " rejected"
+              if (n == 0) { print "::error::no action refs found - the guard itself is broken"; exit 1 }
+              if (bad > 0) { print "::error::remote action refs must be pinned to a 40-hex commit SHA (CLAUDE.md section 0, rule 3); local refs must live under ./.github/actions or ./.github/workflows"; exit 1 }
+            }
+          ' "${files[@]}"
       - name: Strip-comments gate self-test (剥注释的扫描器 = 共用判据面)
         # [SL-330b] `lib/strip-comments.mjs` 是下面几条判据**共用的判据面**:剥多了
         # (把串里的东西当注释删掉)判据无声缩水,剥少了(注释冒充代码)判据变哑弹 ——

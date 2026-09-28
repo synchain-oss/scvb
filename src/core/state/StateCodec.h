@@ -33,8 +33,8 @@
 //    现状([SL-524]):「原样回写」这一半已接 —— 任何被 decodeCrvs 拒收的 CRVS(含 minor 更高)保存时
 //    写回原字节,但只到用户改动段表/版本为止([J122],之后写新表,见 OutputProcessor.h 的
 //    crvsPreserved_);「提示升级」这一半仍未接线。
-// 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
-//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
+// 3. wire-format 与 docs/STATE_SCHEMA.md 交叉校验的基准 = 本头 + tests/golden/state/abi{N}.bin
+//    (abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
 namespace scvb::state
 {
 
