@@ -481,6 +481,26 @@ const ensureHit = (pt) =>
             return d.elementFromPoint(${pt.x} - fr.left, ${pt.y} - fr.top) === c;`),
         5000,
     );
+// 画布在页面上的位置连续 600 ms 不变(每 100 ms 采一次),或 8 s 超时。
+async function stableCanvas() {
+    const t0 = Date.now();
+    let last = "";
+    let same = 0;
+    while (Date.now() - t0 < 8000) {
+        const r = await evaluate(
+            IN(`const c = gb("master-pancurve-canvas");
+                const fr = f.getBoundingClientRect();
+                const r = c.getBoundingClientRect();
+                return [fr.left + r.left, fr.top + r.top, r.width, r.height].map((v) => v.toFixed(1)).join(",");`),
+        );
+        same = r === last ? same + 1 : 0;
+        last = r;
+        if (same >= 6) return true;
+        await sleep(100);
+    }
+    return false;
+}
+
 // 诊断:按下点此刻是什么元素(前提格红了时打出来,别让「没进拖动态」只剩一句话)。
 const whatIsAt = (pt) =>
     evaluate(
@@ -589,8 +609,27 @@ try {
     newBucket("拖点");
     {
         // 第 4 点(angle 0 / 0 dB,bell):离两侧邻点(-24° / 28°)最远,纵向拖不会越过谁。
+        // 先等画布位置稳住:首帧之后页面还会异步出 / 收横幅,画布整体上下挪几十 px ——
+        // elementFromPoint 仍落在画布上,可按下点已经不在那个点的 12 px 命中半径里
+        // (实测:按下点页面坐标 y=660.9、画布收到的 clientY=622.4,diag 显示编辑器没进拖动态)。
+        check(
+            await stableCanvas(),
+            "(p0d)画布位置已稳定(连续 600 ms 不再挪动)",
+        );
         const start = await pointXY(0, 0);
         check(await ensureHit(start), "(p0c)按下点此刻命中画布本身(无罩层)");
+        // 诊断探针:画布实际收到的 pointerdown(捕获阶段,先于编辑器自己的监听)。
+        await evaluate(
+            IN(`const c = gb("master-pancurve-canvas");
+                w.__livePd = [];
+                if (!c.__livePdHook) {
+                    c.__livePdHook = true;
+                    c.addEventListener("pointerdown", (e) => {
+                        w.__livePd.push({ x: e.clientX, y: e.clientY, b: e.button, t: e.pointerType });
+                    }, true);
+                }
+                return true;`),
+        );
         const d0 = await curveDiag();
         const k0 = await logMark();
         await mouse("mousePressed", start.x, start.y);
@@ -602,7 +641,7 @@ try {
             )
         ) {
             log(
-                `  诊断:按下点 ${JSON.stringify(start)} 处是 ${await whatIsAt(start)};diag=${JSON.stringify(pressed)}`,
+                `  诊断:按下点 ${JSON.stringify(start)} 处是 ${await whatIsAt(start)};画布收到的 pointerdown=${JSON.stringify(await evaluate(IN("return w.__livePd;")))};diag=${JSON.stringify(pressed)}`,
             );
         }
         // 约 1 秒连续拖:每 ~16 ms 一步,往上抬增益,横向 ±3 px 抖动。
