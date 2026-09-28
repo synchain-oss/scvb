@@ -913,30 +913,49 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     scvb::SegmentBackendInProcess::resetAll();
     scvb::SegmentBackendInProcess backend;
 
-    auto publish = [&]() {
+    // [SL-453] Catch2 断言宏不是线程安全的:在工作线程里跑 REQUIRE/CHECK(哪怕是成功的那次)
+    // 会与主线程并发改它的内部状态,Debug 下偶发 HEAP CORRUPTION、Release 下偶发挂死;失败时
+    // 在工作线程里抛出又会直接 std::terminate。publish() 下面还要在「消息」工作线程上调用,
+    // 所以它**不放断言宏**,失败只计数,join 之后在主线程上断言。
+    std::atomic<u64> createFailures{0};
+    std::atomic<u64> initFailures{0};
+    auto publish = [&]() -> scvb::SegmentHandle {
         scvb::SegmentView v;
-        REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.registry", scvb::kRegistrySegmentSize, v) ==
-                scvb::InitResult::kOk);
+        if (backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.registry", scvb::kRegistrySegmentSize, v) !=
+            scvb::InitResult::kOk)
+        {
+            ++createFailures;
+            return scvb::SegmentHandle{}; // 没映射出来:空句柄(release() 恒 true,不碰 backend)
+        }
         auto* hdr = static_cast<scvb::RegistryHeader*>(v.base);
-        REQUIRE(backend.initHeader(v, &hdr->magic, &hdr->abi, &hdr->generation, sizeof(scvb::RegistryHeader)) ==
-                scvb::InitResult::kOk);
+        if (backend.initHeader(v, &hdr->magic, &hdr->abi, &hdr->generation, sizeof(scvb::RegistryHeader)) !=
+            scvb::InitResult::kOk)
+        {
+            ++initFailures; // 已映射:仍交给句柄,照常走释放流程
+        }
         return scvb::SegmentHandle(std::move(v), &backend);
     };
 
     scvb::SegmentHandle handle = publish();
+    REQUIRE(createFailures.load() == 0);
+    REQUIRE(initFailures.load() == 0);
     std::vector<scvb::SegmentHandle> pending; // 消息线程延迟释放列表(保活)
 
     std::atomic<bool> stop{false};
     std::atomic<u64> leases{0};
+    std::atomic<u64> nullBaseLeases{0}; // [SL-453] 拿到租约却基址为空的次数;join 后在主线程断言
 
-    // 音频线程:循环 lease()/归还(只读 implPtr_ 原子裸指针)。
+    // 音频线程:循环 lease()/归还(只读 implPtr_ 原子裸指针)。不放断言宏,理由见 publish() 上方。
     std::thread audio([&] {
         while (!stop.load(std::memory_order_acquire))
         {
             auto lease = handle.lease();
             if (lease)
             {
-                REQUIRE(lease.base() != nullptr);
+                if (lease.base() == nullptr)
+                {
+                    ++nullBaseLeases;
+                }
                 ++leases;
             }
         }
@@ -953,6 +972,10 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
                 pending.push_back(std::move(handle)); // 租约在途/宽限期未满 → 入 pending 保活
             }
             handle = publish(); // 重新发布
+            if (createFailures.load() != 0 || initFailures.load() != 0)
+            {
+                break; // 发布失败:不再往下跑,由 join 后的主线程断言报红
+            }
             for (auto it = pending.begin(); it != pending.end();)
             {
                 if (it->release(nowMs))
@@ -971,6 +994,9 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     audio.join();
     message.join();
 
+    REQUIRE(createFailures.load() == 0); // 消息线程上每次重新发布都映射成功
+    REQUIRE(initFailures.load() == 0); // 且头部初始化成功
+    REQUIRE(nullBaseLeases.load() == 0); // 发出去的租约基址从不为空
     REQUIRE(leases.load() > 0); // 音频线程确实租约过
     // 收尾:宽限期是 500ms,release 需两拍(首次记录宽限期起始,次拍届满解映射)。
     const u64 finalNowMs = 1000000000;

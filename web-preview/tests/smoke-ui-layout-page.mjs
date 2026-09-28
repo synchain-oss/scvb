@@ -3045,8 +3045,10 @@ try {
     //     (壳页 API 改名、`ctl.emit` 不在、页面还没 ready),那两条**天然**是 0 布局盒
     //     —— 一个什么都没做的探针也能全绿。所以先推一条**同类但仍在用**的 code
     //     (`srMismatch` 横幅 ③),断它**真有**布局盒:证明事件送进去了、这一帧渲染过。
-    //     toast 那侧已**没有任何仍可点亮的 toast**(toast① 随 `projectCopy` 撤回
-    //     一并删除、toast③ 未接线),所以 toast 的对照改成:**同一次同步读里**临时
+    //     toast 那侧**没有能靠 `scvb.error` 点亮的 toast**(toast① 随 `projectCopy` 撤回
+    //     一并删除;toast③ [J125] 起已接线,但它的触发是「重采集撤防」而不是 `scvb.error`,
+    //     本节不造那一幕 —— 它的页面级判据在 smoke-output-stale-page ⑧),所以 toast 的
+    //     对照改成:**同一次同步读里**临时
     //     摘掉 `toast-sidecarSwitched` 的 `hidden` 再量一次,> 0 才证明那个 0 来自
     //     `hidden`、而不是整个 toast 区根本不渲染;量完当场挂回,中间不让出主线程,
     //     页面上看不到这一步,也不影响同一次读里的真判据(真判据先量)。

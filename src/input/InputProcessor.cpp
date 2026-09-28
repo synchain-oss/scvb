@@ -477,7 +477,9 @@ void ScvbInputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 成员去填同一个字段。两者绝大多数时候相等,只在"加载工程时这次触发的重新认领撞了车"
     // 这一个场景下会分叉,分叉时该记的是工程文件原本写的号,不是这次认领折腾出来的中间结果。
     s.channelId = static_cast<scvb::u32>(savedChannelId_);
-    s.groupId = static_cast<scvb::u32>(groupId_);
+    // [SL-458] 同理:存档记 savedGroupId_(工程原值/用户主动改组值),不记 groupId_(寻址组,
+    // 载入时目标组 ctrl 段打不开会回退到上一组)。字节布局与 abi 不变。
+    s.groupId = static_cast<scvb::u32>(savedGroupId_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
 
@@ -545,6 +547,8 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     // 碰它,直到用户下一次主动 setChannelId() 才会更新。
     savedChannelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
+    // [SL-458] 工程里的组号单独落一份;下面换组失败会把 groupId_ 回退到旧组,但不碰这一份。
+    savedGroupId_ = static_cast<int>(s.groupId);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
     // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
@@ -570,6 +574,7 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         if (ctrl_.changeGroup(s.groupId) != scvb::InitResult::kOk)
         {
             ctrl_.changeGroup(static_cast<scvb::u32>(oldGroupId)); // 尽力回退旧组段
+            // 只回退寻址组;savedGroupId_ 保持工程原值,保存时不把工程组号改写成旧组(SL-458)。
             groupId_ = oldGroupId;
             session_.setGroupId(static_cast<scvb::u32>(oldGroupId));
         }
@@ -656,6 +661,10 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     const juce::ScopedLock lock(lifecycleMutex_);
     if (groupId == groupId_)
     {
+        // [SL-458] 寻址上是 no-op,但调用方明确要这一组:载入回退后 savedGroupId_ 可能还是工程
+        // 原值,以这次调用为准。⚠ Input 页面的组胶囊对当前组直接早退、不调桥(web/input/app.js
+        // 组胶囊 click 处理),所以今天用户在界面上走不到这里;回退后要让存档跟上,得改到别的组。
+        savedGroupId_ = groupId;
         return session_.state(); // 同组 no-op(§3.3:{ok:true})
     }
     const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
@@ -673,6 +682,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
         }
     }
     groupId_ = groupId;
+    savedGroupId_ = groupId; // [SL-458] 用户主动改组成功:存档跟着走(换段失败的早退分支不碰它)
     // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
     stageMachine_.forcePassthrough();
     session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),

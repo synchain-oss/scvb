@@ -4875,6 +4875,23 @@
                 z-index: 8;
                 max-width: 330px;
             }
+            /* [J125] toast 在 #toast-region 里**随流排**:.sc-toast 基类是 absolute(设计稿
+               单枚浮层的写法),而 region 本身 absolute 且无内容尺寸 —— 不改成 relative 的话
+               toast 以 region 的零尺寸原点为锚往右下长,出卡片(页面级 ⑧e 量这个)。 */
+            #toast-region .sc-toast {
+                position: relative;
+            }
+            .sc-toast__body {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            .sc-toast__action {
+                align-self: flex-start;
+                padding: var(--sp-5) var(--sp-12);
+                font-size: var(--fs-110);
+            }
             #guide-overlay {
                 position: absolute;
                 inset: 0;
@@ -5977,7 +5994,9 @@
                                     data-when="nodata"
                                     data-gb="master-analyze-preview-nodata"
                                     data-t="master.step2.desc.noData"
-                                    >当前范围内无采集数据——调整范围或先采集</span
+                                    >当前范围内没有可用的采集数据(没连上 Input
+                                    的通道不计入)——调整范围、先采集,或连上
+                                    Input</span
                                 >
                                 <button
                                     class="an-btn"
@@ -9071,27 +9090,36 @@
                         <span class="sc-toast__dot"></span>
                         <!-- toast②(05 §2.0 逐字;词条 toast.sidecarSwitched 为 T31 Wave 2 新增,04 §5.4) -->
                         <span data-t="toast.sidecarSwitched"
-                            >采集数据已转存外部文件(>8MB),位置见设置页(路径管理与导入导出待功能卡)</span
+                            >采集数据已超过
+                            8MB,已转存外部文件——发给他人需重新采集</span
                         >
                     </div>
+                    <!-- [J125] toast③(05 §2.0 / §2.3「重采集选区」行):撤防那一跳后由 app.js
+                         renderBanners 显隐,{s} 由 app.js 填(recapture-toast.js 记账)。 -->
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast③「已重采集 X.Xs,建议重分析该范围」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            已重采集 X.Xs,建议重分析该范围
-                        </span>
-                        <!-- 词条待立:「立即重分析」按钮(05 §2.0,字典缺) -->
+                        <!-- 版式照设计稿(dc.html toast 段):正文与动作钮上下两行,动作钮 = 主行动
+                             CTA 药丸(--acc-cta 底 + --acc-ink 字),不是 --dark 次按钮。 -->
+                        <div class="sc-toast__body">
+                            <span
+                                data-gb="toast-recaptured-text"
+                                data-t="toast.recaptured"
+                                >已重采集 {s}s,建议重分析该范围</span
+                            >
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--cta sc-toast__action"
+                                data-gb="toast-recaptured-goto"
+                                data-t="toast.recapturedGoto"
+                            >
+                                立即重分析
+                            </button>
+                        </div>
                         <button
-                            class="sc-btn--dark"
-                            data-gb="toast-recaptured-goto"
-                            data-gb-todo="词条待立"
-                        >
-                            立即重分析
-                        </button>
-                        <button
+                            type="button"
                             class="sc-toast__close"
                             data-gb="toast-recaptured-close"
-                            aria-label="close"
+                            data-t-aria="banner.dismiss"
                         >
                             ✕
                         </button>

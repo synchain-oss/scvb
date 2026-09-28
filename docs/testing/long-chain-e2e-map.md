@@ -82,7 +82,7 @@ op 全集(`docs/IPC_CONTRACT.md:149`,v1 冻结)= `{kSetPriority, kFpReport}`;`kN
 | # | 跳 | 覆盖 | 用例 |
 |---|---|---|---|
 | B1 | 生产方 `enqueue`(含非活跃实例拒写) | ✅ | `T30 conflict 实例不得写 ctrl 命令环`(反向:第二生产者);`IPC-13`(跨进程满环) |
-| B2 | ctrl 环语义(满环丢最旧 / seq 由 write_pos 派生 / 多 ch 独立) | ✅ | `IPC-13`;`test_ipc_lifecycle.cpp:765`(双线程 10 万条无撕裂)、`:1017`、`:987` |
+| B2 | ctrl 环语义(满环丢最旧 / seq 由 write_pos 派生 / 多 ch 独立) | ✅ | `IPC-13`;`test_ipc_lifecycle.cpp:765`(双线程 10 万条无撕裂)、`:1047`、`:1017` |
 | B3 | Output dequeue → 落 state | ✅ | `HOST L-4b` |
 | B4 | Output → ctrl 广播区(seqlock) | ✅ | `HOST L-4a`;布局护栏 `T37-C 广播区落在预算内` |
 | B5 | Input 读广播 → 桥面快照 | ✅ | `HOST L-4a`、`HOST I3`(孤儿 Input 的 `participate` 判据) |
