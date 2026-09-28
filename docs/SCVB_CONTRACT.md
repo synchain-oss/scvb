@@ -127,7 +127,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `g: 1..8`(UI 显示 A-H) |
-| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察) |
+| 返回 | `{ok:true}` 或 `{observer:true}`(新组 OutputSlot 已被占 → 本实例进只读观察)或 `{ok:false, reason:"badArg"}`(`g` 不在 1..8;§0.8 第 2 条) |
 | 语义 | 写 state `group_id`;触发 01 §4.2 改组释放-重连:释放旧组 OutputSlot → Unmap 旧组全部段 → 新组 claim → 判定主/只读。成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新。**与 Input 侧 §3.3 同名同签名**,返回值不同(Output=`observer`,Input=`conflict`)。 |
 | 拒绝态 | PRINT 态由 UI 侧整组 disabled(05 §2.1 ⓪ tooltip「打印中不可切组」);C++ 侧不新增 `rejected` 码 |
 | 撤销 | 否 |
@@ -140,7 +140,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或字符串 `"all"`(同 `analyze`) |
 | 返回 | `{intervals:int, tracks:int, manualKept:int}` |
-| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
+| 语义 | **纯只读 dry-run**:只算 `range ∩ coverage` 与 `origin≠auto` 段相交,毫秒级返回;**参与面**([J119],2026-09-28 用户批准;变更文档 `20260928-sl535-analysis-connected-only.md`):`coverage` 只计 scope 内 **`enabled` 且此刻已连接 Input** 的轨 —— 「已连接」= §2.3 `scvb.conn` 同轨 `slotState=2 ∧ heartbeatFresh`(与 UI「未连接」显示同一判据;宿主挂起 `suspended` 不算断开);没连上的轨的采集数据**保留不清**、`enabled` **不改**,连回来后下一次分析自动回到参与面。`tracks` 数的就是这个参与面;**不执行任何流水线、不写 state、不发事件**。供「点击前影响预览」行在 scope/范围/勾选变化时节流刷新(05 §2.1 ①/§2.3)。 |
 | 拒绝态 | 无(空集合返回 `{0,0,0}`) |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步,目标 <10ms;UI 侧节流调用 |
@@ -153,7 +153,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 参数 | `scope`:`{tracksMask:u16, startS?:f64, endS?:f64}` 或 `"all"`;`opts?`:`{clearManual?:bool=false}` |
 | 返回 | `{ok:bool, affected:{intervals:int, tracks:int, manualKept:int}}` 或 `{ok:false, reason:"busy"}` —— **受理回执 + 影响面**,不是最终结果 |
 | 语义 | 离线分析(秒级)。native function 只负责启动:[M] 提交 [W] job 后即 resolve;**结果一律经 `scvb.segments` 回推**,运行态经 `scvb.state.analysis_run` 下推(01 §6.4)。`clearManual:true` = 「重新识别(含手动段)」:仅把目标段 `origin` 重置为 `auto` 后重算;**`locked=true` 段不受影响,须先逐段解锁**(04 §4.4,J34);该分支须 UI 二次确认。默认(`clearManual:false`)只覆盖 `origin=auto` 段(ADR-008 v1.1)。 |
-| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled);已有分析在跑 → `{ok:false, reason:"busy"}` |
+| 拒绝态 | `range ∩ coverage = ∅` → `{ok:false, affected:{0,0,0}}`(UI 侧同条件下按钮 disabled)。`coverage` 的参与面同 §1.5([J119]:只计 `enabled` 且此刻已连接 Input 的轨)⇒ 范围里有采集数据、但那些轨都没连上时同样落这一态,**不新增 reason**;已有分析在跑 → `{ok:false, reason:"busy"}` |
 | 撤销 | **是**([J89],2026-08-28 用户批准;变更文档 `20260827-sl209-analyze-undoable.md`)。一次分析(全量 / 选区 / 单轨重新识别)= **一条**撤销步:提交前把整个 CRVS 快照压进**既有** UndoManager(与段编辑同栈),撤销 = 恢复分析前的段表,重做 = 重放分析结果;撤销/重做各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8 枚举与行为均不变)。**与「重分析不覆盖 user 段」(ADR-008)天然共存**:快照的是整个 `CrvsData`,还原的是「分析前的那一刻」,那一刻本就含着这一轮会被保留的用户段与范围外 auto 段 —— 不需要另算「实际被替换面」。局部重分析同理(改的面更小,快照口径不变) |
 | 线程/频率 | [M] 启动 → [W] 执行;用户操作触发 |
 | 真源 | 05 §1.4 / §2.3;线程语义 01 §6.4 |
@@ -366,7 +366,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ok:bool}`(false = 撤销/重做栈为空) |
-| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的四类操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
+| 语义 | 插件自有 UndoManager(03 §5.3),覆盖 §0.9 左列的全部入栈操作。执行后受影响面回推:段表经 `scvb.segments`(`undo()` → `reason:"undo"`,`redo()` → `reason:"redo"`,§2.8),`pan_curve` 与其余 state 面经 `scvb.state`。**不触碰宿主撤销栈**;UI 侧须 `preventDefault` 阻止冒泡。<br>返回 `{ok:true}`(真的动了栈)时的两条副作用:丢弃已排未到点的松手档重分段防抖(§1.18「丢弃」,[J106]);取消在途分析(§1.9「取消在途分析」③,[J110])。 |
 | 拒绝态 | 无 |
 | 撤销 | 不适用 |
 | 线程/频率 | [M];键盘触发 |
@@ -596,7 +596,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | `{ channel_id:0..15, group_id:1..8, role:"input",`<br>`  conn:{outputOnline:bool, maskBit:bool, capturing:bool, passthrough:bool, passthroughPending:bool, occupiedMask:u16},`<br>`  config:{label:string, priority:0..10, lead_lock:bool, pair_id:0\|1..7, freeze:0..3, source_channels:1\|2, participate_in_auto_pan:bool, config_seq:u32, channelLabels:[15 × string]},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", guide_seen:bool},`<br>`  guide_seen_global:bool, version:{plugin:string, abi:u32} }` |
-| 语义 | 首帧全量快照并置 `mBridgeReady=true`。`channel_id` 报的是**配置(选中)的通道号**(未选过通道时它本就是 `0`);**此外**只在 claim 请求被拒或段不可用时为 `0` —— 那几态下本实例一个 slot 也没持住,报配置号会把被拒的通道显示成「已选中」;这几态下「实际持有」恒为 `0` 是 `InputSession::openAndClaim()` 的结构性保证(每条失败分支要么从未写过、要么显式写 0),**本条据此写成对外承诺** —— 改那里的人破的是本条款而不只是一个内部约定(变更文档 `docs/contract-changes/20260921-sl464-channel-id-zero-semantics.md`)。所以 `channel_id=0` 有两个成因,**分辨它们一律以 `claim`(§4.1/§5.2)为准,不得由 `channel_id=0` 反推「未分配」**:① `claim="unassigned"` —— 从未选过通道 / 主动释放(不 claim 任何 slot,J01,**不是错误态**);② `claim` 取 `conflict`(同组同 channel 被心跳新鲜的实例占用)、`abiMismatch`(abi 不符被拒连)、或 `idle` 中「**段不可用**」那一支(`kUnavailable`,四项:段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败;逐字取 `src/input/InputBridgeLogic.cpp:39-40` 头注) —— **claim 失败态,不是 J01 的引导态**。两个成因下本实例都未占用本组任何 `InputSlot`,所以两者共有的那一半仍然成立:Output 侧完全不可见该实例、不计入 `N/15` 计数。反向不成立:`claim="unassigned"` 时 `channel_id` **未必**为 `0`(会话已释放而配置号原样留着时,它就是那个配置号)。**口径区分 —— 这是三个量,别混读**:本字段 = **配置镜像**;实际占住 `InputSlot` 的那个号是另一个量(不上桥面,只经上述例外间接体现为 `0`);**工程存档**里的 `channel_id`(见 `docs/STATE_SCHEMA.md` §二 Input state)是第三个量 —— [SL-446] 起三者分开记。**它们会分叉,且分不分叉取决于补偿式回滚成不成功**:点了一个正被占用的通道、又没有可回滚的旧通道(或回滚也失败)时,桥面本字段为 `0`、而工程存档记的是**那个被拒的号**;回滚成功时会话留在旧通道上(`claim` 仍是 `active`),桥面与存档都是**旧号**、不分叉。`config` 为本组 ctrl 广播区中本 channel 的只读快照(Output 离线时字段可为默认值,UI 侧隐藏远程摘要行)。`config.channelLabels` 供 4×4 通道网格首帧渲染(15 张卡的 Output 侧 label,A-32,见 §4.3)。`conn.occupiedMask` 见 §4.2 —— 供 4×4 通道网格在点击前标出已被占用的卡(05 §3)。**键名拼写与 §4.1 `scvb.state` 逐字一致**(A-30,§0.2 规则①)。**`ui.guide_seen`**([J81]/J80/T48)= Input 首启轻量引导已读位,随工程持久化;**`guide_seen_global`** = 系统级全局默认判定位(J50a),**只读、不属工程 state**。首启判据两侧同构:**工程 `ui.guide_seen === false` 且 全局 `guide_seen_global === false`** 才弹。**Input 与 Output 的全局位各存一份**(`input.*` / `output.*` 分键,`UiDefaultsStore` 命名空间本就按侧分)——两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导,而那正是 J80 立 T48 的全部理由。 |
+| 语义 | 首帧全量快照并置 `mBridgeReady=true`。`channel_id` 报的是**配置(选中)的通道号**(未选过通道时它本就是 `0`);**此外**只在 claim 请求被拒或段不可用时为 `0` —— 那几态下本实例一个 slot 也没持住,报配置号会把被拒的通道显示成「已选中」;这几态下「实际持有」恒为 `0` 是 `InputSession::openAndClaim()` 的结构性保证(每条失败分支要么从未写过、要么显式写 0),**本条据此写成对外承诺** —— 改那里的人破的是本条款而不只是一个内部约定(变更文档 `docs/contract-changes/20260921-sl464-channel-id-zero-semantics.md`)。所以 `channel_id=0` 有两个成因,**分辨它们一律以 `claim`(§4.1/§5.2)为准,不得由 `channel_id=0` 反推「未分配」**:① `claim="unassigned"` —— 从未选过通道 / 主动释放(不 claim 任何 slot,J01,**不是错误态**);② `claim` 取 `conflict`(同组同 channel 被心跳新鲜的实例占用)、`abiMismatch`(abi 不符被拒连)、或 `idle` 中「**段不可用**」那一支(`kUnavailable`,四项:段打不开 / 映射失败 / `claimInput` 非 `kConflict` 的失败 / `createSegments` 失败;逐字取 `src/input/InputBridgeLogic.cpp:39-40` 头注) —— **claim 失败态,不是 J01 的引导态**。两个成因下本实例都未占用本组任何 `InputSlot`,所以两者共有的那一半仍然成立:Output 侧完全不可见该实例、不计入 `N/15` 计数。反向不成立:`claim="unassigned"` 时 `channel_id` **未必**为 `0`(会话已释放而配置号原样留着时,它就是那个配置号)。**口径区分 —— 这是三个量,别混读**:本字段 = **配置镜像**;实际占住 `InputSlot` 的那个号是另一个量(不上桥面,只经上述例外间接体现为 `0`);**工程存档**里的 `channel_id`(见 `docs/STATE_SCHEMA.md` §二 Input state)是第三个量 —— [SL-446] 起三者分开记。**它们会分叉,且分不分叉取决于补偿式回滚成不成功**:点了一个正被占用的通道、又没有可回滚的旧通道(或回滚也失败)时,桥面本字段为 `0`、而工程存档记的是**那个被拒的号**;回滚成功时会话留在旧通道上(`claim` 仍是 `active`),桥面与存档都是**旧号**、不分叉。`config` 为本组 ctrl 广播区中本 channel 的只读快照(Output 离线时字段可为默认值,UI 侧隐藏远程摘要行)。`config.channelLabels` 供 4×4 通道网格首帧渲染(15 张卡的 Output 侧 label,A-32,见 §4.3)。`conn.occupiedMask` 见 §4.2 —— 供 4×4 通道网格在点击前标出已被占用的卡(05 §3)。**键名拼写与 §4.1 `scvb.state` 逐字一致**(A-30,§0.2 规则①)。**`ui.guide_seen`**([J81]/J80/T48)= Input 首启轻量引导已读位,随工程持久化;**`guide_seen_global`** = 系统级全局默认判定位(J50a),**只读、不属工程 state**。首启判据两侧同构:**工程 `ui.guide_seen === false` 且 全局 `guide_seen_global === false`** 才弹。**Input 与 Output 的全局位各存一份**:两侧共用 `UiDefaultsStore` 的**同一个**落盘文件(`ui-defaults.settings`),靠**键名**分开 —— Output 用 `guide_seen_global`、Input 用 `guide_seen_global_input`([J132] 以实现为准改写,变更文档 `docs/contract-changes/20260928-j132-guide-seen-global-keys.md`)。两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导,而那正是 J80 立 T48 的全部理由。`tour_seen_global` 只有 Output 一个键(Input 没有交互式导览)。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步 |
@@ -631,9 +631,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 参数 | `n: 0..10`(int) |
-| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned"}`(**T25 定名**,§9.2) |
+| 返回 | `{queued:bool, reason?: "ringFull" \| "outputOffline" \| "unassigned" \| "busy"}`(前三个 **T25 定名**,§9.2)或 `{ok:false, reason:"badArg"}`(`n` 不是整数;§0.8 第 2 条) |
 | 语义 | 经 ctrl 命令环投递一条记录 `{seq:u32, channel:u32, op:kSetPriority(=1), value:u64(=n)}`(§6);Output [M] 消费后落 state(唯一真源,ADR-004)并经 `config_seq` 变化回执。**Input UI 只做本地乐观显示,以 `scvb.config` 回执为准**。满环时写方覆盖最旧记录 + 溢出计数,返回 `{queued:false, reason:"ringFull"}`,UI 提示「设置未送达,请重试」(01 §4.4-c)。 |
-| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"` |
+| 拒绝态 | Output 离线 → `{queued:false, reason:"outputOffline"}`(UI 侧 stepper 同时 disabled + tooltip「需 Output 在线」);`channel_id=0` → `reason:"unassigned"`;命令没能写进环(ctrl 段没打开 / 打开失败)→ `{queued:false, reason:"busy"}`(临时、可重试);参数类型不符 → `{ok:false, reason:"badArg"}` |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
 | 真源 | 05 §1.4 / §3;ipc §4;01 §4.4-c |
@@ -821,7 +821,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "OutputSnapshot"},
       {"name": "setCaptureEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
       {"name": "setOutputEnabled", "params": ["on"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"noTimeline\"} | {ok:false,reason:\"badArg\"}"},
-      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true}"},
+      {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "previewAnalyze", "params": ["scope"], "returns": "{intervals,tracks,manualKept}"},
       {"name": "analyze", "params": ["scope", "opts"], "returns": "{ok,affected:{intervals,tracks,manualKept}} | {ok:false,reason:\"busy\"}"},
       {"name": "cancelAnalyze", "params": [], "returns": "{ok}"},
@@ -872,7 +872,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "requestInitialState", "params": [], "returns": "InputSnapshot"},
       {"name": "setChannelId", "params": ["n"], "returns": "{ok} | {conflict:true}"},
       {"name": "setGroupId", "params": ["g"], "returns": "{ok} | {conflict:true}"},
-      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?}"},
+      {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?} | {ok:false,reason:\"badArg\"}"},
       {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "commitUiScale", "params": [], "returns": "{ok}"},
       {"name": "setLang", "params": ["code"], "returns": "{ok}"},

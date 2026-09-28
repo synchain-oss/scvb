@@ -9,7 +9,8 @@
 //  1. guide.rule1..9(九条硬约束红字)不在本文件手写——由 scripts/gen-hard-rules.mjs 从唯一真源
 //     docs/USER_GUIDE.zh-CN.md#硬约束 生成写入本文件,任何位置禁止手抄(05 §0.1 / §5);
 //     CI 跑 gen-hard-rules.mjs --check 比对哈希。设计稿里的 NINE 常量只是视觉参照,不是文案真源。
-//     fr 红字必须经人工审校后方可发布(05 §5)。
+//     fr 红字必须经审校后方可发布(05 §5);v1 发布前的这次审校由用户授权以 AI 三语交叉核对代替人工抽检
+//     (J127,2026-09-28,以中文为准核 en/fr),状态记在 docs/hard-rules.i18n.json 的 frReview。
 //  2. 三词分工(R1 定案,禁止混用):range = 范围(作用范围,Tab1)、interval = 区段(分析产物,
 //     「将影响 N 区段」)、selection = 选区(Tab3 工作选区,重采集/重分析/清除的对象)。
 //  3. 连接类状态每态唯一用词,一律走 state.* 组,不再自由造「等待连接 / 离线」之类泛化说法。
@@ -24,6 +25,9 @@
 //  一个语义无关的中文数词会让那道安全门禁常年假红。)
 // state.groupSuffix 三语、tour.step1..7 的 EN/FR —— 均待人工审校,逐条清单见 T27 差异清单
 // 的「i18n.js」小节(05 §5 要求 fr 发布前人工审校,那份清单就是审校人的入口)。
+// [J127] 2026-09-28:本文件全部词条已做过一轮 AI 三语交叉核对(以 zh 为准核 en/fr,用户授权代替人工抽检)。
+// 下面各段注释里的「待人工审校 / 待 U17 审校 / U17 review pending」是写那段时的记录,由这一轮结清,
+// 不再逐条改写;此后新增或改动的 en/fr 词条仍要重新审校。
 // ======================================================================
 export const T = {
     zh: {
@@ -76,7 +80,7 @@ export const T = {
         // ⚠ [SL-293] 后半句用**参与语义**,**别照 05 §5 写成「音量豁免为独立选项」**。
         // 同 `tracks.colLegend`:那一列的显示层已按**用户裁定 2026-08-21** 取反为「参与音量调节」
         // (`tab-tracks.js` 的头注「豁免改参与语义开关」、同文件 `volPart: cfg.lead_vol_exempt ? 0 : 1`
-        //  那行、以及同格 aria `tracks.colVolPart`),05 §5 停在改版之前。
+        //  那行、以及同格 aria `tracks.colVolPart`);05 §5 已随 J130(SL-298)回填为参与口径。
         // en 侧尤其硬:`Vol Exempt` 是**界面上不存在的标签**(列头是 `Vol`,无障碍名是
         // `Volume participation`)。J58 要保的是「这个开关独立、不随 Lead 联动」这层意思,
         // 不是「豁免」这个词 —— 本卡第一版照规格抄,把 base 里本来就对的内联改坏了。
@@ -311,9 +315,11 @@ export const T = {
         "tour.step22.title": "主唱锁",
         "tour.step22.body":
             "把该轨标记为主唱:分析时它作为最高优先级轨道,中心槽策略(主唱独占)会优先居中它;多轨锁定时会给出提示。",
-        "tour.step24.title": "音量豁免",
+        // [SL-298 / J130] 标题与同格 aria `tracks.colVolPart` 同一个词(参与语义,默认开);
+        // 参数本体仍叫 lead_vol_exempt(反义),只是显示层取反,别据参数名改回「豁免」。
+        "tour.step24.title": "参与音量调节",
         "tour.step24.body":
-            "独立开关:该轨不参与音量平衡计算,与主唱锁 / Lead Select 不联动。",
+            "独立开关:该轨是否参与音量平衡计算(默认开),与主唱锁 / Lead Select 不联动。",
         "tour.step25.title": "参与自动声像",
         "tour.step25.body":
             "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
@@ -545,10 +551,11 @@ export const T = {
         // **用户裁定 2026-08-21**:「开=参与音量调节,与声像一致;契约字段仍是反义的
         // `lead_vol_exempt`,仅显示层取反,桥面不动」;同族记述另见该文件头注「豁免改参与语义开关」。
         // 同格子的无障碍标签
-        // `tracks.colVolPart` 也是「参与音量调节」。05 §2.2/§5 停在改版**之前**的豁免口径。
-        // 照规格改回豁免口径的后果:默认 15 轨全 ON,用户照图例读出来是「全被豁免」——
+        // `tracks.colVolPart` 也是「参与音量调节」。05 §2.2/§5 曾停在改版之前的豁免口径,
+        // 已随 J130(SL-298,用户 2026-09-28 裁定统一叫法)回填。
+        // 改回豁免口径的后果:默认 15 轨全 ON,用户照图例读出来是「全被豁免」——
         // **正好反了**,而这是会让人把设置调反的那一档。(裁判层级同 J88:晚出的用户裁定
-        //  覆盖 05 规格;区别是这条没有 J 号,只落在代码注释里,grep adjudications.md 找不到。)
+        //  覆盖 05 规格;2026-08-21 那条原本没有 J 号,叫法统一后由 J130 补登。)
         // fr 的两段介词写法**不对称,别在没裁定之前顺手统一**。三个可核事实(复审补出第三条,
         // 我原先只写了前两条,那样写等于替 T32 把话说满了):
         //   ① 「音量」段 `participation volume` 与同格 aria `tracks.colVolPart` fr **逐字同构**;
@@ -634,7 +641,7 @@ export const T = {
             "切换响度口径会重算各轨音量平衡;声像通常不变,但素材差异大到平衡解需要重新指派时也会变化;改后需重新分析。",
         "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
-            "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
+            "主唱锁与 Lead Select 之外的兜底规则;不影响各轨是否参与音量调节。",
         // [SL-278] 与 set.reanalyze.scopeNote 同一口径:说清"改了会动什么"再说"要重分析"。
         // 影响面按 02 §5.6:轨数为单数时这三档决定中心位归谁、槽位数是 n 还是 n+1,
         // 措辞用「单数」而非「奇数」:写这条时字体子集里没有「奇」的字形,gate 3h 会红。
@@ -768,7 +775,9 @@ export const T = {
         "master.copyConfirmPrimary": "覆盖并复制",
         "master.captureOff": "采集 OFF",
         "master.step2.desc": "将影响 {n} 区段 / {m} 轨;{k} 处手动编辑将保留",
-        "master.step2.desc.noData": "当前范围内无采集数据——调整范围或先采集",
+        // [SL-535] 分析只认此刻连着 Input 的通道:有数据但都没连上时也显示这句,所以补上括号那半句。
+        "master.step2.desc.noData":
+            "当前范围内没有可用的采集数据(没连上 Input 的通道不计入)——调整范围、先采集,或连上 Input",
         "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
         "master.analyzing": "分析中…",
         "master.analyzeDone": "分析完成",
@@ -795,6 +804,9 @@ export const T = {
         "curve.side.out": "向外",
         "curve.side.left": "向左",
         "curve.side.right": "向右",
+        // [rc-misc i] 曲线浮条两组按钮的组名(读屏用 aria-label)
+        "curve.shapeGroup": "形状",
+        "curve.sideGroup": "方向",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "斜率",
         "curve.slope.opt6": "6 dB/oct",
@@ -877,9 +889,14 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
         // Output toast②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.4)。
-        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
+        // [SL-94 / J133] 回到契约 §5.1 逐字栏:不指路设置页(v1 那一行已收起,SL-415),
+        // 不写内部排期词。v1 出厂态不可达(自动转存关闭,SL-395),文案为开关打开那天留着。
         "toast.sidecarSwitched":
-            "采集数据已转存外部文件(>8MB),位置见设置页(路径管理与导入导出待功能卡)",
+            "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // [J125] toast③(05 §2.0;逗号按本字典既有风格用半角 —— 设计稿是全角,别当 bug 改回;
+        // {s} = 这次重采集的时长,一位小数,app.js 填)
+        "toast.recaptured": "已重采集 {s}s,建议重分析该范围",
+        "toast.recapturedGoto": "立即重分析",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
@@ -1059,8 +1076,11 @@ export const T = {
         // `{ok:false, reason:"busy"}`),两种拒绝在屏上都与「受理了」一模一样 —— 用户看到的
         // 是「点了没反应」。文案给的是**下一步动作**,不是「失败了」:这两件事用户都能自己解。
         // 跨页共用(波形与分段页 + 设置页的重分析确认框),所以不放 `wave.` 前缀。
+        // [SL-535] 分析只认**此刻连着 Input** 的通道:有旧采集数据、但 Input 已不在的通道也落这条
+        // 拒绝(§1.6 既有拒绝态,不另加 reason)。原句「所选范围没有采集数据」在那种情形下是假话,
+        // 所以补上括号那半句,并把「连上 Input」列进下一步动作。
         "analyze.refused":
-            "所选范围没有采集数据,先采集这段,或换一个有数据的范围再重分析",
+            "所选范围没有可用的采集数据(没连上 Input 的通道不计入),先采集这段或连上 Input,或换一个有数据的范围再重分析",
         "analyze.busy": "已有分析在进行,等它跑完再试",
     },
 
@@ -1301,7 +1321,7 @@ export const T = {
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
-            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click to delete. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
+            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click a point to delete it. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
         "tour.step16.title": "This page: Tracks",
         "tour.step16.body":
             "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
@@ -1323,9 +1343,9 @@ export const T = {
         "tour.step22.title": "Lead Lock",
         "tour.step22.body":
             "Mark this track as the lead: it is the top-priority track during analysis, and the center-slot policy (lead exclusive) centers it first; warns if several are locked.",
-        "tour.step24.title": "Vol exempt",
+        "tour.step24.title": "Volume participation",
         "tour.step24.body":
-            "Independent switch: this track is excluded from level balancing; not linked to Lead Lock / Lead Select.",
+            "Independent switch: whether this track joins level balancing (on by default); not linked to Lead Lock / Lead Select.",
         "tour.step25.title": "Auto-Pan Participate",
         "tour.step25.body":
             "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
@@ -1594,7 +1614,7 @@ export const T = {
         "set.centerSlot.title":
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect whether each track joins volume adjustment.",
         "set.centerSlot.scopeNote":
             "Changing the center-slot policy changes who takes the center position when the track count is odd, and whether there are n or n+1 slots. The pan placement produced by auto-assign changes with it. Re-analysis is required afterwards.",
         "in.chHint.groupEmpty":
@@ -1699,7 +1719,7 @@ export const T = {
         "master.step2.desc":
             "Affects {n} intervals / {m} tracks; {k} manual edits will be kept",
         "master.step2.desc.noData":
-            "No captured data in the current range — adjust the range or capture first",
+            "No usable captured data in the current range (channels without a connected Input are not counted) — adjust the range, capture first, or connect the Input",
         "master.step2.coverage":
             "{p}% of the range is covered; uncovered parts stay as they are",
         "master.analyzing": "Analyzing…",
@@ -1728,6 +1748,8 @@ export const T = {
         "curve.side.out": "Out",
         "curve.side.left": "Left",
         "curve.side.right": "Right",
+        "curve.shapeGroup": "Shape",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Slope",
         "curve.slope.opt6": "6 dB/oct",
@@ -1791,7 +1813,10 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
         "toast.sidecarSwitched":
-            "Capture data was moved to an external file (>8 MB); see Settings (path management and import/export are future work)",
+            "Capture data exceeded 8 MB and was moved to an external file — anyone you send the project to will need to capture again",
+        "toast.recaptured":
+            "Re-captured {s} s; re-analyzing this range is recommended",
+        "toast.recapturedGoto": "Re-analyze now",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
         "scale.keep": "Save",
         "master.printLock.group": "Can't switch group while writing automation",
@@ -1821,7 +1846,7 @@ export const T = {
         "wave.tipSensitivity":
             "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
         "wave.tipMinSeg":
-            "Minimum segment length: automatic segments shorter than it are dropped (judged before padding) or merged into a touching neighbour to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected. After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a scope or range re-analysis, or the leftover of a neighbour dropped wholesale because it clashed with a manual segment) (default {d})",
+            "Minimum segment length: automatic segments shorter than it are dropped (judged before padding) or merged into a touching neighbour to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected. After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a selection or range re-analysis, or the leftover of a neighbour dropped wholesale because it clashed with a manual segment) (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -1893,7 +1918,7 @@ export const T = {
         // [SL-396] analyze refusals (see the zh block for the why). Copy states the next
         // action rather than "failed": both are things the user can resolve themselves.
         "analyze.refused":
-            "No captured data in the selected range — capture this part first, or pick a range that has data",
+            "No usable captured data in the selected range (channels without a connected Input are not counted) — capture this part or connect the Input, or pick a range that has data",
         "analyze.busy":
             "An analysis is already running — try again once it finishes",
     },
@@ -2034,7 +2059,7 @@ export const T = {
         // 首次启动引导页(05 §5,606-610 行)。
         // guide.title 与 guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从
         // docs/USER_GUIDE.zh-CN.md#硬约束 + docs/hard-rules.i18n.json 生成写入(禁止手抄)。
-        // fr 红字发布前必须经人工审校(05 §5),审校状态见 docs/hard-rules.i18n.json 的 frReview。
+        // fr 红字发布前必须经审校(05 §5;J127 授权以 AI 三语交叉核对代替人工抽检),审校状态见 docs/hard-rules.i18n.json 的 frReview。
         // BEGIN GENERATED hard-rules:fr
         "guide.title":
             "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
@@ -2137,7 +2162,7 @@ export const T = {
             "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre les intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
-            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez pour supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
+            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez sur un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
         "tour.step16.title": "Cette page : Pistes",
         "tour.step16.body":
             "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
@@ -2159,9 +2184,9 @@ export const T = {
         "tour.step22.title": "Verrou lead",
         "tour.step22.body":
             "Marquez cette piste comme lead : elle devient la piste de priorité maximale à l'analyse, et la stratégie de créneau central (exclusivité lead) la centre d'abord ; avertit si plusieurs sont verrouillées.",
-        "tour.step24.title": "Exemption volume",
+        "tour.step24.title": "Participation volume",
         "tour.step24.body":
-            "Interrupteur indépendant : la piste est exclue de l'équilibrage du volume ; non lié au verrou lead / Lead Select.",
+            "Interrupteur indépendant : si la piste entre dans l'équilibrage du volume (activé par défaut) ; non lié au verrou lead / Lead Select.",
         "tour.step25.title": "Participation pan auto",
         "tour.step25.body":
             "Si la piste entre dans la redistribution du pan ; stéréo désactivé par défaut, équilibrage conservé.",
@@ -2439,7 +2464,7 @@ export const T = {
         "set.centerSlot.title":
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur la participation de chaque piste à l'ajustement du volume.",
         "set.centerSlot.scopeNote":
             "Changer la politique de position centrale modifie qui occupe le centre lorsque le nombre de pistes est impair, ainsi que le nombre de positions (n ou n+1). Le panoramique produit par l'assignation automatique change en conséquence. Une ré-analyse est ensuite nécessaire.",
         "in.chHint.groupEmpty":
@@ -2547,7 +2572,7 @@ export const T = {
         "master.step2.desc":
             "Affecte {n} intervalles / {m} pistes ; {k} modifications manuelles seront conservées",
         "master.step2.desc.noData":
-            "Aucune donnée capturée dans la plage actuelle — ajustez la plage ou capturez d'abord",
+            "Aucune donnée capturée exploitable dans la plage actuelle (les canaux sans Input connecté ne comptent pas) — ajustez la plage, capturez d'abord ou connectez l'Input",
         "master.step2.coverage":
             "{p}% de la plage est couverte ; les parties non couvertes restent inchangées",
         "master.analyzing": "Analyse en cours…",
@@ -2578,6 +2603,8 @@ export const T = {
         "curve.side.out": "Extérieur",
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
+        "curve.shapeGroup": "Forme",
+        "curve.sideGroup": "Direction",
         "curve.qLabel": "Q",
         "curve.slopeLabel": "Pente",
         "curve.slope.opt6": "6 dB/oct",
@@ -2585,7 +2612,7 @@ export const T = {
         "curve.slope.opt18": "18 dB/oct",
         "curve.slope.opt24": "24 dB/oct",
         "curve.sideTooltip":
-            "Extérieur: coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite: coupe uniquement ce côté",
+            "Extérieur : coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite : coupe uniquement ce côté",
         "curve.deleteLabel": "Supprimer le point",
         "curve.announcePoint":
             "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q}",
@@ -2642,7 +2669,10 @@ export const T = {
 
         // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "toast.sidecarSwitched":
-            "Les données de capture ont été déplacées dans un fichier externe (>8 Mo) ; voir les réglages (gestion des chemins et import/export à venir)",
+            "Les données de capture ont dépassé 8 Mo et ont été déplacées dans un fichier externe — toute personne à qui vous envoyez le projet devra refaire la capture",
+        "toast.recaptured":
+            "{s} s re-capturées ; il est conseillé de ré-analyser cette plage",
+        "toast.recapturedGoto": "Ré-analyser maintenant",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
         "scale.keep": "Enregistrer",
         "master.printLock.group":
@@ -2748,7 +2778,7 @@ export const T = {
         "wave.clearedCoverage": "{s} s de données capturées effacées",
         // [SL-396] refus d'analyze (voir le bloc zh pour le pourquoi).
         "analyze.refused":
-            "Aucune donnée capturée dans la plage choisie — capturez d'abord cette partie, ou choisissez une plage qui en contient",
+            "Aucune donnée capturée exploitable dans la plage choisie (les canaux sans Input connecté ne comptent pas) — capturez cette partie ou connectez l'Input, ou choisissez une plage qui en contient",
         "analyze.busy":
             "Une analyse est déjà en cours — réessayez quand elle sera terminée",
     },

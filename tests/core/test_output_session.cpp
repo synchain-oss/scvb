@@ -422,8 +422,11 @@ TEST_CASE("channelConn:采样率不一致 → srMismatch(§2.3 该轨禁用)", "
     const auto ch5 = out.channelConn(5, 1300);
     REQUIRE(ch5.slotState == kSlotActive);
     REQUIRE(ch5.srMismatch);
+    // [rc-misc a] scvb.error{srMismatch} 的 detail.inputSr 取这一位(§5.1)。
+    CHECK(ch5.inputSampleRate == 44100u);
     // 空闲槽不报采样率不一致(sample_rate=0 是「未知」,不是「不同」)。
     REQUIRE_FALSE(out.channelConn(6, 1300).srMismatch);
+    CHECK(out.channelConn(6, 1300).inputSampleRate == 0u);
 }
 
 TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[output][state]")
