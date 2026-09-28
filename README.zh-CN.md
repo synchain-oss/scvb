@@ -40,8 +40,8 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
-| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击;停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
+| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
+| Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 
 > **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio 不在 v1 支持矩阵内。

@@ -7,6 +7,7 @@
 
 #include "AnalyzeScopeMath.h" // [SL-242] 范围 → hop 窗的向内取整(纯函数,scvb_tests 直接断言)
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
+#include "HostId.h" // [J150] 桥面 §1.1 `host` 的取值口径
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
@@ -24,7 +25,20 @@ namespace
 constexpr int kGroupIdMax = 8; // [J66] 1..8
 constexpr int kVersionMax = 2; // [J59] 1..2
 constexpr int kTimelineInvalidTicks = 12; // 25Hz × 0.5s(§4.2 连续无效判定)
+
+// [J150] 测试注入的宿主类型(nullopt = 按真实宿主判定)。只由 setHostTypeForTesting 写,
+// 单测线程;与下面 sidecarTestBaseDirRef 同款。
+std::optional<juce::PluginHostType::HostType>& hostTypeTestOverrideRef()
+{
+    static std::optional<juce::PluginHostType::HostType> type;
+    return type;
+}
 } // namespace
+
+void ScvbOutputAudioProcessor::setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type)
+{
+    hostTypeTestOverrideRef() = type;
+}
 
 ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
@@ -61,6 +75,10 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // 只为让设置页在首次存盘前也有真值可显示 —— 落盘格式(36 字符 dashed UUID)与「永久随
     // state」的语义都不变,工程里存过的值仍然压过它。
     sessionGuid_ = juce::Uuid().toDashedString();
+
+    // [J150] 宿主标识:构造期判定一次(PluginHostType 按宿主可执行文件名识别,不在音频线程)。
+    // 测试注入见 setHostTypeForTesting;生产路径恒走 juce::PluginHostType().type。
+    hostId_ = scvb::output::hostIdOf(hostTypeTestOverrideRef().value_or(juce::PluginHostType().type));
 
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);

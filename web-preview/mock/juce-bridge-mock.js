@@ -514,6 +514,7 @@ function makeContext(role, world) {
             delete s.version;
             delete s.guide_seen_global;
             delete s.tour_seen_global;
+            delete s.host; // [J150] 快照专属(§1.1),真桥的 §2.1 事件里没有它
             delete s.conn;
             return { full: true, ...s };
         }

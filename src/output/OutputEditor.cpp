@@ -205,7 +205,8 @@ juce::var OutputEditor::buildSnapshot()
 {
     juce::var o = buildStateSubtree(true);
 
-    // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global / conn。
+    // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global /
+    // lang_chosen_global / host / conn。
     // [SL-215] 此前这里是一串写死的全零字面量,于是设置页恒显示
     // 「session 00000000-0000-0000-0000-000000000000」。真源在 processor(构造期生成、随 PRMS
     // 持久化、加载时沿用工程里的那一个)。
@@ -221,6 +222,12 @@ juce::var OutputEditor::buildSnapshot()
     put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
     // §1.1 附加位:用户显式选过语言的系统级全局默认(新工程不再重复问语言)。
     put(o, "lang_chosen_global", uidefaults::langChosenGlobal());
+    // [J150] 宿主标识(闭集,口径见 HostId.h):页面据此只在 REAPER / Live 上出宿主专属提示
+    // (03 §4.2 / §4.4)。宿主在实例寿命内不变,所以只进快照、不进 §2.1 增量事件;
+    // 编辑器每次重建都会重新调 requestInitialState()(§0.6),拿得到。
+    // ⚠ 这一行的接线由 web-preview/tests/smoke-host-hints.mjs 的源码钉子锁住
+    // (本 TU 编不进任何单测目标,见 emitTick 头注)。
+    put(o, "host", juce::var(processor_.hostId()));
     put(o, "conn", buildConnPayload());
     return o;
 }

@@ -5502,6 +5502,67 @@ TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][
 }
 
 // ---------------------------------------------------------------------------
+// [J150] 宿主标识:桥面 §1.1 快照的 `host` 取 processor 的 hostId()(03 §4.2 REAPER / §4.4 Live
+// 的宿主专属提示据此只在对应宿主上出)。OutputEditor::buildSnapshot 里那一行 put 不在本目标里
+// (那个 TU 拖 WebView2),由 web-preview/tests/smoke-host-hints.mjs 的源码钉子锁。
+//
+// 本用例钉的是**构造期判定 → hostId()** 这一段,逐支注入(REAPER / Live 两种枚举 /
+// Cubase 两种枚举 / Nuendo / Studio One / pluginval / 未知宿主),每一支都是「先注入、再构造」。
+// ⚠ 钉不住的那一半照实说:**真实判定**(`juce::PluginHostType().type`,按本进程可执行文件名)
+//   在这里只测得到 "other" —— harness 自己不是任何 DAW。把那半句换成常量 UnknownHost,
+//   ① 照样绿;它靠的是 JUCE 自己的识别表,不是本仓代码。
+// 用 CHECK 不用 REQUIRE:一支红了要看得到其余各支仍绿还是一起红(REQUIRE 会掐断后面的支)。
+// 出口一律复位注入,免得一支红了把注入漏给后面的用例。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J150:宿主标识在构造期判定并经 hostId() 发布(§1.1 快照 host)", "[host][J150]")
+{
+    struct ResetHostOverride
+    {
+        ~ResetHostOverride() { ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt); }
+    } resetHostOverride;
+
+    // ① 不注入:走真实判定;本进程不是 DAW ⇒ "other"。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    {
+        ScvbOutputAudioProcessor real;
+        CHECK(std::string(real.hostId()) == "other");
+    }
+
+    // ② 逐支注入。
+    struct HostCase
+    {
+        juce::PluginHostType::HostType type;
+        const char* want;
+    };
+    const HostCase cases[] = {
+        {juce::PluginHostType::Reaper, "reaper"},
+        {juce::PluginHostType::AbletonLiveGeneric, "live"}, // Live 12 走这一支(文件名不带 6..11)
+        {juce::PluginHostType::AbletonLive11, "live"},
+        {juce::PluginHostType::SteinbergCubaseGeneric, "cubase"}, // Cubase 12+ 走这一支
+        {juce::PluginHostType::SteinbergCubase10_5, "cubase"},
+        {juce::PluginHostType::SteinbergNuendoGeneric, "other"}, // 本卡不给 Nuendo 出提示
+        {juce::PluginHostType::StudioOne, "other"},
+        {juce::PluginHostType::pluginval, "other"},
+        {juce::PluginHostType::UnknownHost, "other"},
+    };
+    for (const auto& c : cases)
+    {
+        ScvbOutputAudioProcessor::setHostTypeForTesting(c.type);
+        ScvbOutputAudioProcessor p;
+        INFO("PluginHostType::HostType = " << static_cast<int>(c.type) << " -> want " << c.want);
+        CHECK(std::string(p.hostId()) == c.want);
+    }
+
+    // ③ 注入只影响**之后构造**的实例:复位后新构造的回到真实判定。
+    ScvbOutputAudioProcessor::setHostTypeForTesting(juce::PluginHostType::Reaper);
+    ScvbOutputAudioProcessor before;
+    ScvbOutputAudioProcessor::setHostTypeForTesting(std::nullopt);
+    ScvbOutputAudioProcessor after;
+    CHECK(std::string(before.hostId()) == "reaper");
+    CHECK(std::string(after.hostId()) == "other");
+}
+
+// ---------------------------------------------------------------------------
 // [SL-208] 缩放档位记忆:「保持」过的档位,换实例(= 重开窗 / 重开工程)必须还在。
 //
 // 用户报「重开不记住上次档位」。这条链路有两段,本用例把两段都钉住:
