@@ -35,7 +35,9 @@ param(
   [string]$SourceCommit,
   # 只给演练 tag(v0.0.0-test)用:THIRD-PARTY-NOTICES 点名的许可证在 LICENSES/ 里缺全文时降为 [WARN]
   # 并记进 summary,好让流水线演练不被合规缺口卡住。正式版 / rc 不传,缺就红。
-  [switch]$AllowMissingLicenseTexts
+  [switch]$AllowMissingLicenseTexts,
+  # 只跑不依赖构建产物的检查就退出(见下方 Preflight 段)。
+  [switch]$Preflight
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +91,9 @@ function Get-FirstThreeRules([string]$mdPath, [string]$heading) {
     # 续行:同一段引用里不带编号的 `> 文本`,拼到上一条后面 —— 生成器哪天改成折行输出,
     # 这里不会只取到半句安全提示。`>` 空行或引用结束即收口。
     if ($open -and $l -match '^>\s+(\S.*)$') { $rules[$rules.Count - 1] += ' ' + $Matches[1]; continue }
+    # 规则开始之后,本小节里再出现没被上面两支消费的非空引用行(例如 `>` 空行之后的续文),
+    # 说明规则文本的形态超出了本解析器的理解 —— 判红,不静默截断安全提示。
+    if ($rules.Count -gt 0 -and $l -match '^>\s*\S') { Fail "$mdPath 的「$heading」小节有一行引用没法归到任何一条规则:$l" }
     $open = $false
   }
   if ($rules.Count -ne 3) { Fail "$mdPath 的「$heading」小节里没读到前 3 条规则(读到 $($rules.Count) 条)" }
@@ -131,28 +136,6 @@ if ($null -eq $epoch) { $epoch = 315532800 }
 $entryTime = [DateTimeOffset]::FromUnixTimeSeconds($epoch)
 
 $zipName = "SCVB-v$Version-win64.zip"
-$buildFull = Resolve-Full $BuildDir
-$outFull = Resolve-Full $OutDir
-if (-not (Test-Path -LiteralPath $buildFull -PathType Container)) { Fail "BuildDir 不存在:$buildFull" }
-
-# ── ② 枚举 bundle ─────────────────────────────────────────────────────────────
-$bundles = @(Get-ChildItem -LiteralPath $buildFull -Recurse -Directory -Filter '*.vst3')
-if ($bundles.Count -ne 3) {
-  $bundles | ForEach-Object { Write-Host "  found: $($_.FullName)" }
-  Fail "期望恰好 3 个 .vst3 bundle 目录(SCVB Input / Output / Monitor),实际 $($bundles.Count) 个。BuildDir 里混着多套构建(如 Debug + Release)时请指到单一配置的目录。"
-}
-# 两侧用同一个序数比较器排序,不依赖常量表的书写顺序,也不依赖 locale。
-$names = [string[]]@($bundles | ForEach-Object { $_.Name })
-[Array]::Sort($names, [StringComparer]::Ordinal)
-$expectedSorted = [string[]]@($ExpectedBundles)
-[Array]::Sort($expectedSorted, [StringComparer]::Ordinal)
-if (($names -join '|') -ne ($expectedSorted -join '|')) {
-  Fail ("bundle 名字不对:实际 [{0}],期望 [{1}]" -f ($names -join ', '), ($ExpectedBundles -join ', '))
-}
-foreach ($b in $bundles) {
-  $dll = Join-Path $b.FullName (Join-Path 'Contents\x86_64-win' $b.Name)
-  if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { Fail "bundle 不完整,缺 $dll" }
-}
 
 # ── ⑤ 合规文件 ────────────────────────────────────────────────────────────────
 $licenseDir = Join-Path $RepoRoot 'LICENSES'
@@ -166,14 +149,21 @@ foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
 $notices = [IO.File]::ReadAllLines((Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md'), [Text.Encoding]::UTF8)
 $spdxIds = New-Object System.Collections.Generic.List[string]
 $spdxIds.Add('GPL-3.0-or-later')
-$inDist = $false; $rows = 0
+$inDist = $false; $rows = 0; $col = -1
 foreach ($l in $notices) {
   if ($l -match '^## ') { $inDist = $l.StartsWith('## 随二进制分发'); continue }
   if (-not $inDist -or $l -notmatch '^\|') { continue }
   $cells = $l.Split('|')
-  if ($cells.Count -lt 5 -or $cells[1].Trim() -eq '依赖' -or $cells[1].Trim() -match '^-+$') { continue }
+  # 按表头定位「许可证」列,不写死下标。
+  if ($col -lt 0) {
+    for ($c = 0; $c -lt $cells.Count; $c++) { if ($cells[$c].Trim().StartsWith('许可证')) { $col = $c } }
+    if ($col -lt 0) { Fail "THIRD-PARTY-NOTICES.md「随二进制分发」表的表头里找不到「许可证」列:$l" }
+    continue
+  }
+  if ($cells[1].Trim() -match '^-+$') { continue }
+  if ($cells.Count -le $col) { Fail "THIRD-PARTY-NOTICES.md「随二进制分发」表有一行列数不够:$l" }
   $rows++
-  $m = [regex]::Match($cells[3].Trim(), '^([A-Za-z0-9][A-Za-z0-9.+-]*)')
+  $m = [regex]::Match($cells[$col].Trim(), '^([A-Za-z0-9][A-Za-z0-9.+-]*)')
   if (-not $m.Success) { Fail "THIRD-PARTY-NOTICES.md 的「随二进制分发」表里有一行读不出 SPDX 标识:$l" }
   if (-not $spdxIds.Contains($m.Groups[1].Value)) { $spdxIds.Add($m.Groups[1].Value) }
 }
@@ -295,6 +285,36 @@ $install.AddRange([string[]]@(
 ))
 # 中文一段里的 ** 是写给自己看的强调,txt 不渲染 markdown,落盘前剥掉。
 $installText = (($install.ToArray() -join "`r`n") -replace '\*\*', '')
+
+# -Preflight:只做不依赖构建产物的检查(版本 / tag、许可证全文覆盖、INSTALL.txt 的规则提取)就退出。
+# release.yml 的 verify-tag 在 20 分钟的构建之前先跑它,这几类问题不必等构建完才红。
+if ($Preflight) {
+  Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,规则 en/zh 各 3 条)"
+  exit 0
+}
+
+$buildFull = Resolve-Full $BuildDir
+$outFull = Resolve-Full $OutDir
+if (-not (Test-Path -LiteralPath $buildFull -PathType Container)) { Fail "BuildDir 不存在:$buildFull" }
+
+# ── ② 枚举 bundle ─────────────────────────────────────────────────────────────
+$bundles = @(Get-ChildItem -LiteralPath $buildFull -Recurse -Directory -Filter '*.vst3')
+if ($bundles.Count -ne 3) {
+  $bundles | ForEach-Object { Write-Host "  found: $($_.FullName)" }
+  Fail "期望恰好 3 个 .vst3 bundle 目录(SCVB Input / Output / Monitor),实际 $($bundles.Count) 个。BuildDir 里混着多套构建(如 Debug + Release)时请指到单一配置的目录。"
+}
+# 两侧用同一个序数比较器排序,不依赖常量表的书写顺序,也不依赖 locale。
+$names = [string[]]@($bundles | ForEach-Object { $_.Name })
+[Array]::Sort($names, [StringComparer]::Ordinal)
+$expectedSorted = [string[]]@($ExpectedBundles)
+[Array]::Sort($expectedSorted, [StringComparer]::Ordinal)
+if (($names -join '|') -ne ($expectedSorted -join '|')) {
+  Fail ("bundle 名字不对:实际 [{0}],期望 [{1}]" -f ($names -join ', '), ($ExpectedBundles -join ', '))
+}
+foreach ($b in $bundles) {
+  $dll = Join-Path $b.FullName (Join-Path 'Contents\x86_64-win' $b.Name)
+  if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { Fail "bundle 不完整,缺 $dll" }
+}
 
 # ── 组装条目清单:(zip 内路径, 源文件 或 $null=内存内容) ──────────────────────
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("scvb-package-" + [Guid]::NewGuid().ToString('N'))

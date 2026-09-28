@@ -52,13 +52,13 @@ semver 语义(音频插件特化):
 
 | job | 做什么 | 失败时 |
 |---|---|---|
-| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」) | 立刻红,不进构建 |
+| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
 | `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
 | `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
 
 - 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
 - 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
-- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。**截至本段写下时,该表登记的 WebView2 SDK 许可证 BSD-3-Clause 在 `LICENSES/` 里没有全文 —— 补上之前,正式版和 rc tag 都会停在打包步。**
+- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。**截至本段写下时,该表登记的 WebView2 SDK 许可证 BSD-3-Clause 在 `LICENSES/` 里没有全文 —— 补上之前,正式版和 rc tag 都会停在 `verify-tag` 的 preflight(构建之前)。**
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
 - **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
 
@@ -86,7 +86,7 @@ SCVB-vX.Y.Z-win64.zip
 ├── SCVB Monitor.vst3/          (可选的只读观察窗)
 ├── LICENSE.txt                 GPLv3 全文(= 仓库根 LICENSE)
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
-├── LICENSES/                   仓库 LICENSES/ 下全部许可证全文(OFL-1.1 / MIT / AGPL-3.0 / GPL-3.0)
+├── LICENSES/                   仓库 LICENSES/ 下的全部许可证全文(应有哪些由 THIRD-PARTY-NOTICES.md 的「随二进制分发」表决定)
 └── INSTALL.txt                 安装步骤 + 未签名插件的「解除锁定」与 SmartScreen 说明 + 九条规则前 3 条
                                 + 精确到 tag 的源码获取地址(GPLv3 §6 的书面声明)
 ```
