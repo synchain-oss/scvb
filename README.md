@@ -1,9 +1,9 @@
 **English** | [简体中文](README.zh-CN.md)
 
 [![License](https://img.shields.io/github/license/synchain-oss/scvb?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/synchain-oss/scvb/build-vst3.yml?branch=dev&style=flat-square&label=build)](../../actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/synchain-oss/scvb/build-vst3.yml?branch=dev&style=flat-square&label=build)](https://github.com/synchain-oss/scvb/actions)
 [![pluginval](https://img.shields.io/badge/pluginval-strictness%205-brightgreen?style=flat-square)](https://github.com/Tracktion/pluginval)
-[![Release](https://img.shields.io/github/v/release/synchain-oss/scvb?style=flat-square)](../../releases/latest)
+[![Release](https://img.shields.io/github/v/release/synchain-oss/scvb?style=flat-square)](https://github.com/synchain-oss/scvb/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%C2%B7%20VST3-blue?style=flat-square)](#requirements)
 
 # SCVB — Synchain Vocal Balancer

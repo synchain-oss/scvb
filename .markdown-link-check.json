@@ -1,10 +1,6 @@
 {
   "ignorePatterns": [
     {
-      "comment": "GitHub 相对快捷路径(../../actions、../../releases/latest,12 §7.2 badge 模板逐字如此)。它们由 GitHub 在渲染时解析到当前仓库,本地文件系统里没有对应路径。",
-      "pattern": "^\\.\\./\\.\\./"
-    },
-    {
       "comment": "shields.io badge 端点:响应取决于网络与限流,不构成文档正确性判据。",
       "pattern": "^https://img\\.shields\\.io/"
     },
