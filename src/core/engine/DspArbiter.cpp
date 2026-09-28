@@ -163,6 +163,11 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
 
         // [J58] lead_select 覆盖层:仅把第 n 轨 pan 强制居中;vol 不受影响,其余轨不动。
         // 覆盖优先级高于 freeze:被冻结 pan 的轨若同时被 lead_select 选中,仍强制居中。
+        // [SL-216 / J136] 主唱居中已进分析(按 lead_select 的时间线记录把该轨并入集合 C,其余声部围绕
+        // 它排槽、平衡)。按同一份记录分析过的区间里,该轨在它自己的段上曲线本来就是 0,这一句不改变
+        // 听到的东西。它仍留着兜住分析够不着的几种状态:改了 lead_select 之后还没重新分析的区间、
+        // 冻结 pan 的轨(那一维读参数面,不读曲线)、跟随宿主档(不读曲线)、没有记录的旧工程 ——
+        // 这些状态下「选中即居中」照旧成立,但其余声部不会因此重新排布,要等重新分析。
         if (lead == t + 1)
             panTarget = 0.0f;
 

@@ -18,7 +18,8 @@
 //   12    u32 chunkCount
 //   16..  TLV × N:{ u32 fourcc; u32 sizeBytes; u8 payload[sizeBytes](4 字节对齐,padding 置 0) }
 //
-// 五个已知 fourcc:PRMS / CFGS / CRVS / FEAT / UICF。PRMS/CFGS 是 JUCE ValueTree 二进制、
+// 六个已知 fourcc:PRMS / CFGS / CRVS / FEAT / UICF / LEAD([SL-216] lead_select 时间线记录,
+// 编解码在 analysis/LeadTimeline.h,容器层同样只当不透明 payload)。PRMS/CFGS 是 JUCE ValueTree 二进制、
 // FEAT 是 gzip(04 §5.2,归 T21)——三者在 scvb_core(无 JUCE)层面都是**不透明 payload**,
 // 本层只负责容器承载与未知块回写(03 §6.1)。CRVS 是自定义紧凑二进制,本层负责其编解码。
 // 未知 fourcc 的块在 load 时原样保留、save 时原样回写(前向小版本兼容)。
@@ -32,7 +33,9 @@
 //    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
 //    现状([SL-524]):「原样回写」这一半已接 —— 任何被 decodeCrvs 拒收的 CRVS(含 minor 更高)保存时
 //    写回原字节,但只到用户改动段表/版本为止([J122],之后写新表,见 OutputProcessor.h 的
-//    crvsPreserved_);「提示升级」这一半仍未接线。
+//    crvsPreserved_);提示这一半由 [SL-218] 接上 —— 琥珀横幅⑪(§5.1 `stateNotFullyRestored`,
+//    detail.rejected 含 "CRVS")。横幅不分「minor 更高」与「载荷损坏」(本函数对两者回同一个 false),
+//    所以不专说「请升级」。
 // 3. wire-format 与 docs/STATE_SCHEMA.md 交叉校验的基准 = 本头 + tests/golden/state/abi{N}.bin
 //    (abi=1/2/3/4/5 是历史迁移基线,**abi=6 是当前格式锁**)。
 namespace scvb::state
@@ -54,6 +57,7 @@ inline constexpr std::uint32_t kFourccCfgs = 0x53474643u; // 'CFGS'
 inline constexpr std::uint32_t kFourccCrvs = 0x53565243u; // 'CRVS'
 inline constexpr std::uint32_t kFourccFeat = 0x54414546u; // 'FEAT'
 inline constexpr std::uint32_t kFourccUiConfig = 0x46434955u; // 'UICF'([J75] T43 ui.master_chart_mode)
+inline constexpr std::uint32_t kFourccLead = 0x4441454Cu; // 'LEAD'([SL-216] lead_select 时间线记录)
 
 // ---- 校验上限(不可信字节:长度/范围字段先校验再分配/索引,CLAUDE.md §7.3)----
 inline constexpr std::uint32_t kMaxChunkCount = 256u;
