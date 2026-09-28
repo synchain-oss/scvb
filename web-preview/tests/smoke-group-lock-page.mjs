@@ -989,7 +989,7 @@ try {
             ),
             6000,
         ),
-        "⑥c 横幅⑪ 在 6s 内撤下(active:false ⇒ 下一次全部恢复的载入)",
+        "⑥c 横幅⑪ 在 6s 内撤下(active:false)",
     );
     assertClean("⑥c stateNotFullyRestored 横幅");
 

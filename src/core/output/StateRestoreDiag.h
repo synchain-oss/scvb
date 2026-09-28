@@ -7,8 +7,9 @@
 // [SL-218][SL-219] 「这一次载入有哪几节没恢复」的诊断位图(纯 C++17,无 JUCE)。
 //
 // 生产者 = `ScvbOutputAudioProcessor::setStateInformation`(每次真的走到「载入」那一步就整份重算,
-// 见那里的注释);消费者 = `OutputEditor::emitStateNotRestoredError`,把它变成
-// §2.9 / §5.1 的 `scvb.error{code:"stateNotFullyRestored", detail:{missing, rejected}}`。
+// 见那里的注释;另有两处清零,列在 `stateNotRestoredMask_` 的声明处);
+// 消费者 = `OutputEditor::emitStateNotRestoredError`,把它变成 §2.9 / §5.1 的
+// `scvb.error{code:"stateNotFullyRestored", detail:{missing, rejected}}`。
 //
 // 位图只收两节:CFGS(配置)与 CRVS(段表)。**CRVS 位是这条 code 的必要条件** ——
 // CFGS 缺失或解不开时,`setStateInformation` 在读 CRVS 之前就早退了,段表同样没恢复,

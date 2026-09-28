@@ -29,7 +29,7 @@
 
 | 列 | 内容 |
 | --- | --- |
-| 触发 | 最近一次载入(**容器层已通过**)时段表 `CRVS` 没能恢复:不在 blob 里;在但没被采用(解不开 / 段值非有限或越界 / 更高 CRVS minor);或 `CFGS` 不在 / 解不开,载入在读 `CRVS` 之前就停了。撤下(`active:false`)三个时机:下一次段表恢复成功的载入;用户改动段表 / 版本后的那次保存(仅 `rejected` 含 `"CRVS"` 时);载入一份 abi 更高的工程 |
+| 触发 | 最近一次载入(**容器层已通过**)时段表 `CRVS` 没能恢复:不在 blob 里;在但没被采用(解不开 / 段值非有限或越界 / 更高 CRVS minor);或 `CFGS` 不在 / 解不开,载入在读 `CRVS` 之前就停了。撤下(`active:false`)三个时机:下一次段表恢复成功的载入;用户改动段表 / 版本后宿主第一次取 state(`getStateInformation`;通常是存盘,也可能是宿主记撤销点 / 自动保存)(仅 `rejected` 含 `"CRVS"` 时);载入一份 abi 更高的工程 |
 | `ch` | —(页级) |
 | `detail` | `{missing:string[], rejected:string[]}`,值只取 `"CFGS"` / `"CRVS"`;`missing` = 不在 blob 里,`rejected` = 在但没被采用;每次 `active:true` 都至少含一个 `"CRVS"`;两张表变了即重发 |
 | UI 落点 | 琥珀横幅⑪「段表没能恢复,原数据会原样保留」(文案逐字取用户裁定);不 disable 任何控件;不给 ✕(降级纪律② 的持续性条件) |
@@ -41,7 +41,8 @@
 什么都没载入,上一份工程仍是当前工程,保存照旧写它的留底。
 
 **用户改过段表之后**(#307 复审第 1 轮):保存判出「改过」、保留态解除的那一刻,「原数据会原样保留」不再
-成立 ⇒ 同时把位图清成 0、横幅撤下。只在 CRVS 位是 `rejected` 时清(那正是保留态对应的一支);CRVS 位是
+成立 ⇒ 同时把位图清成 0、横幅撤下。这里的「保存」是宿主调 `getStateInformation`,不一定是用户存盘:
+有的宿主记撤销点或自动保存时也会调(#307 复审第 2 轮),所以横幅可能在用户存盘之前就撤下。只在 CRVS 位是 `rejected` 时清(那正是保留态对应的一支);CRVS 位是
 `missing`(其后又载了一份只带 PRMS 的预设)时不清,那条横幅说的是那份预设。
 
 **「原样保留」怎么兑现**:段表保留不清空([SL-217]);blob 里那份没被采用的 `CRVS`,保存时原样写回,
@@ -56,7 +57,7 @@
 
 | 落点 | 位置 |
 | --- | --- |
-| 条件源(位图,每次载入整份重算) | `ScvbOutputAudioProcessor::setStateInformation` 三处:两处 CFGS 早退(见下 SL-219②)、CRVS 段;访问器 `stateNotRestoredMask()`(原子,编辑器在消息线程读) |
+| 条件源(位图,每次载入整份重算) | `ScvbOutputAudioProcessor::setStateInformation` 三处置位:两处 CFGS 早退(见下 SL-219②)、CRVS 段;两处清零:同函数的更高 abi 分支、`getStateInformation` 保留态解除处;访问器 `stateNotRestoredMask()`(原子,编辑器在消息线程读) |
 | 位定义 + detail 两张表 | `src/core/output/StateRestoreDiag.h`(JUCE-free)`notRestoredFourccs` |
 | 边沿 / 换位图重发 / 撤销 / 不可见不记账 | `src/output/BridgeArgs.h` `planStateNotRestoredEmit`(纯函数) |
 | 上桥 | `OutputEditor::emitStateNotRestoredError`,由 `emitTick` 每拍调 |

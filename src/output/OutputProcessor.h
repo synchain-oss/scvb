@@ -314,8 +314,8 @@ public:
     {
         return (stateNotRestoredMask() & scvb::output::kNotRestoredCrvsAny) != 0;
     }
-    // [SL-218] 最近一次载入没恢复的节(位定义见 StateRestoreDiag.h)。0 = 全部恢复。
-    // setStateInformation 写(持 lifecycleMutex_,不保证在消息线程)、编辑器 emitTick 读(消息线程)⇒ 原子。
+    // [SL-218] 横幅⑪ 的条件(位定义见 StateRestoreDiag.h)。0 = 横幅不亮;写入点见 stateNotRestoredMask_。
+    // get/setStateInformation 写(持 lifecycleMutex_,不保证在消息线程)、编辑器 emitTick 读(消息线程)⇒ 原子。
     std::uint8_t stateNotRestoredMask() const noexcept { return stateNotRestoredMask_.load(std::memory_order_acquire); }
     scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
 
@@ -704,6 +704,9 @@ private:
     // PR#53 R1:state abi 拒载标志 + 保留的宿主原始字节 + 上次成功加载的容器(未知 chunk 原样回写)。
     bool stateAbiMismatch_ = false;
     // [SL-217/SL-218] 最近一次载入没恢复的节(段表已保留,不清空);位定义见 StateRestoreDiag.h。
+    // 置位:setStateInformation 每次走到「载入」就整份重算(两处 CFGS 早退 + CRVS 段)。清零另有两处
+    // (#307 复审第 1 轮):更高 abi 拒载那一支;getStateInformation 判出「改过」、解除 CRVS 保留态时
+    // (仅 CRVS 位为 rejected)。所以 0 ≠「上次载入全部恢复」,只表示横幅⑪ 不亮。
     std::atomic<std::uint8_t> stateNotRestoredMask_{0};
     static_assert(std::atomic<std::uint8_t>::is_always_lock_free, "stateNotRestoredMask_ must be lock-free");
     scvb::u32 stateAbiSeen_ = 0;

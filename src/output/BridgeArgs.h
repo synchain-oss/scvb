@@ -473,7 +473,7 @@ inline SrMismatchEmitPlan planSrMismatchEmit(const SrMismatchTarget& target, boo
 // [SL-218] `scvb.error` 的 `stateNotFullyRestored` 一档:这一拍发不发、发哪一态。
 //
 // 条件源 = `ScvbOutputAudioProcessor::stateNotRestoredMask()`(位定义见 StateRestoreDiag.h;
-// 每次载入整份重算,下一次全部恢复的载入把它清成 0)。形态与 `planNewerStateEmit` 同一条纪律
+// 写入点与清零时机见 `stateNotRestoredMask_` 的声明处)。形态与 `planNewerStateEmit` 同一条纪律
 // (边沿 + 撤销 + 不可见不记账),记账记的是「屏上那一条对应的位图」而不是单个 bool:
 // detail 里的 `missing` / `rejected` 是**读给用户 / 诊断看的**,换了一份缺的节不同的工程
 // 却停在旧的那两张表上,是一句关于当前工程的假话。

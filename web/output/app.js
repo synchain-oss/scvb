@@ -1574,8 +1574,8 @@ function renderHeader() {
  * ⑦ 同样不给 ✕:它自带一枚「继续写入自动化」的动作钮(§1.34),关掉横幅等于把一个
  * **待办**藏起来;⑧⑨⑩ 是纯提示,关掉只少一句话。
  * [SL-218] ⑪ `stateNotFullyRestored` 是 `scvb.error` 的 code,与 ②-⑥ 同一类:契约 §5.1
- * 降级纪律② 已把它写进「持续性条件」(横幅①-⑥、⑪),不给 ✕,下一次全部恢复的载入发
- * `active:false` 才撤下。
+ * 降级纪律② 已把它写进「持续性条件」(横幅①-⑥、⑪),不给 ✕,收到 `active:false` 才撤下
+ * (三个撤下时机见契约 §5.1 该行)。
  */
 function renderBanners() {
     const vs = viewStore();

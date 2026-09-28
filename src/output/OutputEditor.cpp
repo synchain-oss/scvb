@@ -330,7 +330,7 @@ void OutputEditor::emitTick()
     // [SL-478] 横幅⑥ 的生产者。条件是 processor 定时器里去抖过的值(0.5s,与清注入 mask 同一判据),
     // 所以这里逐拍调用不会让横幅随单块抖动翻转;边沿/撤销/不可见不记账由 plan 管。
     emitNoTimelineError();
-    // [SL-218] 横幅⑪ 的生产者。条件是 processor 在 setStateInformation 里整份重算的位图,
+    // [SL-218] 横幅⑪ 的生产者。条件是 processor 的位图(载入时整份重算,清零时机见其声明处),
     // 与 `newerState` 一样收在这一拍:编辑器打开前就载入过的,bridgeReady_ 后第一拍看见。
     emitStateNotRestoredError();
 }
