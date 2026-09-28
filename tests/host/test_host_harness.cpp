@@ -6543,7 +6543,7 @@ TEST_CASE("HOST 加载守卫:恢复 output=ON 的工程,确认前播放零写入
 // [加载守卫] 守卫的其余写点:恢复 OFF 不设守卫(且清掉上一个工程残留的);关输出即解除
 // (桥面 OFF 与 [J92a] 手动开采集连带关输出两条路都走 applyOutputEnabled);
 // 守卫在时再发 setOutputEnabled(true) **不算确认**(契约 P-1 候选②「复用 setOutputEnabled(true)
-// 作确认信号」已被 A-29 否决,确认入口只有 §1.34)。
+// 作确认信号」已被 A-29 否决,确认入口只有 §1.34);确认过后宿主再灌 ON ⇒ 重新置位([J154])。
 // 删除式:删掉 applyOutputEnabled 里的清除 ⇒ 「桥面 OFF」与「J92a」两格红。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出不算确认", "[host][loadguard]")
@@ -6592,6 +6592,17 @@ TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出�
     CHECK_FALSE(out.printGuardPending()); // ← 同上
 
     out.setCaptureEnabled(false);
+
+    // [J154] 契约 §1.34「本工程会话」的边界:确认过之后,宿主对同一实例再灌一次输出=开的状态
+    // (带插件状态的撤销 / A/B 对比 / 载入预设)算新的一次会话 ⇒ 守卫重新置位。
+    // 放在本用例最后:J154 未取的选项 (b)「同一实例确认过就不再重置」会让这个实例此后每次重灌都
+    // 不再置位,放在前面会连带把后面各段的前置 REQUIRE 一起弄红,分不出是哪一格钉住了它。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardPending());
+    out.confirmPrintGuard();
+    REQUIRE_FALSE(out.printGuardPending());
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    CHECK(out.printGuardPending()); // ← 改成 (b) 即红
 }
 
 // ===========================================================================
