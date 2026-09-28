@@ -1101,7 +1101,7 @@ private:
     double vadPreviewLastComputeCostMs_ = 0.0;
     bool vadPreviewPending_ = false;
     std::int64_t vadPreviewMinGapForTestMs_ = 0;
-    void tickVadPreviewPending() noexcept; // [M] 25Hz;调用方已持 lifecycleMutex_
+    void tickVadPreviewPending(); // [M] 25Hz;调用方已持 lifecycleMutex_(会重算 ⇒ 会分配,不标 noexcept)
     // 结束预览:清覆盖层 / 段 / 缓存(整份释放内存);原本 active 才 seq +1(让 editor 发收尾帧)。
     void dropVadPreviewLocked() noexcept;
     // [M] 25Hz;调用方已持 lifecycleMutex_。空闲结束条件见 previewVadSegmentation 的头注。

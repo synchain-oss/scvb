@@ -13465,16 +13465,23 @@ TEST_CASE("HOST J146:限频期覆盖层记哨兵 —— 别的轨延长了时间
     constexpr int kCols = 128;
     // 从没分析过 ⇒ vadP 全 0:这就是「退回 vadP」时该看到的那一份。
     const auto vadP = t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad;
+    // 采集开关先打开、让 Input 经 ctrl 广播(25Hz)看到它 —— 这一步不推块,谁都不写特征。
+    // 放在首建**之前**:下面「B 接着采」必须落在首建后 1s 的限频窗里,不能把这段等待也算进去。
+    t.r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(300);
     t.r.out.runtime().vadThresholdDb = -60.0f;
     REQUIRE(t.r.out.previewVadSegmentation().active);
     const auto builds1 = t.r.out.vadPreviewCacheBuilds();
     REQUIRE(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad != vadP); // 前置:覆盖层在用
 
     // 只让 B 接着采:A 一个字节都不写,时间线被 B 延长(计算窗变了,A 的修改序号没变)。
+    // 推到时间线真的变长为止(特征经 Output 25Hz 拉取才入库),封顶约 0.8s,仍在限频窗内。
     t.r.ph.playing = true;
-    t.r.out.setCaptureEnabled(true);
-    t.blocks(40, false, true, 0.5f);
-    Rig::pumpMessages(120);
+    for (int k = 0; k < 20 && !(t.r.out.capturedExtentSeconds() > extent0); ++k)
+    {
+        t.blocks(8, false, true, 0.5f);
+        Rig::pumpMessages(30);
+    }
     t.r.out.setCaptureEnabled(false);
     t.r.ph.playing = false;
     REQUIRE(t.r.out.capturedExtentSeconds() > extent0);

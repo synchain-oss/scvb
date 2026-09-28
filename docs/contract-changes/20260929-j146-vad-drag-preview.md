@@ -42,7 +42,8 @@
   channels:[ { ch:1..15, spans:[ {t0S:f64, t1S:f64} ] } ] }
 ```
 
-- **何时发**:`setVadParams` / `setSegmentation` 每次调用当场发(调用方 web 已节流到 ≤50Hz);预览结束时发一次
+- **何时发**:`setVadParams` / `setSegmentation` 每次调用当场重判决并发(调用方 web 已节流到 ≤50Hz;长会话单次太贵时自适应合并、
+  由 25Hz 定时器补算后发,见下「代价与长会话」);预览结束时发一次
   `active:false`。按 `seq` 判变化;首帧只在正处于预览中时发(条件类)。
 - **内容**:`active:true` 时 `startS/endS` = 松手那一趟的**写回窗**;`channels` = 写回集轨(启用、此刻已连接、窗内有采集数据 —— 与松手那一趟同一判据,含 [SL-535] 的「已连接」);
   每轨 `spans` = 该轨在**当前参数**下的 **S1 段**(VAD 状态机 + 超长段谷切分),裁到写回窗。

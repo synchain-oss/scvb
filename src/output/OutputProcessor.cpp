@@ -3996,7 +3996,7 @@ void ScvbOutputAudioProcessor::requestVadPreview()
     }
 }
 
-void ScvbOutputAudioProcessor::tickVadPreviewPending() noexcept
+void ScvbOutputAudioProcessor::tickVadPreviewPending()
 {
     if (!vadPreviewPending_)
         return;
