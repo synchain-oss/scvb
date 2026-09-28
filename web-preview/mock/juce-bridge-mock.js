@@ -1054,6 +1054,8 @@ function buildOutputBackend(ctx) {
         // 没连上 Input 的轨即使有覆盖也不计(没有别的轨时落 §1.6 既有拒绝态)。这里**不建模**:
         // mock 的默认世界本身就是「有覆盖、但 15 轨全空闲」(`makeConn()` 的默认),照搬这条判据会让
         // 预览里所有分析一律被拒、牵动多套冒烟。拒绝态的**形状**两侧相同,差的只是触发条件。
+        // 代价(#292 复审):「有数据但没连上」这一态在预览里**不可达**,它的 UI 面(拒回执文案、
+        // 原因句、连接变化后重取预览)**没有页面级冒烟覆盖**;判据本身只有 host 用例与 Tab1 的纯函数格。
         const startS = isFiniteNumber(scope?.startS) ? scope.startS : -Infinity;
         const endS = isFiniteNumber(scope?.endS) ? scope.endS : Infinity;
         for (const ch of chList) {

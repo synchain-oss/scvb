@@ -578,10 +578,16 @@ export function segmentTotals(segments) {
  * 只看段表会鸡生蛋(首采未析永远禁用);只看覆盖会误伤重开工程
  * (§2.7 captureProgress 非播放不发,覆盖帧未到但段表有货)。
  * 此口径两度踩坑(PR #52 首审【重要】+ pr-agent 建议),抽纯函数配 smoke 断言锁死。
+ * [SL-535] 第三个量:`previewAnalyze()` 回的 `tracks`(null = 回包没到 / 未取)。分析只认
+ * **此刻连着 Input** 的轨,「覆盖 / 段表都有、但那些轨全没连上」时 dry-run 回 0 轨,真跑按
+ * §1.6 拒绝 —— 只看覆盖 ∪ 段表会把这一态当成「有数据」,原因句不出,点了又什么都不发生。
+ * `tracks` 是按覆盖数的(不是按段表),所以接上它**不会**重新踩「首采未析」的鸡生蛋。
  * @param {number|null} coveragePct coveragePercent() 的返回(null=无帧)
  * @param {number} segTotalN 已分析段数(segmentTotals().n)
+ * @param {number|null} [previewTracks] previewAnalyze 的 tracks(null/缺省 = 不参与判定)
  */
-export function analyzeNoData(coveragePct, segTotalN) {
+export function analyzeNoData(coveragePct, segTotalN, previewTracks = null) {
+    if (previewTracks === 0) return true;
     return !coveragePct && segTotalN === 0;
 }
 
@@ -1754,9 +1760,11 @@ export function createTabMaster(opts) {
             an = "running"; // 受理回执前的在途窗口
         else if (isWriteBlocked()) an = "disabled";
         el.flow.setAttribute("data-analyze", an);
+        // [SL-535] 第三参 = dry-run 的轨数(只数已连接的轨),见 analyzeNoData 头注。
+        const previewTracks = local.preview ? local.preview.tracks : null;
         el.flow.setAttribute(
             "data-analyze-nodata",
-            analyzeNoData(p, totals.n) ? "1" : "0",
+            analyzeNoData(p, totals.n, previewTracks) ? "1" : "0",
         );
         // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读)时
         // 不能亮「当前范围内无采集数据」——真实原因由横幅②承载,原因句只留给 nodata。
@@ -2378,7 +2386,12 @@ export function createTabMaster(opts) {
      */
     function refreshPreview() {
         const scope = analyzeScope(getStore().state);
-        const key = JSON.stringify(scope);
+        // [SL-535] dry-run 只数**已连接**的轨 ⇒ 指纹里要带连接集合,否则 Input 连上 / 断开之后
+        // 预览数(与上面的原因句)会停在旧值,直到 scope 恰好又变一次。app.js 的 scvb.conn 订阅会调本函数。
+        const key =
+            JSON.stringify(scope) +
+            "|" +
+            connectedChannels(getStore().conn).join(",");
         if (key === local.previewKey) return;
         local.previewKey = key;
         if (local.previewTimer) clearTimeout(local.previewTimer);

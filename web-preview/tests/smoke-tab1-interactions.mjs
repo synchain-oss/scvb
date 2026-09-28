@@ -399,6 +399,19 @@ log("=== ① 契约映射的纯函数 ===");
         "重开工程未播放(§2.7 无覆盖帧,段表有货)⇒ 可分析",
     );
     check(TM.analyzeNoData(null, 0), "双空 ⇒ 禁用(真无数据)");
+    // [SL-535] 第三参 = dry-run 轨数(只数已连接的轨)。删掉 analyzeNoData 里那一行,第一格红。
+    check(
+        TM.analyzeNoData(84, 327, 0),
+        "SL-535 覆盖与段表都有、dry-run 0 轨(有数据的轨都没连上)⇒ 出原因句",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, 2),
+        "SL-535 dry-run 有轨 ⇒ 可分析(第三参不把首采未析判成无数据)",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, null) && !TM.analyzeNoData(84, 0),
+        "SL-535 dry-run 回包未到(null / 缺省)⇒ 维持原判据",
+    );
     check(
         TM.analyzeNoData(0, 0),
         "覆盖 0%(range ∩ coverage = ∅)且段表空 ⇒ 禁用",

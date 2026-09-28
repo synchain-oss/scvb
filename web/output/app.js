@@ -2020,6 +2020,10 @@ if (bridge) {
 
     bridge.on("scvb.conn", (c) => {
         store.conn = c;
+        // [SL-535] 分析的干跑预览只数已连接的轨:连接集合一变,两页的预览数都得重取
+        // (两边各自按「已连接轨号」比对,集合没变就不发请求)。
+        tabMaster.refreshPreview();
+        tabWave.onConn(c);
         requestRender();
     });
 

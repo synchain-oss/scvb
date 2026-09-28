@@ -768,7 +768,9 @@ export const T = {
         "master.copyConfirmPrimary": "覆盖并复制",
         "master.captureOff": "采集 OFF",
         "master.step2.desc": "将影响 {n} 区段 / {m} 轨;{k} 处手动编辑将保留",
-        "master.step2.desc.noData": "当前范围内无采集数据——调整范围或先采集",
+        // [SL-535] 分析只认此刻连着 Input 的通道:有数据但都没连上时也显示这句,所以补上括号那半句。
+        "master.step2.desc.noData":
+            "当前范围内没有可用的采集数据(没连上 Input 的通道不计入)——调整范围、先采集,或连上 Input",
         "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
         "master.analyzing": "分析中…",
         "master.analyzeDone": "分析完成",
@@ -1702,7 +1704,7 @@ export const T = {
         "master.step2.desc":
             "Affects {n} intervals / {m} tracks; {k} manual edits will be kept",
         "master.step2.desc.noData":
-            "No captured data in the current range — adjust the range or capture first",
+            "No usable captured data in the current range (channels without a connected Input are not counted) — adjust the range, capture first, or connect the Input",
         "master.step2.coverage":
             "{p}% of the range is covered; uncovered parts stay as they are",
         "master.analyzing": "Analyzing…",
@@ -2550,7 +2552,7 @@ export const T = {
         "master.step2.desc":
             "Affecte {n} intervalles / {m} pistes ; {k} modifications manuelles seront conservées",
         "master.step2.desc.noData":
-            "Aucune donnée capturée dans la plage actuelle — ajustez la plage ou capturez d'abord",
+            "Aucune donnée capturée exploitable dans la plage actuelle (les canaux sans Input connecté ne comptent pas) — ajustez la plage, capturez d'abord ou connectez l'Input",
         "master.step2.coverage":
             "{p}% de la plage est couverte ; les parties non couvertes restent inchangées",
         "master.analyzing": "Analyse en cours…",

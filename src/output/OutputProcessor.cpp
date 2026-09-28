@@ -1108,8 +1108,15 @@ void ScvbOutputAudioProcessor::syncVizSegment()
     }
 }
 
+// [SL-535] 口径说明(#292 复审):判据是「显示口径」—— 槽位活跃 **且** 心跳在 `kStaleDisplayMs`
+// (2 s)内。所以除了真断开(Input 释放槽位,用户场景走的是这一半),**宿主消息线程卡住 >2 s**
+// (载工程、模态框)之后紧接着的那次分析,也会把心跳陈旧的轨当成未连接、不计入 —— 与界面此刻
+// 显示「未连接」一致,是有意同口径,不是接管判据(接管走 5000 ms + pid 探测)。
+// 另:`previewAnalysis` 与 `startAnalysis` 各自采一次时钟,两侧是「同一判据、不同时刻」,
+// 其间连接态变了会出现「预览能跑、真跑被拒」这种时间采样固有的窗口,后果只是落回拒绝态。
 std::uint16_t ScvbOutputAudioProcessor::connectedForDisplayMask(std::uint64_t nowMs) const
 {
+    static_assert(scvb::engine::kNumTracks <= 16, "connectedForDisplayMask packs tracks into a u16");
     std::uint16_t mask = 0;
     for (int ch = 0; ch < scvb::engine::kNumTracks; ++ch)
     {
