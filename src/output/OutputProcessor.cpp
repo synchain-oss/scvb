@@ -694,13 +694,33 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 与轨启用位求交:关掉的轨整轨不进混音(§1.15;DAW_COMPATIBILITY §「设备停用」把面板轨道
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
     const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
-    if (inject == 0)
+
+    // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
+    // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
+    // 读环、hasData 恒假,混音循环整轨跳过 —— 80ms 淡出平滑器在空转,没乘在任何样本上,
+    // 面板关轨 = 块边界上硬切一刀。现在读环按「inject 或释放中」放行,fade 目标仍按 inject
+    // (释放中的轨目标 = 0),混音判据不变(仍是 hasData)。读失败 ⇒ hasData 假 ⇒ 退化为硬切,
+    // 与修前同形(掉线那半本来就读不到数据,淡出救不回来)。
+    scvb::u32 releasing = releasablePrev & ~inject;
+    for (int ch = 0; ch < 15; ++ch)
     {
-        // 无注入轨(全部离线/注入延迟中/全被关掉):总线直通,经同一 busXfade 状态机(无硬切)。
-        // [SL-488] 这一支**不**给释放中的轨续读:最后一条轨关掉时走的是总线级交叉,
-        // 不是逐轨 fade(那是另一条过渡路径,不在本卡范围)。
-        const float* lastMix[2] = {accumL_.data(), accumR_.data()};
-        busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
+        if ((releasing & (1u << ch)) != 0 && channelFade_[static_cast<std::size_t>(ch)].getCurrentValue() <= 0.0f)
+        {
+            releasing &= ~(1u << ch); // 淡出已走完:不再读它的环
+        }
+    }
+
+    if (inject == 0 && releasing == 0)
+    {
+        // 无注入轨、也没有正在淡出的轨(全部离线/注入延迟中/全被关掉且淡出已走完):
+        // 总线直通,经同一 busXfade 状态机(无硬切)。
+        // [SL-521] 这一段的自有混音**就是静音**(没有任何轨贡献),交叉的混音侧必须给 0。
+        // 此前传的是 accum —— 上一段混音的样本:总线交叉要走 80ms(多个块),每块都把同一段
+        // 旧样本按递减增益重放一遍,听起来是一小段重复/咔嗒。清零只写本段的 n 个样本,不分配。
+        std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
+        std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
+        const float* silentMix[2] = {accumL_.data(), accumR_.data()};
+        busXfade_.render(out, in, silentMix, n, /*targetMix=*/false);
         publishSilentMeters();
         return;
     }
@@ -717,20 +737,10 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             scvb::output::dbToLinear(blockTargets[static_cast<std::size_t>(ch)].volDb);
     }
 
-    // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
-    // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
-    // 读环、hasData 恒假,混音循环整轨跳过 —— 80ms 淡出平滑器在空转,没乘在任何样本上,
-    // 面板关轨 = 块边界上硬切一刀。现在读环按「inject 或释放中」放行,fade 目标仍按 inject
-    // (释放中的轨目标 = 0),混音判据不变(仍是 hasData)。读失败 ⇒ hasData 假 ⇒ 退化为硬切,
-    // 与修前同形(掉线那半本来就读不到数据,淡出救不回来)。
-    scvb::u32 releasing = releasablePrev & ~inject;
-    for (int ch = 0; ch < 15; ++ch)
-    {
-        if ((releasing & (1u << ch)) != 0 && channelFade_[static_cast<std::size_t>(ch)].getCurrentValue() <= 0.0f)
-        {
-            releasing &= ~(1u << ch); // 淡出已走完:不再读它的环
-        }
-    }
+    // [SL-521] 最后一条轨关掉时 inject == 0 但仍有释放中的轨:照走下面的混音路径,让它的
+    // 80ms 逐轨淡出乘在真样本上(与多轨时关掉一轨同一条路径,SL-488),同时总线交叉的目标改为
+    // 直通 —— 交叉的混音侧是本段真实的淡出混音,而不是上一段的旧样本。两个增益(逐轨 fade 与
+    // 总线交叉的混音侧)同一段起步、各走 80ms,是叠乘的:该轨实际落得比单条 80ms 快,仍在 80ms 内到 0。
     const scvb::u32 live = inject | releasing;
 
     // 读 live channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
@@ -806,8 +816,9 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     }
 
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
+    // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    busXfade_.render(out, in, mix, n, /*targetMix=*/true);
+    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0);
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
