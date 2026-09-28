@@ -575,6 +575,10 @@ TEST_CASE("AUTH-PARAMS-14 压力:消息线程连发、音频线程并发读,读�
         }
     });
 
+    // 先等音频线程真正跑完第一块:否则负载高时 400 次发布可能全落在它起跑之前,池涨到 ~400,
+    // 下面的上界判据红的是「线程没被调度」而不是回收坏了(#306 复审建议)。
+    while (blocks.load(std::memory_order_acquire) == 0)
+        std::this_thread::yield();
     std::size_t maxPool = 0;
     for (int i = 0; i < 400; ++i)
     {
