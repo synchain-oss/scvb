@@ -174,3 +174,21 @@ TEST_CASE("PRMS ui 首启已读位:往返 + 新旧构建双向兼容(T37 A-3)", 
     writeUiFlags(stillInvalid, {true, true}); // no-op,不构造节点
     REQUIRE_FALSE(stillInvalid.isValid());
 }
+
+TEST_CASE("[rc-misc c] 缩放全局默认按角色分键 —— Output 与 Monitor 各存一份", "[uidefaults][rcmisc]")
+{
+    TempStore store;
+
+    REQUIRE(ud::uiScalePercentMonitor() == 0); // 从没「保持」过
+
+    ud::setUiScalePercentMonitor(150);
+    CHECK(ud::uiScalePercentMonitor() == 150);
+    CHECK(ud::uiScalePercent() == 0); // 没串到 Output 那一份
+
+    ud::setUiScalePercent(200);
+    CHECK(ud::uiScalePercentMonitor() == 150); // 反向也不串
+
+    // 越界 = 不可信值:不写入、也不当作已设置
+    ud::setUiScalePercentMonitor(5000);
+    CHECK(ud::uiScalePercentMonitor() == 150);
+}

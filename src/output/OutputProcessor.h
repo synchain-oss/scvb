@@ -452,6 +452,7 @@ public:
         // 桥面只允许 §5.6 八值闭集里的 reason,而 §7 manifest 给 analyze 只登记了 "busy"。
         // 「范围∩覆盖=∅」按 §1.6 拒绝态行回 {ok:false, affected:{0,0,0}}(**不带 reason**),
         // 所以这里不再自造 "noData"/"notPrepared" 字符串,只留一个 busy 布尔。
+        // [SL-535] 「有覆盖的轨此刻都没连上 Input」同样落这个拒绝态(分析只认已连接的轨)。
         bool busy = false;
         int intervals = 0; // 影响面预估(受理回执用)
         int tracks = 0;
@@ -502,7 +503,8 @@ public:
     // 抑制条件按契约 §1.18 —— **只有** PRINT 态或分析进行中([J47]);排的时候看一次、
     // 到点再看一次(300ms 里状态可能已经变了)。
     void armResegment(AnalysisDoneReason reason);
-    // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」。
+    // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」
+    // ([SL-535] 起只数此刻已连接的轨,与 startAnalysis 同一条参与判据)。
     AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
 
     // ---- CRVS 写事务(全部持 lifecycleMutex_,与 prepareToPlay/setStateInformation 同锁纪律)----
@@ -536,6 +538,11 @@ private:
     void syncVizSegment();
     // [M] 组装 viz 发布输入并交给 vizPublisher_(内部 4Hz 分频)。调用方须已持 lifecycleMutex_。
     void publishVizFrame(std::uint64_t nowMs);
+    // [SL-535] 此刻「已连接」的轨掩码(bit t = 轨 t+1)。判据 = `isConnectedForDisplay`,
+    // 与 UI 显示「未连接」的口径同一个函数(不用 registry 的 connectedMask:那一份还剔掉挂起/失准,
+    // 宿主在静音段挂起 Input 是常态,不该让这条轨退出分析)。调用方须已持 lifecycleMutex_。
+    // 消费方:viz 发布的 connectedMask、分析的参与面(startAnalysis / previewAnalysis)。
+    std::uint16_t connectedForDisplayMask(std::uint64_t nowMs) const;
 
     // [A] 读全局三件 raw(host 恒权威,不参与仲裁)。
     float readGlobalWidth() const noexcept;
@@ -581,7 +588,8 @@ private:
     class AnalysisJob;
     friend class AnalysisJob;
     // [SL-209] 分析产物合入段表(finishAnalysis 的 mutator;须持 lifecycleMutex_)。
-    // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 范围内有覆盖,即 analyzedTracks):
+    // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 已连接 ∩ 范围内有覆盖,即 analyzedTracks;
+    // 「已连接」为 [SL-535] 所加):
     // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
     // [SL-414 第 2 推] `minSegmentMs` / `sampleRate` = **本作业自己的**两个兜底入参
     // (`config_.segmentation.minSegmentMs` / `config_.sampleRate`,随 PendingAnalysis 交接),

@@ -4018,7 +4018,12 @@ log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测
             /EDITABLE_SELECTOR/.test(cm) && /input\[type="text"\]/.test(cm),
             "(d2)可编辑控件走白名单放行 —— 否则输入框里连粘贴都没了",
         );
-        for (const f of ["web/output/app.js", "web/input/app.js"]) {
+        // [rc-misc c] Monitor 也进这张表:J137 定了 Monitor 进发布包,此前它漏挂了抑制。
+        for (const f of [
+            "web/output/app.js",
+            "web/input/app.js",
+            "web/monitor/app.js",
+        ]) {
             const s = src(f);
             check(
                 /disableNativeContextMenu\(document\);/.test(s),

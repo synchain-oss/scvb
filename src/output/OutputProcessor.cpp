@@ -1123,6 +1123,26 @@ void ScvbOutputAudioProcessor::syncVizSegment()
     }
 }
 
+// [SL-535] 口径说明(#292 复审):判据是「显示口径」—— 槽位活跃 **且** 心跳在 `kStaleDisplayMs`
+// (2 s)内。所以除了真断开(Input 释放槽位,用户场景走的是这一半),**宿主消息线程卡住 >2 s**
+// (载工程、模态框)之后紧接着的那次分析,也会把心跳陈旧的轨当成未连接、不计入 —— 与界面此刻
+// 显示「未连接」一致,是有意同口径,不是接管判据(接管走 5000 ms + pid 探测)。
+// 另:`previewAnalysis` 与 `startAnalysis` 各自采一次时钟,两侧是「同一判据、不同时刻」,
+// 其间连接态变了会出现「预览能跑、真跑被拒」这种时间采样固有的窗口,后果只是落回拒绝态。
+std::uint16_t ScvbOutputAudioProcessor::connectedForDisplayMask(std::uint64_t nowMs) const
+{
+    static_assert(scvb::engine::kNumTracks <= 16, "connectedForDisplayMask packs tracks into a u16");
+    std::uint16_t mask = 0;
+    for (int ch = 0; ch < scvb::engine::kNumTracks; ++ch)
+    {
+        if (scvb::output::isConnectedForDisplay(session_.channelConn(static_cast<scvb::u32>(ch + 1), nowMs)))
+        {
+            mask = static_cast<std::uint16_t>(mask | (1u << ch));
+        }
+    }
+    return mask;
+}
+
 void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
 {
     // 调用方已持 lifecycleMutex_(timerCallback):可直接读 crvsData_,免去 crvsSnapshot() 的深拷贝。
@@ -1176,15 +1196,9 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         // `connSnapshot()` 的口径也是「取锁前采样」,但它那次采样发生在**已持锁之后**,
         // 对 conn 判据而言是新鲜值;这里在锁内重采,与它等价。
         // 所以本函数里两个时间基准是**有意的**:`due(nowMs)` 用形参(发布节拍要的是进入这一拍
-        // 的时刻),conn 判据用 `nowConn`。**别顺手「简化」成一个。**
-        const auto nowConn = scvb::steadyNowMs();
-        for (int ch = 0; ch < 15; ++ch)
-        {
-            if (scvb::output::isConnectedForDisplay(session_.channelConn(static_cast<scvb::u32>(ch + 1), nowConn)))
-            {
-                in.connectedMask |= (1u << ch);
-            }
-        }
+        // 的时刻),conn 判据用下面调用处在锁内重采的那个值。**别顺手「简化」成一个。**
+        // [SL-535] 逐轨判定收进 `connectedForDisplayMask`(分析的参与面读同一份)。
+        in.connectedMask = connectedForDisplayMask(scvb::steadyNowMs());
     }
     // [N1] metaRevision **只哈希轨名**。width 走帧头段、每帧都刷,与 writeLanes 无关 ——
     // 把它掺进来会让「width 被自动化」变成 needLanes 恒真,每秒 15360 次曲线求值。
@@ -3375,6 +3389,9 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     }
     const std::int64_t rangeS0 = static_cast<std::int64_t>(hopWindow.firstHop) * hopSamplesPv;
     const std::int64_t rangeS1 = static_cast<std::int64_t>(hopWindow.lastHop) * hopSamplesPv;
+    // [SL-535] 与 `startAnalysis` 同一条参与判据:此刻没连上 Input 的轨不计(它的旧采集数据
+    // 不进分析)。dry-run 与真跑口径分叉 = 预览说有 1 轨、真跑被拒,见上面 [SL-242] 那段。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
 
     for (int t = 0; t < 15; ++t)
     {
@@ -3385,6 +3402,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:有旧采集数据也不计
         }
         if (session_.frameStore().channel(static_cast<scvb::u32>(t + 1)).coveredHops(range) == 0)
         {
@@ -3601,7 +3622,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
     //
     // [SL-393] **计算集与写回集是两回事**,这里取的是**计算集**:范围内所有 enabled 且有
-    // 覆盖的轨,不按 `tracksMask` 筛。
+    // 覆盖的轨,不按 `tracksMask` 筛。([SL-535] 起还要「此刻已连接」,见下面预扫那段。)
     //
     // 为什么:pan 是**指派**出来的,不是逐轨算出来的 —— 一个区间里活跃轨只有一条时,
     // `generateSlots` 的多轨分支整个跳过、唯一的槽就是正中(AutoAssign.cpp:200-208,
@@ -3647,11 +3668,27 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     //
     // ⚠ 判据与后面那趟取样**必须同源**:预扫这一趟填出来的 `applyCovered[]` 就是后面
     // 冻结清除面与指派器口径读的那一份(`features[t].anyCovered` 是计算窗的账,不能替它)。
+    //
+    // [SL-535] **参与判据 = enabled ∧ 此刻已连接**(`connectedForDisplayMask`,UI「未连接」同一口径)。
+    // 用户实测:把通道 10 的轨改到通道 1 之后,通道 10 已没有 Input,但它的旧采集数据仍在
+    // FrameStore 里 ⇒ 点「分析」时它照样进计算集,唯一出声的那条轨于是被当成「两条之一」
+    // 分到一侧而不是居中。只看 enabled 与覆盖分不开「这条轨还在」与「这条轨的 Input 早没了」。
+    // 未连接的轨:**不进计算集**(下面取样那一趟)、**不进写回集**(这一趟;它的段表一个字节不动)。
+    // 不改 enabled 位、不清采集数据 —— Input 连回来,下一次分析它自动回到参与面。
+    // 两处必须**都**判:只判取样 ⇒ 它仍在写回集里,回执 `affected.tracks` 多算它,而且「有数据的轨
+    // 全都没连上」时不再落 §1.6 拒绝态、照样受理一趟没有输入的分析;
+    // 只判这里 ⇒ 它仍喂计算集,别的轨的声像照旧被它挤偏(即本卡的用户症状)。
+    // 所有分析入口(桥面 analyze 的全部形状、松手重分段)都经本函数,判据只落这里与 previewAnalysis。
+    const std::uint16_t connMask = connectedForDisplayMask(scvb::steadyNowMs());
     for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:不进写回集
         }
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
         applyCovered[static_cast<std::size_t>(t)] = frames.coveredHops(applyHops) > 0;
@@ -3664,8 +3701,8 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             continue;
         }
         ++a.tracks;
-        // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
-        // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
+        // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 已连接 ∩ 范围内有覆盖)——
+        // 与 previewAnalysis 计 tracks/manualKept 的四条判据逐字同款([SL-535] 加了「已连接」)。diff 的 kept
         // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
         //
         // [SL-393] 这里刻意**仍按写回集**统计:回执 `affected.tracks` 与拒绝态
@@ -3692,6 +3729,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
+        }
+        if ((connMask & (1u << t)) == 0)
+        {
+            continue; // [SL-535] 未连接:旧采集数据不进计算集(判据见上面预扫那段)
         }
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
         if (frames.coveredHops(scvb::analysis::HopRange{firstHop, lastHop}) == 0)

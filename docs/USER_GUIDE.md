@@ -88,6 +88,8 @@ Turn on **Capture** in the Output, then play back as usual. Capture writes only 
 
 Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing**, because what capture stores is features rather than audio or decisions.
 
+**Only channels whose Input is connected right now take part in analysis** (the same check the UI uses for "not connected"). After you move a track to another channel, or remove / disable its Input, the data captured on the old channel is kept but no longer counted (the automatic re-segmentation after you release a VAD / segmentation slider does not update its segments either); once the Input is back, the next analysis picks it up again. The check matches the UI: an Input whose heartbeat has not updated for more than 2 seconds (for example while the host is stalled) also counts as not connected. If none of the channels with data in the selected range is connected, the analysis does not run (it never falls back to stale data): the impact preview line under **Analyse** on the Overview page shows the reason instead, and the re-analyse buttons on the Waveform and Settings pages show a message too.
+
 ### Output
 
 Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next.
@@ -152,6 +154,7 @@ Freezing is a **reversible, temporary takeover**: values you adjust while frozen
 The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:
 
 - **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "auto-stop outside the range" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
+  Once the range is disarmed (by you, or by the auto-stop at the right edge), a notice pops up at the bottom right: "Re-captured X.X s; re-analyzing this range is recommended". X.X is **how long the playhead actually travelled inside the selection** while armed (stretches with capture off do not count, and looping the same stretch several times counts it once). "Re-analyze now" jumps to the waveform page and re-runs analysis over **the span from the earliest to the latest re-captured moment x the armed tracks** (if you moved the selection or skipped around while armed, the gaps in between are re-analysed too — their features did not change, and re-analysis only recomputes automatic segments, manual ones stay as they are); the ✕ just closes the notice. Disarming without playing anything shows nothing. The seconds are estimated by the UI from the playhead, so time spent with the editor window closed is not counted.
 - **Re-analysis**: re-runs analysis over the selection only; segments and curves elsewhere are preserved exactly.
 
 ## Versions
@@ -197,6 +200,22 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 - Saving the project elsewhere or copying it to another machine carries the features along. A project written by an earlier version that kept its features in an external directory still opens and reads back as before (that read path is retained — opening one still writes an `owner.lock` ownership marker there), and **saving it once pulls the features back into the project and reclaims the external directory** — that step is **irreversible** and the project file grows accordingly; if that external file is gone, the features cannot be recovered (segments and curves are unaffected) — just capture again.
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
 
+## Privacy and files on disk
+
+**SCVB does not use the network.** None of the three plugins sends or downloads anything: there is no update check, no usage statistics, no account and no licence server. The interface is loaded from files built into the plugin, fonts included. Input, Output and Monitor talk to each other only through shared memory on this computer. Two links open a web page, and only when you click them: the documentation link, and the "install WebView2" link that appears when the WebView2 Runtime is missing. Both open in your default browser, not inside the plugin. (The Microsoft Edge WebView2 Runtime that draws the interface is a Windows component kept up to date by Microsoft; SCVB does not change how it behaves.)
+
+**What SCVB writes to disk:**
+
+- **Your project.** Settings, segments, curves and the captured features are saved by your DAW inside the project file, like any other plugin's state.
+- **`%APPDATA%\Synchain\SCVB\ui-defaults.settings`** — a few preferences that apply across projects: the interface language you picked, the interface scale of the Output window, and whether you have already seen the first-run guide and tour.
+- **`%LOCALAPPDATA%\Synchain\SCVB\WebView2\`** — the working folder of the embedded browser that draws the interface (its cache and settings), one subfolder per plugin.
+- **`%APPDATA%\Synchain\SCVB\sessions\`** — only for projects saved by an early version that kept its features outside the project (see "Sessions and files" above). This version does not create new folders there.
+- **An exported suggestions `.csv`** — only when you export one, in the folder you choose.
+
+SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+
+To remove the preferences and the browser cache, close your DAW and delete the two `Synchain\SCVB` folders above. Keep `sessions` if you still have projects from an early version that use it.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
@@ -235,6 +254,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 
 - 15 tracks per group, 2 version slots;
 - one active Output per group at a time;
+- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);

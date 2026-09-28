@@ -88,4 +88,4 @@ D5 的三条理由(ADR-002 细则):
 | `src/core/output/`(BusXfade / IMixSource / MixMath / OutputSession / ShmRingMixSource) | ARCHITECTURE(§1) | ADR-002 |
 | `src/core/state/`(FeaturesCodec / InputStateCodec / OutputStateCodec / SegmentEdit / SidecarStore / StateCodec / StateMigration) | STATE_SCHEMA | ADR-005/007 |
 
-`src/core/` 下七个子目录(`analysis / dsp / engine / input / ipc / output / state`)全部覆盖如上;`src/input/` 与 `src/output/` 为两个插件的 Processor/Editor,`web/` 为 WebView UI,`web-preview/` 为浏览器 mock 预览。
+`src/core/` 下七个子目录(`analysis / dsp / engine / input / ipc / output / state`)全部覆盖如上;`src/input/`、`src/output/` 与 `src/monitor/` 为三个插件的 Processor/Editor,`web/` 为 WebView UI,`web-preview/` 为浏览器 mock 预览。

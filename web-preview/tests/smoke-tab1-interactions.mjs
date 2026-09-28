@@ -399,6 +399,83 @@ log("=== ① 契约映射的纯函数 ===");
         "重开工程未播放(§2.7 无覆盖帧,段表有货)⇒ 可分析",
     );
     check(TM.analyzeNoData(null, 0), "双空 ⇒ 禁用(真无数据)");
+    // [SL-535] 第三参 = dry-run 轨数(只数已连接的轨)。删掉 analyzeNoData 里那一行,第一格红。
+    check(
+        TM.analyzeNoData(84, 327, 0),
+        "SL-535 覆盖与段表都有、dry-run 0 轨(有数据的轨都没连上)⇒ 出原因句",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, 2),
+        "SL-535 dry-run 有轨 ⇒ 可分析(第三参不把首采未析判成无数据)",
+    );
+    check(
+        !TM.analyzeNoData(84, 0, null) && !TM.analyzeNoData(84, 0),
+        "SL-535 dry-run 回包未到(null / 缺省)⇒ 维持原判据",
+    );
+
+    // [SL-535 #292 复审②] dry-run 的 tracks 进了判据,重取指纹就得盖住它依赖的两样:
+    // 连接集合与「有覆盖的轨号」。删掉指纹里任一样,对应那一格红。
+    const st0 = { global: { range: { mode: "follow" } }, channels: [] };
+    const connOf = (chs) => ({
+        channels: Array.from({ length: 15 }, (_, i) =>
+            chs.includes(i + 1)
+                ? { slotState: 2, heartbeatFresh: true }
+                : { slotState: 0, heartbeatFresh: false },
+        ),
+    });
+    const fpBase = TM.previewFingerprint(st0, connOf([1, 2]), {});
+    check(
+        TM.previewFingerprint(st0, connOf([1, 2]), { 1: 84 }) !== fpBase,
+        "SL-535 首次采集(覆盖从无到有)⇒ 指纹变,重取 dry-run",
+    );
+    check(
+        TM.previewFingerprint(st0, connOf([1, 2]), { 1: 84 }) ===
+            TM.previewFingerprint(st0, connOf([1, 2]), { 1: 90 }),
+        "SL-535 覆盖百分比涨但轨号集合不变 ⇒ 指纹不变(不每帧问)",
+    );
+    check(
+        TM.previewFingerprint(st0, connOf([1]), {}) !== fpBase,
+        "SL-535 连接集合变 ⇒ 指纹变,重取 dry-run",
+    );
+    check(
+        TM.previewFingerprint(
+            {
+                global: { range: { mode: "follow" } },
+                channels: [{ enabled: true }, { enabled: false }],
+            },
+            connOf([1, 2]),
+            {},
+        ) !==
+            TM.previewFingerprint(
+                {
+                    global: { range: { mode: "follow" } },
+                    channels: [{ enabled: true }, { enabled: true }],
+                },
+                connOf([1, 2]),
+                {},
+            ),
+        "SL-535 follow 档拨「参与」开关 ⇒ 指纹变(scope 是字面 all,掩码只在指纹里)",
+    );
+    // 接线:两条订阅都要调 refreshPreview(纯函数对了、没人调也等于没修)。
+    {
+        const app = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+        const handler = (ev) => {
+            const at = app.indexOf(`bridge.on("${ev}"`);
+            const next = app.indexOf("bridge.on(", at + 1);
+            return at < 0 ? "" : app.slice(at, next < 0 ? undefined : next);
+        };
+        check(
+            handler("scvb.captureProgress").includes(
+                "tabMaster.refreshPreview();",
+            ),
+            "SL-535 scvb.captureProgress 订阅调 tabMaster.refreshPreview",
+        );
+        check(
+            handler("scvb.conn").includes("tabMaster.refreshPreview();") &&
+                handler("scvb.conn").includes("tabWave.onConn(c);"),
+            "SL-535 scvb.conn 订阅调两页的预览重取",
+        );
+    }
     check(
         TM.analyzeNoData(0, 0),
         "覆盖 0%(range ∩ coverage = ∅)且段表空 ⇒ 禁用",
@@ -2294,6 +2371,74 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             `(c5) tooltip 词条仍在:${lang}`,
         );
     }
+}
+
+// =============================================================================
+log(
+    "=== [rc-misc h] Header 连接 pill:「· 采集中」后缀 + 点击跳 Tab2(05 §2.0 第 1 行)===",
+);
+{
+    const on = { global: { capture_enabled: true } };
+    const off = { global: { capture_enabled: false } };
+    const playIn = { isPlaying: true, inRange: true };
+    const playOut = { isPlaying: true, inRange: false };
+    const stopped = { isPlaying: false, inRange: true };
+    const m = (n, st, ph) => TM.connPillModel(n, st, ph);
+
+    eq(
+        m(3, off, playIn),
+        {
+            tone: "green",
+            pulse: true,
+            key: "state.connected",
+            capturing: false,
+        },
+        "有连接、采集关 ⇒ 绿、无后缀(与此前逐字同款)",
+    );
+    eq(
+        m(0, off, null),
+        {
+            tone: "gray",
+            pulse: false,
+            key: "state.notConnected",
+            capturing: false,
+        },
+        "零连接 ⇒ 灰「未连接」",
+    );
+    check(
+        m(3, on, playIn).capturing,
+        "采集开 + 播放 + 在 range 内 ⇒ 挂「· 采集中」",
+    );
+    check(!m(3, on, stopped).capturing, "采集开但停着(已布防)⇒ 不挂");
+    check(
+        !m(3, on, playOut).capturing,
+        "采集开、播放但出了 range(不写特征)⇒ 不挂",
+    );
+    check(m(0, on, playIn).pulse, "采集中即使零连接也脉冲");
+
+    // 接线:渲染真的按模型切后缀;pill 真的挂了点击 / 键盘跳 Tab2。
+    const appJs = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+    const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    check(
+        /const pm = connPillModel\(/.test(appJs) &&
+            /capSuffix\.hidden = !pm\.capturing;/.test(appJs),
+        "render:pill 走 connPillModel,后缀按 capturing 显隐",
+    );
+    check(
+        /const goTracks = \(\) => activateTab\("tracks"\);\s*connPill\.addEventListener\("click", goTracks\);/.test(
+            appJs,
+        ),
+        "pill 点击跳 Tab2(tracks)",
+    );
+    check(
+        /data-gb="header-conn-pill"\s+role="button"\s+tabindex="0"/.test(
+            html,
+        ) &&
+            /data-gb="header-conn-capturing" hidden[\s\S]{0,40}data-t="capturing"/.test(
+                html,
+            ),
+        "index.html:pill 可聚焦(role=button)+ 后缀节点默认隐藏、文案走词条 capturing",
+    );
 }
 
 // =============================================================================
