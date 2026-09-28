@@ -98,7 +98,7 @@ SCVB-vX.Y.Z-win64.zip
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
 ├── LICENSES/                   仓库 LICENSES/ 下的全部许可证全文(应有哪些由 THIRD-PARTY-NOTICES.md 的「随二进制分发」表决定)
 ├── third_party/notices/        仓库同名目录的全部文件:JUCE 内置库与 WebView2 loader 的上游版权 / 许可声明原文
-│                               (HarfBuzz 的逐行版权只写在这里的 harfbuzz.COPYING,NOTICES 只给路径)
+│                               (NOTICES 对 HarfBuzz 只写了首行版权,其余各行见这里的 harfbuzz.COPYING)
 └── INSTALL.txt                 安装步骤 + 未签名插件的「解除锁定」与 SmartScreen 说明 + 九条规则前 3 条
                                 + 精确到 tag 的源码获取地址(GPLv3 §6 的书面声明)
 ```
