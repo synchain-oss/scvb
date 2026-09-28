@@ -196,7 +196,7 @@ export const T = {
         "guide.rule1":
             "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
         "guide.rule2":
-            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
+            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
         "guide.rule3":
             '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条没有声音的轨道。(ADR-002 / J12 + J32)',
         "guide.rule4":
@@ -210,7 +210,7 @@ export const T = {
         "guide.rule8":
             'SCVB Output 不向 DAW 报告额外延迟。对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
         "guide.rule9":
-            '看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
+            '看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
         // END GENERATED hard-rules:zh
         "guide.dontShowAgain": "不再显示",
         "guide.start": "开始使用",
@@ -841,6 +841,10 @@ export const T = {
         "banner.srMismatch": "轨 {n} 采样率不一致,已禁用",
         "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
         "banner.noTimeline": "宿主未提供时间线",
+        // [SL-218][J134] 横幅 ⑪(§5.1 stateNotFullyRestored):上次载入工程时段表没能恢复
+        // (缺失 / 损坏 / 由更新版本写入,或配置节缺失使整段没读)。文案逐字取用户裁定。
+        // 段表保留不清空;文件里原来那份原样写回,直到用户改动段表([SL-524][J122])。
+        "banner.stateNotRestored": "段表没能恢复,原数据会原样保留",
         // 已采集特征过期(§2.8 `channels[].stale`)。两种成因共用这一位:① 上游改动(04 §4.5
         // fingerprint watchdog,SL-177)—— 典型场景是在 Input 前面插了 EQ/压缩并改了参数;
         // ② [SL-485] 该轨的采集采样率与当前采样率不同。文案因此只说「过期」并把两种成因都列出来,
@@ -1226,7 +1230,7 @@ export const T = {
         "guide.rule1":
             "Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output. Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)",
         "guide.rule2":
-            "SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+            "SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
         "guide.rule3":
             'Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug. That mute path is what preserves the "vocal tracks first, bus second" ordering in the DAW\'s dependency graph, and it still holds under offline rendering and REAPER\'s anticipative multithreading. When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the "mute → passthrough" direction; "passthrough → mute" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)',
         "guide.rule4":
@@ -1240,7 +1244,7 @@ export const T = {
         "guide.rule8":
             'SCVB Output reports no additional latency to the DAW. Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)',
         "guide.rule9":
-            'Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track\'s audio is not being picked up correctly.',
+            'Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track\'s audio is not being picked up correctly.',
         // END GENERATED hard-rules:en
         "guide.dontShowAgain": "Don't show again",
         "guide.start": "Get started",
@@ -1786,6 +1790,8 @@ export const T = {
         "banner.sidecarMissing":
             "Capture data missing or outdated — please re-capture",
         "banner.noTimeline": "Host provides no timeline",
+        "banner.stateNotRestored":
+            "The segment table could not be restored; the original data will be kept as is",
         "banner.staleCapture":
             "Captured features are out of date on {m} track(s) (upstream audio or sample rate differs from when they were captured) — re-capture recommended",
         "banner.fpPausedByCapture":
@@ -2066,7 +2072,7 @@ export const T = {
         "guide.rule1":
             "Les pistes de voix doivent conserver leur routage DAW d'origine, vers le bus qui héberge SCVB Output. Ne redirigez pas une piste de voix directement vers la sortie principale et ne contournez pas le bus. (ADR-002)",
         "guide.rule2":
-            "SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+            "SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
         "guide.rule3":
             "Input ne coupe sa sortie aval que tant qu'un SCVB Output sain est détecté — c'est le comportement voulu, pas un bug. Ce chemin de coupure préserve l'ordre « pistes de voix d'abord, bus ensuite » dans le graphe de dépendances du DAW, et il reste valable en rendu hors ligne comme sous le multithreading anticipatif de REAPER. Si aucun Output sain n'est détecté (non installé, non connecté, pair quitté), Input repasse automatiquement en direct, via une rampe de 80 ms avec anti-rebond à hystérésis de 5 secondes (l'hystérésis ne s'applique qu'au sens « coupure → direct » ; « direct → coupure » suit une rampe de 80 ms dès la santé confirmée) : n'installer qu'un seul des deux plugins ne vous laissera donc jamais une piste muette. (ADR-002 / J12 + J32)",
         "guide.rule4":
@@ -2080,7 +2086,7 @@ export const T = {
         "guide.rule8":
             "SCVB Output ne déclare aucune latence supplémentaire au DAW. L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
         "guide.rule9":
-            "Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
+            "Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
         // END GENERATED hard-rules:fr
         "guide.dontShowAgain": "Ne plus afficher",
         "guide.start": "Commencer",
@@ -2642,6 +2648,8 @@ export const T = {
         "banner.sidecarMissing":
             "Données de capture manquantes ou périmées — veuillez recapturer",
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
+        "banner.stateNotRestored":
+            "La table des segments n'a pas pu être restaurée ; les données d'origine seront conservées telles quelles",
         "banner.staleCapture":
             "Les caractéristiques capturées sont périmées sur {m} piste(s) (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",
         "banner.fpPausedByCapture":

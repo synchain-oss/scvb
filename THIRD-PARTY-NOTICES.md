@@ -130,4 +130,5 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
 - **`third_party/notices/`** 存上表各 JUCE 内置库与 WebView2 loader 的**上游版权/许可声明原文**
   (逐字副本,文件名 = `<组件>.<上游文件名>`,来源同上)。这些库的源码不在本仓(JUCE 与 nupkg 都在构建期取),
   这一目录让每份声明都能在仓内查到原文,也是 `REUSE.toml` 给这些许可证挂引用的落点。
+  发布 zip 按同一相对路径携带整个目录,解压后本文件里写的这些路径原样可查。
 - 新增任何运行时依赖,必须在同一个 PR 里补本表一行并在 `REUSE.toml` / `LICENSES/` 落对应声明。

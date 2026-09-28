@@ -212,7 +212,7 @@ juce::var OutputEditor::buildSnapshot()
     put(o, "session_guid", juce::var(processor_.sessionGuid()));
     juce::var version = obj();
     // 版本串取 JUCE 由 CMake project(VERSION) 生成的宏,与 Input / Monitor 同形。此前是字面量 "0.1.0",
-    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚与「说明文档」按钮都跟着错)。
+    // 改 CMakeLists 版本号后 Output 会继续自报旧版本(页脚版本号跟着错)。
     put(version, "plugin", JucePlugin_VersionString);
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);
@@ -330,6 +330,9 @@ void OutputEditor::emitTick()
     // [SL-478] 横幅⑥ 的生产者。条件是 processor 定时器里去抖过的值(0.5s,与清注入 mask 同一判据),
     // 所以这里逐拍调用不会让横幅随单块抖动翻转;边沿/撤销/不可见不记账由 plan 管。
     emitNoTimelineError();
+    // [SL-218] 横幅⑪ 的生产者。条件是 processor 的位图(载入时整份重算,清零时机见其声明处),
+    // 与 `newerState` 一样收在这一拍:编辑器打开前就载入过的,bridgeReady_ 后第一拍看见。
+    emitStateNotRestoredError();
 }
 
 // ============================================================================
@@ -825,6 +828,31 @@ void OutputEditor::emitSrMismatchError()
     srMismatchShownOutSr_ = plan.nextShown.outputSr;
 }
 
+// [SL-218] §2.9 `scvb.error` 的 `stateNotFullyRestored` 一档(§5.1 琥珀横幅⑪)。
+// envelope:code + `detail:{missing, rejected}` + active,**不带 ch**(页级条件)。
+// 两张表由纯函数 `notRestoredFourccs`(StateRestoreDiag.h)从位图算出;撤销帧同样带 detail
+// (取的是此刻的位图 = 0 ⇒ 两张空表),web 侧撤销只看 code + active,不读它。
+// 记账口径与 `emitNewerStateError` 同款(按 plan 已采到的可见性回填,理由见那一段)。
+void OutputEditor::emitStateNotRestoredError()
+{
+    const std::uint8_t mask = processor_.stateNotRestoredMask();
+    const auto plan = scvb::output::planStateNotRestoredEmit(mask, webView().isVisible(), stateNotRestoredShown_);
+    if (!plan.send)
+        return;
+    const auto lists = scvb::output::notRestoredFourccs(mask);
+    juce::var missing = mkArray();
+    for (const char* f : lists.missing)
+        push(missing, juce::String(f));
+    juce::var rejected = mkArray();
+    for (const char* f : lists.rejected)
+        push(rejected, juce::String(f));
+    juce::var detail = obj();
+    put(detail, "missing", missing);
+    put(detail, "rejected", rejected);
+    emitError("stateNotFullyRestored", 0, detail, plan.active);
+    stateNotRestoredShown_ = plan.nextShownMask;
+}
+
 // ============================================================================
 // 载荷构造
 // ============================================================================
@@ -960,7 +988,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
-    put(printGuard, "pending", rt.printGuardPending);
+    put(printGuard, "pending", processor_.printGuardPending());
     put(o, "print_guard", printGuard);
 
     juce::var recapture = obj();
@@ -1574,13 +1602,8 @@ void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->beginChangeGesture();
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    // [SL-536] 宿主那一半 + 撤销记账都在 processor(host harness 直接驱动同一份实现)。
+    c(processor_.uiBeginParamGesture(id) ? okResp() : badArgResp());
 }
 
 void OutputEditor::handleSetParam(const ArgList& a, Completion c)
@@ -1597,13 +1620,7 @@ void OutputEditor::handleSetParam(const ArgList& a, Completion c)
         return;
     }
     const float value = a.size() > 1 ? static_cast<float>(a[1]) : 0.0f;
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->setValueNotifyingHost(p->convertTo0to1(value)); // 工程值 → 归一化(§1.13)
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    c(processor_.uiSetParam(id, value) ? okResp() : badArgResp()); // 工程值 → 归一化(§1.13)
 }
 
 void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
@@ -1619,13 +1636,7 @@ void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    if (auto* p = processor_.getAPVTS().getParameter(id))
-    {
-        p->endChangeGesture();
-        c(okResp());
-        return;
-    }
-    c(badArgResp());
+    c(processor_.uiEndParamGesture(id) ? okResp() : badArgResp()); // [SL-536] 起点 ≠ 末值才压撤销步
 }
 
 void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
@@ -2352,7 +2363,14 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
+    {
+        // [SL-536] 撤掉的可能是参数 / 通道配置(不改段表)或首次接管(段表 + 参数面 + 冻结位一起)。
+        // 参数面与 state 先于段表同拍补一帧,理由同 handleSetTrackManual:段表帧一到 UI 就丢乐观值,
+        // 这时参数面若还是旧的,冻结位 / 旋钮会先弹一下再跳到撤销后的值。两者都自带 diff 门。
+        emitParams(/*forceFull=*/false);
+        emitState(/*forceFull=*/false);
         emitSegments("undo", kAllTracksMask); // 全量段表(PR#55 建议①)
+    }
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
@@ -2367,7 +2385,11 @@ void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
+    {
+        emitParams(/*forceFull=*/false); // [SL-536] 同 handleUndo
+        emitState(/*forceFull=*/false);
         emitSegments("redo", kAllTracksMask); // 全量段表(PR#55 建议①)
+    }
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
@@ -2510,7 +2532,7 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
 
 void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
 {
-    processor_.runtime().printGuardPending = false; // 幂等(§1.34)
+    processor_.confirmPrintGuard(); // 幂等(§1.34)
     c(okResp());
 }
 
