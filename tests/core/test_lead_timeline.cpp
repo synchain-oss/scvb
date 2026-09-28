@@ -297,10 +297,22 @@ TEST_CASE("SL216 管线:lead_select 记录与 lead_lock 走同一条 C 路径(pa
     features[0] = makeAlternating(4, 80, 60, 0.02f);
     features[1] = makeAlternating(4, 80, 60, 0.05f);
     features[2] = makeAlternating(4, 80, 60, 0.09f);
+    // 主唱挑一条**没有主唱时不在中心**的轨,否则「选中」与「锁定」两边都是它本来的居中排布,
+    // 逐位相等不说明任何事(本条第一版选了轨 3,而轨 3 本来就在中心 —— 删掉管线那一行照样绿)。
+    const auto base = runAnalysisPipeline(features, makeConfig(features[0].kwMs.size(), 3));
+    int leadIdx = -1;
+    for (int t = 0; t < 3 && leadIdx < 0; ++t)
+    {
+        if (!allPansAre(base.segments[static_cast<std::size_t>(t)], 0.0))
+        {
+            leadIdx = t;
+        }
+    }
+    REQUIRE(leadIdx >= 0);
     auto cfgSelect = makeConfig(features[0].kwMs.size(), 3);
-    cfgSelect.leadRuns = {{cfgSelect.rangeStartSample, cfgSelect.rangeEndSample, 3}};
+    cfgSelect.leadRuns = {{cfgSelect.rangeStartSample, cfgSelect.rangeEndSample, leadIdx + 1}};
     auto cfgLock = makeConfig(features[0].kwMs.size(), 3);
-    cfgLock.tracks[2].leadLock = true;
+    cfgLock.tracks[static_cast<std::size_t>(leadIdx)].leadLock = true;
 
     const auto a = runAnalysisPipeline(features, cfgSelect);
     const auto b = runAnalysisPipeline(features, cfgLock);
@@ -319,7 +331,7 @@ TEST_CASE("SL216 管线:lead_select 记录与 lead_lock 走同一条 C 路径(pa
             anyU = anyU || std::abs(sa[i].volDb) > 1e-6;
         }
     }
-    CHECK(allPansAre(a.segments[2], 0.0));
+    CHECK(allPansAre(a.segments[static_cast<std::size_t>(leadIdx)], 0.0));
     CHECK(anyU); // 前提:平衡确实动了音量,上面的 vol 逐位相等不是「两边都是 0」
 }
 
