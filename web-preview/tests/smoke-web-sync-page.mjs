@@ -49,7 +49,7 @@ import {
     relative,
     resolve,
 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT =
     process.argv[2] && !process.argv[2].startsWith("--")
@@ -801,9 +801,10 @@ try {
             "(w2)滚轮落点**在卡箍上**",
         );
         // 等待窗按产品常量取:写死的话,常量改大后「零提交」会在提交到点之前就判完,静默变绿。
-        const commitMs = await evaluate(
-            IN_ASYNC(`const m = await import("${base}/web/output/tab-tracks.js");
-                return m.MANUAL_COMMIT_MS;`),
+        // node 侧取(同 smoke-tab2-interactions.mjs):页内 import 会在壳页 realm 里把整张
+        // 模块图再实例化一遍,平白多一条「这些模块顶层零副作用」的前提。
+        const { MANUAL_COMMIT_MS: commitMs } = await import(
+            pathToFileURL(join(ROOT, "web/output/tab-tracks.js")).href
         );
         check(
             Number.isFinite(commitMs) && commitMs > 0,
@@ -881,7 +882,7 @@ try {
             "(w7)**卡箍读数不变**(本地回声也没动)",
         );
         log(
-            `  (表体 scrollTop ${top0} -> ${top1};卡箍上共收到 ${(probe || []).length} 格滚轮;等待 ${2 * commitMs}ms)`,
+            `  (表体 scrollTop ${top0} -> ${top1};卡箍上共收到 ${(probe || []).length} 格滚轮;MANUAL_COMMIT_MS=${commitMs})`,
         );
         await evaluate(
             IN(`if (w.__wheelProbeFn) w.removeEventListener("wheel", w.__wheelProbeFn);
