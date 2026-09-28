@@ -42,7 +42,7 @@ jobs:
           config.model: anthropic/deepseek-flash
           config.fallback_models: anthropic/deepseek-v4-flash
           config.custom_model_max_tokens: 1000000 # 1M 档;换成不带 1M 上下文的 id 时改回 131072
-          config.max_model_tokens: 850000 # 输入输出共用 1M 上下文,给输出留出 131072 以上;换 131072 档时这三项一起改成 131072 / 98304 / 32768(输入+输出不超过上下文)
+          config.max_model_tokens: 850000 # 输入输出共用 1M 上下文,给输出留出 131072 以上;换 131072 档时三项要一起改,且输入+输出须小于窗口并留余量,如 131072 / 90112 / 32768
           # config.max_output_tokens 不设时默认 0,请求不带输出上限,由服务端默认值兜底;deepseek-flash 带推理(reasoning_effort=medium),
           # 实测约 4K 就被推理吃完,导致 "Empty content in model response, finish_reason: length",review/code-suggestions 全空跑但 job 仍报绿。
           # 32768 在约 270K token 的 PR 上也不够(推理本身就用了 22–27K);按实际用量计费,上限设高不会多花钱。
