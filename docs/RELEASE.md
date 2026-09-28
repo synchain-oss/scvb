@@ -76,7 +76,7 @@ semver 语义(音频插件特化):
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:先按下方「`stage` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `stage` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:先按下方「`stage` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `stage` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
 ## `stage` 与 `prod` 两个分支(J163)
 

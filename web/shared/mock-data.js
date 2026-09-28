@@ -367,7 +367,10 @@ export const DEMO_GROUPS_ONLINE = 0b00010011;
 /** 快照默认的 session GUID(固定字面量:确定性优先于「像真的」)。 */
 const DEFAULT_SESSION_GUID = "5c0b7d2e-3a41-4f88-9b6a-1d2e3f405162";
 
-/** 插件版本号(与 CMakeLists.txt 的 project(SCVB VERSION 0.1.0) 对齐)。 */
+/** 插件版本号的 mock 固定值,**不跟随真源**(真源 = 顶层 CMakeLists.txt 的 project(SCVB VERSION);
+ *  真插件的版本号由 native 下发 `JucePlugin_VersionString`)。
+ *  ⚠ 它不只出现在 web-preview:导览 demo 快照(`makeTourDemoSnapshot`)也带着它,导览走到设置页时
+ *  版本行显示的就是这个值,与真插件的版本号不同。 */
 const PLUGIN_VERSION = "0.1.0";
 
 /** 段布局 abi(契约 §1.1:version.abi = ipc 段布局 abi,`RegistryHeader.abi` 同源)。 */
