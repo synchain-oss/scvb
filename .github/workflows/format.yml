@@ -264,7 +264,7 @@ jobs:
       - name: Actions pinned to 40-hex commit SHA (CLAUDE.md §0 安全铁律第 3 条)
         # [SL-538] 铁律第 3 条此前没有机检:compliance.yml 与 release.yml 的 `actions/checkout@v4`
         # 就这样一直留着,直到有人人工翻到。这里逐个取 workflow 与 `.github/actions/` 下复合 action
-        # 里 `uses:` 后面的值,判据只有一条:
+        # 里 `uses:` 后面的值,分两类判:
         # 本地引用只放行 `./.github/actions/` 与 `./.github/workflows/` 下的(被指向的文件都在
         # 本步扫描集里;路径含 `..` 不放行),其余必须是 `<ref>@<40 位小写十六进制>`。
         # 指向别处的 `./…` 判红:那份 action.yml 不在扫描集里,放行就等于不查。
@@ -286,18 +286,22 @@ jobs:
             {
               s = $0
               while (match(s, key "[[:space:]]*[^[:space:]]+")) {
+                adv = RSTART + RLENGTH
                 v = substr(s, RSTART + length(key), RLENGTH - length(key)); sub(/^[[:space:]]*/, "", v); n++
-                if (v !~ /^\.\/\.github\/(actions|workflows)\// || v ~ /\.\./) {
+                if (v ~ /^\./) {
+                  # 本地引用先单独判:它没有 SHA 可钉,不能落进下面的 SHA 判据(`./x@<40 hex>` 会被放行)
+                  if (v !~ /^\.\/\.github\/(actions|workflows)\// || v ~ /\.\./) { print FILENAME ":" FNR ": local ref outside ./.github/actions or ./.github/workflows: " v; bad++ }
+                } else {
                   at = index(v, "@"); sha = substr(v, at + 1)
-                  if (at == 0 || length(sha) != 40 || sha ~ /[^0-9a-f]/) { print FILENAME ":" FNR ": " v; bad++ }
+                  if (at == 0 || length(sha) != 40 || sha ~ /[^0-9a-f]/) { print FILENAME ":" FNR ": not pinned to a 40-hex SHA: " v; bad++ }
                 }
-                s = substr(s, RSTART + RLENGTH)
+                s = substr(s, adv)
               }
             }
             END {
-              print "checked " (n + 0) " action refs, " (bad + 0) " not pinned to a 40-hex SHA"
+              print "checked " (n + 0) " action refs, " (bad + 0) " rejected"
               if (n == 0) { print "::error::no action refs found - the guard itself is broken"; exit 1 }
-              if (bad > 0) { print "::error::every action ref must be pinned to a 40-hex commit SHA (CLAUDE.md section 0, rule 3)"; exit 1 }
+              if (bad > 0) { print "::error::remote action refs must be pinned to a 40-hex commit SHA (CLAUDE.md section 0, rule 3); local refs must live under ./.github/actions or ./.github/workflows"; exit 1 }
             }
           ' "${files[@]}"
       - name: Strip-comments gate self-test (剥注释的扫描器 = 共用判据面)
