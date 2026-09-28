@@ -1101,8 +1101,8 @@ function esc(s) {
  */
 // 注:本函数返回的是**模板字符串**,里面的 HTML 注释同样进 fetch_fonts.py 的字符扫描
 // (js_strings 取的是字面量,分不清哪段是注释)—— 模板里的说明要短,长说明写在函数外的
-// JS 注释里。SL-177 的 ⚠ 角标语义:该轨上游音频与已采集特征不一致,建议重新采集
-// (04 §4.5 fingerprint watchdog);只提示,不自动失效、不阻断任何操作。
+// JS 注释里。SL-177 的 ⚠ 角标语义:该轨已采集特征过期,建议重新采集 —— 成因是上游改动
+// (04 §4.5 fingerprint watchdog)或 [SL-485] 采样率与采集时不同;只提示,不自动失效、不阻断任何操作。
 export function waveLaneHtml(ch) {
     const gb = (suffix) => `wave-lane-${ch}${suffix ? "-" + suffix : ""}`;
     return `
@@ -3789,7 +3789,7 @@ export function createTabWave(opts) {
             });
             text(n.covseg, covSeg);
             setTitle(n.covseg, covSeg);
-            // 04 §4.5:该轨上游音频与已采集特征不一致 → ⚠ 角标 + 整句 tooltip。
+            // 04 §4.5:该轨已采集特征过期(上游改动或 [SL-485] 采样率变化)→ ⚠ 角标 + 整句 tooltip。
             // 数据来自 §2.8 segments.channels[].stale(laneModelFromStore 已投影)。
             show(n.stale, !!lane.stale);
             setTitle(n.stale, lane.stale ? t["wave.staleTrack"] || "" : "");

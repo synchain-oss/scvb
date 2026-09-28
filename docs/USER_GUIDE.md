@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-08-24 (for version v0.1.0)
+> Last updated: 2026-09-28
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -14,6 +14,8 @@ SCVB (Synchain Vocal Balancer) is a **pair** of VST3 plugins that automatically 
 - **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and writes the result back as DAW automation.
 
 Both plugins must be **installed together and used as a pair**. Installing only one will not leave you with a track that has no sound (see hard rule 3), but it will not give you any balancing either.
+
+A third plugin, **SCVB Monitor**, ships in the same zip and is **optional**: a read-only window for watching a whole group's pan and level movement. It passes audio through untouched, has no automation parameters, and never changes what Input and Output do.
 
 > **How to change the nine hard rules**: the `## 硬约束` section of `docs/USER_GUIDE.zh-CN.md` is the **single source of truth** for all nine. They also appear in this file, in both READMEs' Quick start, and in the plugin UI's three language dictionaries — 7 places in total. **None of them may be transcribed by hand.** To change the wording, edit that section only (translations live in `docs/hard-rules.i18n.json`), then run `node scripts/gen-hard-rules.mjs`; the other 6 places follow the generator. `node scripts/gen-hard-rules.mjs --check` is the gate.
 
@@ -34,6 +36,35 @@ Breaking any one of these does not give you a slightly worse result — it gives
 > 8. **SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)
 > 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
+
+## Install
+
+Everything comes in one zip, `SCVB-v<version>-win64.zip`, containing three plugins:
+
+| Plugin | Where it goes | Needed? |
+|---|---|---|
+| **SCVB Input** | The last slot of every vocal track | Yes |
+| **SCVB Output** | The first slot of the vocal bus | Yes |
+| **SCVB Monitor** | Any track (it passes audio through untouched) | Optional — a read-only window for watching a whole group |
+
+### Download and verify
+
+1. Download `SCVB-v<version>-win64.zip` and the matching `.sha256` from the [Releases page](https://github.com/synchain-oss/scvb/releases).
+2. Check the zip. In PowerShell, in the folder you downloaded to: `Get-FileHash .\SCVB-v<version>-win64.zip -Algorithm SHA256`. The result must match the SHA-256 in the Release notes (that value is produced by CI and is the authoritative one). **If it does not match, do not install it, and tell us.**
+
+### Unblock the zip (the plugins are not code-signed)
+
+SCVB is not code-signed, so Windows and your browser treat it as coming from an unknown publisher:
+
+- **The browser may warn about the download** ("not commonly downloaded" / "unknown publisher"). If the SHA-256 matched, choose to keep the file — in Microsoft Edge: **…** → **Keep** → **Show more** → **Keep anyway**.
+- **Clear the downloaded-from-the-internet mark before unzipping.** Windows copies that mark onto every file extracted from a marked zip. Right-click the zip → **Properties** → on the **General** tab tick **Unblock** → **OK**. If there is no Unblock checkbox, the file is not marked and there is nothing to do. The PowerShell equivalent is `Unblock-File .\SCVB-v<version>-win64.zip`.
+
+### Copy the plugins
+
+1. Unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and (if you want it) `SCVB Monitor.vst3` — **the whole bundle folder** in each case — into `C:\Program Files\Common Files\VST3\` (Windows asks for administrator permission).
+2. Rescan plugins in your DAW.
+
+**Upgrade every SCVB plugin together.** Input and Output share one version number. If the two sides speak different versions of the shared-memory protocol they refuse to connect, on purpose; even when they do connect, an old Input next to a new Output (or the other way round) is not supported (with a new Output and an old Input, an offline render can sum the vocals twice).
 
 ## Five-minute start
 
