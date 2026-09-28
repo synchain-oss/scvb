@@ -106,7 +106,7 @@
 | 生产接线 | `tests/host/test_host_harness.cpp` HOST SL-548 | 真 `setTrackManual` → CRVS → viz 段:① 每段只带 vol 位;② 输出 OFF 时 `panNow` 跟参数面、`volDb` 仍是手动常值;③ set_locked 保留;④ 存盘重开位原样;⑤ set_values **同值**清位 ⇒ vol 回落参数面;⑥ 撤销位回来;⑦ 旧工程单段无位两维仍读段 |
 | 生产接线(既有格补) | HOST SL-180 / SL-188 | SL-180 两支各只带被拖那一维的位;SL-188 真分析夹具(各段 pan 相同)拖 vol 后 pan 不算手动、`clearManual` 重分析产出的段无位且标熄灭 |
 | 读回 JS | `web-preview/tests/smoke-tab1-interactions.mjs` ⑦ 组 (a9)-(a13) | 与 native 判据格同款((a10) 即 #302 的「已知近似」翻过来) |
-| mock 对拍 | `web-preview/tests/smoke-tab2-interactions.mjs` ⑥ 组 `[SL-548]` | mock 桥拖 vol ⇒ 每段只带 `manualVol`;set_locked 保留;set_values 同值只清被编辑段 ⇒ vol 不再算手动 |
+| mock 对拍 | `web-preview/tests/smoke-tab2-interactions.mjs` ⑥ 组 `[SL-548]` | mock 桥拖 vol ⇒ 每段只带 `manualVol`;set_locked 保留;set_values 同值只清被编辑段 ⇒ vol 不再算手动;split / move_boundary / merge 各一格,只清被编辑段 |
 | 桥面字段 | `scripts/check-bridge-parity.mjs` 四、载荷字段对拍 | ① 认 `name?:` 可选字段写法;② **新增反方向**:§2.8 段对象那一层登记的字段,`buildSegmentsPayload` 都得 `put` |
 
 已删除的判据:`test_viz_plane.cpp` 的「已知近似」块与 `smoke-tab1-interactions.mjs` 的旧 (a10) —— 它们钉的是按值推断的
@@ -114,7 +114,51 @@
 
 ### 删除式(本机实测)
 
-DELETION_TABLE_PLACEHOLDER
+每条只动一处代码;注入与复原都把 mtime 顶到未来再经 build slot 增量重编,复原后 `git hash-object` 与 HEAD 的
+blob 逐一对上;全部复原后三个测试目标 + `SCVBOutput` 整体重编(0 warning),`scvb_tests` 579 例、`scvb_params_tests`
+96 例、`scvb_host_tests` 211 例与两份 tab 冒烟全绿。结果栏是**实得**,行号是本 PR 首推时的行号。
+native 跑的是定向用例(`scvb_tests "[readback],[viz]"` / `"[segedit]"` / `"[crvs]"`、`scvb_params_tests "[service]"`、
+`scvb_host_tests` 按行内所列 tag);JS 用 `node` 直接跑 tab1 / tab2 冒烟。
+
+| 编号 | 注入 | 实得 |
+|---|---|---|
+| ND1 | `DistReadback.h` `manualDimOf`:判位不分维(`bit = kSegmentManualMask`) | `[SL-548]` 判据用例 7 处红:(a) `:779` pan 全等格、`:782` OFF 回落、`:786` ON 取播放头段、`:792` 空表接管;(b) `:799`、`:804`、`:808`。host 3 例红:HOST SL-548 ① `:10142`、② `panNow` 跟参数面 `:10150`;HOST SL-180 读回 `:4104`、`:4108`;HOST SL-188 `:4467`。HOST SL-363(无手动段)不红 |
+| ND2 | 同函数:兼容规则永不成立(`segs.size() == 1` → `== 0`) | 3 例红:段选择口径用例 `manual` 夹具 `:724`(REQUIRE,截断该例)、(d) 单段无位 `:842`/`:843`/`:845`/`:846`、VizPublisher 手动段 `panNow` `:957`。host:HOST SL-548 ⑦ `:10201`/`:10202` |
+| ND3 | 同函数:兼容规则不限单段(`>= 1`) | 1 例红:(d) 多段无位 `:854`/`:855` |
+| ND4 | 同函数:兼容规则越权到带位的单段(`if (anyManualBit && segs.size() != 1)`) | 1 例红:空表接管 pan 不算 `:792` |
+| ND5 | 同函数:判据加回值比较 | 1 例红:「不比值」格 `:827` |
+| NE1 | `SegmentEdit.cpp` `set_locked` 回到只拼 origin + locked | SEGEDIT-MANUAL-1 `:360`/`:365`/`:370`;HOST SL-548 ③ `:10159`(位)、`:10161`(`volDb` 回落参数面),其后 ④⑤⑥ `:10170`/`:10172`/`:10182`/`:10190` 级联 |
+| NE2 | `set_values` 保留被编辑段的位 | SEGEDIT-MANUAL-2 `:382`;SERVICE-13 前置 `:259`;HOST SL-548 ⑤ `:10182`(位)、`:10186`(`volDb` 仍是 −9) |
+| NE3a | `split` 左子段不重写 flags | SEGEDIT-SPLIT-1 `:151`(既有格)+ SEGEDIT-MANUAL-3 `:397` |
+| NE3b | `split` 右子段不重写 flags | SEGEDIT-SPLIT-1 `:152` + SEGEDIT-MANUAL-3 `:398` |
+| NE4 | `move_boundary` 保留本段的位 | SEGEDIT-MANUAL-4 `:412` |
+| NE5 | `merge` 结果段继承左段的位 | SEGEDIT-MANUAL-5 `:426` |
+| NS1 | `SegmentEditService.h` 非空表不置被拖那一维的位 | params 4 例红:SERVICE-5 `:177`、SERVICE-6 `:196`、SERVICE-8 `:234`、SERVICE-13 前置 `:252`;host 3 例全红:HOST SL-548 ① `:10138`/`:10141` 起级联、HOST SL-180 `:4092`/`:4106`/`:4107`/`:4146`、HOST SL-188 `:4466` |
+| NS2 | 非空表不保留另一维已有的位 | SERVICE-8 `:234`、SERVICE-13 `:263`/`:265` |
+| NS3 | 空表不置位 | SERVICE-7 `:211`/`:217`、SERVICE-8 `:234` |
+| NS4 | 空表两位都置 | SERVICE-7 `:211`/`:217` |
+| NC1 | `StateCodec.cpp` CRVS 解码只取 bit0-2(`r.u32() & 0x7`) | STATE-CRVS-5 `:371`/`:372`/`:378`;HOST SL-548 ④ 存盘重开 `:10170`/`:10172`,其后 `:10182`/`:10190` 级联 |
+| NP1 | `OutputProcessor.cpp` 分析产出的新段带 vol 位 | HOST SL-188 `clearManual` 重分析之后 `:4481`(位)/`:4483`(标仍亮) |
+| JD1 | `readback.js` `manualDimOf` 判标记不分维 | tab1 (a9) 两格、(a10) 两格、(a11);tab2 `[SL-180] pan 维不算手动`、`[SL-548] vol 算手动、pan 不算` |
+| JD2 | 同函数:兼容规则永不成立 | tab1 (a6)、(a8)、(a13) 单段;tab2 ③ B 形态、④ 常值段读回两格、(c6)(c8) |
+| JD3 | 同函数:兼容规则不限单段 | tab1 (a13) 多段;tab2 ③ C 形态 |
+| JD4 | 同函数:加回值比较 | tab1 (a12) 值不等格;tab2 全绿 |
+| JM1 | mock 非空表接管不标 `manualVol` | tab2 14 条:既有 §1.16 常值段读回四条 + `[SL-548]` 全部;tab1 全绿 |
+| JM2 | mock `set_values` 不清标记 | tab2 `[SL-548]` set_values 两条 |
+| JM3 | mock `set_locked` 清标记 | tab2 `[SL-548]` set_locked 一条 + 其后 set_values 一条(首段的位已被清) |
+| JM4 | mock `split` 不清标记 | tab2 `[SL-548] split` 一条 |
+| JM5 | mock `move_boundary` 不清标记 | tab2 `[SL-548] move_boundary` 一条 |
+| JM6 | mock `merge` 不清标记 | tab2 `[SL-548] merge` 一条 |
+| PD1 | `check-bridge-parity.mjs` 字段正则不认 `?:` | `scvb.segments 实发了契约未登记的载荷字段:manualPan, manualVol` |
+| PD2 | 删 `OutputEditor.cpp` 的 `put(seg, "manualPan", …)` | `scvb.segments 契约载荷行登记了、OutputEditor::buildSegmentsPayload 却没有 put(seg, …) 的字段:manualPan`(本 PR 新增的反方向) |
+
+**照实写的缺口**:
+- `OutputEditor.cpp` 那两行 `put` 只有 PD2 这道**文本级**对拍守着 —— harness 编不进 `OutputEditor`(与 HOST R4 头注同一个
+  限制),运行期没有一格会因为它红。
+- mock 空表接管那一支(`proto.manualPan` / `proto.manualVol`)没有冒烟格:fixture 里没有空段表的轨可拖。native 的
+  同一支由 SERVICE-7 守。
+- JD2 首次注入时 tab1 在 (a6) 抛 TypeError、JM1 首次注入时 tab2 在 §1.16 那一条抛 TypeError,其后各格都没跑到;
+  把这三处读取改成 `?.` 判空之后重跑,上表是重跑的结果。
 
 ## 变更文件
 

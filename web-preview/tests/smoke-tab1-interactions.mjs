@@ -1518,7 +1518,7 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         ],
     };
     eq(
-        RB.readbackSegsOf(manualSeg, NONE, false, 500).pan.pan,
+        RB.readbackSegsOf(manualSeg, NONE, false, 500).pan?.pan,
         12,
         "(a6) 手动常值段优先于输出档(05 §2.2「读回值同样取自该段」)",
     );
@@ -1534,7 +1534,7 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
     );
     // `manual` 回出的就是命中的手动常值段本身 —— Tab2 行上那枚标与这条链同判定。
     eq(
-        RB.readbackSegsOf(manualSeg, NONE, true, 0).manual.pan,
+        RB.readbackSegsOf(manualSeg, NONE, true, 0).manual?.pan,
         12,
         "(a8) 命中手动常值段时 manual 回出该段(行上的标与读回链必然同判定)",
     );
