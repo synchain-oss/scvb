@@ -210,6 +210,36 @@ function showOccupiedToast(channel, group) {
     }, 4000);
 }
 
+/**
+ * [SL-463 / J156] 非冲突的认领失败:契约 §3.2 `setChannelId` / §3.3 `setGroupId` 回
+ * `{ok:false, reason}`。只认登记过的两种 reason,各有一条说明原因的词条;其余 reason
+ * (`badArg`:UI 只发 0..15 / 1..8 的整数,走不到)不弹 —— 不拿一句不对症的说明充数。
+ * 返回词条 key,不是失败回执时返回 null。
+ */
+const CLAIM_FAILED_KEYS = Object.freeze({
+    unavailable: "ch.claimFailed.unavailable",
+    abiMismatch: "ch.claimFailed.abiMismatch",
+});
+function claimFailedKey(res) {
+    if (!res || res.ok !== false || typeof res.reason !== "string") return null;
+    return Object.prototype.hasOwnProperty.call(CLAIM_FAILED_KEYS, res.reason)
+        ? CLAIM_FAILED_KEYS[res.reason]
+        : null;
+}
+
+/** 认领失败的一次性 toast:与冲突提示共用同一个 toast 槽(同一时刻只会有一条 claim 反馈)。 */
+function showClaimFailedToast(key) {
+    const toast = $("input.toast.occupied");
+    const text = $("input.toast.occupied.text");
+    if (!toast) return;
+    fill(text, key);
+    toast.hidden = false;
+    if (store.local.toastTimer) clearTimeout(store.local.toastTimer);
+    store.local.toastTimer = setTimeout(() => {
+        toast.hidden = true;
+    }, 4000);
+}
+
 // ------------------------------------------------------------- i18n
 let lang = "zh";
 let dictNow = dict(lang);
@@ -348,6 +378,14 @@ function wireGroup() {
                 shake(pill);
                 showOccupiedToast(store.state.channel_id || 0, g);
             }
+            // [SL-463 / J156] 非冲突失败(新组的 ctrl / 共享内存段打不开、或 abi 不符):同一枚胶囊抖一下
+            // + 说明原因的 toast。没有乐观态要回滚:切组前 pendingGroup 已清,组胶囊与 pill 都由随后的
+            // scvb.state 决定 —— ctrl 段那一支组号原样不动,新组 claim 失败那一支组号已换(契约 §3.3)。
+            const failKey = claimFailedKey(res);
+            if (failKey) {
+                shake(seg && seg.querySelector('[data-group="' + g + '"]'));
+                showClaimFailedToast(failKey);
+            }
             render();
         });
     }
@@ -429,6 +467,17 @@ async function claimChannel(ch) {
         const g = store.state.group_id || 1;
         if (claimConflictShakeDue(ch, g, "rpc")) shake(channelCardEl(ch));
         showOccupiedToast(ch, g);
+    }
+
+    // [SL-463 / J156] 非冲突失败(契约 §3.2 `{ok:false, reason}`):这张卡抖一下 + 说明原因的 toast。
+    // 此前真桥在这两种失败上都回 {ok:true}:abi 不符至少还有红 pill + 横幅;段打不开只剩灰 pill
+    // 「未选择通道」,换通道时回滚成功则连它都没有 —— 点了卡,什么都没发生。
+    // 没有乐观态要回滚:选中卡与 pill 都由随后的 scvb.state 决定 —— 换通道时补偿式回滚成功,
+    // 它仍是原通道;首次选通道失败,它是 0。
+    const failKey = claimFailedKey(res);
+    if (failKey) {
+        shake(channelCardEl(ch));
+        showClaimFailedToast(failKey);
     }
     render();
 }

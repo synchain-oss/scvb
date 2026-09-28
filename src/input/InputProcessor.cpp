@@ -429,6 +429,29 @@ void ScvbInputAudioProcessor::timerCallback()
     captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
 
     drainFpReports();
+    publishTrackName(); // [J150] 轨道名 → ctrl 段轨道名区(Output 据此自动填 label)
+}
+
+void ScvbInputAudioProcessor::publishTrackName()
+{
+    // 寻址用**实际持有**的 channel(boundChannel),不用 channelId_ 那个配置镜像:两者在「配置了但没
+    // 绑定」时会分叉([SL-446]),拿配置号写会写进别的实例正占着的那一条(双写方)。没持有任何 slot 时
+    // boundChannel() 为 0(claim 失败态的结构性保证,见 InputSession::openAndClaim),writeTrackName 对 0
+    // 什么都不写 —— 「只有持有者才写」由这一条保证,不另设门。ctrl_ 未打开时同样静默不写。
+    // 归属判据取本 slot 此刻的心跳:Output 只采信「条目记的心跳 == slot 此刻的心跳」的条目,所以即便
+    // ctrl_ 与 session_ 一时不在同一组(换组失败回退的窄窗),写进去的条目也不会被那一组的 Output 采信。
+    // 每拍都写(不做「没变就不写」):条目 128 字节、每轨一条,25Hz 的开销可以忽略;换来的是段被
+    // 覆盖式重初始化清零、换通道、换组之后都不需要任何「补写」逻辑 —— 下一拍自然写对。
+    ctrl_.writeTrackName(session_.boundChannel(), session_.ownSlotHeartbeatMs(), trackNameUtf8_);
+}
+
+void ScvbInputAudioProcessor::updateTrackProperties(const TrackProperties& properties)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    if (properties.name.has_value())
+    {
+        trackNameUtf8_ = properties.name->toStdString();
+    }
 }
 
 void ScvbInputAudioProcessor::drainFpReports()
@@ -667,11 +690,8 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
     {
         stageMachine_.forcePassthrough();
     }
-    // T30 桥:{conflict:true} ⇔ kConflict,其余 {ok:true}。⚠ [SL-463] 「其余」里含两个失败码
-    // (kAbiMismatch / kUnavailable),桥面仍回 {ok:true}:契约 §3.2 的返回并集只有这两种形状,
-    // 失败原因只经 scvb.state.claim 回推(abiMismatch = 红 pill + 横幅;kUnavailable = claim
-    // "idle" + channel_id 0,界面是灰 pill「未选择通道」,**没有专门提示**)。详见 InputSession.h
-    // prepare() 头注的「已知留白」一段。
+    // 桥面回执按这次请求本身的结果映射(§3.2,[J156]):kConflict / kAbiMismatch / kUnavailable 各回
+    // 失败形状,见 InputBridgeLogic.h claimRequestResponse()。
     return requestResult;
 }
 
@@ -686,7 +706,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
         // 原值,以这次调用为准。⚠ Input 页面的组胶囊对当前组直接早退、不调桥(web/input/app.js
         // 组胶囊 click 处理),所以今天用户在界面上走不到这里;回退后要让存档跟上,得改到别的组。
         savedGroupId_ = groupId;
-        return session_.state(); // 同组 no-op(§3.3:{ok:true})
+        return session_.state(); // 同组 no-op:回会话当下的 claim 态(活跃/未分配 ⇒ {ok:true})
     }
     const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
     const scvb::u32 oldGroup = static_cast<scvb::u32>(groupId_);
@@ -696,10 +716,15 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     // 口径),ctrl 段留到首次 setChannelId 的 ensureCtrlOpen 懒开(懒开按当前组对齐)。
     if (channelId_ != 0)
     {
-        if (ctrl_.changeGroup(newGroup) != scvb::InitResult::kOk)
+        const auto ctrlResult = ctrl_.changeGroup(newGroup);
+        if (ctrlResult != scvb::InitResult::kOk)
         {
             ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
-            return session_.state(); // 不切 session group,保持旧组一致态
+            // 不切 session group,保持旧组一致态。[SL-463 / J156] 这次改组**没有生效**,回执必须报
+            // 失败 —— 此前这里回 session_.state(),会话在旧组上多半仍是 kActive ⇒ 桥面回 {ok:true},
+            // 组号原样不动、界面上也没有任何提示。按 ctrl 段打不开的原因映射成 §3.3 的失败形状。
+            return ctrlResult == scvb::InitResult::kAbiMismatch ? scvb::input::InputClaimState::kAbiMismatch
+                                                                : scvb::input::InputClaimState::kUnavailable;
         }
     }
     groupId_ = groupId;
@@ -708,7 +733,9 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     stageMachine_.forcePassthrough();
     session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-    return session_.state(); // T30 桥:{conflict:true} ⇔ 新组同 channel 被占(I2)
+    // 新组里的 claim 结果(§3.3,[J156]):conflict / abiMismatch / unavailable 各回失败形状。
+    // 与上面 ctrl 段那一支不同,走到这里组号**已经**换成新组(claim 失败也不退回旧组)。
+    return session_.state();
 }
 
 // createEditor() 与 createPluginFilter() 见 InputPluginEntry.cpp:抽出去之后本 TU 不再引用

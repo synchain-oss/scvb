@@ -7,11 +7,13 @@
 
 #include "AnalyzeScopeMath.h" // [SL-242] 范围 → hop 窗的向内取整(纯函数,scvb_tests 直接断言)
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
+#include "HostId.h" // [J150] 桥面 §1.1 `host` 的取值口径
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
 #include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径(与分析入口共用)
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
+#include "analysis/WaveValleys.h" // [J145] §1.27 valleys[]:吸附谷点
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
@@ -24,7 +26,20 @@ namespace
 constexpr int kGroupIdMax = 8; // [J66] 1..8
 constexpr int kVersionMax = 2; // [J59] 1..2
 constexpr int kTimelineInvalidTicks = 12; // 25Hz × 0.5s(§4.2 连续无效判定)
+
+// [J150] 测试注入的宿主类型(nullopt = 按真实宿主判定)。只由 setHostTypeForTesting 写,
+// 单测线程;与下面 sidecarTestBaseDirRef 同款。
+std::optional<juce::PluginHostType::HostType>& hostTypeTestOverrideRef()
+{
+    static std::optional<juce::PluginHostType::HostType> type;
+    return type;
+}
 } // namespace
+
+void ScvbOutputAudioProcessor::setHostTypeForTesting(std::optional<juce::PluginHostType::HostType> type)
+{
+    hostTypeTestOverrideRef() = type;
+}
 
 ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
@@ -61,6 +76,10 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // 只为让设置页在首次存盘前也有真值可显示 —— 落盘格式(36 字符 dashed UUID)与「永久随
     // state」的语义都不变,工程里存过的值仍然压过它。
     sessionGuid_ = juce::Uuid().toDashedString();
+
+    // [J150] 宿主标识:构造期判定一次(PluginHostType 按宿主可执行文件名识别,不在音频线程)。
+    // 测试注入见 setHostTypeForTesting;生产路径恒走 juce::PluginHostType().type。
+    hostId_ = scvb::output::hostIdOf(hostTypeTestOverrideRef().value_or(juce::PluginHostType().type));
 
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
@@ -439,6 +458,66 @@ ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int 
     return info;
 }
 
+std::vector<ScvbOutputAudioProcessor::CaptureProgressTrack>
+ScvbOutputAudioProcessor::captureProgressFrame(CaptureProgressBaseline& baseline, bool forceFull)
+{
+    std::vector<CaptureProgressTrack> frame;
+
+    // §2.7:周期帧只在播放中发;[J152] 两个例外帧不看走带。
+    // 数据源 = FrameStore 的 coverage 记账(Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
+    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
+    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
+    const scvb::engine::PlayheadPod pod = playheadSnapshot();
+    const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+    if (!playing && !forceFull)
+    {
+        return frame;
+    }
+
+    const double sr = sampleRate();
+    const double playheadS = (pod.timeSamples >= 0 && sr > 0.0) ? static_cast<double>(pod.timeSamples) / sr : 0.0;
+    // 已采集末端只有「停着」那一支用得上(见 captureProgressWindow),播放中不必扫全轨。
+    const double extentS = playing ? 0.0 : capturedExtentSeconds();
+    const auto window = scvb::output::captureProgressWindow(playing, runtime_.rangeMode, runtime_.rangeStartS,
+                                                            runtime_.rangeEndS, playheadS, extentS);
+    if (!window.valid() && !forceFull)
+    {
+        return frame; // 周期帧:时间线还没走出一个 hop,没有可报的覆盖
+    }
+    // 例外帧在窗口为空时照发:coverageOf 对空窗口回 0% / 无区间,15 轨各报一个 0。
+
+    for (int t = 0; t < 15; ++t)
+    {
+        const int ch = t + 1;
+        const auto info = coverageOf(ch, window.startS, window.endS);
+        const std::size_t idx = static_cast<std::size_t>(t);
+
+        // added = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
+        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
+        scvb::analysis::CoverageMap added;
+        for (const auto& r : info.ranges)
+            added.add(r);
+        for (const auto& r : baseline.ranges[idx])
+            added.punch(r);
+
+        const bool pctChanged = !juce::approximatelyEqual(info.pct, baseline.pct[idx]);
+        if (!forceFull && added.empty() && !pctChanged)
+        {
+            continue; // 周期帧:仅包含本帧有变化的轨(§2.7);例外帧 15 轨全带
+        }
+        baseline.ranges[idx] = info.ranges;
+        baseline.pct[idx] = info.pct;
+
+        CaptureProgressTrack track;
+        track.ch = ch;
+        track.added = added.ranges();
+        track.pct = info.pct;
+        frame.push_back(std::move(track));
+    }
+    return frame;
+}
+
 ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int channel, double startS, double endS,
                                                                             int cols)
 {
@@ -527,7 +606,59 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
         tile.minDb[k] = std::min(mn, mx);
         tile.vad[k] = voiced ? 1 : 0;
     }
+
+    // [J145] 吸附谷点(§1.27 `valleys[]`)。同一把锁里算:谷点与包络必须来自同一刻的 FrameStore,
+    // 否则两者可能一个是采集前、一个是采集后。代价与已覆盖 hop 数同阶并有上限
+    // (`kSnapValleyMaxScanHops`),与请求跨度无关 —— 上面 P0-A 那段注释的同一条纪律。
+    // 门槛与分析同源:`startAnalysis` 装配 `cfg.segmentation.sensitivity` 用的也是这一个值。
+    scvb::analysis::SegmentationParams sp;
+    sp.sensitivity = static_cast<double>(runtime_.segmentationSensitivity);
+    tile.valleys = scvb::analysis::snapValleysSeconds(frames, startS, endS, hopS, sp, static_cast<std::size_t>(cols));
     return tile;
+}
+
+juce::var ScvbOutputAudioProcessor::waveformResponse(const WaveformTile& tile)
+{
+    // 列数 = 瓦片自己的列数:waveformOf 一进门就把四列按 cols 铺满(提前返回的也是满长哨兵),
+    // 四列恒等长 —— 与原先编辑器里 `for (i < cols)` 直接下标的写法同一个前提。
+    const std::size_t cols = tile.minDb.size();
+    juce::Array<juce::var> minDb;
+    juce::Array<juce::var> maxDb;
+    juce::Array<juce::var> vad;
+    juce::Array<juce::var> covered;
+    juce::Array<juce::var> stale;
+    juce::Array<juce::var> passId;
+    for (std::size_t k = 0; k < cols; ++k)
+    {
+        minDb.add(tile.minDb[k]);
+        maxDb.add(tile.maxDb[k]);
+        vad.add(tile.vad[k]);
+        covered.add(tile.covered[k]);
+        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
+        // [J145] passId 这一版仍恒 0(没做):FrameStore 只记「覆盖了哪些 hop」,不记「哪一轮采的」,
+        // 要填它得先给覆盖记账加采集轮次 —— 那是存储面的改动,不是这里一行的事。契约 §9.3 附注
+        // 本就允许首版回退常量(「值填充不触发契约变更」)。
+        stale.add(0);
+        passId.add(0);
+    }
+    // [J145] 吸附谷点(§1.27):此前回包里这一项是一个**从不填**的空数组,tab-wave 的 snapBoundary
+    // 读的就是它 ⇒ tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,
+    // 所以 web 侧的冒烟一直是绿的)。
+    juce::Array<juce::var> valleys;
+    for (const double v : tile.valleys)
+    {
+        valleys.add(v);
+    }
+
+    auto* o = new juce::DynamicObject();
+    o->setProperty("minDb", minDb);
+    o->setProperty("maxDb", maxDb);
+    o->setProperty("vad", vad);
+    o->setProperty("covered", covered);
+    o->setProperty("stale", stale);
+    o->setProperty("passId", passId);
+    o->setProperty("valleys", valleys);
+    return juce::var(o);
 }
 
 double ScvbOutputAudioProcessor::capturedExtentSeconds()
@@ -1104,10 +1235,11 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
-    // 两个都要跑(不能靠 || 短路):优先级与检测值各自独立地弄脏配置。
+    // 三个都要跑(不能靠 || 短路):优先级、检测值、[J150] 轨道名各自独立地弄脏配置。
     const bool prioChanged = applyRemotePriorities();
     const bool srcChanged = refreshSourceChannels();
-    if (prioChanged || srcChanged)
+    const bool nameChanged = applyTrackNames(now);
+    if (prioChanged || srcChanged || nameChanged)
     {
         ++runtime_.configSeq;
     }
@@ -1316,6 +1448,42 @@ bool ScvbOutputAudioProcessor::applyRemotePriorities()
     return changed;
 }
 
+bool ScvbOutputAudioProcessor::applyTrackNames(scvb::u64 nowMs)
+{
+    // [J150] 04 §7 步 2:「轨道名自动填入 label」。只读观察实例不改配置(本组真源是 kActive 那一个)。
+    if (session_.state() != scvb::output::OutputClaimState::kActive)
+    {
+        return false;
+    }
+    bool changed = false;
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        auto& c = runtime_.channels[static_cast<std::size_t>(t)];
+        if (!c.labelFollowsTrackName())
+        {
+            continue; // 用户亲手起的名字:不跟随 DAW 轨道名
+        }
+        std::string name;
+        if (!session_.readOwnedTrackName(static_cast<scvb::u32>(t + 1), nowMs, name))
+        {
+            // 掉线 / 条目不归现任 Input / 宿主没给名字:什么都不做 —— label 停在最后一次的轨道名上
+            // (Input 断开后「保留最后的名字」就是这一行的效果,不是另写的逻辑)。
+            continue;
+        }
+        // 与桥面 setChannelConfig 同一上限:24 码点(JUCE String 在 UTF-8 构建下按码点截,
+        // 与 `OutputEditor::handleSetChannelConfig` 的 `substring(0, 24)` 同口径)。
+        const juce::String next = juce::String::fromUTF8(name.data(), static_cast<int>(name.size()))
+                                      .substring(0, static_cast<int>(scvb::state::kOutputChannelLabelMaxChars));
+        c.autoLabel = next; // 先记「自动填的是什么」:label 与它相等 ⇔ 仍跟随轨道名
+        if (next != c.label)
+        {
+            c.label = next;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void ScvbOutputAudioProcessor::publishConfigBroadcast()
 {
     // 只读观察实例不得写广播区:本组真源是那个 kActive 的 Output,两个实例抢写会让 Input
@@ -1422,17 +1590,31 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 先写 PRMS 就会把旧 GUID 存进工程,下次开工程按旧 GUID 去找,找到的是别人那份或者空。
     writeFeaturesChunk(chunks);
 
-    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
+    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位 + ui.active_tab。
     // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表把 guide_seen /
-    // tour_seen / lang_chosen 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language 才是
-    // 两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
+    // tour_seen / lang_chosen / active_tab 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language
+    // 才是两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
     // 见 OutputUiState.h 头注(那里另记了 CFGS 尾扩口径自 [J69/U24] 起的变化,以及跨 abi 整块
     // 拒载是 PRMS/CFGS 共同处境、论证不了字段该放哪一节)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
                                        runtime_.tourSeen.load(std::memory_order_relaxed),
                                        runtime_.langChosen.load(std::memory_order_relaxed)});
+    // [J148] §1.31「重开面板恢复上次 tab」的落盘那一半。存的是**此刻**的 tab —— 桥入口只改内存,
+    // 真正写进工程只发生在宿主来取 state 的这一刻,所以用户来回切 tab 不会产生任何落盘动作。
+    scvb::output::writeActiveTab(state, runtime_.activeTab.load(std::memory_order_relaxed));
     scvb::output::writeSessionGuid(state, sessionGuid_); // [SL-215] 会话 GUID 随 PRMS 落盘
+    // [J150] channels[].auto_label 随 PRMS 落盘(理由见 OutputUiState.h 那组函数的头注):每轨原样记内存里的
+    // autoLabel,载入后「label 是否跟随轨道名」的推导与存盘前逐轨相同。每次整条覆写,不留上一份工程的残值
+    // (replaceState 会把载入的属性原样带进 APVTS 状态树)。
+    {
+        std::array<juce::String, scvb::engine::kNumTracks> autoLabels;
+        for (std::size_t t = 0; t < autoLabels.size(); ++t)
+        {
+            autoLabels[t] = runtime_.channels[t].autoLabel;
+        }
+        scvb::output::writeAutoLabels(state, autoLabels);
+    }
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -2145,6 +2327,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
 
+    // [J150] channels[].auto_label 随 PRMS 走、却要跟 CFGS 里的 label 一起落地(下面 channels 那段):
+    // 先在这里读出来。缺席(本功能之前的工程)/ 畸形 ⇒ 全空 ⇒ 非空 label 一律视为用户命名。
+    std::array<juce::String, scvb::engine::kNumTracks> loadedAutoLabels;
+
     // 载入覆盖了撤销步所写的面 ⇒ 整栈清空。两个调用点:PRMS 读回处(下面)与函数末尾(CFGS / CRVS);
     // 为什么清、按什么判见末尾那段注释。
     const auto clearUndoForLoad = [this] {
@@ -2167,6 +2353,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
+            // [J148] ui.active_tab:PRMS 解得开时,属性缺失(本版之前存的工程)或非四值 ⇒ Tab1,**照样写回**,
+            // 不做「属性缺失就保留现值」—— 那样上一个工程停在哪个 tab,载入这份就还停在哪(#96 陈旧值同族)。
+            // 范围只到这一层:PRMS 整节缺失 / XML 解不开时根本进不来,tab 与同节的 123 个参数、上面三个
+            // 首启位一起保持现值(「没有信息」不读成「回默认」,与 SL-226 同口径)。本插件存的工程恒带 PRMS。
+            // 编辑器开着时,下一帧 scvb.state 带着新值到页面,页面按 §1.31 切过去。
+            runtime_.activeTab.store(scvb::output::readActiveTab(loaded), std::memory_order_relaxed);
             // [SL-215] 工程里存过合法 GUID 就沿用它 —— 这是「同一工程反复开,sidecar 指向同一份
             // 特征」的全部依据。缺失(老工程)或形状非法(不可信字节)时保留构造期生成的那一个,
             // 绝不把畸形串带进文件名;下次保存即把这个新的写回去。
@@ -2174,6 +2366,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             {
                 sessionGuid_ = loadedGuid;
             }
+            loadedAutoLabels = scvb::output::readAutoLabels(loaded); // [J150]
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
             // [SL-536] 参数刚被覆盖 ⇒ 就地清栈,不等末尾那处:下面 CFGS 缺失 / 解不开的两处早退走不到
@@ -2322,6 +2515,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         dst.leadLock = src.leadLock;
         dst.leadVolExempt = src.leadVolExempt;
         dst.pairId = static_cast<int>(src.pairId);
+        // [J150] auto_label:与 label 相等 ⇒ 这条 label 是上次存盘时自动填的轨道名,继续跟随;不等(含缺席 =
+        // 本功能之前的工程)⇒ 非空 label 视为用户命名。旧构建另存时会把这个 PRMS 属性原样带回来,但用户
+        // 若在旧构建里改过名字,label 就不再等于它 —— 仍判成用户命名,不会被轨道名覆盖。
+        dst.autoLabel = loadedAutoLabels[t];
     }
     // 走既有的通道配置推送路径,不另造:桥面改完配置也只做这一件事(`++configSeq`)。
     // 与桥面「值变化才 bump」不同,这里**无条件** bump,是有意的:载入是整份替换,逐项比对省下的只是

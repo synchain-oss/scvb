@@ -54,7 +54,8 @@ private:
     void emitGroups();
     void emitMeters();
     void emitPlayhead();
-    void emitCaptureProgress();
+    // forceFull = [J152] 例外帧(mBridgeReady 后首帧 / clearCoverage 受理后):不看走带、15 轨全带。
+    void emitCaptureProgress(bool forceFull);
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
@@ -242,8 +243,12 @@ private:
     float lastBusRPeak_ = -1000.0f;
     bool metersEverSent_ = false;
     // §2.7 captureProgress 的增量基线:上一帧已报过的覆盖区间与覆盖率(index = ch-1)。
-    std::array<std::vector<scvb::analysis::HopRange>, 15> lastCoverageRanges_{};
-    std::array<float, 15> lastCoveragePct_{};
+    // 初值 pct 全 0(不是 reset() 的 −1 哨兵):周期帧开播时不报「一直是 0%」的轨。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline coverageBaseline_{};
+    // [J152] 例外帧闩锁:mBridgeReady 后首帧 / clearCoverage 受理后置位;emitCaptureProgress
+    // 在 webview 可见、真的出过帧之后才清(不可见时载荷会被丢,闩锁留着下一拍再补)。
+    // 与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向,首帧只有一次),复位纪律一并适用。
+    bool pendingCoverageFull_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputEditor)
 };

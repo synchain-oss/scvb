@@ -628,6 +628,40 @@ ChannelConnInfo OutputSession::channelConn(u32 channel, u64 nowMs) const
     return info;
 }
 
+bool OutputSession::readOwnedTrackName(u32 channel, u64 nowMs, std::string& out) const
+{
+    // ① 已连接(与 UI 连接灯同一判据;channel 非法 / registry 未映射时 channelConn 回全默认 ⇒ 不过)。
+    if (!isConnectedForDisplay(channelConn(channel, nowMs)))
+    {
+        return false;
+    }
+    const InputSlot* slot = registry_.inputSlot(channel);
+    if (slot == nullptr)
+    {
+        return false;
+    }
+    // ② 归属。先读 slot 心跳、后读条目:Input 在两次读之间恰好写了新心跳并重写条目时,两边对不上
+    //    ⇒ 本拍放弃,下一拍即一致(Input 每拍都重写条目,心跳 4Hz 才变一次)。
+    const u64 heartbeat = slot->heartbeat_ms.load(std::memory_order_acquire);
+    u64 owner = 0;
+    std::string name;
+    if (!ctrl_.readTrackName(channel, owner, name))
+    {
+        return false;
+    }
+    if (owner != heartbeat)
+    {
+        return false;
+    }
+    // ③ 空串 = 宿主没给轨道名:不算「有名字」。
+    if (name.empty())
+    {
+        return false;
+    }
+    out = std::move(name);
+    return true;
+}
+
 u32 OutputSession::gapCount(u32 channel) const
 {
     if (channel < 1 || channel > kMaxChannels)

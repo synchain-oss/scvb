@@ -367,7 +367,10 @@ export const DEMO_GROUPS_ONLINE = 0b00010011;
 /** 快照默认的 session GUID(固定字面量:确定性优先于「像真的」)。 */
 const DEFAULT_SESSION_GUID = "5c0b7d2e-3a41-4f88-9b6a-1d2e3f405162";
 
-/** 插件版本号(与 CMakeLists.txt 的 project(SCVB VERSION 0.1.0) 对齐)。 */
+/** 插件版本号的 mock 固定值,**不跟随真源**(真源 = 顶层 CMakeLists.txt 的 project(SCVB VERSION);
+ *  真插件的版本号由 native 下发 `JucePlugin_VersionString`)。
+ *  ⚠ 它不只出现在 web-preview:导览 demo 快照(`makeTourDemoSnapshot`)也带着它,导览走到设置页时
+ *  版本行显示的就是这个值,与真插件的版本号不同。 */
 const PLUGIN_VERSION = "0.1.0";
 
 /** 段布局 abi(契约 §1.1:version.abi = ipc 段布局 abi,`RegistryHeader.abi` 同源)。 */
@@ -617,7 +620,10 @@ export function makeOutputState(overrides = {}) {
 /**
  * §1.1 `requestInitialState()` 的 Output 全量快照。
  * = §2.1 state 全字段 + 快照专属的 session_guid / guide_seen_global / tour_seen_global /
- *   version / conn(契约 §1.1 语义行);**没有** `full` 键(那是事件字段),**没有**顶层 abi。
+ *   lang_chosen_global / version / host / conn(契约 §1.1 语义行);**没有** `full` 键
+ *   (那是事件字段),**没有**顶层 abi。
+ * [J150] `host` 默认 `"other"`(= 不出任何宿主专属提示),预览里要看 REAPER / Live 的提示
+ *   用 `?host=reaper` / `?host=live`(web-preview/mock/state-driver.js 的 parsePreviewQuery)。
  */
 export function makeOutputSnapshot(overrides = {}) {
     const state = makeOutputState();
@@ -642,6 +648,8 @@ export function makeOutputSnapshot(overrides = {}) {
         analysis_run: state.analysis_run,
         // 本机 abi 的唯一落点(§1.1:无顶层 abi 键)
         version: { plugin: PLUGIN_VERSION, abi: LOCAL_ABI },
+        // [J150] 宿主标识(闭集 reaper / live / cubase / other;native 侧 src/output/HostId.h)
+        host: "other",
         conn: makeConn(),
     };
     return mergeDeep(snapshot, overrides);
@@ -785,7 +793,8 @@ export function makePlayhead(tS = 0, overrides = {}) {
 }
 
 /**
- * §2.7 `scvb.captureProgress`(播放中 2Hz,只含本帧有变化的轨)。
+ * §2.7 `scvb.captureProgress` 的**周期帧**(播放中 2Hz,只含本帧有变化的轨)。
+ * [J152] 的两个全量例外帧不由本函数造,见 juce-bridge-mock 的 `fullCaptureProgressPayload`。
  *
  * 两个字段**都从同一份 coverage 模型派生**(本文件第 4 节自立纪律:段表、波形 VAD 位、
  * 能量谷、覆盖条四处必须讲同一个故事):

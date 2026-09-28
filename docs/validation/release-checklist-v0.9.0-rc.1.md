@@ -48,8 +48,8 @@
 - [ ] **A1 版本号与 tag 一致**
   - 查什么:顶层 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 与 tag 一致。
   - 怎么查:`git show v0.9.0-rc.1:CMakeLists.txt | grep -n "project(SCVB"` 应为 `VERSION 0.9.0`;tag 推上去后 `release.yml` 的 `verify-tag` job 绿(#297 的 `scripts/check-release-tag.ps1`:rc tag 只比对 `X.Y.Z` 部分,rc 与正式版对应同一个 CMake 版本)。
-  - 证据:当前 `CMakeLists.txt:8` 是 `project(SCVB VERSION 0.1.0)`;CI run 36364806176 的 pluginval 输出也是 `SCVB Input v0.1.0`。
-  - 状态:⏳ 统筹(出 RC 时改;依赖 #297 合并)
+  - 证据:`e3a7f5a1` 上 `CMakeLists.txt:8` 是 `project(SCVB VERSION 0.1.0)`;CI run 36364806176 的 pluginval 输出也是 `SCVB Input v0.1.0`。#331 已改为 `project(SCVB VERSION 0.9.0)`,在它的 head 上本地跑 `scripts/check-release-tag.ps1 -Tag v0.9.0-rc.1` 退出 0(kind=rc),`-Tag v1.0.0` 退出 1。
+  - 状态:⏳ 统筹(#297 已合;版本号由 #331 改;tag 推上去后看 `verify-tag`)
 
 - [ ] **A2 CHANGELOG 已更新**
   - 查什么:含破坏性变更、已知限制、DAW Tier 变化。
@@ -272,7 +272,7 @@
   - 状态:⏳ CI(依赖 #297)
 
 - [ ] **J2 zip 内合规文件组断言通过**
-  - 查什么:zip 根目录有 `LICENSE.txt`(GPLv3 全文)、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、`INSTALL.txt`(含精确到 tag 的源码 URL);`LICENSE-EXCEPTION.md` 按 U2 **不附**。
+  - 查什么:zip 根目录有 `LICENSE.txt`(GPLv3 全文)、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、`third_party/notices/`(上游声明原文,HarfBuzz 的逐行版权只在其中的 `harfbuzz.COPYING`)、`INSTALL.txt`(含精确到 tag 的源码 URL);`LICENSE-EXCEPTION.md` 按 U2 **不附**。
   - 实况:#297 的 `package.ps1` 在 `verify-tag` 阶段做许可证全文覆盖检查,BSD-3-Clause 全文补上(#314)之前 rc tag 会停在 preflight。
   - 状态:⏳ CI(依赖 #297、#314)
 
