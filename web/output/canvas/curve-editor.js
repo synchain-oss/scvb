@@ -2,7 +2,7 @@
 // =============================================================================
 // SCVB Output · Tab1 pan 角度域增益曲线编辑器(T34)
 // -----------------------------------------------------------------------------
-// 目标:与 scvb_core 同一条插值算法的可视编辑器(02 §7 / 契约 §1.17)。
+// 目标:与 scvb_core 同一条插值算法的可视编辑器(02 §7 / 契约 §1.17;拖动实时预览 §1.37,[J157])。
 // 职责边界:
 //   • 本文件只管**曲线窗内部**(加点/拖拽/Q/shape/删除/a11y/side 三段选 + 手柄方向指示
 //      + MS 等效增益叠加线)。窗外的 eyebrow / 图例 / X/Y 刻度 / 空态 DOM 仍是
@@ -19,7 +19,7 @@
 //   cut:slope 模型 —— d = 侧向距离(right→P−P₀、left→P₀−P、out→sign(P₀) 定),
 //        d=max(|d|,d0)(d0=1°),u=log2(d/d0),u_b=|A|/s(q 承载 slope),
 //        G=A·smoothstep(u/u_b) clamp 到 [A,0];d≤0(保留侧)→0
-//   LUT = 2049 点(−100..+100,步长 ≈0.0977,奇数保证 0° 恰为格点);
+//   LUT = 32769 点(−100..+100,步长 ≈0.0061,奇数保证 0° 恰为格点;见 LUT_SIZE);
 //        gainDb(P)=clamp + 线性插值。
 //   MS 等效增益(02 §8.4,J68 纯显示层):
 //        t=ms_balance/100;g_M=1−max(t,0);g_S=1−max(−t,0);θ=(P+100)/200·(π/2)
@@ -35,6 +35,19 @@
 
 /** 点数上限(契约 §1.17 整表提交 ≤16 点)。 */
 export const MAX_POINTS = 16;
+
+/**
+ * [J157] 拖动预览的桥面节流间隔(ms):≤ 20 Hz(契约 §1.37;用户裁定「拖动中预览限速(≤20Hz)
+ * 不逐帧提交」)。C++ 侧另有同值的限速与回收闸,**权威在那边**;这里节流是让桥面不逐帧下发。
+ */
+export const PREVIEW_MIN_INTERVAL_MS = 50;
+
+/** 单调时钟(ms);节流只看差值。node 冒烟与浏览器都有 performance。 */
+function nowMs() {
+    return typeof performance !== "undefined" && performance.now
+        ? performance.now()
+        : Date.now();
+}
 
 /** Q 值域(02 §7:Q ∈ [0.5, 10])。 */
 export const Q_RANGE = Object.freeze({ min: 0.5, max: 10 });
@@ -411,6 +424,9 @@ export function createCurveEditor(opts) {
                 commits: 0,
                 aborts: 0,
                 flushes: 0,
+                livePreviews: 0,
+                livePreviewCancels: 0,
+                livePreviewPending: false,
                 readOnly: false,
             }),
         };
@@ -466,6 +482,21 @@ export function createCurveEditor(opts) {
         crossVersionDrops: 0,
         // [SL-460] flushPending() 真的冲刷掉一发防抖提交的次数(空跑不计)。
         flushes: 0,
+        // [J157 / SL-447] 拖动实时预览(契约 §1.37 `previewPanCurve`)。与上面的 `dragPoints`
+        // (**本地**画出来的那份)不是一回事:这里管的是**送去音频链**的那份。
+        //   previewTimer —— 节流窗里的末发定时器(在转 = 还有一份没发);
+        //   previewNext  —— 待发的最新一份 {next, srcVersion};
+        //   previewAt    —— 上一份发出的时刻(nowMs());
+        //   previewLive  —— 本次在飞编辑发过预览、还没被提交或撤回收掉(撤回时据此补发 null);
+        //   previewVersion —— 发出去的那份属于哪一版(补发 null 时带它)。
+        previewTimer: 0,
+        previewNext: null,
+        previewAt: -Infinity,
+        previewLive: false,
+        previewVersion: 0,
+        // 只读诊断计数(页面级冒烟读):发出的预览份数 / 补发 null 的次数。
+        livePreviews: 0,
+        livePreviewCancels: 0,
     };
 
     /**
@@ -717,6 +748,13 @@ export function createCurveEditor(opts) {
         // [SL-450] 计数排在最前面:连「桥没接上」那条早退也算一次**提交尝试**。
         // 判据要的是「abortEdit 之后那一次提交压根没发起」,不是「发起了但没成功」。
         local.commits++;
+        // [J157] 提交即收掉拖动预览:停掉节流窗里还没发的那一份(不然它会在提交**之后**才发出,
+        // 把音频拽回一份旧的点表,而再也没有松手来收它)。**不补发 null**:setPanCurve 在引擎侧
+        // 会顺带撤掉预览(点表与最后一份预览相同时沿用那张表、音频零变化),先发 null 反而让音频
+        // 先弹回旧曲线再跳到新的。提交没被受理时另行补发,见下面 finally。
+        const hadLivePreview = local.previewLive;
+        const livePreviewVersion = local.previewVersion;
+        stopPreview(false);
         // =====================================================================
         // [SL-450 复审轮 1] **跨版本落地守卫 —— 最后一道,不是唯一一道**
         // ---------------------------------------------------------------------
@@ -741,7 +779,9 @@ export function createCurveEditor(opts) {
         //     **任何基于 UI 版本号的判据在这一窗口里都失灵**,补第三处触发点也没用。
         //     实测证据:滚轮 / Q 滑杆两臂曾在此处把 V1 的值写进 V2,而本计数器为 0。
         //     根因在契约:§1.17 的 `setPanCurve` **不带版本号**,UI 没有办法指定目标版本。
-        //     已记为已知负债,留待 [SL-447](issue #272)改 §1.17 时一并解决。
+        //     已记为已知负债(SL-451)。⚠ [J157] 做 SL-447 时**只给新增的 `previewPanCurve`
+        //     (§1.37)带了版本号**、由引擎比对(预览因此不会串版本);`setPanCurve` 本身的签名
+        //     没动 —— 这一档仍在,不在 J157 的裁定范围内。
         //   · **为什么还留着**:真正关死那两路的是 `switchVersion()` 的发前冲刷 / 中止(本地)
         //     与 `render()` 的回声中止(远端)—— 两者都**依赖 UI 状态与时序**。本守卫
         //     在唯一的落地点上再核一次,是它们失效时的最后一道。删掉它今天不会有用例变红
@@ -763,13 +803,19 @@ export function createCurveEditor(opts) {
             local.pendingVersion = 0;
             return;
         }
+        let accepted = false;
         try {
-            await bridge.setPanCurve(next);
+            const r = await bridge.setPanCurve(next);
+            accepted = !!(r && r.ok === true);
         } catch (e) {
             console.warn(
                 "SCVB curve-editor:setPanCurve() 调用失败 —— " + e.message,
             );
         } finally {
+            // [J157] 提交没被受理(只读观察 `{observer:true}` / badArg / 桥抛错)⇒ 引擎那边不会替我们
+            // 撤预览,补发 null:否则那份预览会一直留在音频里,而界面与存盘是已提交的曲线。
+            if (!accepted && hadLivePreview)
+                sendPreviewClear(livePreviewVersion);
             // echo 之后才清本地待提交态:避免 commit 与回显之间的窗口里
             // render()/draw() 退回旧 store 造成「曲线一跳一跳」。只清「仍是当前这批」。
             // [SL-450 复审轮 3] pendingVersion 与 dragPoints **同生共死**,一起清:
@@ -894,7 +940,7 @@ export function createCurveEditor(opts) {
      * 拖动期本来就没有声音变化,所以这件事在界面上察觉不到。
      * ⚠ 这一层**只能落在 web 侧**:C++ 不知道有人正按着鼠标。
      *
-     * **四件事**缺一不可(此前写作「三件事」而下面列了四项,已订正):
+     * **五件事**缺一不可(此前写作「三件事」而下面列了四项,已订正;[J157] 起加了第⑤件):
      *   ① `clearTimeout(commitTimer)` —— `dragPoints` 不只被拖动写:**Q 滑杆(`buildToolbar`
      *      里那个 `input` 监听)与滚轮(`onWheel`)**也写它,并各挂一个 140ms 防抖提交。
      *      ⚠ 此前这句写的是「Q 滑杆与**键盘微调**」——**错的**:键盘微调(`onKeyDown`)走
@@ -910,8 +956,10 @@ export function createCurveEditor(opts) {
      *   ② `releasePointerCapture` —— 捕获不放掉,指针事件会一直被这块 canvas 吃住;
      *   ③ `dragging=false` —— 随后那记 pointerup 由它挡住(onPointerUp 首行早退),
      *      这才是「不再提交那份陈旧抄本」的落点;
-     *   ④ `dragPoints = null`(连同 `pendingVersion = 0`)—— 丢掉预览态,下一帧
-     *      draw()/render() 直接退回 store。
+     *   ④ `dragPoints = null`(连同 `pendingVersion = 0`)—— 丢掉**本地**预览态,下一帧
+     *      draw()/render() 直接退回 store;
+     *   ⑤ [J157] `stopPreview(true)` —— 撤回**音频链上**的拖动预览(补发 `previewPanCurve(v, null)`)。
+     *      ④ 只管画面;拖动期间音频已经按预览在响,只撤画面的话音频会停在拖到一半的那份点表上。
      *
      * @returns {boolean} 本次是否真的中止了一段在飞**拖动**(纯诊断用,生产路径不看)。
      *   ⚠ 口径与下面的 `local.aborts++` **不同**,别读成同一个:返回值只认拖动,
@@ -941,6 +989,9 @@ export function createCurveEditor(opts) {
         local.dragPointerId = null;
         local.pendingVersion = 0;
         local.dragPoints = null;
+        // ⑤ [J157] 音频链上的拖动预览一并撤回(补发 null ⇒ 回到已提交曲线)。中止 = 这一下不算数,
+        // 不撤的话:Ctrl+Z 中止拖动后,音频停在拖到一半的那份点表上,而界面已经退回 store。
+        stopPreview(true);
         if (local.selected >= points().length) local.selected = -1;
         // [SL-450 复审轮 1] 计**所有真正做了事的中止**,不只拖动那一种。
         // 原本写的是 `if (wasDragging)` —— 那会让「取消一发在飞的 140ms 防抖提交」
@@ -996,6 +1047,84 @@ export function createCurveEditor(opts) {
             local.commitTimer = 0;
             commit(next, srcVersion);
         }, 140);
+        // [J157] 滚轮 / Q 滑杆:提交仍是这发 140ms 防抖(滚轮没有手势终点、Q 滑杆的 change 在方向键下
+        // 每步都触发,防抖就是它们的「松手」);等防抖的这段时间里,音频先按预览跟上。
+        schedulePreview(next, srcVersion);
+    }
+
+    // ---- 拖动实时预览([J157] / SL-447;契约 §1.37 `previewPanCurve`)--------------
+    /**
+     * 把「正在拖的这份点表」送去**实时生效**,**不是提交**:不进撤销栈、不写 state、不落盘;
+     * 撤销步仍由松手那一次 `commit()` 产生(一次手势一步,与改前相同)。
+     *
+     * 节流 ≤ 20 Hz(PREVIEW_MIN_INTERVAL_MS):窗口空着就**立刻发**(拖动第一下零额外延迟);
+     * 窗口里再来的只记最新一份,到点**必发**最后那份 —— 手指停在半路就不会再有 pointermove,
+     * 丢了末发,停手前那一下就永远听不到。C++ 侧另有同值的限速与回收闸(权威在那边)。
+     * @param {Array} next 整表
+     * @param {number} srcVersion 这份点表**捕获时**的版本(与 commit() 同一口径):引擎拿它与
+     *   当前版本比,不等即回 `staleVersion`、不应用 —— 预览因此不会在「切版本已发出、回声未到」
+     *   的窗口里串到新版本上。
+     */
+    function schedulePreview(next, srcVersion) {
+        local.previewNext = { next, srcVersion };
+        if (local.previewTimer) return; // 末发那一拍会取最新一份
+        const wait = local.previewAt + PREVIEW_MIN_INTERVAL_MS - nowMs();
+        if (wait <= 0) {
+            sendPreview();
+            return;
+        }
+        local.previewTimer = setTimeout(() => {
+            local.previewTimer = 0;
+            sendPreview();
+        }, wait);
+    }
+
+    function sendPreview() {
+        const p = local.previewNext;
+        local.previewNext = null;
+        if (!p || !bridge || typeof bridge.previewPanCurve !== "function")
+            return;
+        local.previewAt = nowMs();
+        local.previewLive = true;
+        local.previewVersion = p.srcVersion;
+        local.livePreviews++;
+        // 不 await:预览是「尽力而为」,回执不影响任何本地状态(`staleVersion` / `observer`
+        // 都是预期内的竞态结果,不报错)。只有桥本身抛错才记一笔。
+        Promise.resolve(bridge.previewPanCurve(p.srcVersion, p.next)).catch(
+            (e) =>
+                console.warn(
+                    "SCVB curve-editor:previewPanCurve() 调用失败 —— " +
+                        (e && e.message),
+                ),
+        );
+    }
+
+    function sendPreviewClear(version) {
+        if (!bridge || typeof bridge.previewPanCurve !== "function") return;
+        local.livePreviewCancels++;
+        // 版本号只为满足参数形态(§1.37:null 也要带合法 v);引擎对 null **不比**版本,
+        // 回到已提交曲线永远是安全方向。
+        Promise.resolve(
+            bridge.previewPanCurve(version || activeVersion(), null),
+        ).catch((e) =>
+            console.warn(
+                "SCVB curve-editor:previewPanCurve(null) 调用失败 —— " +
+                    (e && e.message),
+            ),
+        );
+    }
+
+    /**
+     * 收掉预览:停掉节流窗里还没发的那一份;`cancel=true` 且这次编辑发过预览 ⇒ 补发 null
+     * (音频回到已提交曲线)。提交路径传 false —— 见 commit() 开头那段。
+     */
+    function stopPreview(cancel) {
+        clearTimeout(local.previewTimer);
+        local.previewTimer = 0;
+        local.previewNext = null;
+        if (cancel && local.previewLive) sendPreviewClear(local.previewVersion);
+        local.previewLive = false;
+        local.previewVersion = 0;
     }
 
     // ---- 拖拽 -------------------------------------------------------------
@@ -1042,6 +1171,8 @@ export function createCurveEditor(opts) {
         const next = movePointTo(points(), local.dragIndex, angle, db);
         local.dragPoints = next;
         draw();
+        // [J157] 拖动中实时生效(节流 ≤ 20 Hz);版本取 pointerdown 那一刻记下的那一版。
+        schedulePreview(next, local.pendingVersion);
     }
 
     function onPointerUp() {
@@ -1071,6 +1202,7 @@ export function createCurveEditor(opts) {
         if (idx < 0 || idx >= cur.length) {
             local.dragPoints = null;
             local.pendingVersion = 0; // 这条路不会走到 commit(),就地清
+            stopPreview(true); // [J157] 同理:没有提交来收预览,就地撤回
             draw();
             return;
         }
@@ -1587,6 +1719,10 @@ export function createCurveEditor(opts) {
             commits: local.commits,
             aborts: local.aborts,
             flushes: local.flushes,
+            // [J157] 拖动实时预览:发出去几份、补发过几次 null、节流窗里还有没有一份没发。
+            livePreviews: local.livePreviews,
+            livePreviewCancels: local.livePreviewCancels,
+            livePreviewPending: !!local.previewTimer,
             readOnly: isWriteBlocked(),
         }),
     };

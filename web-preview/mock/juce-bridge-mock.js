@@ -324,6 +324,9 @@ function makeContext(role, world) {
         // `requestRender` 都不排。只有 `ctl.setHostTimeAvailable` 写它(见那一条),
         // 页面与契约面一个字节都不知道它存在。
         hostTimeAvailable: true,
+        // [J157] §1.37 拖动预览此刻在「音频」里的那份({version, points} | null)。只有
+        // previewPanCurve / setPanCurve 写它;页面与契约面不读(预览不回推任何事件)。
+        panCurvePreview: null,
         snapshot,
         // conn / config 与快照共用同一对象,写一处两处同步(契约 §1.1/§3.1 语义行:
         // 快照的 conn/config 子树与事件载荷不得各自漂移)。
@@ -991,6 +994,27 @@ function buildOutputBackend(ctx) {
     const OK = () => ({ ok: true });
     const BAD_ARG = () => ({ ok: false, reason: "badArg" });
     const OBSERVER = () => ({ observer: true });
+
+    /** §1.17 / §1.37 共用的点表校验(native 侧同样只有一份:BridgeArgs.h parsePanCurvePointsArg)。 */
+    function panCurvePointsOk(points) {
+        if (!Array.isArray(points) || points.length > 16) return false;
+        for (const p of points) {
+            if (
+                !isPlainObject(p) ||
+                !isFiniteNumber(p.angle) ||
+                p.angle < -100 ||
+                p.angle > 100 ||
+                !isFiniteNumber(p.gain_db) ||
+                !["bell", "shelf", "cut"].includes(p.shape) ||
+                !isFiniteNumber(p.q) ||
+                p.q <= 0 ||
+                !["out", "left", "right"].includes(p.side ?? "out")
+            ) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /** 只读观察态(`second-output`):§5.6 的 `{observer:true}`。 */
     function readOnly() {
@@ -1700,27 +1724,33 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.17 ------------------------------------------------------------
         setPanCurve(points) {
-            if (!Array.isArray(points) || points.length > 16) return BAD_ARG();
-            for (const p of points) {
-                if (
-                    !isPlainObject(p) ||
-                    !isFiniteNumber(p.angle) ||
-                    p.angle < -100 ||
-                    p.angle > 100 ||
-                    !isFiniteNumber(p.gain_db) ||
-                    !["bell", "shelf", "cut"].includes(p.shape) ||
-                    !isFiniteNumber(p.q) ||
-                    p.q <= 0 ||
-                    !["out", "left", "right"].includes(p.side ?? "out")
-                ) {
-                    return BAD_ARG();
-                }
-            }
+            if (!panCurvePointsOk(points)) return BAD_ARG();
             const active = model.snapshot.global.version_active;
             const versions = clone(model.snapshot.versions);
             versions[active - 1].pan_curve = { points: clone(points) };
             versions[active - 1].empty = points.length === 0;
             patchState({ versions });
+            // [J157] 松手提交顺带撤掉拖动预览(native:setPanCurve 之后 cancelPanCurvePreview)。
+            model.panCurvePreview = null;
+            return OK();
+        },
+
+        // ---- §1.37([J157] 拖动预览)-------------------------------------------
+        // 不写 state、不发事件、不入栈 —— 与 native 一样只换「音频用的那张表」;preview 里没有
+        // 音频,于是只把「此刻在预览的是什么」记在 model.panCurvePreview 上(冒烟可读,页面不读)。
+        // 判序与 native `handlePreviewPanCurve` 逐条同款:参数形态 → null 撤回(只读也放行)→
+        // 只读 observer → 版本号不是当前版本 staleVersion → 受理。
+        previewPanCurve(v, points) {
+            if (!Number.isInteger(v) || v < 1 || v > 2) return BAD_ARG();
+            if (points === null || points === undefined) {
+                model.panCurvePreview = null;
+                return OK();
+            }
+            if (!panCurvePointsOk(points)) return BAD_ARG();
+            if (readOnly()) return OBSERVER();
+            if (v !== model.snapshot.global.version_active)
+                return { ok: false, reason: "staleVersion" };
+            model.panCurvePreview = { version: v, points: clone(points) };
             return OK();
         },
 

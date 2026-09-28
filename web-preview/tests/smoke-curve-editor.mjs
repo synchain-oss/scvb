@@ -103,7 +103,10 @@ console.log(
 
     // 空态:LUT 全 0、0 dB 直线
     const emptyLut = CE.buildLut([]);
-    check(emptyLut.length === CE.LUT_SIZE, "空态 LUT 长度 2049");
+    check(
+        emptyLut.length === CE.LUT_SIZE,
+        "空态 LUT 长度 = LUT_SIZE(" + CE.LUT_SIZE + ")",
+    );
     check(
         emptyLut.every((v) => v === 0),
         "空态 LUT 全 0",
@@ -415,6 +418,58 @@ console.log(
         "ms_balance 本身已回推(用户直改,非叠加线写)",
     );
 
+    // [J157] §1.37 previewPanCurve(v, points | null):mock 与 native 同一套判序
+    // (参数形态 → null 撤回 → 只读 → 版本号 → 受理)。预览**不写 state、不回推**:
+    // 连发几份之后 pan_curve 逐字节不变。
+    const beforePv = JSON.stringify((store.state.versions || [])[0].pan_curve);
+    const onePt = [{ angle: 0, gain_db: -9, shape: "bell", q: 1, side: "out" }];
+    eq(
+        await bridge.previewPanCurve(1, onePt),
+        { ok: true },
+        "previewPanCurve(1, 点表) → ok",
+    );
+    eq(
+        await bridge.previewPanCurve(1, []),
+        { ok: true },
+        "previewPanCurve(1, []) → ok(空表 = 预览 G≡0,不是撤回)",
+    );
+    eq(
+        await bridge.previewPanCurve(1, null),
+        { ok: true },
+        "previewPanCurve(1, null) → ok(撤回)",
+    );
+    eq(
+        await bridge.previewPanCurve(2, onePt),
+        { ok: false, reason: "staleVersion" },
+        "previewPanCurve(非当前版本, …) → staleVersion(预期竞态,不并进 badArg)",
+    );
+    eq(
+        await bridge.previewPanCurve(0, onePt),
+        { ok: false, reason: "badArg" },
+        "版本号越界 → badArg",
+    );
+    eq(
+        await bridge.previewPanCurve(1.5, onePt),
+        { ok: false, reason: "badArg" },
+        "版本号非整数 → badArg",
+    );
+    eq(
+        await bridge.previewPanCurve(1, seventeen),
+        { ok: false, reason: "badArg" },
+        "17 点 → badArg(同 §1.17)",
+    );
+    eq(
+        await bridge.previewPanCurve(1, "x"),
+        { ok: false, reason: "badArg" },
+        "点表非数组非 null → badArg",
+    );
+    await sleep(60);
+    eq(
+        JSON.stringify((store.state.versions || [])[0].pan_curve),
+        beforePv,
+        "previewPanCurve 连发之后 pan_curve 逐字节不变(预览不写 state、不回推)",
+    );
+
     s.stop();
 }
 
@@ -427,6 +482,28 @@ console.log("=== ⑦ 源码级不变式:叠加线纯显示(draw/render 零写) =
     );
     const calls = ceSrc.split("bridge.setPanCurve(").length - 1;
     eq(calls, 1, "curve-editor.js 只有一处 setPanCurve 调用点(commit 路径)");
+    // [J157] 预览调用点与提交调用点**分开钉**:上一条只数 `bridge.setPanCurve(`,字面量不同的
+    // `previewPanCurve` 撞不红它,而它钉的意图(「曲线只从一处上桥」)在加了预览之后已经是两处。
+    // 预览只准从 sendPreview(点表)与 sendPreviewClear(null)两处上桥 —— 第三处(比如在
+    // onPointerMove 里直接调)就绕过了节流与末发。
+    const pvCalls = ceSrc.split("bridge.previewPanCurve(").length - 1;
+    eq(
+        pvCalls,
+        2,
+        "curve-editor.js 只有两处 previewPanCurve 调用点(sendPreview / sendPreviewClear)",
+    );
+    check(
+        /function sendPreview\(\)[\s\S]*?bridge\.previewPanCurve\(p\.srcVersion, p\.next\)/.test(
+            ceSrc,
+        ),
+        "sendPreview 发的是「点表 + 捕获时的版本号」",
+    );
+    check(
+        /function sendPreviewClear\([\s\S]*?bridge\.previewPanCurve\([^;]*?,\s*null\s*\)/.test(
+            ceSrc,
+        ),
+        "sendPreviewClear 发的是 null(撤回)",
+    );
     check(
         !/bridge.setParam|bridge.beginParamGesture|bridge.endParamGesture/.test(
             ceSrc,
@@ -570,6 +647,62 @@ console.log("=== ⑪ 工具条溢出防线(紧凑标签 + title/aria 全称 + �
     check(
         !/flex-wrap\s*:\s*wrap/.test(tbBlock),
         "工具条无 flex-wrap: wrap(单行)",
+    );
+}
+
+// =============================================================================
+console.log(
+    "=== ⑫ [J157] OutputEditor.cpp 接线(源码级:该文件链不进任何 C++ 测试目标) ===",
+);
+{
+    // 为什么在这里用源码形态钉:OutputEditor.cpp 依赖真 WebView2,全仓没有测试目标编译它
+    // (见 BridgeArgs.h 头注);解析判据本身已抽到 BridgeArgs.h 由 test_bridge_args.cpp 实跑,
+    // 这里只钉「handler 真的在用它」与两处**顺序 / 落点**。先剥掉 `//` 注释再匹配 ——
+    // 注释里提到某个符号不等于代码里调用了它。
+    const edSrc = readFileSync(
+        join(ROOT, "src/output/OutputEditor.cpp"),
+        "utf8",
+    );
+    const bodyOf = (sig) => {
+        const i = edSrc.indexOf(sig);
+        if (i < 0) return "";
+        const j = edSrc.indexOf("\n}\n", i);
+        return edSrc
+            .slice(i, j < 0 ? undefined : j)
+            .split("\n")
+            .map((l) => l.replace(/\/\/.*$/, ""))
+            .join("\n");
+    };
+    const setBody = bodyOf("void OutputEditor::handleSetPanCurve(");
+    const pvBody = bodyOf("void OutputEditor::handlePreviewPanCurve(");
+    const dtorBody = bodyOf("OutputEditor::~OutputEditor()");
+    check(
+        setBody.includes("parsePanCurvePointsArg(a[0], points)"),
+        "handleSetPanCurve 走共用的 parsePanCurvePointsArg(与 previewPanCurve 同一份坏点守卫)",
+    );
+    check(
+        pvBody.includes("parsePanCurvePreviewArgs(a)"),
+        "handlePreviewPanCurve 走 parsePanCurvePreviewArgs",
+    );
+    const iClear = pvBody.indexOf("PanCurvePreviewArgKind::clear");
+    const iRo = pvBody.indexOf("isReadOnly()");
+    check(
+        iClear > 0 && iRo > 0 && iClear < iRo,
+        "handlePreviewPanCurve:null 撤回排在只读闸**之前**(只读观察态下也能撤回预览)",
+    );
+    check(
+        pvBody.includes('"staleVersion"'),
+        "handlePreviewPanCurve:旧版本号回 staleVersion(§1.37 / §5.6)",
+    );
+    check(
+        dtorBody.includes("processor_.cancelPanCurvePreview()"),
+        "OutputEditor 析构撤掉拖动预览(拖到一半关窗就不会再有松手)",
+    );
+    check(
+        /add\(Fn::PreviewPanCurve, &OutputEditor::handlePreviewPanCurve\)/.test(
+            edSrc,
+        ),
+        "previewPanCurve 已注册到桥面",
     );
 }
 

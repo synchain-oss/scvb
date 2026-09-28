@@ -12089,3 +12089,175 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// [J157 / SL-447] pan 曲线拖动实时预览(契约 §1.37 `previewPanCurve`)—— 真 Processor、真混音路径、
+// 真消息循环(重试定时器是 juce::TimedCallback,只有泵消息它才转)。
+// 断的是**听到的**(outBuf 峰值,不经电平表:电平表取块起点的仲裁目标,看不见 G 的淡入)与
+// **记下的**(撤销栈 / 段真身 / 打印器与 viz 读的曲线对象)。
+// ---------------------------------------------------------------------------
+namespace
+{
+
+float outPeak(const Rig& r)
+{
+    return std::max(r.outBuf.getMagnitude(0, 0, kBlock), r.outBuf.getMagnitude(1, 0, kBlock));
+}
+
+// 宽 bell(Q=0.5 ⇒ 半宽 200°):立体声轨的左右两个子声像各查各的 G,窄了的话两侧查到的就不是 A。
+std::vector<scvb::PanCurvePoint> wideBell(float db)
+{
+    scvb::PanCurvePoint p;
+    p.angle = 0.0f;
+    p.gainDb = db;
+    p.shape = scvb::PanCurveShape::bell;
+    p.q = 0.5f;
+    p.side = scvb::PanCurveSide::out;
+    return {p};
+}
+
+bool samePanPoints(const std::vector<scvb::PanCurvePoint>& a, const std::vector<scvb::PanCurvePoint>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i].angle != b[i].angle || a[i].gainDb != b[i].gainDb || a[i].shape != b[i].shape || a[i].q != b[i].q ||
+            a[i].side != b[i].side)
+            return false;
+    }
+    return true;
+}
+
+// 一块一块地跑(不泵消息:只量「音频线程拿到新快照之后几块听得到」),直到 pred(峰值) 成立;
+// 返回用了几块,budget 块内没成立返回 -1。
+template<typename Pred>
+int blocksUntil(Rig& r, int budget, Pred pred)
+{
+    for (int b = 1; b <= budget; ++b)
+    {
+        r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+        if (pred(outPeak(r)))
+            return b;
+    }
+    return -1;
+}
+
+// 边跑音频边泵消息(重试定时器要靠它转),直到 done() 成立;预算 maxRounds × (1 块 + 10 ms)。
+template<typename Done>
+bool pumpUntil(Rig& r, int maxRounds, Done done)
+{
+    for (int i = 0; i < maxRounds; ++i)
+    {
+        r.runBlocks(1, 0.5f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+        if (done())
+            return true;
+    }
+    return false;
+}
+
+// 起一台在 FOLLOW 档出声的 Rig(pan 取 host 参数,默认居中),回报 G≡0 时的输出峰值。
+float settleFollowBase(Rig& r)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.waitUntilAudioFlowing());
+    r.out.setOutputEnabled(false);
+    r.runBlocks(40, 0.5f);
+    r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+    return outPeak(r);
+}
+
+} // namespace
+
+TEST_CASE("HOST J157:拖动 pan 曲线 —— 音频在限速窗内跟随预览,预览不进撤销栈不写段真身,一次手势恰好一步",
+          "[host][j157][pancurve]")
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Rig r;
+    const float base = settleFollowBase(r);
+    REQUIRE(base > 0.05f);
+    const int v = r.out.versionActive();
+    // 先给本轨一条常值段(pan 0 = 居中,听感不变):打印器与 viz 读的是各轨曲线对象,从没分析过的轨
+    // 那里是 nullptr —— 拿 nullptr 比「预览前后没换」恒等,那一格就空了。这一下本身入栈一步,
+    // 所以下面「恰好一步」按**增量**数,不按「栈空」数。
+    {
+        int replacedSegments = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 0.0f, replacedSegments, replacedLocked));
+    }
+    r.runBlocks(8, 0.5f);
+    const auto curvesBefore = r.out.authority().activeCurves();
+    REQUIRE(curvesBefore[static_cast<std::size_t>(kTestChannel - 1)] != nullptr);
+    const int stepsBefore = r.out.authority().undoManager().getUndoDescriptions().size();
+    const auto panCurveBefore = r.out.crvsSnapshot().versions[static_cast<std::size_t>(v - 1)].panCurve;
+
+    // ① 第一份预览:闸门开着 ⇒ 就地发出(不等定时器);30 ms 淡入 = 1440 样本 < 3 块,再给 1 块余量。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    CHECK_FALSE(r.out.panCurvePreviewPending());
+    CHECK(blocksUntil(r, 4, [&](float p) { return p < base * 0.5f; }) > 0);
+
+    // ② 紧接着第二份:限速(50 ms)与回收闸拦住 ⇒ 待发。此后**不再有任何新请求**(手指停在半路),
+    //    只靠重试定时器把它发出去 —— 删掉重试,这一格永远等不到。预算 2 s 给慢机;正常约 60 ms。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(0.0f)) == Req::accepted);
+    CHECK(r.out.panCurvePreviewPending());
+    CHECK(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) > base * 0.9f; }));
+
+    // ③ 预览期间:撤销栈零新增、段真身的 pan_curve 一个字节没动、打印器与 viz 读的曲线对象没换
+    //    (预览不走 rebuildAllCurves,打印区间缓存与 viz 车道都不会因它刷新)。
+    CHECK(r.out.authority().undoManager().getUndoDescriptions().size() == stepsBefore);
+    CHECK(samePanPoints(r.out.crvsSnapshot().versions[static_cast<std::size_t>(v - 1)].panCurve, panCurveBefore));
+    CHECK(r.out.authority().activeCurves() == curvesBefore);
+
+    // ④ 拖回 -12 dB 再松手、提交同一组点 ⇒ 沿用预览那张表(不重烘、音频不开淡入窗口)。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) < base * 0.5f; }));
+    r.runBlocks(4, 0.5f, /*pumpEveryN=*/0); // 2048 样本 > 1440:让这份预览自己的淡入窗口先走完
+    REQUIRE(r.out.authority().arbiter().panCurveXfadeRemaining() == 0);
+    const auto previewLut = r.out.authority().panCurvePreviewLut();
+    REQUIRE(previewLut != nullptr);
+    r.out.setPanCurve(v, wideBell(-12.0f));
+    CHECK(r.out.authority().activePanCurveLut() == previewLut);
+    CHECK_FALSE(r.out.authority().panCurvePreviewLive());
+    r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+    CHECK(r.out.authority().arbiter().panCurveXfadeRemaining() == 0);
+    CHECK(outPeak(r) < base * 0.5f);
+
+    // ⑤ 一次手势(三份预览 + 一次松手)恰好一条撤销步,就是这次松手;撤掉它就回到 G≡0。
+    const auto steps = r.out.authority().undoManager().getUndoDescriptions();
+    CHECK(steps.size() == stepsBefore + 1);
+    CHECK(steps[0] == "Set pan curve"); // JUCE:下标 0 = 最近一步
+    REQUIRE(r.out.undo());
+    CHECK(r.out.authority().undoManager().getUndoDescriptions().size() == stepsBefore);
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+}
+
+TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 音频都回到已提交曲线", "[host][j157][pancurve]")
+{
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    Rig r;
+    const float base = settleFollowBase(r);
+    REQUIRE(base > 0.05f);
+    const int v = r.out.versionActive();
+
+    // ① 撤回(桥面 previewPanCurve(v, null);编辑器关窗也走这一条)⇒ 回到已提交曲线(这里是 G≡0)。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(blocksUntil(r, 4, [&](float p) { return p < base * 0.5f; }) > 0);
+    r.out.cancelPanCurvePreview();
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+    CHECK_FALSE(r.out.authority().undoManager().canUndo());
+
+    // ② 旧版本号(UI 在「切版本已发出、回声未到」窗口里捕获的)⇒ staleVersion,音频不动。
+    const int other = (v == 1) ? 2 : 1;
+    CHECK(r.out.previewPanCurve(other, wideBell(-12.0f)) == Req::staleVersion);
+    CHECK_FALSE(r.out.panCurvePreviewPending());
+    CHECK(blocksUntil(r, 6, [&](float p) { return p < base * 0.5f; }) < 0);
+
+    // ③ 拖出去又拖回原处松手:提交的点表与已提交的一字不差(authority 那边走 no-op、不碰预览),
+    //    processor 的松手路径必须自己撤预览 —— 否则最后那份预览会一直留在音频里。
+    REQUIRE(r.out.previewPanCurve(v, wideBell(-12.0f)) == Req::accepted);
+    REQUIRE(pumpUntil(r, 200, [&] { return !r.out.panCurvePreviewPending() && outPeak(r) < base * 0.5f; }));
+    r.out.setPanCurve(v, {}); // 已提交的就是空表(从没画过)
+    CHECK_FALSE(r.out.authority().panCurvePreviewLive());
+    CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+}
