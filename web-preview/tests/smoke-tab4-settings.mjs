@@ -419,6 +419,13 @@ log("=== ④ 词条:T35 新增 set.* key ===");
             `[J130] ${lang} tour 第 24 步标题 = tracks.colVolPart`,
         );
     }
+    // 上面那格只比了字典;「同格」要靠音量开关那一格真的挂着这个 aria(复审第 2 轮补)。
+    check(
+        /data-t-aria="tracks\.colVolPart"\s+data-gb="\$\{gb\("volexempt"\)\}"/.test(
+            stripComments(src("web/output/tab-tracks.js")),
+        ),
+        "[J130] 音量开关那格(volexempt)的 aria 仍指向 tracks.colVolPart",
+    );
     check(
         /该轨是否参与音量平衡计算/.test(T.zh["tour.step24.body"]) &&
             /whether this track joins level balancing/.test(
@@ -810,6 +817,8 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
     // 两个键(Output `guide_seen_global` / Input `guide_seen_global_input`)。此前契约写
     // 「`input.*` / `output.*` 分键、命名空间本就按侧分」,实现里两样都没有。
     {
+        // 这里拿 JS 词法扫描器剥 C++ 注释:已核过本文件没有字符字面量 / raw string 等歧义
+        // (扫不下去会抛错,不会静默返回半份)。不是通则,别照搬到别的 .cpp 上。
         const uds = stripComments(src("src/plugin-common/UiDefaultsStore.cpp"));
         const contract = src("docs/SCVB_CONTRACT.md");
         const schema = src("docs/STATE_SCHEMA.md");
