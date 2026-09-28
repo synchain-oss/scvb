@@ -1598,7 +1598,7 @@ export const T = {
         "set.centerSlot.title":
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect volume participation.",
         "set.centerSlot.scopeNote":
             "Changing the center-slot policy changes who takes the center position when the track count is odd, and whether there are n or n+1 slots. The pan placement produced by auto-assign changes with it. Re-analysis is required afterwards.",
         "in.chHint.groupEmpty":
@@ -2443,7 +2443,7 @@ export const T = {
         "set.centerSlot.title":
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur la participation volume.",
         "set.centerSlot.scopeNote":
             "Changer la politique de position centrale modifie qui occupe le centre lorsque le nombre de pistes est impair, ainsi que le nombre de positions (n ou n+1). Le panoramique produit par l'assignation automatique change en conséquence. Une ré-analyse est ensuite nécessaire.",
         "in.chHint.groupEmpty":

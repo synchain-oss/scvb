@@ -13,7 +13,7 @@
     "status": "reviewed",
     "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127)",
     "date": "2026-09-28",
-    "note": "以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
+    "note": "以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
