@@ -24,7 +24,7 @@ jobs:
       pull-requests: write
       contents: read # C05 实测补:actions/checkout 克隆必需(06 §3.6 权限行遗漏,已勘误);仍不给 contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 1 }
       - uses: qodo-ai/pr-agent@8e4d32e5497defd43c023a404f73560c62728961 # v0.39.0 —— pin 到 commit SHA,升级手动改
         env:
