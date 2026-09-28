@@ -524,6 +524,9 @@ public:
     // 同键编辑相距不超过它就并成一步(ms)。取 UI 侧 `MANUAL_COMMIT_MS` 同一个数:那是既有的
     // 「键盘 / 滚轮连按提交一次」的窗,两边口径对齐(契约 §0.9「合并」一句)。
     static constexpr std::uint32_t kUndoCoalesceMs = 300;
+    // 「起点 == 末值 ⇒ 不压步」的归一化容差(0..1 域):工程值 ↔ 归一化往返不保证逐位复原。
+    // 1e-6 远小于任何一个参数的一步(最细的 ms_balance 一步 = 1/200)。
+    static constexpr float kUndoSameNormEps = 1.0e-6f;
 
 private:
     // [SL-536] 通道配置(§1.15)的撤销动作;定义在 .cpp(要调下面的 applyChannelFields)。

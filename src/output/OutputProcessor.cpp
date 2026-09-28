@@ -2794,12 +2794,17 @@ scvb::output::ParamWriteAction::Writer ScvbOutputAudioProcessor::paramWriter(con
         // 与 setTrackManual 那段逐字同形(理由见那里):包 gesture,宿主才把它当一次完整的用户编辑
         // (Read 档有车道数据时照样被宿主顶回去 —— 与用户拖旋钮同一个结局,这正是 J140 核过的前提);
         // 自写位只裹 setValueNotifyingHost(begin/end 不触发 listener)。
-        p->beginChangeGesture();
+        // 打印器在 PRINT 区间里已经替这条车道开着 gesture 时,只写值:值照样落在一对 begin/end
+        // 之内(打印器那一对),宿主看到的配对不被打乱(见 AutomationPrinter::laneGestureOpen)。
+        const bool printerHolds = printer_.laneGestureOpen(p);
+        if (!printerHolds)
+            p->beginChangeGesture();
         {
             const scvb::output::AutomationPrinter::ScopedSelfWriteFlag selfWrite(printer_);
             p->setValueNotifyingHost(normalised);
         }
-        p->endChangeGesture();
+        if (!printerHolds)
+            p->endChangeGesture();
     };
 }
 
@@ -2879,7 +2884,9 @@ bool ScvbOutputAudioProcessor::uiEndParamGesture(const juce::String& id)
     const UiGesture g = it->second;
     uiGestures_.erase(it);
     // 拖了又拖回原处(含 pointercancel 回滚到抓握值)、或整次 gesture 没有 setParam:不压步。
-    if (!g.set || g.lastNorm == g.startNorm)
+    // 容差比较:UI 中止时回传的是工程值,工程值 ↔ 归一化来回换算一圈不保证逐位复原
+    // (width / ms_balance 不吸附),差 1 ulp 就会压下一步「几乎没变」的步并清空重做栈(#311 复审)。
+    if (!g.set || std::abs(g.lastNorm - g.startNorm) <= kUndoSameNormEps)
         return true;
 
     auto& um = authority_.undoManager();
@@ -2916,7 +2923,7 @@ bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const 
     }
     const juce::ScopedLock lock(lifecycleMutex_); // [SL-472 R1] 与 get/setStateInformation 串行(label 是 juce::String)
     auto& channel = runtime_.channels[static_cast<std::size_t>(channelIndex)];
-    const OutputRuntimeState::Channel before = channel; // [SL-536] 撤销步的旧值
+    const OutputRuntimeState::Channel channelBefore = channel; // [SL-536] 撤销步的旧值
     bool changed = false;
     if (patch.enabled)
     {
@@ -2973,7 +2980,7 @@ bool ScvbOutputAudioProcessor::bridgeApplyChannelConfig(int channelIndex, const 
             key = "cfg:" + juce::String(channelIndex) + ":priority";
         else if (fields == 1 && patch.pairId)
             key = "cfg:" + juce::String(channelIndex) + ":pair";
-        pushUndoStep(std::make_unique<ChannelConfigAction>(*this, channelIndex, patch, before, channel),
+        pushUndoStep(std::make_unique<ChannelConfigAction>(*this, channelIndex, patch, channelBefore, channel),
                      "Channel config ch" + juce::String(channelIndex + 1), key);
     }
     return changed;
@@ -3241,19 +3248,13 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             // Cubase 这类宿主要么把它记成一个孤立自动化点、要么在自动化 Read 档下当场把值顶回去
             // (那样这条修复根本不生效)。begin/end 把它标成一次完整的用户编辑,宿主才会接受。
             // 这一点与 §1.16「零 gesture」的字面冲突,已在变更文档里作为裁定②登记。
-            p->beginChangeGesture();
-            {
-                // [SL-187] **必须包自写标记**(§3.5 层 2,与打印器自己的写入同款)。
-                // `v{v}_t{t:02d}_pan/_vol` 是打印车道参数,HostEchoListener 挂在 APVTS 上:
-                // 不置这一位,我们**自己**这次写入会走到层 1b,在引擎权威(ARMED/PRINT)下被
-                // 当成「宿主自动化正在回写」记进 host echo → `hostEchoActive()` 真 600ms →
-                // `emitParams` 带 `hostEcho:true` → UI 把用户**刚拖完**的那个旋钮灰显掉,
-                // 提示语还写着「宿主在驱动这条车道」。两条通道每一次拖拽都命中。
-                // 作用域只裹 setValueNotifyingHost:begin/endChangeGesture 不触发 listener。
-                const scvb::output::AutomationPrinter::ScopedSelfWriteFlag selfWrite(printer_);
-                p->setValueNotifyingHost(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
-            }
-            p->endChangeGesture();
+            // [SL-187] **必须包自写标记**(§3.5 层 2,与打印器自己的写入同款):
+            // `v{v}_t{t:02d}_pan/_vol` 是打印车道参数,HostEchoListener 挂在 APVTS 上。不置这一位,
+            // 我们**自己**这次写入会在引擎权威(ARMED/PRINT)下被当成「宿主自动化正在回写」
+            // 记进 host echo,UI 把用户刚拖完的旋钮灰显掉。
+            // [SL-536] 两件事都由 paramWriter 做(撤销 / 重做走同一个 writer),并在 PRINT 区间里
+            // 打印器已开着这条车道的 gesture 时不再嵌套 begin/end(#311 复审【重要】)。
+            paramWriter(id)(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
         }
     }
 
@@ -3280,7 +3281,7 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         }
         lastUndoStep_ = {};
     }
-    else if (laneParam != nullptr && laneNewNorm != laneOldNorm)
+    else if (laneParam != nullptr && std::abs(laneNewNorm - laneOldNorm) > kUndoSameNormEps)
     {
         // ① 冻结通道:只改了参数面,压一步参数改动。不并(UI 已按 MANUAL_COMMIT_MS 防抖成一次提交)。
         pushUndoStep(std::make_unique<scvb::output::ParamWriteAction>(paramWriter(laneId), laneOldNorm, laneNewNorm,
