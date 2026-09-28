@@ -925,6 +925,22 @@ log(
             !/blob\/dev\/docs\/USER_GUIDE/.test(appCode),
             "SL-220 app.js 不再写死 blob/dev 手册地址",
         );
+        // 源头:docsUrl 拼的是快照里的 version.plugin,而那个值由 native 下发。Output 侧此前是
+        // 字面量 "0.1.0"(#298 复审【重要】)——改了 CMakeLists 的版本号它照旧自报旧版本,
+        // 按钮就会指向一个不存在的 tag。mock 里的版本号是另一份,页面侧的格看不见这一跳,只能在源码级钉。
+        const outEd = stripComments(src("src/output/OutputEditor.cpp"));
+        check(
+            /put\(version, "plugin", JucePlugin_VersionString\);/.test(outEd),
+            "SL-220 Output 快照的 version.plugin 取 JucePlugin_VersionString(CMake project VERSION)",
+        );
+        check(
+            /config\.version = JucePlugin_VersionString;/.test(outEd),
+            "SL-220 Output 首帧 version seed 取 JucePlugin_VersionString",
+        );
+        check(
+            !/"plugin",\s*"/.test(outEd) && !/config\.version = "/.test(outEd),
+            "SL-220 OutputEditor.cpp 不再写死版本号字面量",
+        );
     }
     {
         // C++ 侧:JUCE 没暴露 WebView2 的 AreDefaultContextMenusEnabled,但**暴露了**

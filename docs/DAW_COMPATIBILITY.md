@@ -64,7 +64,7 @@ Cubase 的 Insert 架有**可移动的 pre/post 分隔线**——「最后一格
 #### 离线渲染注意事项
 
 - Export → Audio Mixdown 是正确导出路径(S1 C-3 已验)。
-- Direct Offline Processing / Render in Place 对含 Input 的单条轨会得到**静音**产物;若渲染结果替换原素材,原素材就被静音替换了(⚠ 用户数据,见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-4)。请对**总线整体导出**。
+- Render in Place / Freeze 对含 Input 的单条轨会得到**静音**产物(Direct Offline Processing 处理的是音频事件本身、不经过轨道的 Insert 链,不在此列);若渲染结果替换原素材,原素材就被静音替换了(⚠ 用户数据,见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-4)。请对**总线整体导出**。
 
 #### 已知坑
 

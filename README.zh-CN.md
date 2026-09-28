@@ -48,7 +48,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 
 ## 安装
 
-正式版本发布在本仓库的 [Releases 页](../../releases)。如果那里还没有任何版本,请从源码构建(见下)。
+正式版本发布在本仓库的 [Releases 页](https://github.com/synchain-oss/scvb/releases)。如果那里还没有任何版本,请从源码构建(见下)。
 
 1. 从 Releases 页下载 `SCVB-v<版本号>-win64.zip` 与对应的 `.sha256`;
 2. 用 `.sha256` 校验下载到的 zip。**权威校验值以 GitHub Release 正文里的 SHA-256 为准**(它由 CI 在构建时产出),两处应当一致;**对不上就不要安装,并告诉我们**;

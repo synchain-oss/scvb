@@ -48,7 +48,7 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 
 ## Install
 
-Releases are published on this repository's [Releases page](../../releases). If no release is listed there yet, build from source (below).
+Releases are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases). If no release is listed there yet, build from source (below).
 
 1. From the Releases page, download `SCVB-v<version>-win64.zip` and the matching `.sha256`;
 2. verify the zip against the `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
