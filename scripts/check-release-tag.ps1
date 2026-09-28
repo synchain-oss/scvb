@@ -11,7 +11,6 @@
 #>
 param(
   [string]$Tag,
-  [string]$CMakeFile,
   [switch]$SelfTest
 )
 
@@ -47,6 +46,7 @@ if ($SelfTest) {
     @('1.2.3', '1.2.3', $false, $null, $null),
     @('v1.2', '1.2', $false, $null, $null),
     @('v1.2.3 ', '1.2.3', $false, $null, $null),
+    @("v1.2.3`n", '1.2.3', $false, $null, $null),
     @('v3.22', '3.22', $false, $null, $null)
   )
   foreach ($c in $cases) {
@@ -65,14 +65,14 @@ if ($SelfTest) {
 }
 
 if (-not $Tag) { Write-Host 'check-release-tag: 缺 -Tag' -ForegroundColor Red; exit 1 }
-if (-not $CMakeFile) { $CMakeFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'CMakeLists.txt' }
+$CMakeFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'CMakeLists.txt'
 $cmakeVersion = Get-ScvbCMakeVersion ([IO.File]::ReadAllText($CMakeFile))
 $r = Test-ScvbReleaseTag $Tag $cmakeVersion
 if (-not $r.Ok) { Write-Host "check-release-tag: $($r.Message)" -ForegroundColor Red; exit 1 }
 Write-Host "check-release-tag: $($r.Message)"
 if ($env:GITHUB_OUTPUT) {
-  "version=$($r.Version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-  "kind=$($r.Kind)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-  "prerelease=$(([string]$r.Prerelease).ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+  # 显式无 BOM:PS 5.1 的 Out-File -Encoding utf8 会带 BOM。
+  $out = "version=$($r.Version)`nkind=$($r.Kind)`nprerelease=$(([string]$r.Prerelease).ToLowerInvariant())`n"
+  [IO.File]::AppendAllText($env:GITHUB_OUTPUT, $out, (New-Object System.Text.UTF8Encoding($false)))
 }
 exit 0

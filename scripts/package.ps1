@@ -13,7 +13,9 @@
     ④ 生成 INSTALL.txt:安装路径、九条使用规则的前 3 条(从用户手册的生成区原样取,不在这里抄第二份)、
        未签名插件的「解除锁定 / SmartScreen」步骤(U13)、精确到 tag 的源码声明。
     ⑤ zip 根目录带 LICENSE.txt(= 仓库 LICENSE,GPLv3 全文)、THIRD-PARTY-NOTICES.md、LICENSES/ 全部许可证
-       全文(至少含 OFL-1.1.txt)。U2 裁定不附 LICENSE-EXCEPTION.md,所以没有它。
+       全文;THIRD-PARTY-NOTICES.md「随二进制分发」表点名的每个许可证 + 本项目的 GPL-3.0-or-later 都必须
+       在 LICENSES/ 里有全文,缺就红(演练 tag 用 -AllowMissingLicenseTexts 降为警告)。
+       U2 裁定不附 LICENSE-EXCEPTION.md,所以没有它。
     ⑥ 打包后重新打开 zip 断言:三个 bundle 的 DLL 条目、上面每个合规文件、INSTALL.txt 的源码声明行都在;
        每个条目解出来的字节与源文件逐一比哈希;根目录不许有清单外的东西。
   确定性:条目按序数排序,时间戳统一取 SOURCE_DATE_EPOCH / HEAD 提交时间(都取不到才用 1980-01-01),
@@ -30,7 +32,10 @@ param(
   [string]$BuildDir = 'build',
   [string]$OutDir = 'dist',
   # 缺省 = 仓库 HEAD。只写进 INSTALL.txt / summary 作溯源,不参与判定。
-  [string]$SourceCommit
+  [string]$SourceCommit,
+  # 只给演练 tag(v0.0.0-test)用:THIRD-PARTY-NOTICES 点名的许可证在 LICENSES/ 里缺全文时降为 [WARN]
+  # 并记进 summary,好让流水线演练不被合规缺口卡住。正式版 / rc 不传,缺就红。
+  [switch]$AllowMissingLicenseTexts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,19 +74,26 @@ function Get-FirstThreeRules([string]$mdPath, [string]$heading) {
   $lines = [IO.File]::ReadAllLines($mdPath, [Text.Encoding]::UTF8)
   $in = $false
   $rules = New-Object System.Collections.Generic.List[string]
+  $open = $false   # 当前是否有一条规则还在收续行
   foreach ($l in $lines) {
     if ($l -eq $heading) { $in = $true; continue }
-    if ($in -and $l -match '^## ') { break }
-    if ($in -and $l -match '^>\s*([0-9]+)\.\s+(.+)$') {
+    if (-not $in) { continue }
+    if ($l -match '^## ') { break }
+    if ($l -match '^>\s*([0-9]+)\.\s+(.+)$') {
       $n = [int]$Matches[1]
+      if ($n -eq 4) { break }   # 第 4 条开头 = 第 3 条已收完(含续行)
       if ($n -ne $rules.Count + 1) { Fail "$mdPath 的「$heading」小节规则编号不连续(期望 $($rules.Count + 1),读到 $n)" }
-      # 剥加重后,中文句号 / 分号后面那个原本隔开 `**` 的空格会悬空,顺手收掉(英文不含这两个字符)。
-      $rules.Add(((($Matches[2] -replace '\*\*', '') -replace '`', '') -replace '(?<=[。；])[ ]+', ''))
-      if ($rules.Count -eq 3) { break }
+      $rules.Add($Matches[2]); $open = $true
+      continue
     }
+    # 续行:同一段引用里不带编号的 `> 文本`,拼到上一条后面 —— 生成器哪天改成折行输出,
+    # 这里不会只取到半句安全提示。`>` 空行或引用结束即收口。
+    if ($open -and $l -match '^>\s+(\S.*)$') { $rules[$rules.Count - 1] += ' ' + $Matches[1]; continue }
+    $open = $false
   }
   if ($rules.Count -ne 3) { Fail "$mdPath 的「$heading」小节里没读到前 3 条规则(读到 $($rules.Count) 条)" }
-  return , $rules.ToArray()
+  # 剥加重后,中文句号 / 分号后面那个原本隔开 `**` 的空格会悬空,顺手收掉(英文不含这两个字符)。
+  return , @($rules | ForEach-Object { (($_ -replace '\*\*', '') -replace '`', '') -replace '(?<=[。；])[ ]+', '' })
 }
 
 # ── 版本与 tag ────────────────────────────────────────────────────────────────
@@ -89,7 +101,7 @@ $cmakeVersion = Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoo
 if (-not $cmakeVersion) { Fail 'CMakeLists.txt 里找不到 project(SCVB ... VERSION x.y.z)' }
 if (-not $Version) { $Version = $cmakeVersion }
 # 版本串会进文件名与 URL:只放行 semver 形态,挡住路径分隔符与空白。
-if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$') {
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?\z') {
   Fail "版本号形态不对:'$Version'(应为 x.y.z 或 x.y.z-<预发布标识>,不带前导 v)"
 }
 if (-not $Tag) { $Tag = "v$Version" }
@@ -129,8 +141,12 @@ if ($bundles.Count -ne 3) {
   $bundles | ForEach-Object { Write-Host "  found: $($_.FullName)" }
   Fail "期望恰好 3 个 .vst3 bundle 目录(SCVB Input / Output / Monitor),实际 $($bundles.Count) 个。BuildDir 里混着多套构建(如 Debug + Release)时请指到单一配置的目录。"
 }
-$names = @($bundles | ForEach-Object { $_.Name } | Sort-Object)
-if (($names -join '|') -ne ($ExpectedBundles -join '|')) {
+# 两侧用同一个序数比较器排序,不依赖常量表的书写顺序,也不依赖 locale。
+$names = [string[]]@($bundles | ForEach-Object { $_.Name })
+[Array]::Sort($names, [StringComparer]::Ordinal)
+$expectedSorted = [string[]]@($ExpectedBundles)
+[Array]::Sort($expectedSorted, [StringComparer]::Ordinal)
+if (($names -join '|') -ne ($expectedSorted -join '|')) {
   Fail ("bundle 名字不对:实际 [{0}],期望 [{1}]" -f ($names -join ', '), ($ExpectedBundles -join ', '))
 }
 foreach ($b in $bundles) {
@@ -140,10 +156,33 @@ foreach ($b in $bundles) {
 
 # ── ⑤ 合规文件 ────────────────────────────────────────────────────────────────
 $licenseDir = Join-Path $RepoRoot 'LICENSES'
-$licenseFiles = @(Get-ChildItem -LiteralPath $licenseDir -File -Filter '*.txt')
-if (-not ($licenseFiles | Where-Object { $_.Name -eq 'OFL-1.1.txt' })) { Fail 'LICENSES/OFL-1.1.txt 不存在(字体随 .vst3 分发,OFL 全文必须随附)' }
+# LICENSES/ 下的全部文件(不限扩展名)都进 zip。
+$licenseFiles = @(Get-ChildItem -LiteralPath $licenseDir -File)
 foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $f) -PathType Leaf)) { Fail "仓库根缺 $f" }
+}
+# 「随二进制分发」表里每个许可证(第 3 列开头的 SPDX 标识)都必须在 LICENSES/ 里有全文
+# (文件名 = <SPDX>.<任意扩展名>);再加本项目自己的 GPL-3.0-or-later。表读不出行即判红,不当成「没有依赖」。
+$notices = [IO.File]::ReadAllLines((Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md'), [Text.Encoding]::UTF8)
+$spdxIds = New-Object System.Collections.Generic.List[string]
+$spdxIds.Add('GPL-3.0-or-later')
+$inDist = $false; $rows = 0
+foreach ($l in $notices) {
+  if ($l -match '^## ') { $inDist = $l.StartsWith('## 随二进制分发'); continue }
+  if (-not $inDist -or $l -notmatch '^\|') { continue }
+  $cells = $l.Split('|')
+  if ($cells.Count -lt 5 -or $cells[1].Trim() -eq '依赖' -or $cells[1].Trim() -match '^-+$') { continue }
+  $rows++
+  $m = [regex]::Match($cells[3].Trim(), '^([A-Za-z0-9][A-Za-z0-9.+-]*)')
+  if (-not $m.Success) { Fail "THIRD-PARTY-NOTICES.md 的「随二进制分发」表里有一行读不出 SPDX 标识:$l" }
+  if (-not $spdxIds.Contains($m.Groups[1].Value)) { $spdxIds.Add($m.Groups[1].Value) }
+}
+if ($rows -eq 0) { Fail 'THIRD-PARTY-NOTICES.md 里没读到「随二进制分发」表的任何一行(标题或表格式变了?)' }
+$missingLicenseTexts = @($spdxIds | Where-Object { $id = $_; -not ($licenseFiles | Where-Object { $_.BaseName -eq $id }) })
+if ($missingLicenseTexts.Count -gt 0) {
+  $msg = "LICENSES/ 缺这些许可证的全文(THIRD-PARTY-NOTICES.md 的「随二进制分发」表点名了它们):" + ($missingLicenseTexts -join ', ')
+  if ($AllowMissingLicenseTexts) { Write-Host "[WARN] $msg —— 演练模式放行,记进 package-summary.md" -ForegroundColor Yellow }
+  else { Fail $msg }
 }
 
 # ── ④ INSTALL.txt ─────────────────────────────────────────────────────────────
@@ -314,7 +353,8 @@ try {
       if (-not $inZip.ContainsKey($k)) { Fail "zip 内缺条目:$k" }
       if ($inZip[$k] -ne (Get-Sha256 $entries[$k])) { Fail "zip 内条目与源文件字节不一致:$k" }
     }
-    $required = @('LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'LICENSES/OFL-1.1.txt', 'INSTALL.txt')
+    $required = @('LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'INSTALL.txt')
+    foreach ($f in $licenseFiles) { $required += ('LICENSES/' + $f.Name) }
     foreach ($b in $ExpectedBundles) { $required += "$b/Contents/x86_64-win/$b" }
     foreach ($r in $required) { if (-not $inZip.ContainsKey($r)) { Fail "zip 内缺必需条目:$r" } }
     # 根目录白名单:三个 bundle 目录、LICENSES/、三个根文件,别的都不该出现。
@@ -351,6 +391,7 @@ try {
     "| sourceCommit | $SourceCommit |",
     "| cmakeVersion | $cmakeVersion |",
     "| bundles | $($ExpectedBundles -join ', ') |",
+    "| missingLicenseTexts | $(if ($missingLicenseTexts.Count -gt 0) { ($missingLicenseTexts -join ', ') + ' (pipeline test only - must be empty for a real release)' } else { 'none' }) |",
     '',
     "Corresponding source: $sourceUrl",
     '',
@@ -364,8 +405,8 @@ try {
   [IO.File]::WriteAllText($summaryPath, (($summary.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
   if ($env:GITHUB_OUTPUT) {
-    "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-    "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    # 显式无 BOM:PS 5.1 的 Out-File -Encoding utf8 会带 BOM。
+    [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "zip=$zipPath`nsha256=$sha`n", (New-Object System.Text.UTF8Encoding($false)))
   }
 
   Write-Host "package.ps1: OK"

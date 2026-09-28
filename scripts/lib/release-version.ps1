@@ -20,7 +20,7 @@ function Get-ScvbCMakeVersion([string]$CMakeText) {
 #                 构建 → 打包 → 草稿 Release 全程;限死 0.0.0 是为了让它不可能冒充一个真版本。
 function Test-ScvbReleaseTag([string]$Tag, [string]$CMakeVersion) {
   $r = @{ Ok = $false; Version = $null; Core = $null; Kind = $null; Prerelease = $false; Message = '' }
-  $m = [regex]::Match($Tag, '^v([0-9]+\.[0-9]+\.[0-9]+)(?:-(rc\.[0-9]+|test(?:\.[0-9]+)?))?$')
+  $m = [regex]::Match($Tag, '^v([0-9]+\.[0-9]+\.[0-9]+)(?:-(rc\.[0-9]+|test(?:\.[0-9]+)?))?\z')
   if (-not $m.Success) {
     $r.Message = "tag '$Tag' 形态不对:只接受 vX.Y.Z、vX.Y.Z-rc.N、v0.0.0-test[.N]"
     return $r
