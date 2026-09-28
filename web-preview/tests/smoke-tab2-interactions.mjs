@@ -589,6 +589,50 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             ),
             "[SL-478] handleRecaptureArm:readOnly 之后有 noTimeline 这一支",
         );
+        // ------------------------------------------------------------------
+        // [J152] `scvb.captureProgress` 两个例外帧的**调用点钉子**。
+        //
+        // 理由同上面 [SL-412] / [SL-478] 两组:帧内容在 processor 的 `captureProgressFrame` 里,
+        // `HOST J152` 拿真采集、真存盘重开的数据逐拍钉;而「什么时候要一帧」这半条链只在
+        // `OutputEditor.cpp`,编不进任何 C++ 测试目标。各落点各钉一条,**一律带行形态锚**
+        // (注释掉整行 ⇒ 行首多出 `//` ⇒ 不匹配)。
+        {
+            // ① 例外①:首帧置闩锁,且紧接着就是「闩锁或 2Hz 节拍 ⇒ 带着闩锁调一次」。
+            //    删掉 `if (first)` 那两行 ⇒ 停着打开面板一帧都没有(本卡要修的症状)。
+            check(
+                /^[ \t]*if \(first\)\s*pendingCoverageFull_ = true;\s*^[ \t]*if \(pendingCoverageFull_ \|\| \(tickCount_ % 12 == 0\)\)\s*emitCaptureProgress\(pendingCoverageFull_\);/m.test(
+                    fnBodyOf("emitTick"),
+                ),
+                "[J152] emitTick:首帧置 pendingCoverageFull_,并把闩锁传给 emitCaptureProgress(不看走带)",
+            );
+            // ② 不可见先判、不算(算了就推进基线;例外帧的闩锁也会在没人看见时被清掉),
+            //    要过帧才清闩锁。
+            const cp = fnBodyOf("emitCaptureProgress");
+            check(
+                /^[ \t]*if \(!webView\(\)\.isVisible\(\)\)\s*return;[\s\S]*?^[ \t]*const auto frame = processor_\.captureProgressFrame\(coverageBaseline_, forceFull\);/m.test(
+                    cp,
+                ),
+                "[J152] emitCaptureProgress:不可见先返回,再向 processor 要帧(基线不在隐藏期推进)",
+            );
+            check(
+                /^[ \t]*const auto frame = processor_\.captureProgressFrame\(coverageBaseline_, forceFull\);\s*(?:\/\/[^\r\n]*[\r\n]+\s*)*^[ \t]*pendingCoverageFull_ = false;[ \t]*$/m.test(
+                    cp,
+                ),
+                "[J152] emitCaptureProgress:要过帧才清闩锁(清位紧跟在要帧之后)",
+            );
+            // ③ 例外②:clearCoverage **受理之后**作废基线并置闩锁(badArg / observer 两条拒绝支在前面 return)。
+            check(
+                /^[ \t]*const double clearedS = processor_\.clearCoverage\([\s\S]*?^[ \t]*coverageBaseline_\.reset\(\);[ \t]*$[\s\S]*?^[ \t]*pendingCoverageFull_ = true;[ \t]*$/m.test(
+                    fnBodyOf("handleClearCoverage"),
+                ),
+                "[J152] handleClearCoverage:受理后作废基线 + 置 pendingCoverageFull_(停着也补一次全量)",
+            );
+            // ④ 闩锁是 editor 成员、初值 false(首帧由 ① 置位,不是靠初值)。
+            check(
+                /^[ \t]*bool pendingCoverageFull_ = false;[ \t]*$/m.test(oeh),
+                "[J152] pendingCoverageFull_ 初值 false",
+            );
+        }
         // [SL-255 复审②] `armResegment` 必须落在 `if (changed)` **之外**。
         //
         // 为什么只能在源码形态上钉:这两个 handler 属 `OutputEditor.cpp`,只编进插件目标,
