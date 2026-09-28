@@ -43,6 +43,8 @@ import {
     historyAfterPanCurve,
     historyAfterRename,
     historyAfterSegments,
+    historyAfterUndoableWrite,
+    withUndoEvidence,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -152,6 +154,9 @@ const store = {
     playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
+    // [J152] ch → true:本会话里报过 > 0 的轨。Tab1 覆盖率的分母(见 tab-master coveragePercent):
+    // 全量帧里从没采过的轨报 0 不进分母,**采过、后来被清光**的轨仍在分母里 —— 否则整轨清光后数字不降。
+    coverageSeen: {},
     // §2.9 code → payload(active:false 即删)。键 = 裸 code,同一 code 的后一帧覆盖
     // 前一帧。轨级的 srMismatch / channelConflict(载荷带 ch)也不例外 —— srMismatch 的
     // 横幅 ③ 口径就是一次只显示一个轨号(05 §2.0),这是既定行为,不是漏了复合键。
@@ -474,10 +479,21 @@ document.addEventListener("pointermove", (e) => {
     glowLast = el;
 });
 
+// ------------------------------------------------------------- 撤销证据③(SL-536)
+// [SL-536 / J140] `setChannelConfig`(A1-A7)与 gesture 收尾 `endParamGesture`(冻结 / W /
+// Tab1 三件)自本卡起入插件撤销栈,但它们**没有**段表事件可认(证据②认不到)。两个 tab 的
+// 上行都经各自的 `call()` 直取 `bridge[name]`,所以给它们一份包过回执的**同形**桥
+// (包法与判据见 tab-master.js `withUndoEvidence` / `historyAfterUndoableWrite`)。
+// 包在这里而不是各 tab 里:header 两钮属外壳,可用性 reducer 的全部喂点都在本文件。
+const tabBridge = withUndoEvidence(bridge, () => {
+    store.session.history = historyAfterUndoableWrite(store.session.history);
+    requestRender();
+});
+
 // ------------------------------------------------------------- Tab1(tab-master.js)
 const tabMaster = createTabMaster({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -490,7 +506,7 @@ tabMaster.mount();
 // 全部由事件算出,行内全部上行调用也在该文件(本文件只做订阅转发)。
 const tabTracks = createTabTracks({
     root: document,
-    bridge,
+    bridge: tabBridge,
     getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
@@ -1032,6 +1048,9 @@ function settlePendingEdits() {
         curveEditor.flushPending(),
         tabTracks.flushPending(),
         tabWave.flushPending(),
+        // [SL-536] Tab1 的 WIDTH / MS BALANCE 滑轨自本卡起入栈:按住拖动中按 Ctrl+Z ⇒ 中止
+        // (回到抓握值并收束 gesture),与上面「指针仍按着 ⇒ 中止」同一条规矩。
+        tabMaster.flushPending(),
     ]);
 }
 
@@ -2330,6 +2349,7 @@ if (bridge) {
         // `addedRanges` 是本帧新增区间 —— Tab1 只消费前者(泳道底部的 2px 覆盖条归 T33)。
         for (const c of (cp && cp.channels) || []) {
             store.coverage[c.ch] = c.coveragePct;
+            if (c.coveragePct > 0) store.coverageSeen[c.ch] = true; // [J152] 见 store 头注
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);

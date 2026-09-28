@@ -595,3 +595,93 @@ TEST_CASE("SEG-7 不变式3: T 外轨段与曲线值一致(100 轮)", "[segmenta
         }
     }
 }
+
+// ===========================================================================
+// [J145] 边界拖拽吸附谷(`detectSnapValleys`,契约 §1.27 `requestWaveform.valleys[]` 的算法面)。
+// 与 detectValleys 共用平滑 / 谷底判定 / minDepth 门槛,只有 depth 的侧峰边界不同(见 Segmentation.h)。
+// ===========================================================================
+
+TEST_CASE("[J145] 吸附谷:矩形谷落在谷中心,depth = 平台 − 谷底", "[segmentation][valley][J145]")
+{
+    // 12s 平台 −20,一个 20 dB、300ms 宽的矩形谷 @4s(hop 385..414)。
+    const auto l = makeLoudness(1200, -20.0, {{400, 15, 20.0}});
+    SegmentationParams p;
+    p.sensitivity = 50.0; // minDepth = 6
+
+    const auto v = scvb::analysis::detectSnapValleys(l.data(), 0, 1200, p);
+    REQUIRE(v.size() == 1);
+    // 平滑后谷底平坦区 = [387,412],中心四舍五入 = 400(与 detectValleys 同一条 rep 口径)。
+    CHECK(v[0].hop == 400);
+    CHECK(v[0].depthDb == Approx(20.0).margin(1e-6));
+}
+
+TEST_CASE("[J145] 吸附谷:浅于 minDepth 的谷不产出,门槛随灵敏度走", "[segmentation][valley][J145]")
+{
+    // 4 dB 谷:minDepth(s=50)=6 ⇒ 不产出;minDepth(s=100)=3 ⇒ 产出。门槛与 S1 候选谷同一条。
+    const auto l = makeLoudness(1200, -20.0, {{600, 15, 4.0}});
+    SegmentationParams p;
+    p.sensitivity = 50.0;
+    CHECK(scvb::analysis::detectSnapValleys(l.data(), 0, 1200, p).empty());
+    p.sensitivity = 100.0;
+    const auto v = scvb::analysis::detectSnapValleys(l.data(), 0, 1200, p);
+    REQUIRE(v.size() == 1);
+    CHECK(v[0].hop == 600);
+}
+
+TEST_CASE("[J145] 吸附谷:贴段端的低平区不算谷(该侧没有东西可爬)", "[segmentation][valley][J145]")
+{
+    // [0,100) 低平 −60,其后平台 −20:detectValleys 会把段首平坦区当局部极小(depth=0),
+    // 吸附这边同样 depth=0 ⇒ 不产出。覆盖段从一段静音开始是常态,不能在覆盖起点凭空吸一下。
+    std::vector<float> l(400, -20.0f);
+    for (int k = 0; k < 100; ++k)
+        l[static_cast<std::size_t>(k)] = -60.0f;
+    SegmentationParams p;
+    CHECK(scvb::analysis::detectSnapValleys(l.data(), 0, 400, p).empty());
+}
+
+// 为什么吸附不能照搬 detectValleys 的 depth(见 Segmentation.h 头注):两句之间是**带噪底噪**、
+// 不是数字静音时,每个噪声小起伏都是一个局部极小,「相邻极小」就在几十毫秒外 ⇒ 按 detectValleys
+// 算 depth 只有零点几 dB,整段间隙一个候选都没有。同一份 ℓ 两边各跑一次,把这件事钉成对照。
+//
+// 素材:−20 dB 句子 [0,300) · 底噪 −60±1.5 dB(固定种子)[300,500) · 句子 [500,800);
+// 间隙里在 hop 418..422 埋一个 −62.5 dB 的小坑,让「间隙最低点」有确定位置(平滑后唯一最低 = 420)。
+// 小坑比周围噪声只低约 2~3 dB ⇒ 它的「相邻极小口径」depth 仍过不了 6 dB 门槛,不会替前者蒙混过关。
+TEST_CASE("[J145] 带噪间隙:detectValleys 零候选,detectSnapValleys 恰一个谷在间隙最低点", "[segmentation][valley][J145]")
+{
+    std::vector<float> l(800, -20.0f);
+    std::mt19937 rng(0x5CB1452u);
+    std::uniform_real_distribution<float> noise(-1.5f, 1.5f);
+    for (int k = 300; k < 500; ++k)
+        l[static_cast<std::size_t>(k)] = -60.0f + noise(rng);
+    for (int k = 418; k <= 422; ++k)
+        l[static_cast<std::size_t>(k)] = -62.5f;
+    SegmentationParams p;
+    p.sensitivity = 50.0; // minDepth = 6
+
+    // 对照:相邻极小口径下,整条 ℓ 没有一个谷过门槛(间隙两侧的平台是平的,不产生极小)。
+    int legacyCandidates = 0;
+    for (const Valley& v : scvb::analysis::detectValleys(l.data(), 0, 800, p))
+    {
+        if (v.depthDb > p.minDepthDb())
+            ++legacyCandidates;
+    }
+    CHECK(legacyCandidates == 0);
+
+    const auto snap = scvb::analysis::detectSnapValleys(l.data(), 0, 800, p);
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0].hop == 420);
+    // depth ≈ 句子 − 坑底(−20 − (−62.5) = 42.5);平台是平的,平滑不改它。
+    CHECK(snap[0].depthDb == Approx(42.5).margin(0.5));
+}
+
+TEST_CASE("[J145] 吸附谷:两个间隙各一个谷,按 hop 升序", "[segmentation][valley][J145]")
+{
+    const auto l = makeLoudness(1200, -20.0, {{300, 20, 30.0}, {800, 10, 12.0}});
+    SegmentationParams p;
+    const auto v = scvb::analysis::detectSnapValleys(l.data(), 0, 1200, p);
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].hop == 300);
+    CHECK(v[1].hop == 800);
+    CHECK(v[0].depthDb == Approx(30.0).margin(1e-6));
+    CHECK(v[1].depthDb == Approx(12.0).margin(1e-6));
+}

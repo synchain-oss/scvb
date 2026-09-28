@@ -790,7 +790,8 @@ export function makePlayhead(tS = 0, overrides = {}) {
 }
 
 /**
- * §2.7 `scvb.captureProgress`(播放中 2Hz,只含本帧有变化的轨)。
+ * §2.7 `scvb.captureProgress` 的**周期帧**(播放中 2Hz,只含本帧有变化的轨)。
+ * [J152] 的两个全量例外帧不由本函数造,见 juce-bridge-mock 的 `fullCaptureProgressPayload`。
  *
  * 两个字段**都从同一份 coverage 模型派生**(本文件第 4 节自立纪律:段表、波形 VAD 位、
  * 能量谷、覆盖条四处必须讲同一个故事):

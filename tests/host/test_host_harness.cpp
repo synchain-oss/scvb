@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional> // [J148] withPrmsRoot 的编辑回调
 #include <limits>
 #include <set> // [SL-231] GestureSpy 的配对校验
 
@@ -3166,6 +3167,108 @@ TEST_CASE("HOST P0-4:已采集区间的波形瓦片带真实包络", "[host][t37
 }
 
 // ---------------------------------------------------------------------------
+// [J145] requestWaveform 的 `valleys[]`(边界拖拽吸附的数据面)。
+// 此前 OutputEditor 回的是一个**从不填**的空数组,tab-wave 的 snapBoundary 读的就是它 ⇒
+// tooltip 许诺的「拖动时吸附到能量谷」在真机上从没发生过(mock 一直给谷点,web 冒烟一直绿)。
+// 这里走整条链:Input 真采一段「响 · 静 · 响」→ IPC → Output FrameStore → waveformOf 的瓦片。
+// 再往下一跳:瓦片 → §1.27 回包(`waveformResponse`,OutputEditor::handleRequestWaveform 原样 resolve 它)。
+// 编辑器那一行 `c(waveformResponse(waveformOf(...)))` 本身要真 WebView2,不在本套件 TU 清单里;
+// 页面拿到回包之后「拖动吸附 / Alt 关吸附」那一半走 mock:smoke-valley-snap-page.mjs。
+// 判据:窗里**恰有一个**谷点、落在静音段内、离静音段中心不超过 kTolS;回包里的 valleys 与之逐个相同。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:采一段响-静-响,瓦片的 valleys 恰有一个谷点落在静音段中心", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    const std::int64_t quietT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.0f); // 30 × 512 / 48k = 320 ms 数字静音
+    const std::int64_t quietT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f); // ≈ 1.07 s 响
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(quietT0) / kSr;
+    const double q1 = static_cast<double>(quietT1) / kSr;
+    const double mid = 0.5 * (q0 + q1);
+    // 前置:窗两侧都真被采到了(否则「没谷」与「没数据」分不开)。
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    const auto tile = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("quiet=[" << q0 << "," << q1 << ") mid=" << mid << " valleys=" << tile.valleys.size()
+                   << " first=" << (tile.valleys.empty() ? -1.0 : tile.valleys.front()));
+    REQUIRE(tile.valleys.size() == 1); // ← 修复前恒 0
+    CHECK(tile.valleys[0] > q0);
+    CHECK(tile.valleys[0] < q1);
+    // 容差 kTolS 的来历:静音一开始,K 加权滤波器的余振还要衰减一段才落到量化地板 −120 dB,
+    // 谷底平坦区因此整体偏后(谷点 = 平坦区中心)。实测(本机 Release)谷点比静音段中心**晚 27 ms**
+    // (静音段 [1.088, 1.408) s、中心 1.248、谷点 1.275)。60 ms 约为静音段中间三分之一的半宽:
+    // 盖得住余振,又能把「谷点落在静音段边缘(±160 ms)/ 落到响段里」判红。
+    constexpr double kTolS = 0.06;
+    CHECK(std::abs(tile.valleys[0] - mid) <= kTolS);
+
+    // 回包:七个字段都在,六列与 cols 等长,valleys 与瓦片逐个相同(修复前回包里恒是空数组)。
+    const juce::var resp = ScvbOutputAudioProcessor::waveformResponse(tile);
+    for (const char* key : {"minDb", "maxDb", "vad", "covered", "stale", "passId"})
+    {
+        INFO("key=" << key);
+        REQUIRE(resp[key].isArray());
+        CHECK(resp[key].size() == 256);
+    }
+    REQUIRE(resp["valleys"].isArray());
+    REQUIRE(resp["valleys"].size() == static_cast<int>(tile.valleys.size()));
+    for (int i = 0; i < resp["valleys"].size(); ++i)
+    {
+        CHECK(static_cast<double>(resp["valleys"][i]) == tile.valleys[static_cast<std::size_t>(i)]);
+    }
+
+    // 对照:只看响段(静音段整个在窗外)⇒ 没有谷 —— 证明上面那个谷来自静音段,而不是窗边。
+    const auto loudOnly = r.out.waveformOf(kTestChannel, q1 + 0.1, q1 + 0.8, 256);
+    CHECK(loudOnly.valleys.empty());
+}
+
+// ---------------------------------------------------------------------------
+// [J145] 吸附谷的门槛跟着**分段灵敏度**走(与 S1 候选谷同一条 minDepth = 6·2^((50−s)/50))。
+// waveformOf 里 `sp.sensitivity = runtime_.segmentationSensitivity` 那一行是接线;默认档 50 下
+// 删掉它也照样是 50 —— 所以这里造一个**只有高灵敏度才认**的浅谷:0.5 → 0.3 → 0.5 的正弦,
+// 落差 20·log10(0.3/0.5) = −4.44 dB,夹在 minDepth(50)=6 与 minDepth(100)=3 之间。
+// (440 Hz × 10 ms hop = 4.4 周,5 个 hop 恰 22 周 ⇒ 逐 hop 能量以 5 hop 为周期,5 hop 平滑后是平的,
+//  平台上不会冒出别的极小。)
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J145:吸附谷门槛随分段灵敏度 —— 4.4 dB 的浅谷只在高灵敏度下出现", "[host][waveform][J145]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(100, 0.5f);
+    const std::int64_t dipT0 = r.ph.timeSamples;
+    r.runBlocks(30, 0.3f);
+    const std::int64_t dipT1 = r.ph.timeSamples;
+    r.runBlocks(100, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double q0 = static_cast<double>(dipT0) / kSr;
+    const double q1 = static_cast<double>(dipT1) / kSr;
+    REQUIRE(r.out.coverageOf(kTestChannel, q0 - 0.8, q1 + 0.8).pct > 99.0f);
+
+    r.out.runtime().segmentationSensitivity = 50.0f; // minDepth 6 dB
+    const auto atDefault = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    CHECK(atDefault.valleys.empty());
+
+    r.out.runtime().segmentationSensitivity = 100.0f; // minDepth 3 dB
+    const auto atMax = r.out.waveformOf(kTestChannel, q0 - 0.8, q1 + 0.8, 256);
+    INFO("dip=[" << q0 << "," << q1 << ") valleys=" << atMax.valleys.size()
+                 << " first=" << (atMax.valleys.empty() ? -1.0 : atMax.valleys.front()));
+    REQUIRE(atMax.valleys.size() == 1);
+    CHECK(atMax.valleys[0] > q0);
+    CHECK(atMax.valleys[0] < q1);
+}
+
+// ---------------------------------------------------------------------------
 // P0-5:prepareToPlay **之后**才灌工程 chunk 时,viz 段必须跟着换组。
 // 宿主(Cubase)的真实次序就是「先激活组件、再推工程/预设 chunk」;离线测试恒是
 // 「先 setState 再 prepare」,于是这条路径从没被走到 —— Output 把 viz 段发布在旧组、
@@ -3261,6 +3364,110 @@ TEST_CASE("HOST UICF:CFGS 缺失/损坏时 master_chart_mode 仍按 UICF 生效(
         out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
         CHECK(out.masterChartMode() == "trajectory");
     }
+}
+
+// ---------------------------------------------------------------------------
+// [J148] ui.active_tab 随工程保存:契约 §1.31「写 state ui.active_tab(重开面板恢复上次 tab)」。
+// 此前它只活在运行期 —— 同一会话里关窗再开能回到原 tab,**存盘重开工程**一律回 Tab1。
+// 这里走真 Processor 的 get/setStateInformation(宿主存/开工程就是这两个口);编码本身
+// (名字表、非法值)由 scvb_params_tests 的 J148 那一格钉。
+// 各段读数彼此独立,一律 CHECK(REQUIRE 一红就掐断整格,「另一条仍绿」与「没跑」同形)。
+// ---------------------------------------------------------------------------
+namespace
+{
+using scvb::output::OutputActiveTab;
+
+OutputActiveTab tabOf(ScvbOutputAudioProcessor& p)
+{
+    return p.runtime().activeTab.load(std::memory_order_relaxed);
+}
+
+// 把一份完整工程的 PRMS 根节点属性面改一下再原样封回(其余 chunk 一字不动)。
+// 用来造「本版之前存的工程」(删掉属性)与「手改过的工程」(塞非法值)——
+// 新构建自己存出来的工程恒带合法属性,这两种形状只能这样造。
+std::vector<std::uint8_t> withPrmsRoot(const juce::MemoryBlock& full, const std::function<void(juce::ValueTree&)>& edit)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks) ==
+            scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms);
+    REQUIRE(prms != nullptr);
+    std::unique_ptr<juce::XmlElement> xml(
+        juce::AudioProcessor::getXmlFromBinary(prms->payload.data(), static_cast<int>(prms->payload.size())));
+    REQUIRE(xml != nullptr);
+    juce::ValueTree root = juce::ValueTree::fromXml(*xml);
+    edit(root);
+    std::unique_ptr<juce::XmlElement> outXml(root.createXml());
+    REQUIRE(outXml != nullptr);
+    juce::MemoryBlock mb;
+    juce::AudioProcessor::copyXmlToBinary(*outXml, mb);
+    const auto* bytes = static_cast<const std::uint8_t*>(mb.getData());
+    chunks.set(scvb::state::kFourccPrms, std::vector<std::uint8_t>(bytes, bytes + mb.getSize()));
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+    return blob;
+}
+
+juce::String prmsActiveTabOf(const juce::MemoryBlock& full)
+{
+    juce::String seen = "<none>";
+    (void)withPrmsRoot(full, [&seen](juce::ValueTree& root) {
+        seen = root.getProperty(scvb::output::kUiActiveTabProp, juce::String("<none>")).toString();
+    });
+    return seen;
+}
+} // namespace
+
+TEST_CASE("HOST J148:ui.active_tab 随工程往返,老工程/非法值回落 Tab1 且不残留上一个工程的 tab", "[host][j148]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    // ① 新实例默认 Tab1(新建工程打开面板就在总览页)。
+    ScvbOutputAudioProcessor a;
+    CHECK(tabOf(a) == OutputActiveTab::kMaster);
+
+    // ② 往返:切到 Tab3(= 桥入口 setActiveTab 做的那件事)→ 宿主存工程 → 另一个实例开这份工程。
+    //    四个值里挑一个非默认的,读回若是 master 就分不清「恢复了」还是「根本没存」。
+    a.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    juce::MemoryBlock saved;
+    a.getStateInformation(saved);
+    CHECK(prmsActiveTabOf(saved) == "wave"); // 工程文件里写的是 §1.31 字面量(落在 PRMS 根节点)
+
+    ScvbOutputAudioProcessor b;
+    REQUIRE(tabOf(b) == OutputActiveTab::kMaster); // 前置:b 起点不是 wave,下面的读数才有分辨力
+    b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+    CHECK(tabOf(b) == OutputActiveTab::kWave);
+
+    // ③ 其余三个值同样往返(同一个实例连续载入,每次都与上一次不同)。
+    for (const OutputActiveTab t : {OutputActiveTab::kSettings, OutputActiveTab::kTracks, OutputActiveTab::kMaster})
+    {
+        a.runtime().activeTab.store(t, std::memory_order_relaxed);
+        juce::MemoryBlock blob;
+        a.getStateInformation(blob);
+        b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(tabOf(b) == t);
+    }
+
+    // ④ 本版之前存的工程(PRMS 没有这个属性):停在 Tab3 的实例载入它 ⇒ 回 Tab1,
+    //    **不许**停在上一个工程的 Tab3 —— 否则下次保存就把别的工程的 tab 写进这一份(#96 同族)。
+    b.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> oldProject = withPrmsRoot(
+        saved, [](juce::ValueTree& root) { root.removeProperty(scvb::output::kUiActiveTabProp, nullptr); });
+    b.setStateInformation(oldProject.data(), static_cast<int>(oldProject.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑤ 手改过 / 来自未来版本的值(四值之外)⇒ 同样回 Tab1,不报错。
+    b.runtime().activeTab.store(OutputActiveTab::kSettings, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> tampered = withPrmsRoot(saved, [](juce::ValueTree& root) {
+        root.setProperty(scvb::output::kUiActiveTabProp, juce::String("suggest"), nullptr);
+    });
+    b.setStateInformation(tampered.data(), static_cast<int>(tampered.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑥ 载入之后再存:存下来的是**这份工程自己的** tab(⑤ 之后是 master),不是加载前的 settings。
+    juce::MemoryBlock resaved;
+    b.getStateInformation(resaved);
+    CHECK(prmsActiveTabOf(resaved) == "master");
 }
 
 // ---------------------------------------------------------------------------
@@ -6370,6 +6577,148 @@ TEST_CASE("HOST SL-226:反向 —— 未采集的工程往返后仍无波形", "
     }
 }
 
+// ---------------------------------------------------------------------------
+// [J152] 停着也推覆盖率的两个例外(契约 §0.4 / §2.7):mBridgeReady 后首帧、clearCoverage 受理后,
+// 各补发一次全量 `scvb.captureProgress`,不看走带。
+//
+// 用户面症状:重开一个「采过、还没分析」的工程,停着打开 Output,Tab1 一直是「当前范围内无采集
+// 数据」—— 覆盖率只在播放中推,段表又是空的,分析行「覆盖 ∪ 段表」的判空两边都空;停着清除覆盖,
+// 数字也不动。
+//
+// OutputEditor 编不进任何 C++ 测试目标(要真 WebView2);帧内容在 processor 的
+// `captureProgressFrame` 里。本用例走「真采集 → 真存盘 → 新实例重开 → 停带」,按 editor 的
+// 调用序列逐拍断言帧内容:周期帧 forceFull=false,首帧 / 清除后 forceFull=true。
+// editor 那几跳(首帧置闩锁、清除置闩锁、闩锁传进来、出过帧才清、不可见不算)由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的 [J152] 源码钉子钉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J152:停着重开已采未析的工程 —— 就绪首帧补一次全量覆盖率,清除受理后再补一次", "[host][J152]")
+{
+    juce::MemoryBlock blob;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.capturedExtentSeconds() > 0.0); // 前置:确实采到了东西
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 关工程
+
+    // 新实例 = 重开工程。走带停着、播放头在 0(FakePlayHead 的初值),先推几块让 playhead 快照落地。
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(120);
+
+    const double extent = r2.out.capturedExtentSeconds();
+    REQUIRE(extent > 0.0); // 前置:覆盖随工程回来了
+    const auto pod = r2.out.playheadSnapshot();
+    REQUIRE((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0); // 前置:停着
+    REQUIRE(pod.timeSamples == 0); // 前置:播放头在 0 —— 只取播放头的话分母窗口为空
+    REQUIRE(r2.out.runtime().rangeMode == 0); // 前置:follow 档(默认)
+
+    constexpr std::size_t kMine = static_cast<std::size_t>(kTestChannel - 1);
+    constexpr std::size_t kOther = 0; // ch1:本工程从没采过
+    static_assert(kOther != kMine, "对照轨必须是另一条");
+
+    // 与 editor 的初值同形(pct 全 0,不是 reset() 的 −1 哨兵)。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline base;
+
+    // ① 周期帧:停着不发(§2.7 周期档口径不变)。
+    CHECK(r2.out.captureProgressFrame(base, /*forceFull=*/false).empty());
+
+    // ② 就绪首帧(例外①):不看走带,15 轨全带,按 ch 升序。
+    const auto first = r2.out.captureProgressFrame(base, /*forceFull=*/true);
+    REQUIRE(first.size() == 15u);
+    for (std::size_t i = 0; i < first.size(); ++i)
+    {
+        CHECK(first[i].ch == static_cast<int>(i) + 1);
+    }
+    // 分母 = [0, max(播放头 0, 已采集末端))。
+    const float firstPct = first[kMine].pct;
+    CHECK(firstPct > 0.0f); // ← 修复前:停着一帧都不出,Tab1 拿不到这个数
+    CHECK(firstPct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK_FALSE(first[kMine].added.empty()); // 首帧基线为空 ⇒ 增量 = 窗口内全部覆盖
+    // 没采过的轨照样在帧里(「全量」),报 0 —— 不是缺席。
+    CHECK(first[kOther].pct == 0.0f);
+    CHECK(first[kOther].added.empty());
+
+    // ③ 只补一次:下一拍回到周期档,停着不发。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ④ 播放头停在已采集末端之后:分母跟到播放头(max 的另一半)。
+    const double farS = extent * 2.0;
+    r2.ph.timeSamples = static_cast<std::int64_t>(farS * kSr);
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    {
+        const auto far2 = r2.out.captureProgressFrame(base, true);
+        REQUIRE(far2.size() == 15u);
+        const double phS = static_cast<double>(r2.out.playheadSnapshot().timeSamples) / kSr;
+        CHECK(far2[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, phS).pct));
+        CHECK(far2[kMine].pct < firstPct); // 分母变大了
+    }
+    r2.ph.timeSamples = 0;
+    r2.runBlocks(4, 0.0f);
+    Rig::pumpMessages(60);
+    base = ScvbOutputAudioProcessor::CaptureProgressBaseline{};
+    REQUIRE_FALSE(r2.out.captureProgressFrame(base, true).empty()); // 复位到「首帧已报」的基线
+    REQUIRE(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑤ clearCoverage 受理(例外②):清掉本轨覆盖的前半 —— editor 作废基线 + 补一次全量。
+    const auto covBefore = r2.out.coverageOf(kTestChannel, 0.0, extent);
+    REQUIRE_FALSE(covBefore.ranges.empty());
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    const double coveredFromS = static_cast<double>(covBefore.ranges.front().begin) * hopS;
+    const double midS = (coveredFromS + extent) * 0.5;
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, midS) > 0.0);
+    base.reset();
+    const auto afterClear = r2.out.captureProgressFrame(base, true);
+    REQUIRE(afterClear.size() == 15u);
+    // 已采集末端没动(清的是前半),分母仍是 [0, extent);数字跟着清除往下走。
+    CHECK(afterClear[kMine].pct < firstPct); // ← 修复前:停着清完数字不动
+    CHECK(afterClear[kMine].pct > 0.0f);
+    CHECK(afterClear[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    CHECK(afterClear[kOther].pct == 0.0f);
+
+    // ⑥ 又只补一次。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+
+    // ⑥b 清掉本轨覆盖的**尾部**:已采集末端跟着缩短,停着的分母 = [0, 新末端) —— 与 §1.6 follow 档
+    //     「分析全部」的范围是同一个量,数字答的是「分析会作用的那段里有多少已采」。所以只剩一段、
+    //     清掉它后半的工程可能仍显示 100%(#322 第 1 轮复审【建议】2 举的例子),这是有意的口径。
+    //     钉在这里,免得被当成回归去「修」成别的分母。
+    {
+        const double tailFromS = (midS + extent) * 0.5;
+        REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), tailFromS, extent + 1.0) > 0.0);
+        const double newExtent = r2.out.capturedExtentSeconds();
+        REQUIRE(newExtent > 0.0);
+        REQUIRE(newExtent < extent);
+        base.reset();
+        const auto tail = r2.out.captureProgressFrame(base, true);
+        REQUIRE(tail.size() == 15u);
+        CHECK(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, newExtent).pct));
+        // 对照:分母若停在旧末端,会是另一个数 —— 这一格分得出两种口径。
+        CHECK_FALSE(tail[kMine].pct == Catch::Approx(r2.out.coverageOf(kTestChannel, 0.0, extent).pct));
+    }
+
+    // ⑦ 清光全部覆盖:已采集末端归 0、播放头在 0 ⇒ 分母窗口为空。例外帧**照发**,各轨报 0 ——
+    //    否则「清空了全部覆盖」那一下界面上的数字永远等不到归零。
+    REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), 0.0, extent + 1.0) > 0.0);
+    REQUIRE(r2.out.capturedExtentSeconds() == 0.0);
+    base.reset();
+    const auto emptied = r2.out.captureProgressFrame(base, true);
+    REQUIRE(emptied.size() == 15u);
+    CHECK(emptied[kMine].pct == 0.0f);
+    CHECK(emptied[kMine].added.empty());
+    // 周期帧在空窗口下不发(既有口径)。
+    CHECK(r2.out.captureProgressFrame(base, false).empty());
+}
+
 // [SL-226] 反向②:特征被清空后再保存,必须把 FEAT 一并删掉 —— 留着上一版会让重开时
 // 把已经不存在的波形又捞回来。清空走**改组**这条真实用户路径([J66]:frameStore 按 channel
 // 索引存、没有 group 维度,改组必须整店作废)。
@@ -7379,6 +7728,65 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     CHECK(spy.ends == spy.begins);
     CHECK(spy.begins == beginsBeforeClose); // 关输出不该再开新的
 
+    r.out.removeListener(&spy);
+}
+
+// [SL-536 / #311 复审【重要】] PRINT 区间里打印器替每条车道开着 gesture(AutomationPrinter::tick
+// 「冻结 / 未冻结车道在区间内都保持打开」)。冻结通道的手动写入与它的撤销 / 重做都在同一参数上
+// 写宿主,若各自再 begin/end 就会嵌套(GestureSpy 记 doubleBegin),而自己那一下 end 会替打印器
+// 把宿主那边的 gesture 提前关掉(之后打印写入落在 gesture 之外)。本格断:整个过程配对不乱,
+// 且撤销 / 重做之后打印器那条车道的 gesture 在宿主侧**仍然开着**。
+TEST_CASE("HOST SL-536:PRINT 中冻结通道写入与撤销 / 重做不与打印器的 gesture 嵌套", "[host][sl536][print][e2e]")
+{
+    GestureSpy spy; // 须比 rig 活得久(理由见 SL-231 那格)
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.ph.timeSamples = 0;
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+    const int v = r.out.versionActive();
+    const juce::String panId = scvb::params::panId(v, kCh);
+    auto* pan = r.out.getAPVTS().getParameter(panId);
+    REQUIRE(pan != nullptr);
+    const int panIdx = pan->getParameterIndex();
+
+    // 先冻 pan(非车道参数,自己的 gesture 不与打印器相干),再从干净起点开输出进 PRINT。
+    REQUIRE(r.out.uiBeginParamGesture(scvb::params::freezeId(v, kCh)));
+    REQUIRE(r.out.uiSetParam(scvb::params::freezeId(v, kCh), 1.0f));
+    REQUIRE(r.out.uiEndParamGesture(scvb::params::freezeId(v, kCh)));
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(300);
+    r.out.addListener(&spy);
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(40, 0.5f);
+    MonoMultiRig::pump(300);
+    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    REQUIRE(spy.open.count(panIdx) == 1); // 前提:打印器此刻确实替这条车道开着 gesture
+
+    const float before = pan->convertFrom0to1(pan->getValue());
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, 42.0f, replaced, locked)); // 冻结通道
+    CHECK(r.out.undo());
+    CHECK(pan->convertFrom0to1(pan->getValue()) == Catch::Approx(before).margin(0.01));
+    CHECK(r.out.redo());
+    CHECK(pan->convertFrom0to1(pan->getValue()) == Catch::Approx(42.0f).margin(0.01));
+
+    CHECK(spy.doubleBegin == 0); // 嵌套 begin
+    CHECK(spy.orphanEnd == 0);
+    CHECK(spy.open.count(panIdx) == 1); // 打印器那一对没被我们的 end 提前关掉
+
+    r.runBlocks(20, 0.5f);
+    MonoMultiRig::pump(200);
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(400);
+    CHECK(spy.open.empty());
+    CHECK(spy.ends == spy.begins);
     r.out.removeListener(&spy);
 }
 

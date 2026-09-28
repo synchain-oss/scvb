@@ -35,6 +35,8 @@ add_library(scvb_core STATIC
   analysis/LoudnessMode.h
   analysis/Segmentation.cpp
   analysis/Segmentation.h
+  analysis/WaveValleys.cpp
+  analysis/WaveValleys.h
   analysis/Reanalysis.cpp
   analysis/Reanalysis.h
   analysis/Hungarian.cpp

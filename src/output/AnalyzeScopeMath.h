@@ -54,6 +54,40 @@ inline AnalyzeRange analyzeAllRange(int rangeMode, double rangeStartS, double ra
     return r;
 }
 
+// [J152] §2.7 `scvb.captureProgress` 里 `coveragePct` 的分母窗口。
+//
+// 范围档(rangeMode≠0)= `global.range`,与走带无关。follow 档没有显式范围,分母取「已知时间线」:
+//   · 播放中 = [0, 播放头) —— 周期帧的既有口径,播放头就是已知时间线的末端;
+//   · 停着   = [0, max(播放头, 已采集时间线末端)) —— 停着只会出两种例外帧(mBridgeReady 后首帧、
+//     clearCoverage 受理后),而这时播放头多半停在 0(重开工程 / 宿主「播完回开头」),
+//     只取播放头的话窗口为空、已采集的覆盖一格都报不出来,界面就停在「当前范围内无采集数据」。
+//     已采集末端与 `analyzeAllRange` 的 follow 档是同一个量(v5.1 P1-F 同款理由);
+//     与播放头取大,是为了播放头停在已采集末端之后时,窗口仍盖得住「走到过的地方」。
+// 窗口可能为空(follow 档、从未采集、播放头在 0):调用方自己判 `valid()`。
+struct CoverageWindow
+{
+    double startS = 0.0;
+    double endS = 0.0;
+    bool valid() const { return endS > startS; }
+};
+
+inline CoverageWindow captureProgressWindow(bool playing, int rangeMode, double rangeStartS, double rangeEndS,
+                                            double playheadS, double capturedExtentS)
+{
+    CoverageWindow w;
+    if (rangeMode != 0)
+    {
+        w.startS = rangeStartS;
+        w.endS = rangeEndS;
+        return w;
+    }
+    const double ph = playheadS > 0.0 ? playheadS : 0.0;
+    const double extent = capturedExtentS > 0.0 ? capturedExtentS : 0.0;
+    w.startS = 0.0;
+    w.endS = playing ? ph : std::max(ph, extent);
+    return w;
+}
+
 // 对象形 scope `{tracksMask, startS?, endS?}` 的范围推导(§1.6:后两个字段是**可选**的)。
 //
 // 缺省口径 = 与 `"all"` 同一条推导,**不是 0.0**。原实现两个字段都 `getProperty(..., 0.0)`

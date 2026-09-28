@@ -192,7 +192,7 @@ export const T = {
         // 的内容是**生成物** —— 手改会被下一次 --write 覆盖,并在此之前被 --check 判红。
         // BEGIN GENERATED hard-rules:zh
         "guide.title":
-            "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。",
+            "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、声像位置错误或分析失效。",
         "guide.rule1":
             "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
         "guide.rule2":
@@ -293,8 +293,9 @@ export const T = {
         "tour.step13.body":
             "段间过渡:20–300ms;决定区间之间音量和声像过渡的速度。",
         "tour.step15.title": "角度域曲线",
+        // [J153] 双击点即删,不用先选中(curve-editor.js 的 dblclick:hitTest 命中即 deleteAt)。
         "tour.step15.body":
-            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,选中后双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
+            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
         "tour.step16.title": "本页:轨道",
         "tour.step16.body":
             "每个通道占一行,构成 15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动调节。",
@@ -320,12 +321,15 @@ export const T = {
         "tour.step24.title": "参与音量调节",
         "tour.step24.body":
             "独立开关:该轨是否参与音量平衡计算(默认开),与主唱锁 / Lead Select 不联动。",
+        // [J153] 默认档按代码实况写:未显式设置一律参与([J83];真源 = OutputProcessor.h 的
+        // `participatesInAutoPan()`),立体声轨不例外。旧句「立体声轨默认关闭」是 [J60] 的口径,已被 J83 取代。
         "tour.step25.title": "参与自动声像",
         "tour.step25.body":
-            "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
+            "该轨是否参与声像重分布(默认开,含立体声轨);关掉后仍参与音量平衡。",
+        // [J153] 「同一配对」不写「同组」:组是 A–H 那个概念,这里说的是 pair_id 相同的两轨。
         "tour.step23.title": "配对",
         "tour.step23.body":
-            "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同组两轨行首显示同色圆点。",
+            "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同一配对的两轨行首显示同色圆点。",
         "tour.step26.title": "冻结 PAN / VOL",
         "tour.step26.body":
             "两个冻结开关会 bypass 引擎对该维度的影响,旋钮与推子随之解锁为纯手动调节。",
@@ -364,7 +368,7 @@ export const T = {
             "一次完整的工作流程:采集 → 分析 → 微调/冻结 → 写入自动化 → 手动调自动化。优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。之后随时可在设置页「查看工作流程」里回看。",
         "tour.step37.title": "使用说明",
         "tour.step37.body":
-            "三步工作流 + 九条重要提示;请逐条读一遍,违反任何一条都会导致静音或错音。",
+            "三步工作流 + 九条重要提示;请逐条读一遍,违反任何一条都会导致静音或声像位置错误。",
         "tour.step38.title": "第二响度指标",
         "tour.step38.body":
             "段响度采用哪个指标:K 加权段积分(接近人耳听感)/ RMS(平均能量)/ 峰值 dBFS(瞬时峰值);修改后需重新分析。",
@@ -564,8 +568,10 @@ export const T = {
         //      **不带介词** —— 按 ① 的标准(同格标签同构)它该跟音量段一样,与 ② 指向相反。
         // 两种写法都是合法法语,本卡**不动**:三个参照点里有两个互相矛盾,这是 T32 EN/FR 人工
         // 审校该裁的事,不是文案对齐能顺手办的。要统一就三处一起改,别只改看起来碍眼的那一处。
+        // [J153] 「声像」段的默认档按代码实况写(同 `tour.step25.body` 上方那条):一律默认参与,
+        // stereo 轨不例外;旧括注「stereo 轨默认关」是 [J60] 口径。改这一段别动上面说的 fr 介词。
         "tracks.colLegend":
-            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(默认开,含 stereo 轨;关掉后仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -1366,7 +1372,7 @@ export const T = {
             "Independent switch: whether this track joins level balancing (on by default); not linked to Lead Lock / Lead Select.",
         "tour.step25.title": "Auto-Pan Participate",
         "tour.step25.body":
-            "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
+            "Whether this track joins pan redistribution (on by default, stereo tracks included); when off, it is still level-balanced.",
         "tour.step23.title": "Pair",
         "tour.step23.body":
             "Pair two tracks; their pan is linked and the pair moves as one. Same pair shows the same colored dot at the row head.",
@@ -1579,7 +1585,7 @@ export const T = {
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
-            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (on by default, stereo included; still level-balanced when off) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
@@ -2216,7 +2222,7 @@ export const T = {
             "Interrupteur indépendant : si la piste entre dans l'équilibrage du volume (activé par défaut) ; non lié au verrou lead / Lead Select.",
         "tour.step25.title": "Participation pan auto",
         "tour.step25.body":
-            "Si la piste entre dans la redistribution du pan ; stéréo désactivé par défaut, équilibrage conservé.",
+            "Si la piste entre dans la redistribution du pan (activé par défaut, pistes stéréo comprises) ; une fois désactivé, l'équilibrage du volume est conservé.",
         "tour.step23.title": "Paire",
         "tour.step23.body":
             "Appairez deux pistes ; leur panoramique est lié et la paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
@@ -2436,7 +2442,7 @@ export const T = {
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
-            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (activé par défaut, stéréo compris ; équilibrage conservé une fois désactivé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----

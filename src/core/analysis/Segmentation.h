@@ -87,6 +87,28 @@ struct Valley
 // l 指向 ℓ[0..N)(dB,绝对 hop 时间线,10ms/hop)。
 std::vector<Valley> detectValleys(const float* l, int64_t startHop, int64_t endHop, const SegmentationParams& p);
 
+// [J145] 边界拖拽的吸附谷(契约 §1.27 `requestWaveform.valleys[]` 的数据面)。
+struct SnapValley
+{
+    int64_t hop = 0; // 谷底代表 hop(绝对时间线;平坦区取中心,与 detectValleys 同口径)
+    double depthDb = 0.0; // 地形 prominence,见下
+};
+
+// 与 detectValleys **共用**平滑(movingAverage(ℓ, 5 hop))、「谷底」判定(局部极小平坦区)与
+// 门槛(depth > p.minDepthDb(),即 S1 候选谷那一条),只有 depth 的侧峰边界不同:
+//   · detectValleys:侧峰 = 到**相邻局部极小**为止的最大值(02 §3.2 步骤 2a,S1 递归要的「无自指」);
+//   · 本函数:侧峰 = 向该侧走到**第一个更低的点**(或段端)为止的最大值(地形 prominence)。
+// 为什么吸附不能照搬前者:两句之间的间隙若是**带噪的底噪**而不是数字静音,平滑后仍有零点几 dB
+// 的起伏,每个小起伏都是一个局部极小 ⇒ 每个极小的「相邻极小」就在几十毫秒外 ⇒ 按前者算
+// depth 只有零点几 dB,整段间隙一个谷都过不了门槛 —— 吸附在这类素材上等于没有
+// (test_segmentation.cpp 的「[J145] 带噪间隙」一格:同一份 ℓ 喂前者零候选、喂本函数恰一个谷)。
+// 按地形算,间隙里最低的那个点左右两侧都要爬回句子的响度才遇得到更低点 ⇒ depth ≈ 句子 − 底噪;
+// 同一间隙里其余的小起伏向某一侧走不远就遇到更低的点 ⇒ depth 仍是零点几 dB ⇒ 过不了门槛。
+// 段端平坦区(贴 startHop / endHop−1)那一侧没有东西 ⇒ 该侧侧峰 = 谷底自己 ⇒ depth = 0,不产出。
+// 返回按 hop 升序。l 指向 ℓ[0..N)(dB,绝对 hop 时间线,10ms/hop)。
+std::vector<SnapValley> detectSnapValleys(const float* l, int64_t startHop, int64_t endHop,
+                                          const SegmentationParams& p);
+
 struct ValleySplitResult
 {
     std::vector<VadSegment> segments; // hop 域段序列(绝对时间线,按 start 排序、互不重叠)
