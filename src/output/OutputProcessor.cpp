@@ -1040,7 +1040,11 @@ void ScvbOutputAudioProcessor::timerCallback()
         scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
         if (outputEnabled_)
         {
-            mode = (playing && inRange) ? scvb::engine::AuthorityMode::Print : scvb::engine::AuthorityMode::Armed;
+            // 加载守卫未确认 ⇒ 行为止于 ARMED(契约 §1.3 / §1.34):零 gesture、零写入;DSP 仍由
+            // 引擎驱动(authority_.processBlock 读的是 session_.outputEnabled(),不看守卫),试听不受影响。
+            const bool guardPending = runtime_.printGuardPending.load(std::memory_order_acquire);
+            mode = (playing && inRange && !guardPending) ? scvb::engine::AuthorityMode::Print
+                                                         : scvb::engine::AuthorityMode::Armed;
         }
         printer_.setMode(mode);
     }
@@ -2087,6 +2091,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 要采集就再点一次 §1.2 setCaptureEnabled。
     captureEnabled_ = false;
     outputEnabled_ = s.outputEnabled != 0;
+    // [加载守卫] 04 §5.3:恢复出 output_enabled=ON ⇒ 待确认,确认前打印器止于 ARMED(见 timerCallback
+    // 三态求值)。恢复 OFF ⇒ 清掉(上一个工程残留的待确认不该带进这个工程)。
+    // 此前这一位**没有任何写 true 的地方**:横幅⑦与确认钮都在,引擎却照常进 PRINT,
+    // 重开工程一按播放就把 DAW 车道(常留在 Latch)上已录的自动化覆盖掉。
+    runtime_.printGuardPending.store(outputEnabled_, std::memory_order_release);
     versionActive_ = static_cast<int>(s.versionActive);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
@@ -2455,6 +2464,12 @@ void ScvbOutputAudioProcessor::applyOutputEnabled(bool on)
     // 调用方须已持 lifecycleMutex_。与 applyCaptureEnabled 对称的**内部**写点:不触发 J92a 互斥。
     outputEnabled_ = on;
     session_.setOutputEnabled(on);
+    // [加载守卫] 输出一关即解除(见 OutputRuntimeState::printGuardPending 的头注)。桥面 OFF 与
+    // [J92a] 手动开采集连带关输出都走这里。只清不置:再打开时走的是 UI 的 OFF→ON 一次性确认。
+    if (!on)
+    {
+        runtime_.printGuardPending.store(false, std::memory_order_release);
+    }
 }
 
 void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
@@ -2542,6 +2557,13 @@ void ScvbOutputAudioProcessor::disarmRecaptureLocked()
     }
     runtime_.recaptureAutoEnabledCapture = false;
     applyFeatureGates(); // 门控当拍回落到 global.range
+}
+
+void ScvbOutputAudioProcessor::confirmPrintGuard()
+{
+    // 契约 §1.34:幂等;只动这一位,不碰输出开关、不开 gesture。下一拍 25Hz tick 若满足
+    // PRINT 三与条件即恢复正常打印。
+    runtime_.printGuardPending.store(false, std::memory_order_release);
 }
 
 void ScvbOutputAudioProcessor::setOutputEnabled(bool on)

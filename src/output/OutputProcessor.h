@@ -142,7 +142,14 @@ struct OutputRuntimeState
     std::atomic<bool> langChosen{false};
 
     // 运行时态(不入 state chunk、不随工程持久化)
-    bool printGuardPending = false;
+    // 加载守卫(04 §5.3 / 契约 §1.3、§1.34 / 05 §2.0 横幅⑦)。三个写点,全在 processor 里:
+    //   · setStateInformation:CFGS 解码成功后置为「恢复出来的 output_enabled」—— 恢复 ON 即待确认;
+    //   · confirmPrintGuard(桥面 §1.34 唯一确认入口):置 false;
+    //   · applyOutputEnabled(false):输出一关,「随工程恢复的 ON」这个条件就不在了,守卫随之解除
+    //     (契约未写这一格;不解除的话横幅会在开关 OFF 时仍说「输出开关处于写入自动化状态」)。
+    // 唯一读方是 timerCallback 的三态求值:为真时即便「播放中 ∧ 在区间内」也只给 ARMED。
+    // atomic:setStateInformation 可在宿主线程上跑,桥面 emit 在消息线程 25Hz 读(同 guideSeen 的理由)。
+    std::atomic<bool> printGuardPending{false};
     bool recaptureArmed = false;
     std::uint16_t recaptureTracksMask = 0;
     double recaptureStartS = 0.0;
@@ -212,6 +219,9 @@ public:
     void setGroupId(int groupId);
     void setCaptureEnabled(bool on);
     void setOutputEnabled(bool on);
+    // [加载守卫] 契约 §1.34 confirmPrintGuard 的落地方(幂等,零 gesture)。
+    void confirmPrintGuard();
+    bool printGuardPending() const { return runtime_.printGuardPending.load(std::memory_order_acquire); }
 
     // [J87] 局部重采集布防(04 §4.2;桥面 §1.23 recaptureArm 的落地方)。两个口都在 [M]。
     // 放在 processor 而不是 editor 里,是因为**撤防有两条触发路径**:桥面显式撤防,与 25Hz
