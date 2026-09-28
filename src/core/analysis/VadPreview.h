@@ -16,8 +16,10 @@
 // 又会合回去),所以最终段数可以多于预览里的段数。预览回答的是「这组参数下每条轨哪里算有声、
 // 长乐句在哪里切」,不是「最终段表长什么样」—— 后者要等松手那一趟跑完。
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "analysis/EnergyVad.h"
@@ -44,5 +46,39 @@ VadPreviewTrackCache buildVadPreviewTrackCache(const float* kwMs, std::size_t n)
 // `PipelineResult::vadPosterior` 同口径)。
 std::vector<VadSegment> runVadPreviewTrack(VadPreviewTrackCache& c, std::int64_t firstHop, const VadParams& vad,
                                            const SegmentationParams& seg, double hopSec, float* posteriorOut);
+
+// ---- [J146 复审] 两条调度判据(纯函数:processor 调、core 用例直接断言) ------------------------
+//
+// ① **缓存重建限频**。边播边采时特征每拍都在变,不限频的话每一次拖动调用都要重建一遍。判据:
+//    这一拍需要重建(写回集里有轨的缓存缺失 / 旧了 / 计算窗变了)∧ 写回集里**至少一条轨**手上有
+//    可沿用的缓存 ∧ 距上次重建不足 minMs。第二条只数**写回集里**的轨:上一拍唯一有缓存的轨这一拍
+//    刚被关掉 / 断开、另一条刚进来时,若把前者也算进去就会判成「限频」,而新进来的那条没有缓存可沿用
+//    ⇒ 这一拍一条轨都算不出 ⇒ 预览被收尾、下一拍再首建 —— 拖动中泳道闪一下。那种情形按首建处理。
+inline bool vadPreviewRebuildThrottled(bool needRebuild, bool anyValidInWriteSet, std::int64_t nowMs,
+                                       std::int64_t lastRebuildMs, std::int64_t minMs) noexcept
+{
+    return needRebuild && anyValidInWriteSet && nowMs - lastRebuildMs < minMs;
+}
+
+// 覆盖层的「修改序号」记账:限频期沿用的缓存算自**旧的计算窗**(分位数基准随窗变),即使这条轨自己
+// 没被写过(别的轨在采、把时间线延长了),它的覆盖层也不是松手那一趟会写下的结果 ⇒ 记一个永远对不上的
+// 哨兵,`waveformOf` 退回读 vadP(契约 §1.27「采集写入进行中」那条例外的实现)。不限频时照记缓存的序号。
+inline constexpr std::uint64_t kVadPreviewOverlayStale = std::numeric_limits<std::uint64_t>::max();
+inline std::uint64_t vadPreviewOverlaySeq(bool throttled, std::uint64_t cacheSeq) noexcept
+{
+    return throttled ? kVadPreviewOverlayStale : cacheSeq;
+}
+
+// ② **自适应占空比**(单次重判决耗时相对调用间隔太大时合并调用)。web 侧最多 ≤50Hz 连发、不等回执;
+// 长会话(如 15 轨 × 60 分钟)里命中缓存的一次重判决就要 ~40ms,照单全收会把消息线程占满、调用在队列里
+// 堆积(松手后的防抖与宿主存盘都被推迟)。判据:距上一次重判决**开始** ≥ max(上次耗时 × 2, floorMs)
+// 才当场算,否则只记「有待算」,由 25Hz 定时器补算 —— 占空比 ≤ 50%,预览仍以最新参数为准。
+// 典型会话(一次 ~3ms,调用间隔 25ms)下恒为「当场算」,行为与不合并时相同。从没算过 ⇒ 当场算。
+inline bool vadPreviewComputeDue(double nowMs, double lastStartMs, double lastCostMs, double floorMs) noexcept
+{
+    if (!(lastStartMs > 0.0))
+        return true;
+    return nowMs - lastStartMs >= std::max(2.0 * lastCostMs, floorMs);
+}
 
 } // namespace scvb::analysis

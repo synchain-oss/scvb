@@ -1119,6 +1119,8 @@ void ScvbOutputAudioProcessor::timerCallback()
     tickResegmentDebounce(now);
     // [J146] 拖动档预览的空闲结束(排在防抖之后:这一拍刚起飞的重分段已把 analysisRunning 置真,
     // 不会被误判成「没人接手」)。
+    // [J146 复审②] 合并下来的那一次(自适应占空比)在这里按最新参数补算;editor 的 emitTick 随后发出。
+    tickVadPreviewPending();
     tickVadPreviewExpiry(now);
 
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
@@ -3977,11 +3979,52 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
 // ============================================================================
 // [J146] 拖动档预览(契约 §1.18/§1.19;事件 §2.10)。设计与边界见头文件 VadPreviewState 那段头注。
 // ============================================================================
+void ScvbOutputAudioProcessor::requestVadPreview()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    vadPreviewLastUseMs_ = static_cast<std::int64_t>(scvb::steadyNowMs()); // 待算期间别让空闲收尾误收
+    if (scvb::analysis::vadPreviewComputeDue(juce::Time::getMillisecondCounterHiRes(), vadPreviewLastComputeStartMs_,
+                                             vadPreviewLastComputeCostMs_,
+                                             static_cast<double>(vadPreviewMinGapForTestMs_)))
+    {
+        vadPreviewPending_ = false;
+        previewVadSegmentation();
+    }
+    else
+    {
+        vadPreviewPending_ = true; // 合并:只记「有待算」,25Hz 定时器按最新参数补算
+    }
+}
+
+void ScvbOutputAudioProcessor::tickVadPreviewPending() noexcept
+{
+    if (!vadPreviewPending_)
+        return;
+    if (!scvb::analysis::vadPreviewComputeDue(juce::Time::getMillisecondCounterHiRes(), vadPreviewLastComputeStartMs_,
+                                              vadPreviewLastComputeCostMs_,
+                                              static_cast<double>(vadPreviewMinGapForTestMs_)))
+        return;
+    vadPreviewPending_ = false;
+    previewVadSegmentation();
+}
+
 const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previewVadSegmentation()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     const auto nowMs = static_cast<std::int64_t>(scvb::steadyNowMs());
     vadPreviewLastUseMs_ = nowMs;
+    // 本次重判决的起点与耗时(自适应占空比的输入,见 `vadPreviewComputeDue`)。任何返回路径都记。
+    struct ComputeMark
+    {
+        double* start;
+        double* cost;
+        double t0;
+        ~ComputeMark()
+        {
+            *start = t0;
+            *cost = juce::Time::getMillisecondCounterHiRes() - t0;
+        }
+    } mark{&vadPreviewLastComputeStartMs_, &vadPreviewLastComputeCostMs_, juce::Time::getMillisecondCounterHiRes()};
 
     // 窗:与 `tickResegmentDebounce` → `startAnalysis` **同一把尺子**(范围档 + 已采集时间线 →
     // 计算窗 / 写回窗)。预览回答的是「松手那一趟会怎么判」,窗不同就不是那一趟了。
@@ -4024,7 +4067,8 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
         // 写回集判据与 `startAnalysis` 的预扫逐字同款(enabled ∧ 此刻已连接 ∧ 写回窗内有覆盖;松手档
         // tracksMask=0)。
         inSet[ti] = runtime_.channels[ti].enabled && (connMask & (1u << t)) != 0 && frames.coveredHops(applyHops) != 0;
-        anyValid = anyValid || vadPreviewCacheValid_[ti];
+        // 只数写回集里的轨(判据与理由见 `vadPreviewRebuildThrottled` 的头注)。
+        anyValid = anyValid || (inSet[ti] && vadPreviewCacheValid_[ti]);
         if (inSet[ti] && (!vadPreviewCacheValid_[ti] || !windowSame || vadPreviewCacheSeq_[ti] != frames.mutationSeq()))
         {
             needRebuild = true;
@@ -4041,7 +4085,8 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
     //   · 覆盖层按缓存那一刻的修改序号记账,而特征已经变了 ⇒ `waveformOf` 退回读 vadP ——
     //     **采集写入进行中时 VAD 着色不随拖动变**(契约 §1.27 口径补写里写明了这条例外)。
     // 首建(一份有效缓存都没有)不限频。
-    const bool throttled = needRebuild && anyValid && nowMs - vadPreviewLastRebuildMs_ < kVadPreviewRebuildMinMs;
+    const bool throttled = scvb::analysis::vadPreviewRebuildThrottled(
+        needRebuild, anyValid, nowMs, vadPreviewLastRebuildMs_, kVadPreviewRebuildMinMs);
     std::uint64_t cFirst = firstHop;
     std::uint64_t cLast = lastHop;
     if (throttled)
@@ -4127,7 +4172,6 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
                                                                 vp, sp, hopS, vadPreviewPosterior_.data());
 
         // 覆盖层 = 写回窗那一截后验的量化值(与 `finishAnalysis` 写 vadP 同一个量化器、同一个窗)。
-        // 记的是**缓存那一刻**的修改序号:沿用旧缓存时它与现在的特征对不上,`waveformOf` 自然不读它。
         auto& q = vadPreviewQ_[ti];
         q.resize(static_cast<std::size_t>(applyLast - applyFirst));
         const std::size_t off = static_cast<std::size_t>(applyFirst - cFirst);
@@ -4135,7 +4179,8 @@ const ScvbOutputAudioProcessor::VadPreviewState& ScvbOutputAudioProcessor::previ
         {
             q[i] = scvb::analysis::quantizeVadPosterior(vadPreviewPosterior_[off + i]);
         }
-        vadPreviewQSeq_[ti] = vadPreviewCacheSeq_[ti];
+        // 限频期记哨兵(沿用的缓存算自旧窗,这条轨自己没被写过也不算数,见 `vadPreviewOverlaySeq`)。
+        vadPreviewQSeq_[ti] = scvb::analysis::vadPreviewOverlaySeq(throttled, vadPreviewCacheSeq_[ti]);
 
         // 段:裁到写回窗(窗外那一截松手后一个字节不动,画出来就是假话),hop → 秒。
         for (const auto& hs : hopSegs)
@@ -4189,6 +4234,7 @@ void ScvbOutputAudioProcessor::dropVadPreviewLocked() noexcept
     std::vector<float>().swap(vadPreviewPosterior_);
     vadPreviewApplyFirstHop_ = 0;
     vadPreviewApplyLastHop_ = 0;
+    vadPreviewPending_ = false; // 收尾了就没有「待算」可言(丢弃事件后不该再补算出一帧)
     if (wasActive)
     {
         ++vadPreview_.seq; // 让 editor 发一帧 active:false 收尾

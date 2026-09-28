@@ -12,7 +12,7 @@
 //        · 真切版本(丢弃事件)⇒ 立刻 active:false;
 //        · 没人接手(分析被取消 ⇒ 防抖被抑制、也没有在跑的分析)⇒ 空闲 1.5s 后 active:false;
 //   ③ **C++ 接线的源码钉子**:`OutputEditor` 编不进任何测试目标(依赖 WebView2),host 用例
-//      只能打到 processor 那一半 —— 「handler 真的调了 previewVadSegmentation 并当场发事件」
+//      只能打到 processor 那一半 —— 「handler 真的调了 requestVadPreview 并当场发事件」
 //      「emitTick 真的补发收尾帧」这两跳只能在这里按源码钉(与 smoke-tab3 ⑮(f) 同一做法)。
 //      删除式见 PR 描述(D-S1..D-S3)。
 //
@@ -260,12 +260,12 @@ log("=== ③ C++ 接线的源码钉子(OutputEditor 编不进测试目标)===");
     for (const fn of ["handleSetVadParams", "handleSetSegmentation"]) {
         const b = code(body(`void OutputEditor::${fn}(`));
         const iArm = b.indexOf("processor_.armResegment(");
-        const iPrev = b.indexOf("processor_.previewVadSegmentation();");
+        const iPrev = b.indexOf("processor_.requestVadPreview();");
         const iEmit = b.indexOf("emitVadPreview();");
         const iOk = b.lastIndexOf("c(okResp());");
         check(
             iArm >= 0 && iPrev > iArm && iEmit > iPrev && iOk > iEmit,
-            `(D-S1/D-S2) ${fn}:armResegment → previewVadSegmentation → emitVadPreview → 回执,四步齐且有序` +
+            `(D-S1/D-S2) ${fn}:armResegment → requestVadPreview → emitVadPreview → 回执,四步齐且有序` +
                 `(实得 arm=${iArm} prev=${iPrev} emit=${iEmit} ok=${iOk};排在 armResegment 前面会让空闲收尾误收第一拍)`,
         );
     }

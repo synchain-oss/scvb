@@ -563,8 +563,14 @@ public:
         std::uint16_t tracksMask = 0; // 写回集(bit t = 轨 t+1)
         std::array<std::vector<std::pair<double, double>>, scvb::engine::kNumTracks> spans{}; // 秒,半开
     };
-    // [M] 按当前 runtime 参数重算预览并返回(引用在下一次调用 / 结束前有效)。
+    // [M] 按当前 runtime 参数**当场**重算预览并返回(引用在下一次调用 / 结束前有效)。
     const VadPreviewState& previewVadSegmentation();
+    // [M] editor 的拖动档入口:到点就当场重算(= 上面那个),没到点只记「有待算」、由 25Hz 定时器按最新
+    // 参数补算 —— 自适应占空比,判据见 `scvb::analysis::vadPreviewComputeDue`(复审②:长会话里单次
+    // 重判决 ~40ms,web ≤50Hz 连发会把消息线程占满)。典型会话恒为当场算。
+    void requestVadPreview();
+    // 用例专用:给占空比判据加一个下限(毫秒),让「合并」这一支在本机的小素材上也能确定性地走到。
+    void setVadPreviewMinGapForTesting(std::int64_t ms) { vadPreviewMinGapForTestMs_ = ms; }
     // [M] 当前预览状态的**无锁引用** —— 只给单线程场景用(host 用例)。editor 走下面两个加锁版。
     const VadPreviewState& vadPreview() const { return vadPreview_; }
     // 加锁版(editor 发 §2.10 用)。为什么要锁:宿主可以在消息线程之外调 setStateInformation,
@@ -1090,6 +1096,12 @@ private:
     // [J146 复审①] 与参数无关那一半的重建限频(边播边采时特征每 25Hz 都在变,见实现处头注)。
     std::int64_t vadPreviewLastRebuildMs_ = 0;
     static constexpr std::int64_t kVadPreviewRebuildMinMs = 1000;
+    // [J146 复审②] 自适应占空比:上一次重判决的起点 / 耗时(juce 高精度毫秒)、是否有合并下来待算的一次。
+    double vadPreviewLastComputeStartMs_ = 0.0;
+    double vadPreviewLastComputeCostMs_ = 0.0;
+    bool vadPreviewPending_ = false;
+    std::int64_t vadPreviewMinGapForTestMs_ = 0;
+    void tickVadPreviewPending() noexcept; // [M] 25Hz;调用方已持 lifecycleMutex_
     // 结束预览:清覆盖层 / 段 / 缓存(整份释放内存);原本 active 才 seq +1(让 editor 发收尾帧)。
     void dropVadPreviewLocked() noexcept;
     // [M] 25Hz;调用方已持 lifecycleMutex_。空闲结束条件见 previewVadSegmentation 的头注。

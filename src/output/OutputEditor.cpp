@@ -2028,8 +2028,9 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
     // [J146] 拖动档(§1.18):每次调用即时重判决,预览经 §2.10 `scvb.vadPreview` 当场回发。
     // 放在 `armResegment` 之后:空闲结束判据要看「防抖排上了没有」,顺序反了第一拍会被误收。
-    // 与松手档同一条「调一次 = 做一次」:去重归 web 侧(见上面那段头注)。
-    processor_.previewVadSegmentation();
+    // 与松手档同一条「调一次 = 做一次」:去重归 web 侧(见上面那段头注)。长会话里单次重判决太贵时
+    // processor 会自适应合并(`requestVadPreview`),合并下来的那一次由 emitTick 补发。
+    processor_.requestVadPreview();
     emitVadPreview();
     c(okResp());
 }
@@ -2101,7 +2102,7 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     // 理由逐字见 handleSetVadParams 那处的头注。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
     // [J146] 拖动档(§1.19 同 §1.18):即时重判决 + 当场回发预览,理由逐字见 handleSetVadParams。
-    processor_.previewVadSegmentation();
+    processor_.requestVadPreview();
     emitVadPreview();
     c(okResp());
 }

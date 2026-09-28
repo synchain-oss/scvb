@@ -13056,7 +13056,8 @@ TEST_CASE("HOST SL472:轨道页七项随工程保存 —— 重开后运行态�
 //   D6 缓存命中判据删掉(每次重建)⇒ ★C 红;
 //   D7 段不裁写回窗 ⇒ ★R 红;
 //   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红;
-//   D9 重建不限频 ⇒ ★T 红。
+//   D9 重建不限频 ⇒ ★T 红;
+//   D10 / D11 / D12 / D13 见下方「复审②」那一组的头注(★D / ★A / ★S)。
 // ===========================================================================
 namespace
 {
@@ -13330,6 +13331,158 @@ TEST_CASE("HOST J146:范围档 ⇒ 预览只在写回窗内(段裁到窗、窗�
     r.in.prepareToPlay(kSr, kBlock);
     REQUIRE(r.waitUntilInjected());
     CHECK(r.out.previewVadSegmentation().active);
+}
+
+// ---------------------------------------------------------------------------
+// [J146 复审②] 调度两格 + 双轨两格。
+//   ★D 自适应占空比:距上次重判决不足「耗时 × 2 / 下限」时,拖动调用只记「有待算」,25Hz 定时器按最新
+//      参数补算(删除式 D10:去掉到点判据 ⇒ 第二发当场算、红;D11:定时器不补算 ⇒ 红)。
+//   ★A 限频只数写回集里的缓存:上一拍唯一有缓存的轨刚出、另一条刚进 ⇒ 按首建,不收尾(删 inSet 条件 ⇒ 红)。
+//   ★S 限频期覆盖层记哨兵:别的轨在采、把时间线延长,这条轨自己没被写过 ⇒ VAD 列也退回 vadP
+//      (删哨兵、照记缓存序号 ⇒ 这条轨读到旧窗算的覆盖层 ⇒ 红)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J146:自适应占空比 —— 没到点的拖动调用只记待算,定时器按最新参数补算", "[host][j146]")
+{
+    Rig r;
+    j146Prepare(r);
+    r.out.setVadPreviewMinGapForTesting(400); // 本机小素材一次只要零点几毫秒,给判据一个确定的下限
+    r.out.runtime().vadThresholdDb = -60.0f;
+    r.out.requestVadPreview();
+    const auto seq1 = r.out.vadPreview().seq;
+    REQUIRE(r.out.vadPreview().active); // 第一发:从没算过 ⇒ 当场算
+    const auto spans60 = r.out.vadPreview().spans[kTestChannel - 1].size();
+
+    r.out.runtime().vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    r.out.requestVadPreview();
+    CHECK(r.out.vadPreview().seq == seq1); // ★D 没到点:这一发不当场算
+    Rig::pumpMessages(700); // 过下限;25Hz 定时器补算
+    CHECK(r.out.vadPreview().seq == seq1 + 1); // ★D 补算了恰好一次
+    CHECK(r.out.vadPreview().spans[kTestChannel - 1].size() < spans60); // 而且按的是最新参数(默认门限)
+}
+
+namespace
+{
+// Rig 之外再挂第二条轨(ch5)的 Input;推块时两条可分别开关(造「只有一条在写」的时刻)。
+struct J146TwoTrack
+{
+    static constexpr int kChB = 5;
+    Rig r;
+    ScvbInputAudioProcessor inB;
+    juce::AudioBuffer<float> bufB{2, kBlock};
+
+    J146TwoTrack()
+    {
+        inB.setGroupId(kTestGroup);
+        inB.setChannelId(kChB);
+        inB.setPlayHead(&r.ph);
+        inB.prepareToPlay(kSr, kBlock);
+    }
+    ~J146TwoTrack() { inB.releaseResources(); }
+
+    void blocks(int n, bool a, bool b, float amp)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (a)
+            {
+                Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
+                r.in.processBlock(r.inBuf, r.midi);
+            }
+            if (b)
+            {
+                Rig::fillSine(bufB, amp, r.ph.timeSamples);
+                inB.processBlock(bufB, r.midi);
+            }
+            r.outBuf.clear();
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+                r.ph.timeSamples += kBlock;
+            if ((i % 4) == 3)
+                Rig::pumpMessages(4);
+        }
+    }
+
+    bool connected(int ch)
+    {
+        return scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[static_cast<std::size_t>(ch - 1)]);
+    }
+
+    // 两条都连上、都采一段(响 / 静交替),停走带。
+    void prepare()
+    {
+        r.ph.playing = true;
+        for (int w = 0; w < 4000 && !(connected(kTestChannel) && connected(kChB)); w += 40)
+        {
+            blocks(2, true, true, 0.25f);
+            Rig::pumpMessages(20);
+        }
+        REQUIRE(connected(kTestChannel));
+        REQUIRE(connected(kChB));
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        for (int i = 0; i < 3; ++i)
+        {
+            blocks(60, true, true, 0.5f);
+            blocks(120, true, true, 0.0f);
+        }
+        Rig::pumpMessages(400);
+        r.out.setCaptureEnabled(false);
+        r.ph.playing = false;
+        blocks(8, true, true, 0.0f);
+        Rig::pumpMessages(200);
+        REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    }
+};
+} // namespace
+
+TEST_CASE("HOST J146:限频只数写回集里的缓存 —— 一条刚出一条刚进,按首建、不收尾", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    auto& rt = t.r.out.runtime();
+    rt.vadThresholdDb = -60.0f;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = false; // 先只有 A
+    const auto& pvA = t.r.out.previewVadSegmentation();
+    REQUIRE(pvA.active);
+    REQUIRE(pvA.tracksMask == (1u << (kTestChannel - 1)));
+    const auto seqA = pvA.seq;
+
+    // 1s 之内:A 出、B 进。
+    rt.channels[static_cast<std::size_t>(kTestChannel - 1)].enabled = false;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = true;
+    const auto& pvB = t.r.out.previewVadSegmentation();
+    CHECK(pvB.active); // ★A 没被收尾(不闪)
+    CHECK(pvB.seq == seqA + 1); // 恰好一帧,中间没有 active:false
+    CHECK(pvB.tracksMask == (1u << (J146TwoTrack::kChB - 1)));
+    CHECK_FALSE(pvB.spans[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].empty());
+}
+
+TEST_CASE("HOST J146:限频期覆盖层记哨兵 —— 别的轨延长了时间线,这条轨的 VAD 列也退回 vadP", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    const double extent0 = t.r.out.capturedExtentSeconds();
+    constexpr int kCols = 128;
+    // 从没分析过 ⇒ vadP 全 0:这就是「退回 vadP」时该看到的那一份。
+    const auto vadP = t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad;
+    t.r.out.runtime().vadThresholdDb = -60.0f;
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    const auto builds1 = t.r.out.vadPreviewCacheBuilds();
+    REQUIRE(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad != vadP); // 前置:覆盖层在用
+
+    // 只让 B 接着采:A 一个字节都不写,时间线被 B 延长(计算窗变了,A 的修改序号没变)。
+    t.r.ph.playing = true;
+    t.r.out.setCaptureEnabled(true);
+    t.blocks(40, false, true, 0.5f);
+    Rig::pumpMessages(120);
+    t.r.out.setCaptureEnabled(false);
+    t.r.ph.playing = false;
+    REQUIRE(t.r.out.capturedExtentSeconds() > extent0);
+    REQUIRE(t.connected(kTestChannel)); // A 仍连着、仍在写回集里
+
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    REQUIRE(t.r.out.vadPreviewCacheBuilds() == builds1); // 前置:这一拍确实走了限频(没重建)
+    CHECK(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad == vadP); // ★S
 }
 
 // ===========================================================================

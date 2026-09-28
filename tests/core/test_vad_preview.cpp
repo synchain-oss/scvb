@@ -232,6 +232,29 @@ TEST_CASE("[j146] ChannelFrames::mutationSeq:改特征的入口都 +1,只动 vad
     CHECK(bumped());
 }
 
+TEST_CASE("[j146] 调度判据:重建限频只数写回集 / 限频期覆盖层记哨兵 / 自适应占空比", "[j146][sched]")
+{
+    using scvb::analysis::kVadPreviewOverlayStale;
+    using scvb::analysis::vadPreviewComputeDue;
+    using scvb::analysis::vadPreviewOverlaySeq;
+    using scvb::analysis::vadPreviewRebuildThrottled;
+    // ① 限频:三件同时成立才限
+    CHECK(vadPreviewRebuildThrottled(true, true, 500, 0, 1000));
+    CHECK_FALSE(vadPreviewRebuildThrottled(false, true, 500, 0, 1000)); // 不需要重建
+    CHECK_FALSE(vadPreviewRebuildThrottled(true, false, 500, 0, 1000)); // 写回集里没有可沿用的 ⇒ 首建
+    CHECK_FALSE(vadPreviewRebuildThrottled(true, true, 1000, 0, 1000)); // 到点
+    // 覆盖层哨兵:限频期永远对不上,不限频照记
+    CHECK(vadPreviewOverlaySeq(true, 7) == kVadPreviewOverlayStale);
+    CHECK(vadPreviewOverlaySeq(false, 7) == 7);
+    // ② 占空比
+    CHECK(vadPreviewComputeDue(10.0, 0.0, 0.0, 0.0)); // 从没算过
+    CHECK(vadPreviewComputeDue(125.0, 100.0, 3.0, 0.0)); // 典型:一次 3ms,25ms 后再来 ⇒ 当场
+    CHECK_FALSE(vadPreviewComputeDue(125.0, 100.0, 40.0, 0.0)); // 一次 40ms ⇒ 至少隔 80ms
+    CHECK(vadPreviewComputeDue(180.0, 100.0, 40.0, 0.0));
+    CHECK_FALSE(vadPreviewComputeDue(300.0, 100.0, 3.0, 400.0)); // 下限(用例专用)
+    CHECK(vadPreviewComputeDue(500.0, 100.0, 3.0, 400.0));
+}
+
 // 隐藏用例([.][j146cost]):拖动档预览的单次代价实测面(契约 §1.18「目标 <50ms」)。ctest 默认不跑 ——
 // 门禁里不该有按墙钟判红的断言(与 test_viz_publish_cost.cpp 的 [vizcost] 同一纪律)。
 // 手工:`scvb_tests.exe "[j146cost]"`,读 WARN 行。量的是计算核(VAD + S1 + 后验),不含 FrameStore 取样
