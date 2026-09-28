@@ -50,6 +50,12 @@ on:
         description: "要构建的 ref(出包前批次全量;默认主支线)"
         required: false
         default: feature/v1
+  # [T40] release.yml 以 reusable workflow 调用本文件,发版构建与出包硬门走同一份配方(不复制步骤)。
+  # 被调用时 `github` 上下文属于**调用方**:event_name 是 `push`、ref 是 `refs/tags/v…` ——
+  # 所以 detect-native 直通(非 pull_request)、build-and-validate 的 `if:` 为真、checkout 取 tag
+  # 指向的提交;产物由下面「Upload VST3 (release)」那一步按 tag 名上传给 release.yml 取用。
+  # 本文件自己的 `push` 触发只列了 branches,tag push 不会直接触发它 —— 那一步只在被调用时跑。
+  workflow_call:
 
 concurrency:
   # dispatch 也进 group:同一 ref 连点两次只留最后一次;不同 ref 的两次 dispatch 互不取消。
@@ -586,6 +592,18 @@ jobs:
           path: build/**/*.vst3
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload VST3 (release / 被 release.yml 调用)
+        # [T40] 只在 release.yml 以 workflow_call 调用、且由 v* tag push 触发时成立(见 on.workflow_call
+        # 的注释)。名字只用 tag 名、不带 sha:release.yml 的打包 job 按同一个名字取,两边不必对
+        # 「annotated tag 下 github.sha 指哪个对象」有共识。Release 资产才是长期保存的那份,这里只留 7 天。
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SCVB-VST3-win64-release-${{ github.ref_name }}
+          path: build/**/*.vst3
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload pluginval logs (on failure)
         if: failure()

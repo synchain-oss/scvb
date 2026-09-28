@@ -343,6 +343,9 @@ public:
     // prepareToPlay/setStateInformation 的 CRVS 写竞争 —— PR#55 重要1)。
     scvb::state::CrvsData crvsSnapshot();
 
+    // [SL-216] lead_select 时间线记录的快照(先排干音频线程队列;持 lifecycleMutex_)。
+    std::vector<scvb::analysis::LeadRun> leadTimelineSnapshot();
+
     // [SL-279] 当前 + 「上次全量分析所用」**四个值一次锁读全**。
     // 分成两个入口读会在两次 ScopedLock 之间放开锁 —— 那时「一次读全」只是一句注释,
     // 真正让它不出错的是「四个写者与 emitTick 都在消息线程上」,不是这把锁(复审第 1 轮)。
@@ -811,6 +814,17 @@ private:
     // 时 loadedChunks_ 会被整个换成 {PRMS},而那条路不走 readFeaturesChunk、两位也就不复位 ——
     // 「什么都不做就是原样回写」的前提当场失效,那份不认识的字节永久消失(#147 三轮复审)。
     std::vector<std::uint8_t> preservedFeatChunk_;
+
+    // [SL-216 / J136] lead_select 的时间线记录:音频线程在走带播放时每块 record 一条(无锁 SPSC),
+    // 消息线程在 timerCallback / startAnalysis / getStateInformation 里排干进 leadTimeline_。
+    // leadTimeline_ 只在持 lifecycleMutex_ 时读写(get/setStateInformation 不保证在消息线程)。
+    // 分析按区间取它的多数值,选中轨在该区间并入集合 C(见 AnalysisPipeline.h `leadRuns`)。
+    scvb::analysis::LeadRecorder leadRecorder_;
+    scvb::analysis::LeadTimeline leadTimeline_;
+    // 读到更高 minor 的 LEAD chunk:本构建不解,保存时原样回写这份字节(与 preservedFeatChunk_
+    // 同一条纪律,也同样不能指望 loadedChunks_ —— 只带 PRMS 的预设载入会把它整个换掉)。
+    bool leadChunkNewer_ = false;
+    std::vector<std::uint8_t> preservedLeadChunk_;
 
     // [SL-524] CRVS 拒载(chunk 在、decodeCrvs 不收:字节坏 / [SL-483] 段值非有限或越界 / minor 更高)
     // 之后要原样带走的**原始 CRVS 字节**。此前保存一律从 live crvsData_ 重编码,而拒载时 live 表

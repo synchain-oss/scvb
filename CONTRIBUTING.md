@@ -115,4 +115,4 @@ npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md do
 
 ## 9. 发布流程(仅维护者)
 
-版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 三个插件打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。
+版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 三个插件(Input / Output / 可选的 Monitor)打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。
