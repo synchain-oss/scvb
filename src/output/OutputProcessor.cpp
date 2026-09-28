@@ -1497,9 +1497,26 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     chunks.set(scvb::state::kFourccUiConfig, std::move(uicf));
 
     // CRVS:段真身(版本名/段表/pan_curve)从 live crvsData_ 编码(T29;覆盖 loadedChunks_ 的旧 CRVS)。
+    // [SL-524][J122] 例外:上次载入拒收了 CRVS、且 live 表自那以后没变过 ⇒ 原样写回拒收的原始字节,
+    // 不拿保留下来的旧表(新开实例 = 空表)去覆盖它。判据与理由见 crvsPreserved_ 的声明处。
     std::vector<std::uint8_t> crvs;
-    if (scvb::state::encodeCrvs(crvsData_, crvs))
-        chunks.set(scvb::state::kFourccCrvs, std::move(crvs));
+    const bool crvsEncoded = scvb::state::encodeCrvs(crvsData_, crvs);
+    if (crvsPreserved_ && (!crvsEncoded || crvs == crvsAtRejectEncoded_))
+    {
+        chunks.set(scvb::state::kFourccCrvs, preservedCrvsChunk_);
+    }
+    else
+    {
+        if (crvsPreserved_)
+        {
+            // 用户改过段表/版本:从这一次起写新表,保留态解除且不再恢复。
+            crvsPreserved_ = false;
+            preservedCrvsChunk_.clear();
+            crvsAtRejectEncoded_.clear();
+        }
+        if (crvsEncoded)
+            chunks.set(scvb::state::kFourccCrvs, std::move(crvs));
+    }
 
     std::vector<std::uint8_t> blob;
     if (!scvb::state::encodeContainer(chunks, blob))
@@ -2242,6 +2259,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 不可逆、看不见的。两害相权取其轻。
     bool crvsLoaded = false;
     bool crvsChunkPresent = false;
+    std::vector<std::uint8_t> rejectedCrvs; // [SL-524] 拒收时的原始字节(chunk 在、decodeCrvs 不收)
     if (const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs); crvs != nullptr)
     {
         crvsChunkPresent = true;
@@ -2250,6 +2268,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         {
             crvsData_ = std::move(decoded);
             crvsLoaded = true;
+        }
+        else
+        {
+            rejectedCrvs = crvs->payload;
         }
     }
     // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。
@@ -2267,6 +2289,21 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
                 meta.name = (v == 0) ? "V1" : "V2"; // 默认版本名([J05])
             }
         }
+    }
+    // [SL-524][J122] 保留态:成功解码 ⇒ 解除;chunk 在但被拒 ⇒ 记下原始字节 + 此刻 live 表的编码
+    // (排在上面版本名兜底之后,否则兜底本身会被当成「用户改过」);缺 chunk ⇒ 不动(见声明处)。
+    if (crvsLoaded)
+    {
+        crvsPreserved_ = false;
+        preservedCrvsChunk_.clear();
+        crvsAtRejectEncoded_.clear();
+    }
+    else if (crvsChunkPresent)
+    {
+        crvsPreserved_ = true;
+        preservedCrvsChunk_ = std::move(rejectedCrvs);
+        crvsAtRejectEncoded_.clear();
+        (void)scvb::state::encodeCrvs(crvsData_, crvsAtRejectEncoded_); // 失败 = 留空:之后保存时 live 编码成功即判「改过」
     }
     crvsRevision_.fetch_add(1, std::memory_order_release);
 

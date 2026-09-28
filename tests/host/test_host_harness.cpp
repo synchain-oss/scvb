@@ -4277,6 +4277,156 @@ TEST_CASE("HOST SL-483:段 pan 为 NaN 的 CRVS 整份拒载,段表与曲线原�
     CHECK(r.out.hasCrvsNotRestored());
 }
 
+// ---------------------------------------------------------------------------
+// [SL-524][J122] CRVS 拒载后保存不得用 live 表覆盖原字节。
+//
+// 缺陷:拒载时 live 表是「保留下来的旧表」(新开实例 = 空表),而保存一律从 live 表重编码 ⇒
+// 打开一份段值损坏的工程、什么都不做就保存,用户原来的段表与版本永久丢失。
+// 裁定:拒载后保存原样写回原字节(不重编码),直到用户做了改变段表/版本的操作;之后写新表。
+// 两格分别钉「原样写回」与「改过就写新表」两半,外加「只带 PRMS 的预设不解除保留」一格。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 取一份 state 里 CRVS chunk 的原始载荷。
+std::vector<std::uint8_t> crvsPayloadOf(const juce::MemoryBlock& blob)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
+    REQUIRE(crvs != nullptr);
+    return crvs->payload;
+}
+
+// 把 base 里的 CRVS 载荷换成 payload(容器层解开→换→重编,与生产同一套编解码)。
+std::vector<std::uint8_t> blobWithCrvsPayload(const juce::MemoryBlock& base, const std::vector<std::uint8_t>& payload)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    bool found = false;
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCrvs)
+        {
+            c.payload = payload;
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+// 一份会被 [SL-483] 拒收的 CRVS:ch1 两段合法(用户的数据),ch2 一段 pan=NaN。
+std::vector<std::uint8_t> rejectedCrvsPayload(const juce::MemoryBlock& base, int versionActive)
+{
+    scvb::state::CrvsData d;
+    const auto basePayload = crvsPayloadOf(base);
+    REQUIRE(scvb::state::decodeCrvs(basePayload.data(), basePayload.size(), d));
+    auto& v = d.versions[static_cast<std::size_t>(versionActive - 1)];
+    const auto flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    v.tracks[0].segments = {scvb::state::Segment{0, 480000, 30.0f, -6.0f, flags},
+                            scvb::state::Segment{480000, 960000, -40.0f, -3.0f, flags}};
+    v.tracks[1].segments = {
+        scvb::state::Segment{0, 480000, std::numeric_limits<float>::quiet_NaN(), -6.0f, flags}};
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeCrvs(d, payload));
+    return payload;
+}
+} // namespace
+
+TEST_CASE("HOST SL-524:CRVS 拒载后保存原样写回原字节,改段后写新表", "[host][sl524]")
+{
+    Rig r; // 新开实例:live 段表为空,正是「打开损坏工程」的现场
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const auto badPayload = rejectedCrvsPayload(base, r.out.versionActive());
+    const auto bad = blobWithCrvsPayload(base, badPayload);
+
+    r.out.setStateInformation(bad.data(), static_cast<int>(bad.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored()); // 前提:确实走了拒载那一支
+    REQUIRE(segmentsOfTrack(r.out, 1).empty()); // 前提:live 表是空的(不空的话下面比不出覆盖)
+
+    // ★ 前半:什么都不做,连存两次,CRVS 都是原字节逐字节相同(不是空表,也不是重编码)。
+    for (int i = 0; i < 2; ++i)
+    {
+        INFO("save #" << (i + 1));
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == badPayload);
+    }
+
+    // ★ 后半:用户改了段表(设为手动 = 一条撤销事务)→ 保存写新表。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+    const auto live = segmentsOfTrack(r.out, 1);
+    REQUIRE(live.size() == 1u);
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        const auto p = crvsPayloadOf(saved);
+        CHECK(p != badPayload);
+        scvb::state::CrvsData decoded;
+        REQUIRE(scvb::state::decodeCrvs(p.data(), p.size(), decoded));
+        CHECK(sameSegments(decoded.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments,
+                           live));
+    }
+
+    // 保留态一旦解除就不再恢复:撤销回空表后保存,写的是 live(空表),不是原字节。
+    REQUIRE(r.out.undo());
+    REQUIRE(segmentsOfTrack(r.out, 1).empty());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) != badPayload);
+    }
+}
+
+TEST_CASE("HOST SL-524:CRVS 字节损坏同样原样写回;只带 PRMS 的预设不解除保留;成功载入解除",
+          "[host][sl524]")
+{
+    Rig r;
+
+    juce::MemoryBlock base;
+    r.out.getStateInformation(base);
+    const std::vector<std::uint8_t> garbage(16, std::uint8_t{0xEE}); // 解不开的载荷
+    const auto broken = blobWithCrvsPayload(base, garbage);
+
+    r.out.setStateInformation(broken.data(), static_cast<int>(broken.size()));
+    Rig::pumpMessages(100);
+    REQUIRE(r.out.hasCrvsNotRestored());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == garbage);
+    }
+
+    // 灌一份不带 CRVS 的 blob(轨道/参数预设):段表什么都没说 ⇒ 保留态不动。
+    const auto stripped = blobWithoutCrvs(base);
+    r.out.setStateInformation(stripped.data(), static_cast<int>(stripped.size()));
+    Rig::pumpMessages(100);
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == garbage); // ★ 不能指望 loadedChunks_:它此刻已不含 CRVS
+    }
+
+    // 对照:成功载入一份合法 CRVS ⇒ 保留态解除,保存写回的是那份合法表的编码。
+    r.out.setStateInformation(base.getData(), static_cast<int>(base.getSize()));
+    Rig::pumpMessages(100);
+    REQUIRE_FALSE(r.out.hasCrvsNotRestored());
+    {
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved);
+        CHECK(crvsPayloadOf(saved) == crvsPayloadOf(base));
+    }
+}
+
 // ===========================================================================
 // [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
 //
