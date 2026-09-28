@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional> // [J148] withPrmsRoot 的编辑回调
 #include <limits>
 #include <set> // [SL-231] GestureSpy 的配对校验
 
@@ -3261,6 +3262,110 @@ TEST_CASE("HOST UICF:CFGS 缺失/损坏时 master_chart_mode 仍按 UICF 生效(
         out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
         CHECK(out.masterChartMode() == "trajectory");
     }
+}
+
+// ---------------------------------------------------------------------------
+// [J148] ui.active_tab 随工程保存:契约 §1.31「写 state ui.active_tab(重开面板恢复上次 tab)」。
+// 此前它只活在运行期 —— 同一会话里关窗再开能回到原 tab,**存盘重开工程**一律回 Tab1。
+// 这里走真 Processor 的 get/setStateInformation(宿主存/开工程就是这两个口);编码本身
+// (名字表、非法值)由 scvb_params_tests 的 J148 那一格钉。
+// 各段读数彼此独立,一律 CHECK(REQUIRE 一红就掐断整格,「另一条仍绿」与「没跑」同形)。
+// ---------------------------------------------------------------------------
+namespace
+{
+using scvb::output::OutputActiveTab;
+
+OutputActiveTab tabOf(ScvbOutputAudioProcessor& p)
+{
+    return p.runtime().activeTab.load(std::memory_order_relaxed);
+}
+
+// 把一份完整工程的 PRMS 根节点属性面改一下再原样封回(其余 chunk 一字不动)。
+// 用来造「本版之前存的工程」(删掉属性)与「手改过的工程」(塞非法值)——
+// 新构建自己存出来的工程恒带合法属性,这两种形状只能这样造。
+std::vector<std::uint8_t> withPrmsRoot(const juce::MemoryBlock& full, const std::function<void(juce::ValueTree&)>& edit)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks) ==
+            scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms);
+    REQUIRE(prms != nullptr);
+    std::unique_ptr<juce::XmlElement> xml(
+        juce::AudioProcessor::getXmlFromBinary(prms->payload.data(), static_cast<int>(prms->payload.size())));
+    REQUIRE(xml != nullptr);
+    juce::ValueTree root = juce::ValueTree::fromXml(*xml);
+    edit(root);
+    std::unique_ptr<juce::XmlElement> outXml(root.createXml());
+    REQUIRE(outXml != nullptr);
+    juce::MemoryBlock mb;
+    juce::AudioProcessor::copyXmlToBinary(*outXml, mb);
+    const auto* bytes = static_cast<const std::uint8_t*>(mb.getData());
+    chunks.set(scvb::state::kFourccPrms, std::vector<std::uint8_t>(bytes, bytes + mb.getSize()));
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+    return blob;
+}
+
+juce::String prmsActiveTabOf(const juce::MemoryBlock& full)
+{
+    juce::String seen = "<none>";
+    (void)withPrmsRoot(full, [&seen](juce::ValueTree& root) {
+        seen = root.getProperty(scvb::output::kUiActiveTabProp, juce::String("<none>")).toString();
+    });
+    return seen;
+}
+} // namespace
+
+TEST_CASE("HOST J148:ui.active_tab 随工程往返,老工程/非法值回落 Tab1 且不残留上一个工程的 tab", "[host][j148]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    // ① 新实例默认 Tab1(新建工程打开面板就在总览页)。
+    ScvbOutputAudioProcessor a;
+    CHECK(tabOf(a) == OutputActiveTab::kMaster);
+
+    // ② 往返:切到 Tab3(= 桥入口 setActiveTab 做的那件事)→ 宿主存工程 → 另一个实例开这份工程。
+    //    四个值里挑一个非默认的,读回若是 master 就分不清「恢复了」还是「根本没存」。
+    a.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    juce::MemoryBlock saved;
+    a.getStateInformation(saved);
+    CHECK(prmsActiveTabOf(saved) == "wave"); // 工程文件里写的是 §1.31 字面量(落在 PRMS 根节点)
+
+    ScvbOutputAudioProcessor b;
+    REQUIRE(tabOf(b) == OutputActiveTab::kMaster); // 前置:b 起点不是 wave,下面的读数才有分辨力
+    b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+    CHECK(tabOf(b) == OutputActiveTab::kWave);
+
+    // ③ 其余三个值同样往返(同一个实例连续载入,每次都与上一次不同)。
+    for (const OutputActiveTab t : {OutputActiveTab::kSettings, OutputActiveTab::kTracks, OutputActiveTab::kMaster})
+    {
+        a.runtime().activeTab.store(t, std::memory_order_relaxed);
+        juce::MemoryBlock blob;
+        a.getStateInformation(blob);
+        b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(tabOf(b) == t);
+    }
+
+    // ④ 本版之前存的工程(PRMS 没有这个属性):停在 Tab3 的实例载入它 ⇒ 回 Tab1,
+    //    **不许**停在上一个工程的 Tab3 —— 否则下次保存就把别的工程的 tab 写进这一份(#96 同族)。
+    b.runtime().activeTab.store(OutputActiveTab::kWave, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> oldProject = withPrmsRoot(
+        saved, [](juce::ValueTree& root) { root.removeProperty(scvb::output::kUiActiveTabProp, nullptr); });
+    b.setStateInformation(oldProject.data(), static_cast<int>(oldProject.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑤ 手改过 / 来自未来版本的值(四值之外)⇒ 同样回 Tab1,不报错。
+    b.runtime().activeTab.store(OutputActiveTab::kSettings, std::memory_order_relaxed);
+    const std::vector<std::uint8_t> tampered = withPrmsRoot(saved, [](juce::ValueTree& root) {
+        root.setProperty(scvb::output::kUiActiveTabProp, juce::String("suggest"), nullptr);
+    });
+    b.setStateInformation(tampered.data(), static_cast<int>(tampered.size()));
+    CHECK(tabOf(b) == OutputActiveTab::kMaster);
+
+    // ⑥ 载入之后再存:存下来的是**这份工程自己的** tab(⑤ 之后是 master),不是加载前的 settings。
+    juce::MemoryBlock resaved;
+    b.getStateInformation(resaved);
+    CHECK(prmsActiveTabOf(resaved) == "master");
 }
 
 // ---------------------------------------------------------------------------

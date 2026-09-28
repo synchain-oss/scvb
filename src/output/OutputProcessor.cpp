@@ -1421,16 +1421,19 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 先写 PRMS 就会把旧 GUID 存进工程,下次开工程按旧 GUID 去找,找到的是别人那份或者空。
     writeFeaturesChunk(chunks);
 
-    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
+    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位 + ui.active_tab。
     // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表把 guide_seen /
-    // tour_seen / lang_chosen 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language 才是
-    // 两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
+    // tour_seen / lang_chosen / active_tab 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language
+    // 才是两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
     // 见 OutputUiState.h 头注(那里另记了 CFGS 尾扩口径自 [J69/U24] 起的变化,以及跨 abi 整块
     // 拒载是 PRMS/CFGS 共同处境、论证不了字段该放哪一节)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
                                        runtime_.tourSeen.load(std::memory_order_relaxed),
                                        runtime_.langChosen.load(std::memory_order_relaxed)});
+    // [J148] §1.31「重开面板恢复上次 tab」的落盘那一半。存的是**此刻**的 tab —— 桥入口只改内存,
+    // 真正写进工程只发生在宿主来取 state 的这一刻,所以用户来回切 tab 不会产生任何落盘动作。
+    scvb::output::writeActiveTab(state, runtime_.activeTab.load(std::memory_order_relaxed));
     scvb::output::writeSessionGuid(state, sessionGuid_); // [SL-215] 会话 GUID 随 PRMS 落盘
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
@@ -2166,6 +2169,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
+            // [J148] ui.active_tab:PRMS 解得开时,属性缺失(本版之前存的工程)或非四值 ⇒ Tab1,**照样写回**,
+            // 不做「属性缺失就保留现值」—— 那样上一个工程停在哪个 tab,载入这份就还停在哪(#96 陈旧值同族)。
+            // 范围只到这一层:PRMS 整节缺失 / XML 解不开时根本进不来,tab 与同节的 123 个参数、上面三个
+            // 首启位一起保持现值(「没有信息」不读成「回默认」,与 SL-226 同口径)。本插件存的工程恒带 PRMS。
+            // 编辑器开着时,下一帧 scvb.state 带着新值到页面,页面按 §1.31 切过去。
+            runtime_.activeTab.store(scvb::output::readActiveTab(loaded), std::memory_order_relaxed);
             // [SL-215] 工程里存过合法 GUID 就沿用它 —— 这是「同一工程反复开,sidecar 指向同一份
             // 特征」的全部依据。缺失(老工程)或形状非法(不可信字节)时保留构造期生成的那一个,
             // 绝不把畸形串带进文件名;下次保存即把这个新的写回去。
