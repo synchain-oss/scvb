@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "OutputAuthority.h"
+#include "output/StateRestoreDiag.h" // [SL-218] 未恢复节位图(JUCE-free)
 #include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
 #include "dsp/ParamSmoother.h"
@@ -301,9 +302,20 @@ public:
     // + 提示升级,绝不静默降级;原 blob 由宿主工程保有)。消息线程读写(setStateInformation 持
     // lifecycleMutex_),T30 桥经此把 abiMismatch 横幅推给 UI(Input PR#51 红旗#1 同款)。
     bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
-    // [SL-217] 最近一次 setStateInformation 是否**没能恢复段真身**(缺 CRVS chunk 或解码失败)。
-    // 此时段表被**保留**而不是清空(§7.3 不得静默丢数据),这一位供诊断与后续上桥告警使用。
-    bool hasCrvsNotRestored() const noexcept { return crvsNotRestored_; }
+    // [SL-217] 最近一次 setStateInformation 是否**没能恢复段真身**(缺 CRVS chunk / 解码失败 /
+    // [SL-219] CFGS 缺失或解不开、在读 CRVS 之前就早退了)。此时段表被**保留**而不是清空
+    // (§7.3 不得静默丢数据)。
+    // [SL-218] 上桥走下面的位图:编辑器按它发 §5.1 `stateNotFullyRestored`(琥珀横幅)。
+    // 两条整份拒载的早退(容器损坏 / 更高 abi)**不改**这两个值:那两支什么都没载入,更高 abi
+    // 另有 `newerState` 横幅;容器损坏那支保存时写的是 live 状态、并不原样保留原字节,
+    // 在那一支亮这条横幅(「原数据会原样保留」)就是一句假话。
+    bool hasCrvsNotRestored() const noexcept
+    {
+        return (stateNotRestoredMask() & scvb::output::kNotRestoredCrvsAny) != 0;
+    }
+    // [SL-218] 最近一次载入没恢复的节(位定义见 StateRestoreDiag.h)。0 = 全部恢复。
+    // setStateInformation 写(持 lifecycleMutex_,不保证在消息线程)、编辑器 emitTick 读(消息线程)⇒ 原子。
+    std::uint8_t stateNotRestoredMask() const noexcept { return stateNotRestoredMask_.load(std::memory_order_acquire); }
     scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
 
     // ---- T29 桥面入口(消息线程)----
@@ -690,7 +702,8 @@ private:
 
     // PR#53 R1:state abi 拒载标志 + 保留的宿主原始字节 + 上次成功加载的容器(未知 chunk 原样回写)。
     bool stateAbiMismatch_ = false;
-    bool crvsNotRestored_ = false; // [SL-217] 最近一次加载没恢复段真身(段表已保留,不清空)
+    // [SL-217/SL-218] 最近一次载入没恢复的节(段表已保留,不清空);位定义见 StateRestoreDiag.h。
+    std::atomic<std::uint8_t> stateNotRestoredMask_{0};
     scvb::u32 stateAbiSeen_ = 0;
     std::vector<std::uint8_t> preservedStateBlob_; // 拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写)
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
@@ -734,13 +747,18 @@ private:
     // 已开实例的情形(有意,按 [J122] 同一口径):实例里已有段表 A,再载入一份 CRVS 被拒的 B,
     // 界面仍显示 A(SL-217 保留),保存却写回 B 的原字节 —— 那份字节才是宿主给的工程内容;
     // 代价是 A 在下次重开时不再出现(B 仍被拒 ⇒ 空表),除非用户在此之前改动过段表。
-    // 拒载时界面没有提示,这一半未接线。
+    // 拒载时的提示由 [SL-218] 接上:琥珀横幅⑪(§5.1 `stateNotFullyRestored`,detail.rejected 含 "CRVS",
+    // 位图见上面 stateNotRestoredMask_)。
     // 解除只在两处:判出「改过」且容器编码成功的那次保存,或下一次 CRVS 成功解码。载入**不带** CRVS 的
     // blob(轨道/参数预设) 不动它 —— 与 [SL-217]「缺 chunk 不等于删除」同口径,也不能指望 loadedChunks_ 还留着原字节
     // (那条路会把 loadedChunks_ 整个换成 {PRMS},理由同上面 preservedFeatChunk_)。
+    // [SL-219] 「chunk 在、却没被采用」还有第二种来路:CFGS 缺失或解不开,setStateInformation 在读
+    // CRVS 之前就早退了。那份 CRVS 同样要原样带走,否则 [SL-218] 横幅那句「原数据会原样保留」是假话。
+    // 两条路共用 holdRejectedCrvs(进入保留态的唯一写法)。
     bool crvsPreserved_ = false;
     std::vector<std::uint8_t> preservedCrvsChunk_;
     std::vector<std::uint8_t> crvsAtRejectEncoded_;
+    void holdRejectedCrvs(std::vector<std::uint8_t> raw);
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

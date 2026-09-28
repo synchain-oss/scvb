@@ -14,6 +14,7 @@
 
 #include "BridgeArgs.h"
 #include "OutputParams.h"
+#include "StateRestoreDiag.h"
 
 using Catch::Approx;
 
@@ -644,6 +645,96 @@ TEST_CASE("planConditionErrorEmit:noTimeline 的边沿/撤销/去重/丢弃", "[
         CHECK_FALSE(retract.send);
         CHECK(retract.nextShown); // 撤销帧没发出去,不许当成已撤
     }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-218] `scvb.error{stateNotFullyRestored}` 的**发送面判定**与 detail 的两张 fourcc 表。
+//
+// 理由同上面 SL-412 / SL-478 两组(`OutputEditor` 编不进任何 C++ 测试目标):条件源会不会
+// 真的被置起来由 `HOST SL-218` 在真 processor 上断,调用点由 smoke-tab2-interactions.mjs 的
+// [SL-218] 行形态钉子锁住。比 SL-478 多一维:位图变了(换了一份缺的节不同的工程)要重发。
+// ---------------------------------------------------------------------------
+TEST_CASE("planStateNotRestoredEmit:边沿/换位图重发/撤销/去重/丢弃", "[output][bridge][SL218]")
+{
+    using scvb::output::planStateNotRestoredEmit;
+    constexpr std::uint8_t kCrvsRej = scvb::output::kNotRestoredCrvsRejected;
+    constexpr std::uint8_t kPreset = scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing;
+
+    SECTION("N1 有位 + 屏上没有 ⇒ 发 active:true 并记下位图")
+    {
+        const auto p = planStateNotRestoredEmit(kCrvsRej, true, 0);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShownMask == kCrvsRej);
+    }
+    SECTION("N2 位图没变 ⇒ 不重复发")
+    {
+        const auto p = planStateNotRestoredEmit(kCrvsRej, true, kCrvsRej);
+        CHECK_FALSE(p.send);
+        CHECK(p.nextShownMask == kCrvsRej);
+    }
+    SECTION("N3 位图变了 ⇒ 再发一次 active:true(detail 那两张表是读给人看的)")
+    {
+        const auto p = planStateNotRestoredEmit(kPreset, true, kCrvsRej);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShownMask == kPreset);
+    }
+    SECTION("N4 全部恢复且屏上挂着 ⇒ 发 active:false 撤横幅")
+    {
+        const auto p = planStateNotRestoredEmit(0, true, kCrvsRej);
+        CHECK(p.send);
+        CHECK_FALSE(p.active);
+        CHECK(p.nextShownMask == 0);
+    }
+    SECTION("N5 全部恢复且屏上本来就没有 ⇒ 不发空撤销帧")
+    {
+        const auto p = planStateNotRestoredEmit(0, true, 0);
+        CHECK_FALSE(p.send);
+    }
+    SECTION("N6 不可见 ⇒ 一律不发,且不推进记账")
+    {
+        const auto raise = planStateNotRestoredEmit(kCrvsRej, false, 0);
+        CHECK_FALSE(raise.send);
+        CHECK(raise.nextShownMask == 0);
+        const auto retract = planStateNotRestoredEmit(0, false, kCrvsRej);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShownMask == kCrvsRej);
+    }
+}
+
+TEST_CASE("notRestoredFourccs:位图 → detail 的 missing / rejected 两张表", "[output][bridge][SL218]")
+{
+    using scvb::output::notRestoredFourccs;
+    const auto asStrings = [](const std::vector<const char*>& v) {
+        std::vector<std::string> out;
+        for (const char* s : v)
+            out.emplace_back(s);
+        return out;
+    };
+    using SV = std::vector<std::string>;
+
+    const auto none = notRestoredFourccs(0);
+    CHECK(none.missing.empty());
+    CHECK(none.rejected.empty());
+
+    // 只带 PRMS 的预设:两节都不在。
+    const auto preset =
+        notRestoredFourccs(scvb::output::kNotRestoredCfgsMissing | scvb::output::kNotRestoredCrvsMissing);
+    CHECK(asStrings(preset.missing) == SV{"CFGS", "CRVS"});
+    CHECK(preset.rejected.empty());
+
+    // CFGS 坏了、CRVS 在但因早退没被采用:两节都进 rejected。
+    const auto cfgsBad =
+        notRestoredFourccs(scvb::output::kNotRestoredCfgsRejected | scvb::output::kNotRestoredCrvsRejected);
+    CHECK(cfgsBad.missing.empty());
+    CHECK(asStrings(cfgsBad.rejected) == SV{"CFGS", "CRVS"});
+
+    // 四位各落各的表(换位不串表)。
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCrvsMissing).missing) == SV{"CRVS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCrvsRejected).rejected) == SV{"CRVS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCfgsMissing).missing) == SV{"CFGS"});
+    CHECK(asStrings(notRestoredFourccs(scvb::output::kNotRestoredCfgsRejected).rejected) == SV{"CFGS"});
 }
 
 // ---------------------------------------------------------------------------

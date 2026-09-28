@@ -1573,6 +1573,9 @@ function renderHeader() {
  * code,`active:false` 这条撤下机制对它们根本不适用。
  * ⑦ 同样不给 ✕:它自带一枚「继续写入自动化」的动作钮(§1.34),关掉横幅等于把一个
  * **待办**藏起来;⑧⑨⑩ 是纯提示,关掉只少一句话。
+ * [SL-218] ⑪ `stateNotFullyRestored` 是 `scvb.error` 的 code,与 ②-⑥ 同一类:契约 §5.1
+ * 降级纪律② 已把它写进「持续性条件」(横幅①-⑥、⑪),不给 ✕,下一次全部恢复的载入发
+ * `active:false` 才撤下。
  */
 function renderBanners() {
     const vs = viewStore();
@@ -1639,6 +1642,11 @@ function renderBanners() {
     // `docs/SCVB_CONTRACT.md` §5.1 的 UI 落点列 / 降级纪律①。
     vs.noTimeline = err.has("noTimeline");
     show($("banner-noTimeline"), vs.noTimeline);
+
+    // ⑪ [SL-218] 上次载入工程时段表没能恢复(§5.1 `stateNotFullyRestored`)。只提示,不挡任何控件:
+    // 段表被保留、原始字节原样写回([SL-524][J122]),用户照常可以编辑或重新分析。
+    // detail 的 missing / rejected 两张 fourcc 表不上屏(给诊断用),横幅只说那一句话。
+    show($("banner-stateNotRestored"), err.has("stateNotFullyRestored"));
 
     // ⑦ 加载守卫(数据源 scvb.state.print_guard,不是 error code)
     show($("banner-printGuard"), !!(s.print_guard && s.print_guard.pending));
@@ -2285,7 +2293,7 @@ if (bridge) {
     });
 }
 
-/** §5.1 七码;表外一律进诊断区(UI 不静默)。 */
+/** §5.1 八码;表外一律进诊断区(UI 不静默)。 */
 const KNOWN_CODES = new Set([
     "srMismatch",
     "secondOutput",
@@ -2294,6 +2302,7 @@ const KNOWN_CODES = new Set([
     "sidecarMissing",
     "noTimeline",
     "sidecarSwitched",
+    "stateNotFullyRestored",
 ]);
 
 /**

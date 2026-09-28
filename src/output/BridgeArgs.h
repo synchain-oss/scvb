@@ -470,6 +470,41 @@ inline SrMismatchEmitPlan planSrMismatchEmit(const SrMismatchTarget& target, boo
     return p;
 }
 
+// [SL-218] `scvb.error` 的 `stateNotFullyRestored` 一档:这一拍发不发、发哪一态。
+//
+// 条件源 = `ScvbOutputAudioProcessor::stateNotRestoredMask()`(位定义见 StateRestoreDiag.h;
+// 每次载入整份重算,下一次全部恢复的载入把它清成 0)。形态与 `planNewerStateEmit` 同一条纪律
+// (边沿 + 撤销 + 不可见不记账),记账记的是「屏上那一条对应的位图」而不是单个 bool:
+// detail 里的 `missing` / `rejected` 是**读给用户 / 诊断看的**,换了一份缺的节不同的工程
+// 却停在旧的那两张表上,是一句关于当前工程的假话。
+//   · mask ≠ 0 且与屏上那一条不同(含屏上没有)⇒ 发 `active:true`,记下 mask;
+//   · mask ≠ 0 且与屏上相同 ⇒ 不发(持续态,逐拍比会发 25 次/秒);
+//   · mask = 0 且屏上有 ⇒ 发 `active:false` 撤横幅,记 0;
+//   · mask = 0 且屏上没有 ⇒ 不发空撤销帧;
+//   · 不可见 ⇒ 一律不发**且不推进记账**(理由同 `planNewerStateEmit` 的 `!visibleNow` 支)。
+// `shownMask == 0` 就是「屏上没有这一条」—— mask 为 0 从来不会作为 active:true 发出去,
+// 所以这里不需要另一个 bool。
+struct MaskErrorEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    std::uint8_t nextShownMask = 0; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline MaskErrorEmitPlan planStateNotRestoredEmit(std::uint8_t mask, bool visibleNow, std::uint8_t shownMask) noexcept
+{
+    MaskErrorEmitPlan p;
+    p.nextShownMask = shownMask;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (mask == shownMask)
+        return p; // 屏上已是这一态(含「全部恢复且本来就没有」)
+    p.send = true;
+    p.active = mask != 0;
+    p.nextShownMask = mask;
+    return p;
+}
+
 // -----------------------------------------------------------------------------
 // [SL-509] §1.2 `setCaptureEnabled` 的 `noTimeline` 拒绝支:**只挡「打开」**([J107],用户
 // 2026-09-26 裁定「允许关、拒绝开」)。

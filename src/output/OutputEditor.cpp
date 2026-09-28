@@ -330,6 +330,9 @@ void OutputEditor::emitTick()
     // [SL-478] 横幅⑥ 的生产者。条件是 processor 定时器里去抖过的值(0.5s,与清注入 mask 同一判据),
     // 所以这里逐拍调用不会让横幅随单块抖动翻转;边沿/撤销/不可见不记账由 plan 管。
     emitNoTimelineError();
+    // [SL-218] 横幅⑪ 的生产者。条件是 processor 在 setStateInformation 里整份重算的位图,
+    // 与 `newerState` 一样收在这一拍:编辑器打开前就载入过的,bridgeReady_ 后第一拍看见。
+    emitStateNotRestoredError();
 }
 
 // ============================================================================
@@ -823,6 +826,31 @@ void OutputEditor::emitSrMismatchError()
     srMismatchShownCh_ = plan.nextShown.ch;
     srMismatchShownInSr_ = plan.nextShown.inputSr;
     srMismatchShownOutSr_ = plan.nextShown.outputSr;
+}
+
+// [SL-218] §2.9 `scvb.error` 的 `stateNotFullyRestored` 一档(§5.1 琥珀横幅⑪)。
+// envelope:code + `detail:{missing, rejected}` + active,**不带 ch**(页级条件)。
+// 两张表由纯函数 `notRestoredFourccs`(StateRestoreDiag.h)从位图算出;撤销帧同样带 detail
+// (取的是此刻的位图 = 0 ⇒ 两张空表),web 侧撤销只看 code + active,不读它。
+// 记账口径与 `emitNewerStateError` 同款(按 plan 已采到的可见性回填,理由见那一段)。
+void OutputEditor::emitStateNotRestoredError()
+{
+    const std::uint8_t mask = processor_.stateNotRestoredMask();
+    const auto plan = scvb::output::planStateNotRestoredEmit(mask, webView().isVisible(), stateNotRestoredShown_);
+    if (!plan.send)
+        return;
+    const auto lists = scvb::output::notRestoredFourccs(mask);
+    juce::var missing = mkArray();
+    for (const char* f : lists.missing)
+        push(missing, juce::String(f));
+    juce::var rejected = mkArray();
+    for (const char* f : lists.rejected)
+        push(rejected, juce::String(f));
+    juce::var detail = obj();
+    put(detail, "missing", missing);
+    put(detail, "rejected", rejected);
+    emitError("stateNotFullyRestored", 0, detail, plan.active);
+    stateNotRestoredShown_ = plan.nextShownMask;
 }
 
 // ============================================================================
