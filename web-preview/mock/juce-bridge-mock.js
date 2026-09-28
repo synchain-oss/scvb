@@ -1237,6 +1237,9 @@ function buildOutputBackend(ctx) {
                     output_enabled: !!on,
                     ...(on ? { capture_enabled: false } : {}),
                 },
+                // [加载守卫] 与真桥同款:输出一关守卫即解除(OutputProcessor::applyOutputEnabled);
+                // 开输出不算确认,确认入口只有 §1.34 confirmPrintGuard。
+                ...(on ? {} : { print_guard: { pending: false } }),
             });
             return OK();
         },

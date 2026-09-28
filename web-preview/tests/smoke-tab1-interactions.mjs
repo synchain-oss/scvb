@@ -2226,6 +2226,7 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         // 名单没变,改的是理由(app.js renderBanners 头注同批订正)。
         // ⑦ printGuard 同样不给(它自带一枚「继续写入自动化」的待办动作钮,
         // 关掉横幅等于把待办藏起来)。
+        // [SL-218] ⑪ stateNotFullyRestored:契约 §5.1 降级纪律② 已写成「横幅①-⑥、⑪」,同样不给 ✕。
         for (const gb of [
             "banner-misaligned",
             "banner-secondOutput",
@@ -2234,6 +2235,7 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             "banner-sidecarMissing",
             "banner-noTimeline",
             "banner-printGuard",
+            "banner-stateNotRestored",
         ]) {
             // [复审第 2 轮] **先断这条横幅还在,再断它没有 ✕。**
             // 下面那格是两个**纯否定**项:锚点名拼错 / 横幅被改名 / 横幅被删,三种情形

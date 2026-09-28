@@ -41,7 +41,7 @@ git rebase --signoff      # 一段区间
 
 ## 3. 分支模型
 
-默认主干是 `dev`;**没有 stage / prod 分支**。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
+默认主干是 `dev`(研发分支);`prod` 是稳定正式版分支,只由维护者在发正式版时前移,插件里的文档链接固定指向它(J149,见 [docs/RELEASE.md](docs/RELEASE.md));**没有 stage 分支**。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
 
 - **内部贡献者**:从 `feature/v1` 开 `feat/<TASK-ID>-<slug>` 子支线,PR 回 `feature/v1`。一张卡一条子支线一个 PR。same-repo 提到 `dev` 的 PR 只接受 `feat/*` / `feature/*`(外加 `dependabot/*`)。
 - **外部贡献者(J31 / J41)**:fork 本仓 → 用**任意分支名**(请不要用 `dev` / `stage` / `prod` / `feature/v1` / `feature/extraction`)→ PR 到 `dev`。
@@ -115,4 +115,4 @@ npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md do
 
 ## 9. 发布流程(仅维护者)
 
-版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 三个插件打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。
+版本号真源 = 顶层 `CMakeLists.txt` 的 `project(SCVB VERSION ...)`。打 `vX.Y.Z` tag 触发 `release.yml`:版本一致性门禁 → 构建 → pluginval → 三个插件(Input / Output / 可选的 Monitor)打一个 zip + `.sha256` → 草稿 Release。完整 runbook 见 `docs/RELEASE.md`。

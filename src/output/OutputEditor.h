@@ -67,6 +67,9 @@ private:
     // [rc-misc a] §2.9 的 `srMismatch` 一档(红横幅③)。判定走 `BridgeArgs.h` 的 `planSrMismatchEmit`,
     // 条件取 `connSnapshot()` 的每轨 `srMismatch`(与 `scvb.conn` 同源、同 ~4Hz 节拍)。
     void emitSrMismatchError();
+    // [SL-218] §2.9 的 `stateNotFullyRestored` 一档(横幅⑪)。判定走 `BridgeArgs.h` 的
+    // `planStateNotRestoredEmit`,条件取 processor 的 `stateNotRestoredMask()`。
+    void emitStateNotRestoredError();
 
     // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
     struct AnalyzeScope
@@ -205,6 +208,9 @@ private:
     int srMismatchShownCh_ = 0;
     std::uint32_t srMismatchShownInSr_ = 0;
     std::uint32_t srMismatchShownOutSr_ = 0;
+    // [SL-218] `scvb.error{stateNotFullyRestored}` 的闩锁(消息线程独占):屏上那一条对应的位图,
+    // 0 = 屏上没有。与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向),复位纪律一并适用。
+    std::uint8_t stateNotRestoredShown_ = 0;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)
