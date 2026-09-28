@@ -101,13 +101,16 @@ U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认
 ```markdown
 # Synchain Vocal Balancer v{X.Y.Z} (Windows x64)
 
-> SCVB 的 Input 与 Output 是一对配套插件,**必须同时安装、成对使用**;同一个 zip 里的 Monitor 是可选的只读观察窗。
+> SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**;zip 里的第三个插件 SCVB Monitor 是**可选**的只读旁观窗口。
 
 ## ⚠️ 升级须知
-<!-- 有则填,无则整节删除 -->
-- state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}
+<!-- 「三个插件一起升级」与「文档链接」两条每次都留;其余有则填,无则删 -->
+- **Input、Output、Monitor 三个一起升级,不要混装。** IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然能连上,但新 Output 配旧 Input 做离线渲染,两侧的交接方式不同,人声可能被**双路叠加**(不升 IPC abi 的有意取舍,见 `docs/contract-changes/` 相应变更文档)—— 所以升级一律三个一起换。
+- state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}。**用本版保存的工程,拿到 state abi 更低的旧版本(含此前的内部测试包)里打开时会被拒载**:Output 显示「工程来自较新版本」横幅,Input 以默认值运行(没有横幅)。建议不要在旧版本里打开并保存这类工程。
+  <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
+- 本说明里的文档链接都固定在 `v{X.Y.Z}` 这个 tag 上;插件设置页「说明文档」按钮打开的也是与插件版本同号 tag 下的手册。
 
 ## 本次更新
 ### ⚠️ 契约变更
@@ -130,7 +133,7 @@ SHA-256(直接从 `package-summary.md` 复制,不要手抄):
 系统要求:Windows 10 1809+ / WebView2 Evergreen Runtime(通常已随 Windows 预装)
 
 <!-- 未签名时必填 -->
-> 本项目未做代码签名(U13)。**解压前先解除锁定**:右键 zip → 属性 → 常规 → 勾选「解除锁定」→ 确定(或 PowerShell `Unblock-File .\SCVB-v{X.Y.Z}-win64.zip`)。若 Windows SmartScreen 或浏览器提示「未知发布者」,先核对 SHA-256,再点「更多信息 → 仍要运行」(浏览器里选「保留」)。你也可以自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)。zip 里的 `INSTALL.txt` 有同样的中英文步骤。
+> 本项目未做代码签名(U13),浏览器或 Windows 可能提示「未知发布者」。先核对 SHA-256;**解压前**右键 zip → 属性 → 常规 → 勾选「解除锁定」→ 确定(或 PowerShell `Unblock-File .\SCVB-v{X.Y.Z}-win64.zip`);SmartScreen 拦下时点「更多信息 → 仍要运行」(浏览器里选「保留」)。zip 里的 `INSTALL.txt` 有同样的中英文步骤,分步说明也见[用户手册 · 安装](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#安装)。你也可以自行从源码构建校验(见 [CONTRIBUTOR_ONBOARDING.md](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/CONTRIBUTOR_ONBOARDING.md))。
 
 ## 首次使用?
 先读 **[九条使用规则](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#硬约束)** —— 路由摆错会直接出静音。
@@ -151,7 +154,7 @@ SHA-256(直接从 `package-summary.md` 复制,不要手抄):
 
 ## 分发渠道
 
-- **权威产物来源**:GitHub Releases —— 单个 zip(三个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256` + `package-summary.md`。三者都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。
-- **官网下载页**:是否上线、何时上线**待定**。上线后必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 这条不成立时,「两处应当一致」的说法就是空头承诺,用户会被引到一条只验传输、不验来源的弱路径上。
+- **权威产物来源**:GitHub Releases —— 单个 zip(三个 `.vst3`:Input / Output / 可选的 Monitor + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256` + `package-summary.md`。三者都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。README 与用户手册目前只把用户指向 GitHub Releases。
+- **官网下载页**:是否作为用户入口**待定**。若上线,官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 否则用户会被引到一条只验传输、不验来源的弱路径上;上线时同步改 README 的安装小节。
 
-**为什么合并成一个 zip**:Input 与 Output 本来就配对使用,分开下载最常见的用户故障就是「只装了一个」;Monitor 跟着同一个版本走,放在同一个 zip 里也避免版本错配。
+**为什么合并成一个 zip**:Input 与 Output 本来就配对使用,分开下载最常见的用户故障就是「只装了一个」;Monitor 跟它们同版本同一次发布,放进同一个 zip 也免得版本对不上。
