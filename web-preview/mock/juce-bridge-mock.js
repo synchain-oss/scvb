@@ -1049,6 +1049,11 @@ function buildOutputBackend(ctx) {
         // 在真桥是「不限轨 + 显式范围」照单全收,在这里 `channelsOfMask(0)` 得空轨 → {ok:false}。
         // 而 `{tracksMask:0}`(连范围也不给)两侧现在**是对齐的** —— 真桥由 analyzeScopeRange
         // 的 tracksMask 守卫判空,这里由空轨判空。
+        //
+        // [SL-535] 再登记一条:真桥只数**此刻已连接**(`slotState === 2 ∧ heartbeatFresh`)的轨,
+        // 没连上 Input 的轨即使有覆盖也不计(没有别的轨时落 §1.6 既有拒绝态)。这里**不建模**:
+        // mock 的默认世界本身就是「有覆盖、但 15 轨全空闲」(`makeConn()` 的默认),照搬这条判据会让
+        // 预览里所有分析一律被拒、牵动多套冒烟。拒绝态的**形状**两侧相同,差的只是触发条件。
         const startS = isFiniteNumber(scope?.startS) ? scope.startS : -Infinity;
         const endS = isFiniteNumber(scope?.endS) ? scope.endS : Infinity;
         for (const ch of chList) {

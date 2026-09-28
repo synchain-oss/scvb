@@ -88,6 +88,8 @@ Turn on **Capture** in the Output, then play back as usual. Capture writes only 
 
 Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing**, because what capture stores is features rather than audio or decisions.
 
+**Only channels whose Input is connected right now take part in analysis** (the same check the UI uses for "not connected"). After you move a track to another channel, or remove / disable its Input, the data captured on the old channel is kept but no longer counted; once the Input is back, the next analysis picks it up again. If none of the channels with data in the selected range is connected, the analysis does not run (it never falls back to stale data); the re-analyse buttons on the Waveform and Settings pages show a message saying so.
+
 ### Output
 
 Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next.
