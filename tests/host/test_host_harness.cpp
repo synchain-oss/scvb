@@ -6203,7 +6203,7 @@ TEST_CASE("HOST J152:停着重开已采未析的工程 —— 就绪首帧补一
     //     清掉它后半的工程可能仍显示 100%(#322 第 1 轮复审【建议】2 举的例子),这是有意的口径。
     //     钉在这里,免得被当成回归去「修」成别的分母。
     {
-        const tailFromS = (midS + extent) * 0.5;
+        const double tailFromS = (midS + extent) * 0.5;
         REQUIRE(r2.out.clearCoverage(static_cast<std::uint16_t>(1u << kMine), tailFromS, extent + 1.0) > 0.0);
         const double newExtent = r2.out.capturedExtentSeconds();
         REQUIRE(newExtent > 0.0);
