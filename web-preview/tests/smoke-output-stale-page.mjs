@@ -1277,8 +1277,9 @@ try {
             "⑧a 布防态到了页面(Tab3 布防行亮)",
         );
         await disarm();
+        // 布防行与 toast 在同一次 render() 里投影(renderBanners 在 tab render 之前),
+        // 布防行熄了 = 撤防那一帧已经渲染过,不再另等。
         check(await waitFor(badgeHidden, 3000), "⑧a 撤防态到了页面(布防行熄)");
-        await sleep(400);
         check(await evaluate(toastHidden), "⑧a 没播过 ⇒ 撤防后 toast 仍收起");
 
         // ---- ⑧b 布防 → 播 ~1.5s → 停 → 撤防 ⇒ toast 出现,秒数 = 播放头走过的时长
@@ -1310,7 +1311,7 @@ try {
         }
         check(
             /已重采集/.test(txt) && /建议重分析该范围/.test(txt),
-            `⑧b 中文文案逐字取自 05 §2.0(实得「${txt}」)`,
+            `⑧b 中文文案取自 05 §2.0(实得「${txt}」)`,
         );
         // 切语言后秒数照填(applyI18n 先写整串,render 再填 —— 少了后一步就是裸 {s})
         const byLang = {};
@@ -1334,6 +1335,48 @@ try {
                 byLang.en !== byLang.fr &&
                 byLang.zh !== byLang.fr,
             "⑧b 三语文案两两不同(没有整块回退到另一语)",
+        );
+
+        // ---- ⑧e 真上屏:有布局盒,且整块落在卡片里(不是只挂没挂 hidden)。
+        //   ← 去掉 index.html 里 `#toast-region .sc-toast { position: relative; }`
+        //     ⇒ toast 以 region 的零尺寸原点往右下长、出卡片,本格红。
+        const geo = await evaluate(
+            IN(`const t = gb("toast-recaptured");
+                const c = d.getElementById("card");
+                const g = gb("toast-recaptured-goto");
+                if (!t || !c || !g) return null;
+                const r = t.getBoundingClientRect();
+                const k = c.getBoundingClientRect();
+                const b = g.getBoundingClientRect();
+                return {
+                    boxes: t.getClientRects().length,
+                    inside: r.left >= k.left - 0.5 && r.right <= k.right + 0.5 &&
+                        r.top >= k.top - 0.5 && r.bottom <= k.bottom + 0.5,
+                    btnInside: b.left >= r.left && b.right <= r.right &&
+                        b.top >= r.top && b.bottom <= r.bottom,
+                    r: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
+                    k: [Math.round(k.left), Math.round(k.top), Math.round(k.right), Math.round(k.bottom)],
+                };`),
+        );
+        check(
+            !!geo && geo.boxes > 0 && geo.inside && geo.btnInside,
+            `⑧e toast 有布局盒、整块在卡片内、钮在 toast 内(实得 ${JSON.stringify(geo)})`,
+        );
+
+        // ---- ⑧f 只读观察态(第二个 Output)不显:那边「立即重分析」会被写闸挡回,是死钮。
+        //   ← 把 renderBanners 里 `!!done && !vs.readOnly` 改回 `!!done` ⇒ 本格红。
+        const pushSecond = (active) =>
+            shell(`const err = { code: "secondOutput", active: ${active ? "true" : "false"} };
+                s.ctl.emit("scvb.error", err); return true;`);
+        await pushSecond(true);
+        check(
+            await waitFor(toastHidden, 3000),
+            "⑧f 只读观察态 ⇒ toast 收起(钮点了不会有反应,不给)",
+        );
+        await pushSecond(false);
+        check(
+            await waitFor(toastShown, 3000),
+            "⑧f 只读位撤掉 ⇒ toast 回来(记账没丢)",
         );
 
         // ---- ⑧c 「立即重分析」⇒ 跳 Tab3 + 调一次 §1.6 analyze,范围 = 刚重采的那一块

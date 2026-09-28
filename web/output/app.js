@@ -1713,8 +1713,11 @@ function renderBanners() {
     // 只有 ✕ 与「立即重分析」收它(新到的一条并进来,不另起一条)—— 带动作钮的提示不自己消失,
     // 否则用户还没读完「立即重分析」就没了(05 §2.0「可关闭/自动消失」取前者)。
     {
+        // 只读观察态(第二个 Output)不显:那边「立即重分析」会被 isWriteBlocked() 挡回,
+        // 钮点了没反应 —— 与本页其余写控件「只读态整块不给」同口径。记账照旧,
+        // 只读位撤掉之后 toast 回来。
         const done = (vs.session || {}).recapDone || null;
-        show($("toast-recaptured"), !!done);
+        show($("toast-recaptured"), !!done && !vs.readOnly);
         if (done) {
             fill($("toast-recaptured-text"), "toast.recaptured", {
                 s: fmtRecapSeconds(done.seconds),
