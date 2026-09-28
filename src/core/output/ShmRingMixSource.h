@@ -57,7 +57,7 @@ public:
 
 private:
     std::atomic<const AudioRingBinding*> binding_{nullptr}; // [M] 写 / [A] 读
-    std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命,T16 同款)
+    std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命;T16 已改回收,SL-445)
 
     // 音频线程独占(仅 read() 访问;换代/重绑由 lastBinding_ 指针变化检测,不回读成员)。
     const AudioRingBinding* lastBinding_ = nullptr; // 上次块所用绑定(变指针 → 重置代际状态)

@@ -2020,6 +2020,10 @@ if (bridge) {
 
     bridge.on("scvb.conn", (c) => {
         store.conn = c;
+        // [SL-535] 分析的干跑预览只数已连接的轨:连接集合一变,两页的预览数都得重取
+        // (两边各自按「已连接轨号」比对,集合没变就不发请求)。
+        tabMaster.refreshPreview();
+        tabWave.onConn(c);
         requestRender();
     });
 
@@ -2145,6 +2149,8 @@ if (bridge) {
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
+        // [SL-535] 有覆盖的轨号集合变了(首次采集)⇒ Tab1 重取 dry-run;集合没变在指纹比对处早退。
+        tabMaster.refreshPreview();
         requestRender();
     });
 
