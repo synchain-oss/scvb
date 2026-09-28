@@ -76,7 +76,7 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**两条通道都入**:[J85] 起原只有未冻结的手动接管通道,[J140] 起冻结通道也入)、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18)、**`setChannelConfig`**([J140]:A1-A7,见 §1.15)、**`beginParamGesture`/`setParam`/`endParamGesture`**([J140]:一次 gesture = 一步,见 §1.12-§1.14) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**两条通道都入**:[J85] 起原只有未冻结的手动接管通道,[J140] 起冻结通道也入)、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18)、**`setChannelConfig`**([J140]:A1-A7,见 §1.15)、**`beginParamGesture`/`setParam`/`endParamGesture`**([J140]:一次 gesture = 一步,见 §1.12-§1.14) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、**`previewPanCurve`**([J157]:拖动预览只换音频线程用的那张 G 表、不写 state;撤销步由松手那次 `setPanCurve` 产生,见 §1.37)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
 
@@ -92,7 +92,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 1. Output —— native functions(UI → C++)
 
-共 **36** 个。全部在 [M] 处理(§0.3)。
+共 **37** 个。全部在 [M] 处理(§0.3)。
 
 ### 1.1 `requestInitialState()`
 
@@ -281,7 +281,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 语义 | 写**当前激活版本**的 `pan_curve.points[]`(params-v0 v2.0:`pan_curve` 属 `versions[2]`,J07/J59)。整表语义 = 给定数组即全量替换,**不做点级增删接口**(`setPanCurvePoint`/`removePanCurvePoint` 已归并,§8)。**写入后经 `scvb.state` 回推 `versions[active].pan_curve`**(下行落点见 §1.1/§2.1)——曲线编辑器渲染既有点集的唯一数据源。`side` 默认 `out`,方向由 `sign(angle)` 决定;`shape∈{shelf,cut} ∧ side="out" ∧ |angle|<5` 的组合在 UI 侧自动改选 left/right,数据层若仍出现按 02 §7.1 确定性回退(`angle≥0`→right,`angle<0`→left),**不报错**。 |
 | 拒绝态 | 点数 >16 或字段越界 → `{ok:false, reason:"badArg"}` |
 | 撤销 | **是** |
-| 线程/频率 | [M];`pointerup`/工具条变更后提交,**节流 1 次/gesture,不逐帧下发** |
+| 线程/频率 | [M];`pointerup`/工具条变更后提交,**节流 1 次/gesture,不逐帧下发** —— 一次手势 = 一次提交 = 一条撤销步,这一条**不变**。**[J157] 拖动期间的实时生效不走本函数**:改走 §1.37 `previewPanCurve`(≤20 Hz、不入撤销栈、不写 state、不回推)。本函数提交时引擎顺带撤掉预览:提交的点表与最后一份预览相同时**沿用预览那张表**(不重烘、音频不开淡入窗口,松手那一下输出零变化),不同则照常烘新表并 30 ms 淡入。变更文档 `docs/contract-changes/20260928-j157-pan-curve-live-preview.md` |
 | 真源 | 05 §1.4 / §6.2 |
 
 ### 1.18 `setVadParams(p)`
@@ -492,6 +492,18 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 撤销 | 否(只读导出) |
 | 线程/频率 | `[M]`;用户点一次调一次。`processBlock` 与本函数无关 |
 | 真源 | 07 T41 卡 / 11 §4.2.3 通路 B(B1 数值表 / B2 CSV 导出);U12「进 v1 主线」;变更文档 `docs/contract-changes/20260825-export-suggestions.md`(PR #91) |
+
+### 1.37 `previewPanCurve(v, points)`([J157] SL-447;变更文档 `20260928-j157-pan-curve-live-preview.md`)
+
+| 项 | 定义 |
+|---|---|
+| 参数 | `v: 1..2` —— 这份点表**捕获时**的激活版本(整数,§0.2 第 4 条);`points` —— 与 §1.17 同一形状与同一套校验的整表(≤16 点),或 `null`(= 撤回预览) |
+| 返回 | `{ok:true}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}` 或 `{ok:false, reason:"staleVersion"}` |
+| 语义 | **拖动实时生效**:把这份点表烘成 G 查表,**只替换音频线程用的那一张**。**不写** `versions[].pan_curve`、**不经** `scvb.state` 回推、**不落盘**、**不入撤销栈**(§0.9)—— 已提交曲线仍只由 §1.17 改。读已提交曲线的一方一律看不到预览:存盘、`scvb.state` 回推、分析(左右平衡按 `pan_curve` 算)读的都是已提交的点表;打印器与 viz **根本不读 G**(它们读各轨 pan/vol 曲线),预览对打印与 Monitor 零影响。<br>**生效节奏(引擎侧,权威)**:① 限速 **≤20 Hz** —— 两次生效间隔 ≥50 ms;烘一张表的实测耗时若会让消息线程占用超过 10%,按耗时拉长间隔(已知上限:点数接近 16 **且**多数为 bell 时,开发机 Release 实测约 16–19 ms/张 ⇒ 约 5–6 Hz;数随机器变);② **上一份预览被音频线程确认之前不发下一份**(沿用 SL-445 的快照回收判据)⇒ 任何时刻至多一份预览未被确认 —— 音频链不在跑(只读观察 / 无时间线 / 无注入轨 / 宿主停了音频)时拖多久也只多留一张表;③ 被拦下的那一份**不丢**:只保留最新一份,到点重试直到发出。每次换表照常走 30 ms 交叉淡入(与 §1.17 提交同一条路径)。UI 侧同样节流 ≤20 Hz(不逐帧下发),节流窗里最后一份必发。<br>**`points = null`**:撤回预览,音频回到已提交曲线(30 ms 淡回)。<br>**自动作废**(无需 UI 发 `null`):§1.17 提交(点表与最后一份预览相同时沿用那张表)、该版本的已提交曲线被改(撤销 / 重做 / 载入工程)、切换版本(§1.9)、编辑器关闭。 |
+| 拒绝态 | 参数形态不对 / 点不合法(同 §1.17)→ `badArg`;只读观察态 → `{observer:true}`(**`null` 撤回不拒**:回到已提交曲线不是写入);`v` ≠ 当前激活版本 → `staleVersion`,不应用 —— UI 在「切版本已发出、`scvb.state` 回声未到」的窗口里捕获的是旧版本号,这份点表属于旧版本 |
+| 撤销 | 否(预览)。撤销步由松手那一次 §1.17 产生:**一次手势一步**,与 [J157] 之前相同 |
+| 线程/频率 | [M];UI 在拖点 / Q 滑杆 / 滚轮调 Q 期间节流调用(≤20 Hz),拖动中止(撤销 / 切版本 / 远端换版本)时补发一次 `null` |
+| 真源 | 用户裁定 [J157] —— 原话「7现在做,但是要注意和内存回收那个有没有冲突和情况会不会更严重」;设计 SL-447;回收判据 SL-445(#306) |
 
 ---
 
@@ -793,7 +805,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `{conflict:true}` | Input `setChannelId`、Input `setGroupId` | claim 冲突:目标 slot 被心跳新鲜的实例占用 |
 | `{observer:true}` | Output `setGroupId`(新组已有主 Output);只读观察态下的一切写函数 | 本实例进/处于只读观察模式,写入未生效 |
 
-其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**十三值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned` / **`cancelled`** / **`noData`** / **`ioError`** / **`abiMismatch`** / **`unavailable`**。`cancelled` / `noData` / `ioError` 三个由 §1.36 `exportSuggestions` 带入([J81],纯新增,不改既有八值语义)——`cancelled` 是本契约第一个**用户可取消的阻塞式操作**(文件对话框),此前八值里没有「用户取消了一个对话框」这件事。`abiMismatch` / `unavailable` 两个由 Input §3.2 `setChannelId` / §3.3 `setGroupId` 带入([J156],纯新增,不改既有十一值语义)——`abiMismatch` 与 §5.2 claim 值同拼写、同含义(abi 不符拒连);`unavailable` 对应 §5.2 `idle` 的「段不可用」那一支;此前这两种认领失败没有回执形状,被回成 `{ok:true}`。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
+其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**十四值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned` / **`cancelled`** / **`noData`** / **`ioError`** / **`abiMismatch`** / **`unavailable`** / **`staleVersion`**。`cancelled` / `noData` / `ioError` 三个由 §1.36 `exportSuggestions` 带入([J81],纯新增,不改既有八值语义)——`cancelled` 是本契约第一个**用户可取消的阻塞式操作**(文件对话框),此前八值里没有「用户取消了一个对话框」这件事。`abiMismatch` / `unavailable` 两个由 Input §3.2 `setChannelId` / §3.3 `setGroupId` 带入([J156],纯新增,不改既有十一值语义)——`abiMismatch` 与 §5.2 claim 值同拼写、同含义(abi 不符拒连);`unavailable` 对应 §5.2 `idle` 的「段不可用」那一支;此前这两种认领失败没有回执形状,被回成 `{ok:true}`。`staleVersion` 由 §1.37 `previewPanCurve` 带入([J157],纯新增,不改既有十三值语义):调用方传的版本号已不是当前激活版本 —— 这是「切版本已发出、回声未到」窗口里的**预期竞态**,不是参数错,所以不并进 `badArg`。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
 
 ---
 
@@ -821,7 +833,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 
 ## 7. 机器可读清单(manifest)
 
-以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对六个计数(Output **36**/9、Input **8**/5、**Monitor 5/4**)与跨侧同名函数的 `params` 一致性做硬断言。
+以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对六个计数(Output **37**/9、Input **8**/5、**Monitor 5/4**)与跨侧同名函数的 `params` 一致性做硬断言。
 **`returns` 登记口径**:按 §0.8 第 5 条写**完整并集**(成功形状 + 全部拒绝态形状,`A | B` 分隔),与正文「返回」行逐字对应;`{ok:false, reason:"…"}` 简写为 `{ok:false,reason:"…"}`。
 
 ```json
@@ -846,6 +858,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "setChannelConfig", "params": ["ch", "patch"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "setTrackManual", "params": ["ch", "panOrVol", "value"], "returns": "{ok,replacedSegments,replacedLocked} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "setPanCurve", "params": ["points"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
+      {"name": "previewPanCurve", "params": ["v", "points"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"} | {ok:false,reason:\"staleVersion\"}"},
       {"name": "setVadParams", "params": ["p"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setSegmentation", "params": ["p"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setTransitionRamp", "params": ["ms"], "returns": "{ok}"},
@@ -925,7 +938,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 }
 ```
 
-**计数自检**:Output 函数 **36** / 事件 **9**;Input 函数 **7→8** / 事件 **5**;**Monitor 函数 5 / 事件 4**([J81] 转正,见 §10)。
+**计数自检**:Output 函数 **36→37**([J157] `previewPanCurve`)/ 事件 **9**;Input 函数 **7→8** / 事件 **5**;**Monitor 函数 5 / 事件 4**([J81] 转正,见 §10)。
 
 ---
 
@@ -979,9 +992,9 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 | 01 §6.2 Input 快照 `channelId`/`groupId`/`uiScale`/`lang`(camelCase) | 统一取宪法拼写 `channel_id`/`group_id`/`ui:{scale, language}`(**A-30**;§0.2 规则①)——同一 state 字段全契约一种键名,mock 与 JuceBackend 不再各实现两套键 |
 | 01 §4.3-i「用 `slot.pid` 反查进程名提示『被 <进程名> 中的另一工程占用』」 | **v1 不实现**:冲突反馈 = `ch.occupied` 词条(05 §5.1,J71② 定稿);`channelConflict` 的 `detail` 仅 `{groupId}`。将来需要时按 §0.1 第 3 条增**可选**字段,零破坏(**A-31**) |
 
-### 8.4 相对 05 §1.4 的授权增量(共 **4** 项)
+### 8.4 相对 05 §1.4 的授权增量(共 **7** 项)
 
-T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下四项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
+T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下七项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
 
 | 增量项 | 授权来源 | 说明 |
 |---|---|---|
@@ -989,6 +1002,9 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 | Input 事件 `scvb.error` | **01 §6.2**(Input 事件列有 `scvb.error`)+ 裁定记录 **A-8**;需求面 05 §3(`ch.occupied` 冲突反馈、`srMismatch` 红 pill 需即时错误通道) | 05 §1.4 的 Input events 表未列;载荷形状统一取 05 的 `{code, ch?, detail}`(§4.5/§8.3) |
 | Output 函数 `confirmPrintGuard()` | **04 §5.3 / 05 §2.0 横幅⑦**(语义与 §2.5 验收已定,05 §1.4 函数表缺位);统筹裁定 **A-29**,成例 = R4 `setGuideSeen` | **T25 新增名**(不同于前两项,05 全文无字面出处);对 05 §1.4 的回写要求列入 PR 描述 |
 | Output 函数 `setMasterChartMode(mode)` | **05 J75 A**(T43 Tab1 分布图双视图的视图态);变更文档 `docs/contract-changes/20260825-master-chart-mode.md` | 纯 UI 偏好 state 写入口(照 §1.31 `setActiveTab`);取值 `"distribution"`/`"trajectory"`,默认 `"distribution"`,未知值 `badArg`;不占参数面、不进 undo 栈 |
+| Output 函数 `exportSuggestions(scope)` | **07 T41 / 11 §4.2.3 通路 B2**,U12「进 v1 主线」;[J81] 转正;变更文档 `docs/contract-changes/20260825-export-suggestions.md` | 见 §1.36。([J157] 补登:本表此前标题写「共 4 项」,而 `check-bridge-parity.mjs` 的 `EXPECTED` 早已按 6 项断言,这一行与下一行是那时漏回填的) |
+| Input 函数 `setGuideSeen(seen, alsoGlobal)` | **05 §3 文末 J80 节 / T48**;[J81] 转正;变更文档 `docs/contract-changes/20260825-input-guide-seen.md` | 见 §3.8。(同上,[J157] 补登) |
+| Output 函数 `previewPanCurve(v, points)` | **用户裁定 J157**(SL-447:pan 曲线拖动实时生效);变更文档 `docs/contract-changes/20260928-j157-pan-curve-live-preview.md` | 见 §1.37。拖动期间只换音频线程用的 G 表,不写 state、不入撤销栈;撤销步仍由松手那次 §1.17 产生 |
 
 ---
 

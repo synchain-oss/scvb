@@ -7,10 +7,13 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
+#include <vector>
 
 #include "BridgeBase.h" // strictBool 真身(两插件共用的桥面参数口径)
+#include "analysis/PanCurve.h" // [J157] parsePanCurvePointsArg
 #include "state/StateCodec.h" // CrvsData/VersionCurve(R4 降级链的输入)
 
 namespace scvb::output
@@ -546,6 +549,98 @@ inline bool noTimelineRejectsCaptureSwitch(bool timelineMissing, const juce::var
 inline juce::int64 abiForJson(std::uint32_t abi) noexcept
 {
     return static_cast<juce::int64>(abi);
+}
+
+// -----------------------------------------------------------------------------
+// [J157] pan 曲线点表的桥面解析 —— `setPanCurve(points)`(§1.17)与 `previewPanCurve(v, points)`
+// (§1.37)**共用这一份**。
+//
+// 此前这段写在 `OutputEditor::handleSetPanCurve` 里,而 `OutputEditor.cpp` 链不进任何测试目标,
+// 那道坏点守卫因此没有机检覆盖;第二个 handler 再抄一份又必漂 —— 抽到这里一次解决两件事,
+// 由 `tests/core/test_bridge_args.cpp` 离线断言。**行为与抽出前逐字相同**:
+//   · 非数组 / 超过 16 点 / 元素不是对象 / shape 不在三值内 / side 不在三值内 ⇒ false;
+//   · 点不可用(`isPanCurvePointUsable`:非有限、angle 越界、q ≤ 0)⇒ false。原先桥面那三条
+//     范围比较**挡不住 NaN**(`NaN <= 0`、`NaN < -100`、`NaN > 100` 全为 false),[SL-442 第2轮]
+//     起换成共用守卫 —— 曲线进了实时链,漏过去的就是母线上的 NaN;
+//   · 缺省:angle / gain_db 缺省 0、q 缺省 1.5、side 缺省 "out";**shape 不缺省**(缺了即 false)。
+// 空数组 = 合法(整表替换为空 = 显式清空,不是缺参)。
+inline bool parsePanCurvePointsArg(const juce::var& arg, std::vector<scvb::PanCurvePoint>& out)
+{
+    out.clear();
+    if (!arg.isArray())
+        return false;
+    const auto* arr = arg.getArray();
+    if (arr == nullptr || arr->size() > 16)
+        return false;
+    for (const auto& item : *arr)
+    {
+        if (!item.isObject())
+            return false;
+        scvb::PanCurvePoint p;
+        p.angle = static_cast<float>(item.getProperty("angle", 0.0));
+        p.gainDb = static_cast<float>(item.getProperty("gain_db", 0.0));
+        p.q = static_cast<float>(item.getProperty("q", 1.5));
+        const juce::String shape = item.getProperty("shape", juce::String()).toString();
+        const juce::String side = item.getProperty("side", juce::String("out")).toString();
+        if (shape == "shelf")
+            p.shape = scvb::PanCurveShape::shelf;
+        else if (shape == "cut")
+            p.shape = scvb::PanCurveShape::cut;
+        else if (shape != "bell")
+            return false;
+        if (side == "left")
+            p.side = scvb::PanCurveSide::left;
+        else if (side == "right")
+            p.side = scvb::PanCurveSide::right;
+        else if (side != "out")
+            return false;
+        if (!scvb::isPanCurvePointUsable(p))
+            return false;
+        out.push_back(p);
+    }
+    return true;
+}
+
+// [J157] `previewPanCurve(v, points)`(§1.37)的参数形态。
+//   · v:版本号 1..kNumVersions —— UI 传的是**点表捕获时**的那一版(整数;非整数 / 越界 / 缺参 ⇒ bad);
+//   · points:点表(同 setPanCurve,解析失败 ⇒ bad)或 `null`(⇒ clear:撤掉预览、回到已提交曲线)。
+// clear 也要求 v 合法:参数形态只留一种写法,省得「clear 时 v 可以乱填」成了第二种。
+// (handler 对 clear **不比** v 与当前版本 —— 回到已提交曲线永远是安全方向。)
+enum class PanCurvePreviewArgKind
+{
+    bad,
+    points,
+    clear
+};
+struct PanCurvePreviewArgs
+{
+    PanCurvePreviewArgKind kind = PanCurvePreviewArgKind::bad;
+    int version = 0;
+    std::vector<scvb::PanCurvePoint> points;
+};
+inline PanCurvePreviewArgs parsePanCurvePreviewArgs(const juce::Array<juce::var>& a)
+{
+    PanCurvePreviewArgs r;
+    if (a.size() < 2)
+        return r;
+    const juce::var& v = a[0];
+    if (!(v.isInt() || v.isInt64() || v.isDouble()))
+        return r;
+    const double dv = static_cast<double>(v);
+    if (!std::isfinite(dv) || dv != std::floor(dv) || dv < 1.0 || dv > static_cast<double>(scvb::state::kNumVersions))
+        return r;
+    const int version = static_cast<int>(dv);
+    if (a[1].isVoid() || a[1].isUndefined())
+    {
+        r.kind = PanCurvePreviewArgKind::clear;
+        r.version = version;
+        return r;
+    }
+    if (!parsePanCurvePointsArg(a[1], r.points))
+        return r;
+    r.kind = PanCurvePreviewArgKind::points;
+    r.version = version;
+    return r;
 }
 
 } // namespace scvb::output

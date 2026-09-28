@@ -198,6 +198,11 @@ OutputEditor::OutputEditor(ScvbOutputAudioProcessor& processor)
 {
 }
 
+OutputEditor::~OutputEditor()
+{
+    processor_.cancelPanCurvePreview(); // [J157] 见头文件:关窗 = 这一次拖动不会再有松手
+}
+
 // ============================================================================
 // 首帧全量快照(契约 §1.1)
 // ============================================================================
@@ -1155,6 +1160,7 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
     add(Fn::SetChannelConfig, &OutputEditor::handleSetChannelConfig);
     add(Fn::SetTrackManual, &OutputEditor::handleSetTrackManual);
     add(Fn::SetPanCurve, &OutputEditor::handleSetPanCurve);
+    add(Fn::PreviewPanCurve, &OutputEditor::handlePreviewPanCurve); // [J157] §1.37
     add(Fn::SetVadParams, &OutputEditor::handleSetVadParams);
     add(Fn::SetSegmentation, &OutputEditor::handleSetSegmentation);
     add(Fn::SetTransitionRamp, &OutputEditor::handleSetTransitionRamp);
@@ -1799,72 +1805,55 @@ void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
     }
 
     // 缺参/非数组 → badArg,绝不静默清空曲线(PR#55 第5轮缺陷1);空数组 = 整表替换为空(显式清空)。
-    if (a.size() < 1 || !a[0].isArray())
+    // [J157] 解析与坏点守卫抽到 BridgeArgs.h 的 parsePanCurvePointsArg(与 previewPanCurve 共用一份,
+    // 由 test_bridge_args.cpp 离线断言;此前这段写在本函数里,没有任何测试目标编得到它)。
+    std::vector<scvb::PanCurvePoint> points;
+    if (a.size() < 1 || !parsePanCurvePointsArg(a[0], points))
     {
         c(badArgResp());
         return;
     }
 
-    std::vector<scvb::PanCurvePoint> points;
-    {
-        const auto* arr = a[0].getArray();
-        if (arr == nullptr || arr->size() > 16)
-        {
-            c(badArgResp());
-            return;
-        }
-        for (const auto& item : *arr)
-        {
-            if (!item.isObject())
-            {
-                c(badArgResp());
-                return;
-            }
-            scvb::PanCurvePoint p;
-            p.angle = static_cast<float>(item.getProperty("angle", 0.0));
-            p.gainDb = static_cast<float>(item.getProperty("gain_db", 0.0));
-            p.q = static_cast<float>(item.getProperty("q", 1.5));
-            const juce::String shape = item.getProperty("shape", juce::String()).toString();
-            const juce::String side = item.getProperty("side", juce::String("out")).toString();
-            if (shape == "shelf")
-                p.shape = scvb::PanCurveShape::shelf;
-            else if (shape == "cut")
-                p.shape = scvb::PanCurveShape::cut;
-            else if (shape != "bell")
-            {
-                c(badArgResp());
-                return;
-            }
-            if (side == "left")
-                p.side = scvb::PanCurveSide::left;
-            else if (side == "right")
-                p.side = scvb::PanCurveSide::right;
-            else if (side != "out")
-            {
-                c(badArgResp());
-                return;
-            }
-            // [SL-442 第2轮] 原先是 `p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f`。
-            // 那三条**挡不住 NaN**:`NaN <= 0`、`NaN < -100`、`NaN > 100` 全为 false,NaN 从每
-            // 一条里穿过去;而 `gain_db` 当时一条都没查。曲线进实时链之后,那就是母线上的 NaN。
-            // 换成共用守卫(显式 isfinite 在先、值域在后)—— 三条入口只此一份,不会各写各的漂。
-            //
-            // ⚠ **这一处守卫没有机检覆盖。** 全仓没有任何测试目标编译 `OutputEditor.cpp`
-            //   (它依赖真 WebView2,属 gate 8 的真机 GUI 面),所以解码侧与烘表侧那两处
-            //   各自有删除式用例守着、改坏了会红,而**这一处改坏了不会有任何东西说话**。
-            //   动它之后只能人工复核,别指望 CI 替你发现。
-            if (!scvb::isPanCurvePointUsable(p))
-            {
-                c(badArgResp());
-                return;
-            }
-            points.push_back(p);
-        }
-    }
-
     processor_.setPanCurve(processor_.versionActive(), points); // 持锁事务(PR#55 重要1)
     lastStateJson_.clear(); // pan_curve 经 scvb.state 回推
     c(okResp());
+}
+
+// [J157 / SL-447] §1.37:拖动预览。**不是**事务:不进撤销栈、不写 state、不回推 scvb.state
+// (曲线编辑器拖动期间画的是本地那份,已提交的点集只由 setPanCurve 之后的回推改)。
+void OutputEditor::handlePreviewPanCurve(const ArgList& a, Completion c)
+{
+    const auto args = parsePanCurvePreviewArgs(a);
+    if (args.kind == PanCurvePreviewArgKind::bad)
+    {
+        c(badArgResp());
+        return;
+    }
+    // clear 排在只读闸**前面**:回到已提交曲线不是写入,永远允许。拖到一半本实例被挤成只读观察,
+    // 这一发 clear 被拒的话,那份预览会留在音频里,而再也没有人会撤它。
+    if (args.kind == PanCurvePreviewArgKind::clear)
+    {
+        processor_.cancelPanCurvePreview();
+        c(okResp());
+        return;
+    }
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+    using Req = scvb::output::OutputAuthority::PanCurvePreviewRequest;
+    const Req r = processor_.previewPanCurve(args.version, args.points);
+    if (r == Req::staleVersion)
+    {
+        juce::var o = obj();
+        put(o, "ok", false);
+        put(o, "reason", "staleVersion");
+        c(o);
+        return;
+    }
+    // badPoints 今天走不到(上面的解析已用同一道 isPanCurvePointUsable 挡过),照契约回 badArg。
+    c(r == Req::accepted ? okResp() : badArgResp());
 }
 
 void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
