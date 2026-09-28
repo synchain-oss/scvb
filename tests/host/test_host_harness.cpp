@@ -107,7 +107,12 @@ public:
         {
             p.setBpm(bpm);
         }
-        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0));
+        // [J147] 拍号默认**不给**:既有用例的快照一个字段都不变,只有 J147 那几格显式打开。
+        if (haveTimeSig)
+        {
+            p.setTimeSignature(TimeSignature{timeSigNum, timeSigDen});
+        }
+        p.setPpqPosition(static_cast<double>(timeSamples) / kSr * (bpm / 60.0) + ppqOffset);
         if (haveLoop)
         {
             LoopPoints lp;
@@ -127,6 +132,10 @@ public:
     double bpm = 120.0;
     double loopStartPpq = 0.0;
     double loopEndPpq = 0.0;
+    bool haveTimeSig = false; // [J147] 见 getPosition
+    int timeSigNum = 4;
+    int timeSigDen = 4;
+    double ppqOffset = 0.0; // [J147] 让 ppq 与「秒×bpm/60」错开,证明发出去的是宿主的 ppq 而不是自己算的
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
@@ -323,6 +332,141 @@ TEST_CASE("HOST L-5:宿主循环区经 playhead 快照可见并可换算成秒",
     r.ph.looping = false;
     r.runBlocks(4);
     CHECK((r.out.playheadSnapshot().flags & scvb::engine::kPlayheadCycleValid) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [J147] Tab1 手动范围按小节显示:宿主 AudioPlayHead 的 bpm / 拍号 / 拍位置 →
+// processBlock 发布进 playhead 快照 → hostTempoOf 取成 `scvb.playhead` 的四个可选字段
+// (契约 §2.6 `bpm` / `timeSigNum` / `timeSigDen` / `ppq`)。OutputEditor::emitPlayhead 只是把
+// hostTempoOf 的结果逐项 put 出去(不在任何测试目标里;字段名与契约的对拍归
+// check-bridge-parity 的载荷对拍一节)。
+// 断言一律用 CHECK:同一格里几条互相独立,REQUIRE 一红会把后面「仍绿」的那几条一起藏掉。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J147:宿主 bpm/拍号/拍位置经 playhead 快照成为 scvb.playhead 的速度字段", "[host][j147]")
+{
+    Rig r;
+    // 停在 8 s 处(停带时宿主照样给速度与位置 —— J147「停带时用最后一次读到的值」的来源)。
+    r.ph.playing = false;
+    r.ph.timeSamples = static_cast<std::int64_t>(8.0 * kSr);
+    r.ph.bpm = 120.0;
+    r.ph.haveTimeSig = true;
+    r.ph.timeSigNum = 3;
+    r.ph.timeSigDen = 4;
+    // ppq 故意不等于「秒 × bpm / 60」:发出去的必须是宿主给的拍位置,不是插件自己推的。
+    r.ph.ppqOffset = 0.5;
+
+    SECTION("① bpm + 拍号 + 拍位置齐全 ⇒ 四个字段都在,且 ppq 与 timeS 出自同一块")
+    {
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u);
+        CHECK(pod.timeSigNum == 3);
+        CHECK(pod.timeSigDen == 4);
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK(t.bpm == 120.0);
+        CHECK(t.timeSigNum == 3);
+        CHECK(t.timeSigDen == 4);
+        CHECK(t.ppqValid);
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr));
+        CHECK(t.ppq == Catch::Approx(16.5)); // 8 s × 2 拍/s + 0.5
+    }
+
+    SECTION("② 宿主只给 bpm、不给拍号 ⇒ 四个字段都不发(页面按秒显示)")
+    {
+        r.ph.haveTimeSig = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) == 0u);
+        CHECK((pod.flags & scvb::engine::kPlayheadTempoValid) != 0u); // 对照:bpm 本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
+    }
+
+    SECTION("③ 宿主只给拍号、不给 bpm ⇒ 四个字段都不发")
+    {
+        r.ph.haveBpm = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK((pod.flags & scvb::engine::kPlayheadTimeSigValid) != 0u); // 对照:拍号本身是到了的
+        CHECK_FALSE(scvb::engine::hostTempoOf(pod, r.out.sampleRate()).valid);
+    }
+
+    SECTION("④ 宿主不给时间线 ⇒ bpm/拍号照发,ppq 不发(timeS 此时是填的 0,不能当锚点)")
+    {
+        r.ph.haveTime = false;
+        r.runBlocks(2);
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples < 0);
+        CHECK((pod.flags & scvb::engine::kPlayheadMusicValid) != 0u); // 对照:ppq 本身是到了的
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+    }
+
+    SECTION("⑤ 插件停用后 ⇒ bpm/拍号照发,ppq 不发(timeS 此时按采样率 0 换成了 0.0)")
+    {
+        // [PR #325 复审] releaseResources 补发一帧「只清 playing 位」的快照([SL-527]),
+        // ppq 仍是停用前的真实位置,而处理器采样率已回 0 ⇒ emitPlayhead 算出的 timeS = 0.0。
+        r.runBlocks(2);
+        r.out.releaseResources();
+        const auto pod = r.out.playheadSnapshot();
+        CHECK(pod.timeSamples == static_cast<std::int64_t>(8.0 * kSr)); // 对照:位置还在
+        CHECK(pod.sampleRate == kSr); // 对照:快照里记着发布时的采样率
+        CHECK(r.out.sampleRate() == 0.0); // 对照:处理器这边已经回 0
+        const scvb::engine::HostTempo t = scvb::engine::hostTempoOf(pod, r.out.sampleRate());
+        CHECK(t.valid);
+        CHECK_FALSE(t.ppqValid);
+        r.out.prepareToPlay(kSr, kBlock); // 还给 Rig 的析构一个已 prepare 的处理器
+    }
+}
+
+TEST_CASE("HOST J147:hostTempoOf 的取值域 —— 越界或非有限值按「宿主没给」处理", "[host][j147]")
+{
+    scvb::engine::PlayheadPod ok;
+    ok.flags =
+        scvb::engine::kPlayheadTempoValid | scvb::engine::kPlayheadTimeSigValid | scvb::engine::kPlayheadMusicValid;
+    ok.bpm = 97.5;
+    ok.timeSigNum = 6;
+    ok.timeSigDen = 8;
+    ok.timeSamples = 0;
+    ok.ppq = 0.0;
+    REQUIRE(scvb::engine::hostTempoOf(ok, ok.sampleRate).valid); // 对照格:下面每一格只改一个字段
+
+    auto withBpm = [&](double v) {
+        auto p = ok;
+        p.bpm = v;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
+    };
+    CHECK_FALSE(withBpm(0.0));
+    CHECK_FALSE(withBpm(-120.0));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE(withBpm(std::numeric_limits<double>::infinity()));
+    CHECK_FALSE(withBpm(scvb::engine::kHostTempoMaxBpm + 1.0));
+    CHECK(withBpm(scvb::engine::kHostTempoMaxBpm));
+
+    auto withSig = [&](int n, int d) {
+        auto p = ok;
+        p.timeSigNum = n;
+        p.timeSigDen = d;
+        return scvb::engine::hostTempoOf(p, p.sampleRate).valid;
+    };
+    CHECK_FALSE(withSig(0, 4));
+    CHECK_FALSE(withSig(4, 0));
+    CHECK_FALSE(withSig(-3, 4));
+    CHECK_FALSE(withSig(scvb::engine::kHostTimeSigMax + 1, 4));
+    CHECK_FALSE(withSig(4, scvb::engine::kHostTimeSigMax + 1));
+    CHECK(withSig(scvb::engine::kHostTimeSigMax, scvb::engine::kHostTimeSigMax));
+
+    auto nanPpq = ok;
+    nanPpq.ppq = std::numeric_limits<double>::quiet_NaN();
+    CHECK(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).valid); // bpm/拍号照发
+    CHECK_FALSE(scvb::engine::hostTempoOf(nanPpq, nanPpq.sampleRate).ppqValid); // ppq 不发
+
+    // 换算 timeS 用的采样率与快照发布时的对不上 ⇒ ppq 不发(bpm/拍号照发)
+    CHECK(scvb::engine::hostTempoOf(ok, ok.sampleRate).ppqValid); // 对照
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, 0.0).ppqValid);
+    CHECK_FALSE(scvb::engine::hostTempoOf(ok, ok.sampleRate / 2.0).ppqValid);
+    CHECK(scvb::engine::hostTempoOf(ok, 0.0).valid);
 }
 
 // ---------------------------------------------------------------------------
@@ -13937,6 +14081,462 @@ TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 
 }
 
 // ===========================================================================
+// [J146] 拖动档即时预览(契约 §1.18 / §1.19 拖动档 + §2.10 scvb.vadPreview + §1.27 vad 列)。
+//
+// 这里模拟 `OutputEditor::handleSetVadParams` 的 native 那一半:写 runtime → `armResegment` →
+// `previewVadSegmentation()`(editor 本身编不进 host,它把返回的预览经 §2.10 发出去 —— 那一跳
+// 由 `web-preview/tests/smoke-vad-preview.mjs` 的源码钉子守)。
+//
+// 素材是「两档响度」:4 段响的(0.5)+ 4 段轻的(0.002,低约 48 dB),中间长静音。默认门限下
+// 轻的那几段判成无声;把门限拖到最低(−60)它们就该变有声 —— 阈值于是**有牙**,不会像单档
+// 素材那样「随便拖,VAD 列都不动」而让判据空转。
+//
+// 删除式(每格只动一处落点,见 PR 描述):
+//   D1 editor/processor 不重算预览(`previewVadSegmentation` 早退)⇒ ★P 红;
+//   D2 `waveformOf` 不读覆盖层 ⇒ ★W 红;
+//   D3 `finishAnalysis` 不收尾 ⇒ ★L 红;
+//   D4 `discardPendingResegment` 不收尾 ⇒ ★U / ★V 红;
+//   D5 timerCallback 不跑空闲收尾 ⇒ ★I 红;
+//   D6 缓存命中判据删掉(每次重建)⇒ ★C 红;
+//   D7 段不裁写回窗 ⇒ ★R 红;
+//   D8 写回集不看「此刻已连接」([SL-535])⇒ ★N 红;
+//   D9 重建不限频 ⇒ ★T 红;
+//   D10 / D11 / D12 / D13 见下方「复审②」那一组的头注(★D / ★A / ★S)。
+// ===========================================================================
+namespace
+{
+constexpr int kJ146Cols = 256;
+
+// 采两档响度的素材 → 按「松手那一趟会用的窗」(已采集时间线全长)分析一次 → 停走带离开 PRINT。
+// 返回已采集时间线右端(秒)。
+double j146Prepare(Rig& r)
+{
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int i = 0; i < 4; ++i)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 响
+        r.runBlocks(200, 0.0f, 4, 4);
+        r.runBlocks(60, 0.002f, 4, 4); // 轻(约 −48 dB:默认深度 30 dB 之外、最低门限的深度 52 dB 之内)
+        r.runBlocks(200, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    r.out.setCaptureEnabled(false);
+    const double extentS = r.out.capturedExtentSeconds();
+    REQUIRE(extentS > 10.0);
+    // 与松手档同一个窗分析(计算窗 = 写回窗 = 整条已采集时间线),vadP 于是与「默认参数下的预览」
+    // 同窗同参 —— 下面「拖回默认 ⇒ VAD 列与分析结果逐位相同」那格才成立。
+    REQUIRE(r.out.startAnalysis(0, 0.0, extentS, false, true).ok);
+    waitAnalysis(r);
+    REQUIRE(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+    r.ph.playing = false;
+    r.runBlocks(8, 0.0f);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    return extentS;
+}
+
+int voicedCols(const std::vector<int>& vad)
+{
+    int n = 0;
+    for (const int v : vad)
+        n += v != 0 ? 1 : 0;
+    return n;
+}
+
+// editor 的 handleSetVadParams 在写完 runtime 之后做的两件事(native 那一半)。
+const ScvbOutputAudioProcessor::VadPreviewState& j146Drag(Rig& r, float thresholdDb)
+{
+    r.out.runtime().vadThresholdDb = thresholdDb;
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    return r.out.previewVadSegmentation();
+}
+} // namespace
+
+TEST_CASE("HOST J146:拖动档每次调用当场产出预览,段与 VAD 列随阈值变;存档字节 / CRVS / 撤销栈一个字节不动",
+          "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto vadAnalyzed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const int voicedAnalyzed = voicedCols(vadAnalyzed);
+    REQUIRE(voicedAnalyzed > 0); // 前置:分析确实写了 vadP(响的那几段)
+
+    // 拖到最低门限:轻的那几段也该判成有声。**不排防抖**(这一格只看拖动档本身,不让松手那一趟混进来)。
+    r.out.runtime().vadThresholdDb = -60.0f;
+    juce::MemoryBlock stateBefore;
+    r.out.getStateInformation(stateBefore);
+    const auto revBefore = r.out.crvsRevision();
+    auto& um = r.out.authority().undoManager();
+    const bool canUndo0 = um.canUndo();
+    const bool canRedo0 = um.canRedo();
+    const auto units0 = um.getNumberOfUnitsTakenUpByStoredCommands();
+    const auto desc0 = um.getUndoDescription();
+    const auto seq0 = r.out.vadPreview().seq;
+
+    const auto& pvLow = r.out.previewVadSegmentation();
+    CHECK(pvLow.active); // ★P
+    CHECK(pvLow.seq == seq0 + 1);
+    CHECK((pvLow.tracksMask & (1u << (kTestChannel - 1))) != 0);
+    const auto spansLow = pvLow.spans[kTestChannel - 1];
+    INFO("spans@-60 = " << spansLow.size());
+    // editor 读的是加锁版:头与快照必须与无锁引用同一份。
+    CHECK(r.out.vadPreviewHead().seq == pvLow.seq);
+    CHECK(r.out.vadPreviewHead().active);
+    CHECK(r.out.vadPreviewSnapshot().spans[kTestChannel - 1] == spansLow);
+    CHECK(spansLow.size() >= 8); // 4 响 + 4 轻,各自成段
+    for (const auto& sp : spansLow)
+    {
+        CHECK(sp.second > sp.first);
+        CHECK(sp.first >= pvLow.startS - 1e-9);
+        CHECK(sp.second <= pvLow.endS + 1e-9);
+    }
+
+    const auto vadLow = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    INFO("voiced cols: analyzed=" << voicedAnalyzed << " preview@-60=" << voicedCols(vadLow));
+    CHECK(voicedCols(vadLow) > voicedAnalyzed); // ★W VAD 列跟着即时重判决走(覆盖层)
+
+    // 非破坏:存档字节(CRVS / FEAT 含 vadP / CFGS 全在里面)逐字节不变、修订号不动、撤销栈不动。
+    juce::MemoryBlock stateAfter;
+    r.out.getStateInformation(stateAfter);
+    CHECK(stateAfter == stateBefore);
+    CHECK(r.out.crvsRevision() == revBefore);
+    CHECK(um.canUndo() == canUndo0);
+    CHECK(um.canRedo() == canRedo0);
+    CHECK(um.getNumberOfUnitsTakenUpByStoredCommands() == units0);
+    CHECK(um.getUndoDescription() == desc0);
+
+    // 拖回默认:预览跟着回来,而且这时的覆盖层与分析写下的 vadP 逐位相同(同参数、同特征、同窗)。
+    r.out.runtime().vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    const auto& pvDef = r.out.previewVadSegmentation();
+    CHECK(pvDef.seq == seq0 + 2);
+    CHECK(pvDef.spans[kTestChannel - 1].size() < spansLow.size());
+    CHECK(r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad == vadAnalyzed);
+}
+
+TEST_CASE("HOST J146:松手那一趟落地 ⇒ 预览收尾、内存归零,VAD 列与拖动时看到的逐位相同", "[host][j146][SL255]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto& pv = j146Drag(r, -60.0f);
+    REQUIRE(pv.active);
+    const auto seqDrag = pv.seq;
+    const auto vadPreviewed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    REQUIRE(r.out.vadPreviewBytes() > 0);
+
+    Rig::pumpMessages(600); // 过 300ms 防抖(25Hz tick ⇒ 实际 300~340ms)
+    waitAnalysis(r);
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    CHECK_FALSE(r.out.vadPreview().active); // ★L 落地即收尾(空闲收尾要 1.5s,这里远没到)
+    CHECK(r.out.vadPreview().seq == seqDrag + 1); // 恰好一帧收尾
+    CHECK(r.out.vadPreviewBytes() == 0);
+    // 覆盖层撤了,VAD 列现在读的是松手那一趟写下的 vadP —— 与拖动时预览的逐位相同。
+    CHECK(r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad == vadPreviewed);
+}
+
+TEST_CASE("HOST J146:缓存命中 —— 连拖 40 次只建一次基准、占用不随次数涨;特征一改,限频 1s 后重建", "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto builds0 = r.out.vadPreviewCacheBuilds();
+    std::size_t bytesAfter2 = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        r.out.runtime().vadThresholdDb = (i % 2) == 0 ? -60.0f : -20.0f;
+        REQUIRE(r.out.previewVadSegmentation().active);
+        if (i == 1)
+            bytesAfter2 = r.out.vadPreviewBytes();
+    }
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 1); // ★C
+    INFO("bytes after 2 drags = " << bytesAfter2 << ", after 40 = " << r.out.vadPreviewBytes());
+    CHECK(r.out.vadPreviewBytes() == bytesAfter2); // 占用只随时间线 × 轨数,不随拖动次数
+
+    // 特征变了(清掉一小段覆盖 = 采集面被改,边播边采时每 25Hz 就是这样)。
+    REQUIRE(r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), extentS * 0.5,
+                                extentS * 0.5 + 0.5) > 0.0);
+    // [J146 复审①] 距上次重建不足 1s ⇒ **不重建**,沿用旧缓存按**当前参数**照跑 —— 虚影仍随拖动变。
+    const auto seqBefore = r.out.vadPreview().seq;
+    const auto spansAt20 = r.out.vadPreview().spans[kTestChannel - 1].size(); // 上一拍停在 −20
+    r.out.runtime().vadThresholdDb = -60.0f;
+    const auto& pvT = r.out.previewVadSegmentation();
+    REQUIRE(pvT.active);
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 1); // ★T 限频期不重建
+    CHECK(pvT.seq == seqBefore + 1); // 仍然当场出了一帧
+    CHECK(pvT.spans[kTestChannel - 1].size() > spansAt20); // 而且是按新参数(−60 判得出轻的那几段)
+    // 过了 1s:下一次拖动调用按新特征重建。中间每 400ms 拖一下,别让空闲收尾把预览收掉。
+    for (int i = 0; i < 3; ++i)
+    {
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.previewVadSegmentation().active);
+    }
+    CHECK(r.out.vadPreviewCacheBuilds() == builds0 + 2); // ★C 特征一改就重建(限频之后)
+}
+
+TEST_CASE("HOST J146:丢弃事件(撤销 / 真切版本)收尾预览", "[host][j146][sl531]")
+{
+    SECTION("撤销真的动了栈")
+    {
+        Rig r;
+        j146Prepare(r);
+        REQUIRE(j146Drag(r, -60.0f).active);
+        const auto seq = r.out.vadPreview().seq;
+        REQUIRE(r.out.undo()); // 撤掉那次分析
+        CHECK_FALSE(r.out.vadPreview().active); // ★U
+        CHECK(r.out.vadPreview().seq == seq + 1);
+        CHECK(r.out.vadPreviewBytes() == 0);
+    }
+    SECTION("真切版本")
+    {
+        Rig r;
+        j146Prepare(r);
+        REQUIRE(j146Drag(r, -60.0f).active);
+        REQUIRE(r.out.setVersionActive(2));
+        CHECK_FALSE(r.out.vadPreview().active); // ★V
+    }
+    SECTION("对照:栈空的撤销 / 切到同一版本不收尾")
+    {
+        Rig r;
+        j146Prepare(r);
+        r.out.authority().undoManager().clearUndoHistory();
+        REQUIRE(j146Drag(r, -60.0f).active);
+        CHECK_FALSE(r.out.undo());
+        CHECK(r.out.setVersionActive(r.out.versionActive()));
+        CHECK(r.out.vadPreview().active);
+    }
+}
+
+TEST_CASE("HOST J146:没人接手(抑制态松手)⇒ 空闲 1.5s 后收尾;之前不收", "[host][j146]")
+{
+    Rig r;
+    j146Prepare(r);
+    // 不排防抖 = 抑制态松手(PRINT / 分析中时 armResegment 什么都不排)的同一形态。
+    r.out.runtime().vadThresholdDb = -60.0f;
+    REQUIRE(r.out.previewVadSegmentation().active);
+    Rig::pumpMessages(700);
+    CHECK(r.out.vadPreview().active); // 对照:还没到 1.5s,不许早收
+    Rig::pumpMessages(1300);
+    CHECK_FALSE(r.out.vadPreview().active); // ★I
+    CHECK(r.out.vadPreviewBytes() == 0);
+}
+
+TEST_CASE("HOST J146:范围档 ⇒ 预览只在写回窗内(段裁到窗、窗外 VAD 列不动)", "[host][j146]")
+{
+    Rig r;
+    const double extentS = j146Prepare(r);
+    const auto vadAnalyzed = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const double a = extentS * 0.25;
+    const double b = extentS * 0.75;
+    r.out.runtime().rangeMode = 2; // manual
+    r.out.runtime().rangeStartS = a;
+    r.out.runtime().rangeEndS = b;
+    const auto& pv = j146Drag(r, -60.0f);
+    REQUIRE(pv.active);
+    CHECK(pv.startS >= a - 0.011);
+    CHECK(pv.endS <= b + 0.011);
+    const auto& spans = pv.spans[kTestChannel - 1];
+    REQUIRE_FALSE(spans.empty());
+    for (const auto& sp : spans)
+    {
+        CHECK(sp.first >= pv.startS - 1e-9); // ★R
+        CHECK(sp.second <= pv.endS + 1e-9);
+    }
+    // 窗外的列:覆盖层不管,仍是分析写下的那一份。
+    const auto vadNow = r.out.waveformOf(kTestChannel, 0.0, extentS, kJ146Cols).vad;
+    const double colS = extentS / kJ146Cols;
+    int outsideSame = 0;
+    int outsideTotal = 0;
+    for (int i = 0; i < kJ146Cols; ++i)
+    {
+        const double c0 = colS * i;
+        const double c1 = c0 + colS;
+        if (c1 <= pv.startS || c0 >= pv.endS)
+        {
+            ++outsideTotal;
+            outsideSame += vadNow[static_cast<std::size_t>(i)] == vadAnalyzed[static_cast<std::size_t>(i)] ? 1 : 0;
+        }
+    }
+    REQUIRE(outsideTotal > 0);
+    CHECK(outsideSame == outsideTotal);
+    // 关掉这条轨 ⇒ 写回集为空 ⇒ 预览结束。
+    r.out.runtime().channels[kTestChannel - 1].enabled = false;
+    CHECK_FALSE(r.out.previewVadSegmentation().active);
+    r.out.runtime().channels[kTestChannel - 1].enabled = true;
+    REQUIRE(r.out.previewVadSegmentation().active); // 对照:开回来就又有了
+
+    // [SL-535] 此刻没连上 Input ⇒ 松手那一趟不计它 ⇒ 预览也不画它(旧采集数据还在)。
+    r.in.releaseResources();
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[kTestChannel - 1]));
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, extentS).coveredS > 0.0);
+    CHECK_FALSE(r.out.previewVadSegmentation().active); // ★N
+    // 接回来:不改 enabled、不清数据,自动回到预览里。
+    r.in.prepareToPlay(kSr, kBlock);
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.out.previewVadSegmentation().active);
+}
+
+// ---------------------------------------------------------------------------
+// [J146 复审②] 调度两格 + 双轨两格。
+//   ★D 自适应占空比:距上次重判决不足「耗时 × 2 / 下限」时,拖动调用只记「有待算」,25Hz 定时器按最新
+//      参数补算(删除式 D10:去掉到点判据 ⇒ 第二发当场算、红;D11:定时器不补算 ⇒ 红)。
+//   ★A 限频只数写回集里的缓存:上一拍唯一有缓存的轨刚出、另一条刚进 ⇒ 按首建,不收尾(删 inSet 条件 ⇒ 红)。
+//   ★S 限频期覆盖层记哨兵:别的轨在采、把时间线延长,这条轨自己没被写过 ⇒ VAD 列也退回 vadP
+//      (删哨兵、照记缓存序号 ⇒ 这条轨读到旧窗算的覆盖层 ⇒ 红)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J146:自适应占空比 —— 没到点的拖动调用只记待算,定时器按最新参数补算", "[host][j146]")
+{
+    Rig r;
+    j146Prepare(r);
+    r.out.setVadPreviewMinGapForTesting(400); // 本机小素材一次只要零点几毫秒,给判据一个确定的下限
+    r.out.runtime().vadThresholdDb = -60.0f;
+    r.out.requestVadPreview();
+    const auto seq1 = r.out.vadPreview().seq;
+    REQUIRE(r.out.vadPreview().active); // 第一发:从没算过 ⇒ 当场算
+    const auto spans60 = r.out.vadPreview().spans[kTestChannel - 1].size();
+
+    r.out.runtime().vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    r.out.requestVadPreview();
+    CHECK(r.out.vadPreview().seq == seq1); // ★D 没到点:这一发不当场算
+    Rig::pumpMessages(700); // 过下限;25Hz 定时器补算
+    CHECK(r.out.vadPreview().seq == seq1 + 1); // ★D 补算了恰好一次
+    CHECK(r.out.vadPreview().spans[kTestChannel - 1].size() < spans60); // 而且按的是最新参数(默认门限)
+}
+
+namespace
+{
+// Rig 之外再挂第二条轨(ch5)的 Input;推块时两条可分别开关(造「只有一条在写」的时刻)。
+struct J146TwoTrack
+{
+    static constexpr int kChB = 5;
+    Rig r;
+    ScvbInputAudioProcessor inB;
+    juce::AudioBuffer<float> bufB{2, kBlock};
+
+    J146TwoTrack()
+    {
+        inB.setGroupId(kTestGroup);
+        inB.setChannelId(kChB);
+        inB.setPlayHead(&r.ph);
+        inB.prepareToPlay(kSr, kBlock);
+    }
+    ~J146TwoTrack() { inB.releaseResources(); }
+
+    void blocks(int n, bool a, bool b, float amp)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (a)
+            {
+                Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
+                r.in.processBlock(r.inBuf, r.midi);
+            }
+            if (b)
+            {
+                Rig::fillSine(bufB, amp, r.ph.timeSamples);
+                inB.processBlock(bufB, r.midi);
+            }
+            r.outBuf.clear();
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+                r.ph.timeSamples += kBlock;
+            if ((i % 4) == 3)
+                Rig::pumpMessages(4);
+        }
+    }
+
+    bool connected(int ch)
+    {
+        return scvb::output::isConnectedForDisplay(r.out.connSnapshot().channels[static_cast<std::size_t>(ch - 1)]);
+    }
+
+    // 两条都连上、都采一段(响 / 静交替),停走带。
+    void prepare()
+    {
+        r.ph.playing = true;
+        for (int w = 0; w < 4000 && !(connected(kTestChannel) && connected(kChB)); w += 40)
+        {
+            blocks(2, true, true, 0.25f);
+            Rig::pumpMessages(20);
+        }
+        REQUIRE(connected(kTestChannel));
+        REQUIRE(connected(kChB));
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        for (int i = 0; i < 3; ++i)
+        {
+            blocks(60, true, true, 0.5f);
+            blocks(120, true, true, 0.0f);
+        }
+        Rig::pumpMessages(400);
+        r.out.setCaptureEnabled(false);
+        r.ph.playing = false;
+        blocks(8, true, true, 0.0f);
+        Rig::pumpMessages(200);
+        REQUIRE(r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Print);
+    }
+};
+} // namespace
+
+TEST_CASE("HOST J146:限频只数写回集里的缓存 —— 一条刚出一条刚进,按首建、不收尾", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    auto& rt = t.r.out.runtime();
+    rt.vadThresholdDb = -60.0f;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = false; // 先只有 A
+    const auto& pvA = t.r.out.previewVadSegmentation();
+    REQUIRE(pvA.active);
+    REQUIRE(pvA.tracksMask == (1u << (kTestChannel - 1)));
+    const auto seqA = pvA.seq;
+
+    // 1s 之内:A 出、B 进。
+    rt.channels[static_cast<std::size_t>(kTestChannel - 1)].enabled = false;
+    rt.channels[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].enabled = true;
+    const auto& pvB = t.r.out.previewVadSegmentation();
+    CHECK(pvB.active); // ★A 没被收尾(不闪)
+    CHECK(pvB.seq == seqA + 1); // 恰好一帧,中间没有 active:false
+    CHECK(pvB.tracksMask == (1u << (J146TwoTrack::kChB - 1)));
+    CHECK_FALSE(pvB.spans[static_cast<std::size_t>(J146TwoTrack::kChB - 1)].empty());
+}
+
+TEST_CASE("HOST J146:限频期覆盖层记哨兵 —— 别的轨延长了时间线,这条轨的 VAD 列也退回 vadP", "[host][j146]")
+{
+    J146TwoTrack t;
+    t.prepare();
+    const double extent0 = t.r.out.capturedExtentSeconds();
+    constexpr int kCols = 128;
+    // 从没分析过 ⇒ vadP 全 0:这就是「退回 vadP」时该看到的那一份。
+    const auto vadP = t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad;
+    // 采集开关先打开、让 Input 经 ctrl 广播(25Hz)看到它 —— 这一步不推块,谁都不写特征。
+    // 放在首建**之前**:下面「B 接着采」必须落在首建后 1s 的限频窗里,不能把这段等待也算进去。
+    t.r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(300);
+    t.r.out.runtime().vadThresholdDb = -60.0f;
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    const auto builds1 = t.r.out.vadPreviewCacheBuilds();
+    REQUIRE(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad != vadP); // 前置:覆盖层在用
+
+    // 只让 B 接着采:A 一个字节都不写,时间线被 B 延长(计算窗变了,A 的修改序号没变)。
+    // 推到时间线真的变长为止(特征经 Output 25Hz 拉取才入库),封顶约 0.8s,仍在限频窗内。
+    t.r.ph.playing = true;
+    for (int k = 0; k < 20 && !(t.r.out.capturedExtentSeconds() > extent0); ++k)
+    {
+        t.blocks(8, false, true, 0.5f);
+        Rig::pumpMessages(30);
+    }
+    t.r.out.setCaptureEnabled(false);
+    t.r.ph.playing = false;
+    REQUIRE(t.r.out.capturedExtentSeconds() > extent0);
+    REQUIRE(t.connected(kTestChannel)); // A 仍连着、仍在写回集里
+
+    REQUIRE(t.r.out.previewVadSegmentation().active);
+    REQUIRE(t.r.out.vadPreviewCacheBuilds() == builds1); // 前置:这一拍确实走了限频(没重建)
+    CHECK(t.r.out.waveformOf(kTestChannel, 0.0, extent0, kCols).vad == vadP); // ★S
+}
+
+// ===========================================================================
 // [SL-216 / J136] 主唱居中进分析计算。
 //
 // 用户裁定(J136):主唱居中由「播放期强制覆盖」改为进入分析引擎的槽位/平衡计算,其余声部据此排布。
@@ -13947,6 +14547,9 @@ TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 
 // ===========================================================================
 namespace
 {
+// 宿主那条写入路径:直接 setValueNotifyingHost,不经插件的任何写入口 —— 与 VST3 wrapper 把宿主的参数写入
+// (自动化回放 / 宿主参数面板)转交插件时的 setValueAndNotifyIfChanged 是同一个调用。[SL-545] 起它记下的那段
+// 算「宿主写的」(`LeadRun::automated`);插件界面那条见 `setLeadSelectFromUi`。
 void setLeadSelect(ScvbOutputAudioProcessor& out, int v)
 {
     auto* p = out.getAPVTS().getParameter("lead_select");
@@ -14007,7 +14610,8 @@ bool sameRuns(const std::vector<scvb::analysis::LeadRun>& a, const std::vector<s
     }
     for (std::size_t i = 0; i < a.size(); ++i)
     {
-        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead)
+        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].lead != b[i].lead ||
+            a[i].automated != b[i].automated) // [SL-545] 来源位也随工程存取
         {
             return false;
         }
@@ -14322,4 +14926,288 @@ TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不�
     const auto withoutLead = analyzeOthers();
     CHECK(withLead == withoutLead); // ② 主唱记录没把它的旧数据带回计算集
     CHECK(r.segTableOf(leadCh) == leadBefore);
+}
+
+// ===========================================================================
+// [SL-545 / J143 + J143b] 点分析那一刻的 Lead Select 进分析;自动化证据按**写入来源**判。
+//
+// J143:没有记录的区间用点分析那一刻的 lead_select。J143b(统筹 2026-09-28,取代 J143a):只有**宿主写进来的**
+// 值记下的那几段(`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用当前值;有 ⇒ 宿主记录盖到的区间
+// 按记录,其余用当前值。插件界面改的、撤销重做写回的、载入工程恢复的值记下的那几段不看。
+// J143a(「记录里有 ≥ 2 个不同的值才算自动化」)被推翻的原因就是下面「试听一小段」那一格(#317 复审【重要】1):
+// 采集把整窗记成 0,用户在插件里改成主唱轨再试听一小段 ⇒ 窗里有 0 和主唱轨两个值 ⇒ 被当成自动化,只有试听
+// 那段居中。
+// 纯算法那半在 tests/core/test_lead_timeline.cpp 的 [sl545];这里钉**接线**:① 每条写入路径把来源标对了、
+// 记录带着来源存取;② startAnalysis 真的只按宿主记录取、把参数面上的当前值交给了管线。
+// 两条写入路径:`setLeadSelect`(宿主那条 —— 直接 setValueNotifyingHost,与 VST3 wrapper 转交宿主写入的
+// setValueAndNotifyIfChanged 是同一个调用)、`setLeadSelectFromUi`(插件界面那条 —— 桥面 setParam 三段式
+// 落到的 uiBeginParamGesture / uiSetParam / uiEndParamGesture)。
+// ===========================================================================
+namespace
+{
+void setLeadSelectFromUi(ScvbOutputAudioProcessor& out, int v)
+{
+    REQUIRE(out.uiBeginParamGesture("lead_select"));
+    REQUIRE(out.uiSetParam("lead_select", static_cast<float>(v)));
+    REQUIRE(out.uiEndParamGesture("lead_select"));
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(60);
+}
+} // namespace
+
+TEST_CASE("HOST SL-545:每条写入路径的来源 —— 界面 / 撤销重做 / 载入工程 = 插件,宿主参数写入 = 宿主", "[host][sl545]")
+{
+    Rig r;
+    r.ph.playing = true;
+    const auto lastRun = [&] {
+        const auto runs = r.out.leadTimelineSnapshot();
+        REQUIRE_FALSE(runs.empty());
+        return runs.back();
+    };
+
+    // 起点:还没人改过 lead_select ⇒ 插件(默认值不是自动化)。
+    r.runBlocks(8);
+    CHECK_FALSE(lastRun().automated);
+
+    SECTION("插件界面(uiSetParam)写的 → 不算自动化;随后宿主改值 → 算")
+    {
+        setLeadSelectFromUi(r.out, 3);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated); // ★ 界面那条路
+        setLeadSelect(r.out, 4);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 4);
+        CHECK(lastRun().automated); // ★ 宿主那条路
+    }
+
+    SECTION("撤销 / 重做写回 lead_select → 不算自动化(即使上一笔是宿主写的)")
+    {
+        setLeadSelectFromUi(r.out, 3); // 压一步撤销:0 → 3
+        setLeadSelect(r.out, 5); // 宿主改成 5:来源 = 宿主(宿主写入不进插件撤销栈)
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        REQUIRE(r.out.undo()); // 撤销:经 paramWriter 写回 0
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 0);
+        CHECK_FALSE(lastRun().automated); // ★ 撤销
+        setLeadSelect(r.out, 5);
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        REQUIRE(r.out.redo()); // 重做:经 paramWriter 写回 3
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated); // ★ 重做
+    }
+
+    SECTION("载入工程恢复出来的 lead_select → 不算自动化")
+    {
+        setLeadSelectFromUi(r.out, 6);
+        juce::MemoryBlock saved;
+        r.out.getStateInformation(saved); // PRMS 里 lead_select = 6
+        setLeadSelect(r.out, 2); // 宿主改成 2
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        r.out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize())); // replaceState 恢复成 6
+        Rig::pumpMessages(60);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 6);
+        CHECK_FALSE(lastRun().automated); // ★ 载入
+    }
+
+    SECTION("插件界面写一次同值 → 来源也改成插件(ScopedPluginWrite 的预置;监听器这次不会来)")
+    {
+        setLeadSelect(r.out, 3);
+        r.runBlocks(8);
+        REQUIRE(lastRun().automated);
+        setLeadSelectFromUi(r.out, 3); // 同值:JUCE 不调监听器,只剩预置在起作用
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated);
+    }
+
+    SECTION("宿主写进来的值与此刻相同 → 监听器不来,来源保持上一次改值时的(已知边,USER_GUIDE 写明)")
+    {
+        // 钉住现行行为,不是判据:自动化的第一个值恰好等于播放前的值时,那一截记成插件写的。
+        setLeadSelectFromUi(r.out, 3);
+        setLeadSelect(r.out, 3);
+        r.runBlocks(8);
+        CHECK(lastRun().lead == 3);
+        CHECK_FALSE(lastRun().automated);
+    }
+
+    SECTION("来源随工程存取(LEAD minor 2):界面那段与宿主那段分开存、原样读回")
+    {
+        setLeadSelectFromUi(r.out, 3);
+        r.runBlocks(8);
+        setLeadSelect(r.out, 5);
+        r.runBlocks(8);
+        const auto before = r.out.leadTimelineSnapshot();
+        REQUIRE(before.size() == 3); // 起点那段 0 / 界面 3 / 宿主 5
+        REQUIRE_FALSE(before[1].automated);
+        REQUIRE(before[2].automated);
+
+        juce::MemoryBlock full;
+        r.out.getStateInformation(full);
+        const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+        r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+        Rig::pumpMessages(60);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        r.out.setStateInformation(full.getData(), static_cast<int>(full.getSize()));
+        Rig::pumpMessages(60);
+        CHECK(sameRuns(r.out.leadTimelineSnapshot(), before)); // sameRuns 连来源位一起比
+    }
+}
+
+TEST_CASE("HOST SL-545:插件界面改的值不算自动化、宿主写的才按记录 —— 改完旋钮试听一小段,不再只有那段居中",
+          "[host][sl545][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+
+    // 事实前提(不是本卡造的):采集就是走带播放 ⇒ 从时间线起点到采集末尾全有记录,值都是 0;
+    // 采集期间没人改过 lead_select ⇒ 全是插件来源,一条宿主记录都没有。
+    {
+        const auto runs = r.out.leadTimelineSnapshot();
+        REQUIRE(scvb::analysis::majorityLead(runs, s0, s1, /*fallback=*/7) == 0); // 7 当哨兵:取到 0 = 窗里有记录
+        REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty());
+    }
+
+    // 基线:Lead Select = 0。挑离开正中的段最多的那条轨当主唱 —— 这样下面「它每段都在正中」只能来自本卡。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    const auto panBase = r.flatOf(/*wantPan=*/true);
+    const auto volBase = r.flatOf(/*wantPan=*/false);
+    int leadCh = 0;
+    int bestOff = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const int off = countOffCenter(segmentsOfTrack(r.out, ch));
+        if (off > bestOff)
+        {
+            bestOff = off;
+            leadCh = ch;
+        }
+    }
+    REQUIRE(leadCh != 0);
+    r.out.setCaptureEnabled(false); // 下面几格的重播只为让 Output 记下 Lead Select,不改特征
+    MonoMultiRig::pump(100);
+
+    const auto checkLeadCentredOthersAround = [&] {
+        const auto leadSegs = segmentsOfTrack(r.out, leadCh);
+        REQUIRE_FALSE(leadSegs.empty());
+        for (const auto& s : leadSegs)
+        {
+            CHECK(s.pan == 0.0f); // ★ 主唱进了分析:段表里就是正中,不靠播放期覆盖
+        }
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            if (ch == leadCh)
+            {
+                continue;
+            }
+            INFO("non-lead track " << ch);
+            CHECK(countOffCenter(segmentsOfTrack(r.out, ch)) > 0); // 其余声部围绕主唱排到两侧
+        }
+    };
+
+    SECTION("记录全是 0、界面改 Lead Select 不重播 → 主唱居中,其余围绕它")
+    {
+        const auto before = r.out.leadTimelineSnapshot();
+        setLeadSelectFromUi(r.out, leadCh); // 只改参数,不走带
+        REQUIRE(sameRuns(r.out.leadTimelineSnapshot(), before)); // 前提:记录没变,居中只能来自当前值
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("旧工程(没有 LEAD 块)、界面选主唱轨、不播放 → 主唱居中,其余围绕它")
+    {
+        juce::MemoryBlock full;
+        r.out.getStateInformation(full);
+        const auto noLead = blobWithout(full, scvb::state::kFourccLead);
+        r.out.setStateInformation(noLead.data(), static_cast<int>(noLead.size()));
+        MonoMultiRig::pump(100);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        setLeadSelectFromUi(r.out, leadCh);
+        REQUIRE(r.out.leadTimelineSnapshot().empty());
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("★ 记录全是 0、界面改成主唱轨、试听开头一小段再分析 → 主唱居中(整窗用当前值,不只是试听那段)")
+    {
+        // #317 复审【重要】1 的原样:本机台每轨只切出**一段**(六个爆发之间的静音短于换气容忍,整窗并成一段)
+        // ⇒ 整窗只有一个全局区间。试听开头 1/4:窗里有 0 与主唱轨两个值、0 占多数 —— J143a 判成自动化,
+        // 这个区间按多数值 0,主唱不居中。J143b:两种值都是插件写的,整窗按当前值 = 主唱轨。
+        setLeadSelectFromUi(r.out, leadCh);
+        const std::int64_t cut = s0 + ((s1 - s0) / 4 / kBlock) * kBlock;
+        r.ph.timeSamples = s0;
+        r.runBlocks(static_cast<int>((cut - s0) / kBlock), 0.5f);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::majorityLead(runs, s0, cut, /*fallback=*/7) == leadCh); // 前提:试听那段记下了
+            REQUIRE(scvb::analysis::majorityLead(runs, s0, s1) == 0); // 前提:整窗仍是 0 占多数
+            REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty()); // 前提:全是插件来源
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("宿主写的记录前 2/3 是主唱轨、界面随后换成另一轨不重播 → 按宿主记录,当前值说了不算")
+    {
+        const std::int64_t cut = s0 + ((s1 - s0) * 2 / 3 / kBlock) * kBlock;
+        setLeadSelect(r.out, leadCh); // 宿主那条路(自动化回放)
+        r.ph.timeSamples = s0;
+        r.runBlocks(static_cast<int>((cut - s0) / kBlock), 0.5f);
+        const int otherCh = leadCh % MonoMultiRig::kCount + 1;
+        setLeadSelectFromUi(r.out, otherCh); // 停下后在插件里换成另一轨,不播
+        {
+            const auto automated = scvb::analysis::automatedLeadRuns(r.out.leadTimelineSnapshot());
+            REQUIRE_FALSE(automated.empty()); // 前提:有自动化证据
+            REQUIRE(scvb::analysis::majorityLead(automated, s0, s1, /*fallback=*/7) == leadCh);
+            REQUIRE(scvb::analysis::majorityLead(automated, cut, s1, /*fallback=*/7) == 7); // 后 1/3 盖不到
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        INFO("leadCh=" << leadCh << " otherCh=" << otherCh);
+        checkLeadCentredOthersAround(); // 其中含「当前值那一轨离开正中」:它没把宿主记录盖掉
+    }
+
+    SECTION("宿主写的记录恒为主唱轨、界面改回 0 → 仍按记录居中")
+    {
+        setLeadSelect(r.out, leadCh);
+        r.ph.timeSamples = 0; // 从时间线起点重播到采集末尾:计算窗里全是宿主写的主唱轨
+        r.runBlocks(static_cast<int>(s1 / kBlock) + 2, 0.5f);
+        setLeadSelectFromUi(r.out, 0);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            const auto automated = scvb::analysis::automatedLeadRuns(runs);
+            REQUIRE(automated.size() == runs.size()); // 前提:全是宿主来源
+            REQUIRE(scvb::analysis::majorityLead(automated, 0, s1) == leadCh);
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        checkLeadCentredOthersAround();
+    }
+
+    SECTION("界面写的记录恒为主唱轨、界面改回 0 → 不居中,与基线逐位同解")
+    {
+        // 与上一格只差「重播前是谁把 Lead Select 改成主唱轨的」。
+        setLeadSelectFromUi(r.out, leadCh);
+        r.ph.timeSamples = 0;
+        r.runBlocks(static_cast<int>(s1 / kBlock) + 2, 0.5f);
+        setLeadSelectFromUi(r.out, 0);
+        {
+            const auto runs = r.out.leadTimelineSnapshot();
+            REQUIRE(scvb::analysis::automatedLeadRuns(runs).empty()); // 前提:全是插件来源
+            REQUIRE(scvb::analysis::majorityLead(runs, 0, s1) == leadCh);
+        }
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+        CHECK(r.flatOf(/*wantPan=*/true) == panBase);
+        CHECK(r.flatOf(/*wantPan=*/false) == volBase);
+    }
 }

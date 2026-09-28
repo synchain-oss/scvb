@@ -62,14 +62,35 @@ struct PipelineConfig
     // [SL-216 / J136] `lead_select` 在时间线上的记录(样本域,按 t0 升序、互不重叠;Output 在走带
     // 播放时逐块记下)。逐区间取 `majorityLead`:结果 n ∈ 1..15 且轨 n 在该区间活跃 ⇒ 这一轨
     // 在**这个区间**按主唱锁处理(并入集合 C:恒居中、不占槽,02 §5.2),其余声部据此排槽、
-    // 平衡也把它当作居中的那一轨来算。空 = 没有记录 ⇒ 与改动前逐位相同。
+    // 平衡也把它当作居中的那一轨来算。**只取 `automated` 的记录**(宿主写的),见下面 `leadFallback`。
     std::vector<LeadRun> leadRuns;
+
+    // [SL-545 / J143 + J143b] 点分析那一刻的 `lead_select`(0..15;0 = 无主唱)。自动化证据按**写入来源**判,
+    // 不按记录里有几个不同的值判(J143b 取代 J143a):只有宿主写进来的值(`LeadRun::automated`)算自动化,
+    // 插件界面上改的、撤销重做写回的、载入工程恢复的都不算 —— 用户在插件里拧旋钮再试听一段,试听那段
+    // 记下的值不会让记录「看起来像自动化」。
+    //   · 计算窗里一条宿主记录都没有 ⇒ **整窗**每个区间都取它(记录不看);
+    //   · 有 ⇒ 逐区间按**宿主记录**的多数值,一个宿主记录样本都没有的区间才取它(宿主记录优先)。
+    // 两支是同一个表达式:`majorityLead(automatedLeadRuns(leadRuns), 区间, leadFallback)` —— 一条都没有时
+    // 每个区间都落到回落值。为 0 且没有宿主记录 ⇒ 与 SL-216 之前逐位相同。
+    int leadFallback = 0;
 };
 
 // K 加权均方(线性能量)→ LUFS(BS.1770 的 −0.691 偏置;静音回 −120 替身)。
 // §2.8 `loudnessLufs` 与 `AnalysisSegment.loudnessLufs` 的**唯一换算口径**:
 // 流水线产段时用它,桥面 emit 时按 FEAT 重算也用它([SL-257] 真值化)。
 double lufsFromMeanKw(double meanKwLinear);
+
+// [J146] 谷切分的 ℓ 包络:逐 hop `frameLoudnessDb(kw)`(ℓ 的唯一口径,见 EnergyVad.h)。out 先清空。
+void envelopeDbInto(const float* kwMs, std::size_t n, std::vector<float>& out);
+
+// [J146] S1 单轨的后一半:VAD 段里超过 `seg.maxSegmentS` 的按谷切分(02 §3.2),短段原样保留;
+// 返回 hop 域段序列(绝对时间线)。**分析流水线与拖动档预览(契约 §1.18)共用这一份**。
+// `kwMs[0..n)` 对应绝对 hop `firstHop..firstHop+n`;`envDb` 为空时按需由 `envelopeDbInto` 现建
+// (流水线的惰性口径),非空则视为已建好(预览传缓存)。任一段找不到自然切点时置 *noNaturalCut。
+std::vector<VadSegment> splitLongVadSegments(const std::vector<VadSegment>& vadSegs, std::int64_t firstHop,
+                                             const SegmentationParams& seg, double hopSec, const float* kwMs,
+                                             std::size_t n, std::vector<float>& envDb, bool* noNaturalCut);
 
 // 每轨的特征切片(调用方从 FrameStore 里按范围抠出来的快照:kw 线性能量 + 峰值)。
 // 长度必须一致 = 范围内 hop 数;未覆盖的 hop 由调用方填静音(kw=0)。

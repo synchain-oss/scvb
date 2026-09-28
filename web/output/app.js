@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 当前阶段(T31 Wave 2「交互接线」):
 //   • 本文件负责**外壳与事件仓**:createBridge → requestInitialState(§0.6 门控由页面
-//     掌握)→ 订阅契约 §2 的九个事件 → 维护一份深合并后的 store → 驱动 header /
+//     掌握)→ 订阅契约 §2 的十个事件([J146] 起含 §2.10 `scvb.vadPreview`,它不进 store)→ 维护一份深合并后的 store → 驱动 header /
 //     横幅区 / footer / 缩放 / 引导页 / tab 路由;Tab1 的全部渲染与上行调用在
 //     web/output/tab-master.js(createTabMaster)。
 //   • **Wave 1 的 WAVE1_NUMBERS 静态填数路径已删除**:所有 {n}/{m}/{k}/{p}/{t}
@@ -94,6 +94,8 @@ import {
 } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
 import { installShellFit } from "../shared/shell-fit.js";
+// [J147] 宿主速度模型:本文件只负责喂(scvb.playhead 订阅),消费者是 Tab1 手动范围。
+import { emptyTempo, observeTempo } from "./host-tempo.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -142,6 +144,10 @@ const store = {
     conn: null, // §2.3
     groups: 0, // §2.4 groups_online 位图(事件缺失 = 0 ⇒ 绿点全灭)
     playhead: null, // §2.6
+    // [J147] 宿主速度 / 拍号 / 拍位置的观察记录(host-tempo.js)。只由 `scvb.playhead` 订阅经
+    // `observeTempo()` 推进;缺速度字段的帧不动它(停带时沿用最后一次读到的值)。
+    // 只在内存里:关掉插件窗口再打开 = 新页面 = 从头观察。
+    tempo: emptyTempo(),
     // [SL-356] 走带态去抖的记账:最近一次「**不是**明确停走」的那一帧的时刻(ms)。
     // 0 = 本会话还没观测到过这样的一帧。只由 `scvb.playhead` 订阅经 `transportPlayingAt()`
     // 推进,消费者只有 `hostEchoUseWideWindow()`。为什么需要它:见 host-echo.js 的
@@ -1995,9 +2001,11 @@ function renderFooter() {
 
     // {x}/{y} 一律填 **mm:ss.mmm**(桥面单位,契约 §1.8/§0.2 第 3 条:UI 永不见样本、只收秒),
     // 与 Range 卡可编辑侧、write 确认条同一单位。词条 footer.printing 的 zh 写作
-    // 「{x}–{y} 小节」/ en「BARS」/ fr「MESURES」—— **桥面没有宿主 tempo map 入口**(A17),
-    // 小节值算不出来;填裸秒数会读成「12–96 小节」(明确错标),填时间码至少不撒谎。
-    // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),拿到 tempo map(T33)后回填小节。
+    // 「{x}–{y} 小节」/ en「BARS」/ fr「MESURES」—— 这里填的是秒,填裸秒数会读成「12–96 小节」
+    // (明确错标),填时间码至少不撒谎。该单位词待统筹按 A17/A19 同款裁定(deviations A26)。
+    // [J147] 起 scvb.playhead 带了宿主**当前位置**的速度 / 拍号 / 拍位置(不是整张速度表),
+    // Tab1 手动范围已按它换算小节(host-tempo.js,含估算态)。**这里没跟着换**:J147 裁的只是
+    // Tab1 手动范围;footer / 写入确认条改填小节(连同估算态标注,05 §2.0 Footer 行)另待裁定。
     const vName = versionName(g.version_active || 1);
     fillKeyed($("footer-print-status"), footerPrintKey(range.mode, false), {
         v: vName,
@@ -2097,7 +2105,7 @@ function syncTourAsk() {
 }
 
 // ============================================================================
-// 事件订阅(契约 §2 九个事件;名字逐字照 BRIDGE_EVENTS.output)
+// 事件订阅(契约 §2 十个事件;名字逐字照 BRIDGE_EVENTS.output)
 // ============================================================================
 if (bridge) {
     bridge.on("scvb.state", (s) => {
@@ -2269,6 +2277,9 @@ if (bridge) {
         );
         // [SL-356] 走带态去抖的记账(判据与理由见 host-echo.js 的 transportPlayingAt)。
         store.playingAt = transportPlayingAt(store.playingAt, p);
+        // [J147] 速度字段进模型。不影响下面的 render 判定:速度字段变了,载荷就变了,
+        // `samePlayhead` 自然判「不同」;没变就不用重画。
+        store.tempo = observeTempo(store.tempo, p);
         const nowStopped = !!p && p.isPlaying === false;
         if (nowStopped && !wasStopped) {
             // 停走边沿:排一拍 render 到去抖窗到期之后。**停走之后没有事件会来 render**
@@ -2358,6 +2369,12 @@ if (bridge) {
         requestRender();
     });
 
+    // [J146] §2.10 拖动档 VAD/边界预览:只归 Tab3(虚影 + 刷 VAD 着色),不进 store ——
+    // 它是瞬态显示件,不是段数据(段数据唯一来源仍是 §2.8)。
+    bridge.on("scvb.vadPreview", (pv) => {
+        tabWave.onVadPreview(pv);
+    });
+
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
         // §2.9:active 缺省视为 true;false = 条件已解除(持续性横幅据此撤下)。
@@ -2384,7 +2401,8 @@ const KNOWN_CODES = new Set([
 
 /**
  * §2.6 载荷是**扁平的标量集**(`timeS` / `isPlaying` / `loopStartS?` / `loopEndS?` /
- * `inRange`)—— 逐键严格相等即可断定「由它派生的一切投影都相同」。
+ * `inRange`,[J147] 起另有 `bpm?` / `timeSigNum?` / `timeSigDen?` / `ppq?`)—— 逐键严格相等
+ * 即可断定「由它派生的一切投影都相同」。
  * 键集不同、出现非标量(引用不等)时一律判不同,宁可多渲染一帧也不漏。
  */
 function samePlayhead(a, b) {

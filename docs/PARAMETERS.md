@@ -1,7 +1,7 @@
 # PARAMETERS —— SCVB 自动化参数表(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-09-28(同日两处,均**零参数面变更**:① [J136] / [SL-216] `lead_select` 的说明列补「播放时记下的值进入分析」:选中轨在分析里按主唱锁处理、其余声部围绕它排布;实时居中覆盖照旧 —— ParamID / index / 顺序 / 范围 / 默认 / versionHint 一个字节未动,详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`;② [SL-218] / [SL-219]:§四「读到高版本 → 拒载并提示升级」那条里 CRVS minor 一支的接线实况改实,详见 `docs/contract-changes/20260928-sl218-219-state-not-restored.md`);上一次更新 2026-09-26([J102] §二 state 树移出 `global.range`(运行期状态,不随工程走;**零参数面变更**),与 `docs/STATE_SCHEMA.md` §一 同步,详见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`);上一次更新 2026-09-15(**两处,均零参数面变更**):[SL-416] `analysis.vad` 五字段与 `transition_ramp_ms` 改为**随工程落盘**(§一 那两行补注;容器 abi 4→5,详见 `docs/contract-changes/20260914-sl416-vad-persist.md`);[SL-413] `analysis.segmentation.mode` 标注为 **v1 保留位** —— UI 不露出、引擎不消费、恒写 0=valley;§四 命名与兼容规则那条「读到高版本 → 拒载并提示升级」补上 [SL-412] 的接线实况。**123 参数表逐字未改**、ParamID / index / 顺序 / versionHint 一个字节未动(变更文档 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`);上一次更新 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
+> 最后更新: 2026-09-28(同日三处,均**零参数面变更**:① [J136] / [SL-216] `lead_select` 的说明列补「播放时记下的值进入分析」:选中轨在分析里按主唱锁处理、其余声部围绕它排布;实时居中覆盖照旧 —— ParamID / index / 顺序 / 范围 / 默认 / versionHint 一个字节未动,详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`;② [SL-218] / [SL-219]:§四「读到高版本 → 拒载并提示升级」那条里 CRVS minor 一支的接线实况改实,详见 `docs/contract-changes/20260928-sl218-219-state-not-restored.md`;③ [J143b] / [SL-545] ① 那一说明列补取值规则 —— 只有宿主写进来的值记下的那几段算自动化、按记录取,其余取点分析那一刻的值(J143b 取代同日的 J143a「记录 ≥ 2 个不同的值才按记录」),详见 ① 那份变更文档「追加:J143 / J143a / J143b」);上一次更新 2026-09-26([J102] §二 state 树移出 `global.range`(运行期状态,不随工程走;**零参数面变更**),与 `docs/STATE_SCHEMA.md` §一 同步,详见 `docs/contract-changes/20260926-j101-j103-contract-withdrawals.md`);上一次更新 2026-09-15(**两处,均零参数面变更**):[SL-416] `analysis.vad` 五字段与 `transition_ramp_ms` 改为**随工程落盘**(§一 那两行补注;容器 abi 4→5,详见 `docs/contract-changes/20260914-sl416-vad-persist.md`);[SL-413] `analysis.segmentation.mode` 标注为 **v1 保留位** —— UI 不露出、引擎不消费、恒写 0=valley;§四 命名与兼容规则那条「读到高版本 → 拒载并提示升级」补上 [SL-412] 的接线实况。**123 参数表逐字未改**、ParamID / index / 顺序 / versionHint 一个字节未动(变更文档 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`);上一次更新 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -22,7 +22,7 @@ index 公式:`3 + (v-1)*60 + (t-1)*4 + k`,k∈{0=pan,1=vol,2=width,3=freeze}。
 |---|---|---|---|---|---|
 | 0 | `width` | Width | 0..150 % | 100 | 全局期望宽度(几何角度缩放系数) |
 | 1 | `ms_balance` | MS Balance | -100..+100 | 0 | 总线 M/S 音量比(0=不变,负偏 M 正偏 S)[J58 需求组] |
-| 2 | `lead_select` | Lead Select | 0..15(int,step 1) | 0 | 0=遵循分析;1-15=强制该轨实时居中(**不**联动音量豁免,J58)。[J136] 走带播放时 Output 逐块记下它的值(state `LEAD` 块),分析按区间取记录里的多数值,选中轨在该区间按主唱锁处理(居中、不占槽),其余声部围绕它排槽、平衡;改了之后要播一遍再重新分析才进段表 |
+| 2 | `lead_select` | Lead Select | 0..15(int,step 1) | 0 | 0=遵循分析;1-15=强制该轨实时居中(**不**联动音量豁免,J58)。[J136] 走带播放时 Output 逐块记下它的值(state `LEAD` 块),分析时选中轨按主唱锁处理(居中、不占槽),其余声部围绕它排槽、平衡。[J143b] 取值按**写入来源**:只有宿主写进来的值(自动化回放 / 宿主参数面)记下的那几段算自动化 ⇒ 被它们盖到的区间取其中的多数值,其余区间取点分析那一刻的值;一段都没有 ⇒ 整窗取点分析那一刻的值。插件界面、撤销 / 重做、载入工程写的值记下的段不看。改了之后要重新分析才进段表 |
 | 3 | `v1_t01_pan` | V1 T01 Pan | -100..+100 | 0 | mono:equal-power 点;stereo:弧中心(dual-pan,J57) |
 | 4 | `v1_t01_vol` | V1 T01 Vol | -24..+12 dB | 0 | 段音量推子 |
 | 5 | `v1_t01_width` | V1 T01 Width | 0..100 % | 100 | stereo:源宽度(0=收成 mono);mono:v1 no-op 占位(注明) |

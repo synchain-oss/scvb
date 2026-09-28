@@ -332,6 +332,18 @@ void OutputEditor::emitTick()
             pendingAnalyzedReason_ = ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     }
 
+    // [J146] §2.10 拖动档预览。拖动调用里已经当场发过;这里补两类:① 预览在调用**之外**结束
+    // (分析落地 / 丢弃事件 / 空闲)那一帧 active:false;② 隐藏期被挡下、恢复可见后该补的那一帧。
+    // 排在段表之后:松手那一趟落地时,UI 先拿到新段表、再撤掉虚影,中间不会有一拍两样都没有。
+    // 条件类(§0.4 第 3 条第三档):首帧只在**正处于预览中**时补发,空闲时不发空帧。
+    if (first)
+    {
+        const auto head = processor_.vadPreviewHead();
+        vadPreviewSentSeq_ = head.seq;
+        vadPreviewForce_ = head.active;
+    }
+    emitVadPreview();
+
     // scvb.error:仅条件成立时发(§2.9)。
     //
     // [SL-412] `newerState` 是本编辑器的**第一个** error 生产者(此前 `emitError` 零调用方,
@@ -619,7 +631,9 @@ void OutputEditor::emitPlayhead()
     // 读音频线程发布的 playheadShot_ SPSC 快照(PR#55 建议①;不直读宿主 AudioPlayHead)。
     const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
     const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
-    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+    // [J147] 采样率只读一次:timeS 与下面 ppq 的发不发由同一个值决定(两次原子读之间可能换了 prepare)。
+    const double timeRate = processor_.sampleRate();
+    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, timeRate) : 0.0;
 
     // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
     const auto& rt = processor_.runtime();
@@ -640,8 +654,75 @@ void OutputEditor::emitPlayhead()
         put(payload, "loopStartS", loopStartS);
         put(payload, "loopEndS", loopEndS);
     }
+    // [J147] 宿主速度 / 拍号 / 拍位置(§2.6 四个可选字段):Tab1 手动范围据此换算小节。
+    // bpm 与拍号同进同出(缺一样页面也换算不了);ppq 另要求本帧有时间线 —— 它与本载荷的
+    // timeS 出自同一次快照读,页面拿这一对当换算锚点。取值纪律见 hostTempoOf。
+    // 第二个实参 = 上面换算 timeS 用的那个采样率:两者对不上(插件已停用)时 ppq 不发。
+    const scvb::engine::HostTempo tempo = scvb::engine::hostTempoOf(pod, timeRate);
+    if (tempo.valid)
+    {
+        put(payload, "bpm", tempo.bpm);
+        put(payload, "timeSigNum", static_cast<int>(tempo.timeSigNum));
+        put(payload, "timeSigDen", static_cast<int>(tempo.timeSigDen));
+        if (tempo.ppqValid)
+        {
+            put(payload, "ppq", tempo.ppq);
+        }
+    }
 
     emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
+}
+
+void OutputEditor::emitVadPreview()
+{
+    // §2.10:载荷 = 预览的**整份当前态**(不是增量),按 seq diff —— seq 没动就是什么都没变。
+    // 只走加锁的头 / 快照,不读 processor 的无锁引用(理由见 `vadPreviewHead` 的头注)。
+    if (processor_.vadPreviewHead().seq == vadPreviewSentSeq_ && !vadPreviewForce_)
+    {
+        return;
+    }
+    // 与 `emitIfChanged` 同一条纪律:不可见时**不推进基线**(载荷会被丢),恢复可见后下一拍补发。
+    if (!webView().isVisible())
+    {
+        return;
+    }
+    // 取头与取快照之间预览可能又前进了一拍:发的是快照那份,基线也记快照的 seq。
+    const auto pv = processor_.vadPreviewSnapshot();
+    juce::var channels = mkArray();
+    if (pv.active)
+    {
+        for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+        {
+            if ((pv.tracksMask & (1u << t)) == 0)
+            {
+                continue;
+            }
+            juce::var spans = mkArray();
+            for (const auto& sp : pv.spans[static_cast<std::size_t>(t)])
+            {
+                juce::var seg = obj();
+                put(seg, "t0S", sp.first);
+                put(seg, "t1S", sp.second);
+                push(spans, seg);
+            }
+            juce::var c = obj();
+            put(c, "ch", t + 1);
+            put(c, "spans", spans);
+            push(channels, c);
+        }
+    }
+    juce::var payload = obj();
+    put(payload, "seq", static_cast<juce::int64>(pv.seq));
+    put(payload, "active", pv.active);
+    if (pv.active)
+    {
+        put(payload, "startS", pv.startS);
+        put(payload, "endS", pv.endS);
+    }
+    put(payload, "channels", channels);
+    webView().emitEventIfBrowserIsVisible(Event::VadPreview, payload);
+    vadPreviewSentSeq_ = pv.seq;
+    vadPreviewForce_ = false;
 }
 
 void OutputEditor::emitCaptureProgress(bool forceFull)
@@ -1929,6 +2010,12 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     // 所以现在没问题;但从此**调一次 = 排一整条流水线**。若要接状态恢复、预设加载、
     // Input 远端同步这类新调用方,得在那一侧自己去重,别指望这里替你挡。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    // [J146] 拖动档(§1.18):每次调用即时重判决,预览经 §2.10 `scvb.vadPreview` 当场回发。
+    // 放在 `armResegment` 之后:空闲结束判据要看「防抖排上了没有」,顺序反了第一拍会被误收。
+    // 与松手档同一条「调一次 = 做一次」:去重归 web 侧(见上面那段头注)。长会话里单次重判决太贵时
+    // processor 会自适应合并(`requestVadPreview`),合并下来的那一次由 emitTick 补发。
+    processor_.requestVadPreview();
+    emitVadPreview();
     c(okResp());
 }
 
@@ -1998,6 +2085,9 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     // [SL-255] 同 §1.18,reason 落 "segmentation"(§1.19);同样在 `if (changed)` 之外,
     // 理由逐字见 handleSetVadParams 那处的头注。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
+    // [J146] 拖动档(§1.19 同 §1.18):即时重判决 + 当场回发预览,理由逐字见 handleSetVadParams。
+    processor_.requestVadPreview();
+    emitVadPreview();
     c(okResp());
 }
 

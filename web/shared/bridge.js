@@ -116,7 +116,7 @@ export const BRIDGE_FUNCTIONS = {
  * 事件是纯下行:UI 只订阅,绝不用这些名字发起上行调用(§0.5)。
  */
 export const BRIDGE_EVENTS = {
-    // Output —— 9 个(契约 §2)
+    // Output —— 10 个(契约 §2)
     output: [
         "scvb.state",
         "scvb.params",
@@ -127,6 +127,7 @@ export const BRIDGE_EVENTS = {
         "scvb.captureProgress",
         "scvb.segments",
         "scvb.error",
+        "scvb.vadPreview", // [J146] 拖动档 VAD/边界预览(契约 §2.10)
     ],
     // Input —— 5 个(契约 §4)
     input: [

@@ -5,7 +5,7 @@
 // 职责三件:
 //   ① **组装 fixture 初始状态**(六个 fixture,数据一律经 web/shared/mock-data.js
 //      的生成器 + overrides 产出,本文件不自造载荷形状);
-//   ② **解析 `?fixture=` / `?scenario=` / `?loop=` / `?role=` / `?play=`**,
+//   ② **解析 `?fixture=` / `?scenario=` / `?loop=` / `?role=` / `?play=` / `?tempo=`**,
 //      未实现的 05 §2.5 场景名一律回落 `fifteen-tracks` + console.warn(**不假装支持**);
 //   ③ **驱动周期性事件**:meters 30Hz / playhead 30Hz / params 25Hz / conn 4Hz /
 //      config 4Hz(变化才发)/ captureProgress 播放中 2Hz / groups 1Hz —— 频率照契约 §2/§4。
@@ -187,6 +187,34 @@ const STALE_DEMO_CHANNELS = Object.freeze([2, 5, 11]);
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
 const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
 
+/**
+ * [J147] 宿主报的速度与拍号(`scvb.playhead` 的 bpm / timeSigNum / timeSigDen / ppq 的来源)。
+ * 默认 = 常见宿主的样子(120 BPM、4/4,恒速);`?tempo=none` = 宿主不报(页面按秒显示),
+ * `?tempo=<bpm>/<分子>/<分母>`(如 `90/3/4`)= 换一个速度与拍号;`?tempo=var` = 变速工程
+ * (30 s 之前 120 BPM、之后 100 BPM,4/4)。
+ */
+const HOST_TEMPO = Object.freeze({ bpm: 120, num: 4, den: 4 });
+const HOST_TEMPO_VAR = Object.freeze({
+    bpm: 100,
+    num: 4,
+    den: 4,
+    pre: Object.freeze({ untilS: 30, bpm: 120 }),
+});
+
+/** `?tempo=` 的解析:合法 ⇒ {bpm,num,den[,pre]};`none` ⇒ "none";非法 ⇒ undefined。 */
+function parseTempoQuery(raw) {
+    if (raw === "none") return "none";
+    if (raw === "var")
+        return { ...HOST_TEMPO_VAR, pre: { ...HOST_TEMPO_VAR.pre } };
+    const m = /^(\d+(?:\.\d+)?)\/(\d+)\/(\d+)$/.exec(String(raw));
+    if (!m) return undefined;
+    const bpm = Number(m[1]);
+    const num = Number(m[2]);
+    const den = Number(m[3]);
+    if (!(bpm > 0) || !(num >= 1) || !(den >= 1)) return undefined;
+    return { bpm, num, den };
+}
+
 /** `stereo-mixed` 的手动区间(第三个枚举值 `manual` 的代表档)。 */
 const MANUAL_RANGE = Object.freeze({ startS: 12, endS: 96 });
 
@@ -316,6 +344,18 @@ export function parsePreviewQuery(params) {
     const play =
         rawPlay === null ? null : rawPlay !== "0" && rawPlay !== "false";
 
+    // [J147] 宿主速度:缺省 = null(buildWorld 用默认 120/4/4);非法值出警告不静默吞。
+    const rawTempo = q.get("tempo");
+    let tempo = null;
+    if (rawTempo !== null) {
+        const v = parseTempoQuery(rawTempo);
+        if (v === undefined)
+            warnings.push(
+                `tempo=${rawTempo} 非法(要 none / var 或 <bpm>/<分子>/<分母>,如 90/3/4),已按默认档`,
+            );
+        else tempo = v;
+    }
+
     // [J150] 宿主标识(§1.1 快照 `host`,闭集 = HOST_VALUES)。缺省 = 快照生成器的默认 "other"。
     // 非法值**出警告**不静默吞(同 staleFullEvery):拼错一个字就悄悄跑在 "other" 上,
     // 拿到的是「提示怎么没出」而不是「参数写错了」。
@@ -335,6 +375,7 @@ export function parsePreviewQuery(params) {
         loop,
         play,
         staleFullEvery,
+        tempo,
         host,
         role: q.get("role"),
         warnings,
@@ -430,6 +471,8 @@ export function buildWorld(opts = {}) {
         claimFailure: null,
         ringFull: false,
         noTimeline: false,
+        // [J147] 宿主报的速度与拍号(null = 不报);`?tempo=` 覆写,见下面「查询参数覆写」。
+        hostTempo: { ...HOST_TEMPO },
         // [SL-354] 「状态回声延后一拍」—— 只有开了它,mock 的时序才与真桥同形。
         //
         // 默认 mock 的 `patchState` 是**同步** emit `scvb.state` 的:`setAnalysisConfig`
@@ -965,6 +1008,10 @@ export function buildWorld(opts = {}) {
     if (opts.scenario === "applied-echo-drop") caps.dropAppliedEcho = true;
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
+    // [J147] `?tempo=none` ⇒ 宿主不报速度;`?tempo=90/3/4` ⇒ 换一组。
+    if (opts.tempo === "none") caps.hostTempo = null;
+    else if (opts.tempo && typeof opts.tempo === "object")
+        caps.hostTempo = { ...opts.tempo };
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
     // [J150] `?host=`:只改 Output 快照的 `host`(§1.1 快照专属键),其余一个字节不动。
     // 非法值在 parsePreviewQuery 已经出过警告并落成 null ⇒ 这里不再判。
@@ -1264,6 +1311,9 @@ export function createPreviewSession(opts = {}) {
         // 上一版在 caps 里写了覆写逻辑却没往下传,那段代码一次都没执行过 ——
         // 加参数时**同一个 commit 里就要有一格跑在非默认值上**,否则看不出没接上。
         staleFullEvery: parsed.staleFullEvery,
+        // [J147] 同上一行的纪律:加了参数就要真往下传(页面级 smoke-range-bars-page 跑在
+        // `?tempo=none` 上,这一行断了那一格会红)。
+        tempo: parsed.tempo,
         // [J150] 同上一条的接线纪律:`?host=` 只有经这一行才到得了 buildWorld。
         // 非默认值那一格 = smoke-host-hints.mjs 的 mock 段(host=reaper 必须落进快照)。
         host: parsed.host,

@@ -53,7 +53,7 @@
  *       ① manifest 可解析;
  *       ② 名字合法(lowerCamelCase / scvb.*)且侧内无重复;
  *       ③ **完备性**:与 05 §1.4 对齐的冻结期望表 EXPECTED 逐项零差异 + 四个计数断言
- *          (Output 37 函数 / 9 事件,Input 8 函数 / 5 事件;真值以下方 EXPECTED_COUNTS 为准)
+ *          (计数以下方 EXPECTED_COUNTS 为准,本行不再抄数 —— 抄过的 35/9、7/5、37/9 都已过期)
  *          ——防「契约被误删/误改名而脚本仍绿」;
  *       ④ **跨侧同名函数签名一致**(params 顺序敏感);
  *       ⑤ 无禁止复活名单命中,且每个禁止名都在契约 §8.2 名单行内以反引号整词列明
@@ -63,8 +63,8 @@
  *       ⑦ **manifest 与正文双向可见**:manifest 每项在**对应侧**正文段落内有条目
  *          (正文按 "## 3. Input" 切成 output/input 两段,§5 起截断,避免 side-blind);
  *          反向,正文里定义的每个函数/事件条目也必须被 manifest 收录。
- *       ⑧ 相对 05 §1.4 的授权增量共 7 项(逐项见下方 EXPECTED 表头注释与契约 §8.4),
- *          在 EXPECTED 表旁注明来源,使脚本本身成为「对 05 §1.4 零差异 + 显式增量」的断言。
+ *       ⑧ 相对 05 §1.4 的授权增量逐项在 EXPECTED 表旁注明来源(清单见 EXPECTED 头注与契约 §8.4,
+ *          本行不抄项数),使脚本本身成为「对 05 §1.4 零差异 + 显式增量」的断言。
  *
  * 退出码:发现任何差异 / 命中禁止名 / 自检失败 => 1;全部通过 => 0。
  *
@@ -117,7 +117,7 @@ const FORBIDDEN = [
 /**
  * 冻结期望表 —— 「对 05 §1.4 的函数/事件全集零差异」的可执行断言(T25 卡验收原文)。
  * 与 docs/SCVB_CONTRACT.md §7 manifest 同源,**改动必须两处同步**(同 FORBIDDEN 口径)。
- * 相对 05 §1.4 的授权增量共 7 项(契约 §8.4),已在下表就地标注:
+ * 相对 05 §1.4 的授权增量共 8 项(契约 §8.4),已在下表就地标注:
  *   - output.functions 的 `setAnalysisConfig`  —— 授权来源 05 §2.4(J69,函数名有 05 字面出处)
  *   - input.events   的 `scvb.error`          —— 授权来源 01 §6.2 + 裁定记录 A-8
  *   - output.functions 的 `confirmPrintGuard` —— 授权来源 04 §5.3 / 05 §2.0 横幅⑦ + 统筹裁定 A-29
@@ -129,6 +129,9 @@ const FORBIDDEN = [
  *     docs/contract-changes/20260825-input-guide-seen.md([J81] 转正)
  *   - output.functions 的 `previewPanCurve`   —— 授权来源用户裁定 J157(SL-447 拖动实时生效);变更文档
  *     docs/contract-changes/20260928-j157-pan-curve-live-preview.md
+ *   - output.events    的 `scvb.vadPreview`   —— 授权来源 05 §1.4 `setVadParams` 行「拖动档……回发
+ *     VAD/边界预览」(未定事件名)+ 用户裁定 [J146];变更文档
+ *     docs/contract-changes/20260929-j146-vad-drag-preview.md
  * 其余每一项都能在 05 §1.4 的表内逐字找到。
  */
 const EXPECTED = {
@@ -182,6 +185,7 @@ const EXPECTED = {
             "scvb.captureProgress",
             "scvb.segments",
             "scvb.error",
+            "scvb.vadPreview", // ← 授权增量⑧(05 §1.4 setVadParams 行「回发 VAD/边界预览」+ [J146];变更文档 20260929-j146-vad-drag-preview)
         ],
     },
     input: {
@@ -206,7 +210,7 @@ const EXPECTED = {
 };
 /** 计数自检 —— 与契约 §7 文末「计数自检」行同源。 */
 const EXPECTED_COUNTS = {
-    output: { functions: 37, events: 9 },
+    output: { functions: 37, events: 10 }, // [J157] +previewPanCurve;[J146] +scvb.vadPreview
     input: { functions: 8, events: 5 },
 };
 
@@ -458,7 +462,7 @@ for (const side of sides) {
 }
 if (completenessOk) {
     ok(
-        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 7 项授权增量),四个计数 " +
+        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 8 项授权增量),四个计数 " +
             `${EXPECTED_COUNTS.output.functions}/${EXPECTED_COUNTS.output.events}/${EXPECTED_COUNTS.input.functions}/${EXPECTED_COUNTS.input.events} 一致`,
     );
 }
@@ -1272,6 +1276,38 @@ function checkEventPayloadFields() {
             // 变量装配,拿 `seg` 去比会假红。
             docObjectAnchor: "segments:[ {",
         },
+        // [J146] §2.10 三层都对拍:顶层 / 每轨 / 每段。锚点取 `spans:` —— 全契约只有 §2.10 的载荷行
+        // 带它(`t0S` 在 §2.8 的载荷行里也有,拿它当锚会先命中那一行)。
+        {
+            event: "scvb.vadPreview",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "payload",
+            otherLevels: [],
+        },
+        {
+            event: "scvb.vadPreview(channels[])",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "c",
+            otherLevels: [],
+        },
+        {
+            event: "scvb.vadPreview(spans[])",
+            anchor: "spans:",
+            fn: "OutputEditor::emitVadPreview",
+            varName: "seg",
+            otherLevels: [],
+        },
+        // [J147] §2.6 加了四个可选字段(bpm / timeSigNum / timeSigDen / ppq)。这一事件此前不在
+        // 本表里 —— 它的载荷行全是标量、`emitPlayhead` 只有一层 `payload`,补进来零误判面。
+        {
+            event: "scvb.playhead",
+            anchor: "isPlaying",
+            fn: "OutputEditor::emitPlayhead",
+            varName: "payload",
+            otherLevels: [],
+        },
     ];
 
     for (const c of CASES) {
@@ -1284,8 +1320,10 @@ function checkEventPayloadFields() {
             );
             continue;
         }
-        // [SL-548] 字段名后可带 `?`(契约里「可选字段」的写法,§0.1 第 3 条允许的加法就长这样,
-        // 例如 `manualPan?:bool`)。不认 `?` 的话,一个按规矩登记成可选的字段会被判成「未登记」。
+        // 字段名后可带 `?`:契约里「可选字段」写作 `name?:type`(§0.1 第 3 条允许的加法就长这样)。
+        // [J147] §2.6 的 `loopStartS?:f64`、[J146] §2.10 的 `startS?:`、[SL-548] 的 `manualPan?:bool`
+        // 都是这种写法 —— 不认 `?` 的话,一个按规矩登记成可选的字段会被判成「契约没登记」,把实发的
+        // 可选字段判红。下方 [SL-548] 反方向对拍复用同一个 FIELD_RE。
         const FIELD_RE = /([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g;
         const docFields = new Set(
             [...line.matchAll(FIELD_RE)].map((m) => m[1]),

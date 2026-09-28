@@ -68,6 +68,13 @@ import {
     readbackSegsOf,
     segmentsOfCh,
 } from "../shared/readback.js";
+// [J147] 手动范围按小节显示:宿主速度模型(模型本身由 app.js 的 scvb.playhead 订阅喂)。
+import {
+    barBeatAt,
+    formatBarBeat,
+    hasTempo,
+    stepByBars,
+} from "./host-tempo.js";
 
 export { distGeometry } from "../shared/distribution-chart.js";
 
@@ -105,6 +112,8 @@ export const RANGE_UI_TO_MODE = Object.freeze({
     loop: "daw_loop",
     manual: "manual",
 });
+/** 手动范围「−4 / +4」的步长:读到宿主速度时是小节,没读到时是秒([J147];05 §2.1 ②)。 */
+export const RANGE_STEP = 4;
 
 /** 全局三件的出厂默认(契约 §1.12-§1.14 可驱动 ParamID 全集行);双击回默认取这里。 */
 export const PARAM_DEFAULTS = Object.freeze({
@@ -1149,7 +1158,8 @@ export function createTabMaster(opts) {
         rangeFollowHint: $("master-range-follow-hint"),
         rangeStart: $("master-range-start-bars"),
         rangeEnd: $("master-range-end-bars"),
-        rangeTimecode: $("master-range-timecode"),
+        rangeBars: $("master-range-bars"), // [J147] 「小节 33.1 → 49.1」换算行
+        rangeNote: $("master-range-note"), // [J147] 估算 / 拍号变化 / 按秒显示 三选一,精确时隐藏
         rangeSetPlayhead: $("master-range-setplayhead"),
         rangeMinus4: $("master-range-step-minus4"),
         rangePlus4: $("master-range-step-plus4"),
@@ -1682,16 +1692,23 @@ export function createTabMaster(opts) {
             });
         }
         if (el.rangeMinus4) {
-            el.rangeMinus4.addEventListener("click", () => nudgeRange(-4));
+            el.rangeMinus4.addEventListener("click", () => nudgeRange(-1));
         }
         if (el.rangePlus4) {
-            el.rangePlus4.addEventListener("click", () => nudgeRange(+4));
+            el.rangePlus4.addEventListener("click", () => nudgeRange(+1));
         }
     }
 
-    function nudgeRange(deltaS) {
+    /**
+     * 「−4 / +4」挪终点。[J147] 读到过宿主速度 ⇒ 挪 **4 小节**(按终点处换算所用的速度与
+     * 最近一次的拍号折成秒,见 host-tempo.js `stepByBars`);一帧速度都没读到过 ⇒ 挪 4 秒,
+     * 注释行同时明说「按秒显示」。此前恒挪 4 秒,而规格(05 §2.1 ②)一直写的是 ±4 小节。
+     */
+    function nudgeRange(dir) {
         const cur = readManualRange();
-        const endS = Math.max(cur.startS + 0.001, cur.endS + deltaS);
+        const byBars = stepByBars(getStore().tempo, cur.endS, RANGE_STEP * dir);
+        const target = byBars === null ? cur.endS + RANGE_STEP * dir : byBars;
+        const endS = Math.max(cur.startS + 0.001, target);
         writeManualInputs(cur.startS, endS);
         applyRange("manual");
     }
@@ -2295,12 +2312,7 @@ export function createTabMaster(opts) {
             const seed = manualSeed(st, range);
             if (seed) writeManualInputs(seed.startS, seed.endS);
         }
-        if (el.rangeTimecode) {
-            el.rangeTimecode.textContent =
-                secondsToTimecode(range.start_s) +
-                " → " +
-                secondsToTimecode(range.end_s);
-        }
+        renderRangeBars(st, t, range);
 
         // 重采集布防 badge①(契约 §2.1 `recapture`;05 §2.3「重采集选区」行)
         const rec = st.state.recapture;
@@ -2312,6 +2324,45 @@ export function createTabMaster(opts) {
                     y: secondsToTimecode(rec.endS),
                     n: popcount(rec.tracksMask),
                 });
+            }
+        }
+    }
+
+    /**
+     * [J147] 手动档的小节换算行 + 注释行。输入框仍是 mm:ss.mmm(桥面 §1.8 只收秒,可编辑侧不变);
+     * 换算行显示同一区间落在第几小节第几拍(宿主速度见 host-tempo.js),注释行三选一:
+     *   · 一帧速度都没读到过 ⇒ 换算行隐藏,注释说「按秒显示」(±4 此时挪秒);
+     *   · 本次会话见过拍号变化 ⇒「拍号有变化,小节号为估算值」(播放校准不了,所以不说校准);
+     *   · 两个端点里有一个是估算值 ⇒「小节为估算值,播放该区域后校准」;
+     *   · 两个端点都精确 ⇒ 注释行隐藏。
+     * 端点取 state 里的区间(与原先 mm:ss 换算行同一来源:已提交的那一对,编辑中不跟着输入框跳)。
+     */
+    function renderRangeBars(st, t, range) {
+        const tempo = st.tempo;
+        const bars = hasTempo(tempo);
+        let noteKey = null;
+        if (el.rangeBars) {
+            el.rangeBars.hidden = !bars;
+            if (bars) {
+                const a = barBeatAt(tempo, range.start_s);
+                const b = barBeatAt(tempo, range.end_s);
+                const exact = a.exact && b.exact;
+                fill(el.rangeBars, t, "master.rangeBars", {
+                    x: formatBarBeat(a),
+                    y: formatBarBeat(b),
+                });
+                el.rangeBars.setAttribute("data-est", exact ? "0" : "1");
+                if (tempo.meterVaried) noteKey = "master.barsMeterNote";
+                else if (!exact) noteKey = "master.barsEstimateNote";
+            }
+        }
+        if (!bars) noteKey = "master.rangeSecondsNote";
+        if (el.rangeNote) {
+            el.rangeNote.hidden = noteKey === null;
+            if (noteKey !== null) {
+                // data-t 跟着换:切语言时 applyI18n 按它重填,不能停在旧词条上。
+                el.rangeNote.setAttribute("data-t", noteKey);
+                fill(el.rangeNote, t, noteKey, {});
             }
         }
     }
