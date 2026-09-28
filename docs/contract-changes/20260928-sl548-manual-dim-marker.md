@@ -116,7 +116,9 @@
 
 每条只动一处代码;注入与复原都把 mtime 顶到未来再经 build slot 增量重编,复原后 `git hash-object` 与 HEAD 的
 blob 逐一对上;全部复原后三个测试目标 + `SCVBOutput` 整体重编(0 warning),`scvb_tests` 579 例、`scvb_params_tests`
-96 例、`scvb_host_tests` 211 例与两份 tab 冒烟全绿。结果栏是**实得**,行号是本 PR 首推时的行号。
+96 例、`scvb_host_tests` 211 例与两份 tab 冒烟全绿。结果栏是**实得**。行号是实测时的行号(提交 `a70dd339`,合并 base 上的 #324 / #328 之前);合并之后只有
+`test_host_harness.cpp` 挪了位置 —— HOST SL-180 / SL-188 那一段整体下移 1 行,HOST SL-548 那一段整体下移 242 行,
+其余测试文件的行号不变。
 native 跑的是定向用例(`scvb_tests "[readback],[viz]"` / `"[segedit]"` / `"[crvs]"`、`scvb_params_tests "[service]"`、
 `scvb_host_tests` 按行内所列 tag);JS 用 `node` 直接跑 tab1 / tab2 冒烟。
 
