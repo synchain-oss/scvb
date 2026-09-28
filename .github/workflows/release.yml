@@ -44,7 +44,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: pwsh -NoProfile -File scripts/check-release-tag.ps1 -Tag "$env:TAG_NAME"
-      # 不依赖构建产物的打包检查(许可证全文覆盖、INSTALL.txt 的规则提取)提前到构建之前,
+      # 不依赖构建产物的打包检查(许可证全文覆盖、NOTICES 点名的声明文件、INSTALL.txt 的规则提取)提前到构建之前,
       # 缺许可证全文之类的问题不必白烧 20 分钟构建才红。release job 打包时会再判一次。
       - name: Package preflight
         shell: pwsh

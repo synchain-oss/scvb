@@ -282,7 +282,7 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
     eq(
         TT.needsManualConfirm(2, "vol", false),
         false,
-        "[J85] 冻结 vol ⇒ 不弹(不替换任何段、不入撤销栈,确认条正文两句都不成立)",
+        "[J85] 冻结 vol ⇒ 不弹(不替换任何段,确认条要拦的改写段表不成立;[J140] 起可撤销)",
     );
     eq(TT.needsManualConfirm(1, "pan", false), false, "[J85] 冻结 pan ⇒ 不弹");
     // **逐维**而非整行:冻 pan 不该让 vol 那一维也免弹(vol 仍会整表压曲线)。
