@@ -263,16 +263,20 @@ jobs:
         run: node scripts/check-native-paths.mjs
       - name: Actions pinned to 40-hex commit SHA (CLAUDE.md §0 安全铁律第 3 条)
         # [SL-538] 铁律第 3 条此前没有机检:compliance.yml 与 release.yml 的 `actions/checkout@v4`
-        # 就这样一直留着,直到有人人工翻到。这里逐个取 `uses:` 后面的值,判据只有一条:
+        # 就这样一直留着,直到有人人工翻到。这里逐个取 workflow 与 `.github/actions/` 下复合 action
+        # 里 `uses:` 后面的值,判据只有一条:
         # 本地 action(`./` 开头)放行,其余必须是 `<ref>@<40 位小写十六进制>`。
         # 不查 `# vX.Y.Z` 注释(它是给人和 dependabot 看的,钉住执行内容的是 SHA)。
         # 形态上宁红勿漏:加引号、值写在下一行、`docker://` 这类判据没见过的写法一律判红,
-        # 真要用再来改这里。零 `uses:` 也判红 —— 那说明 glob 或匹配本身坏了,不是「全都合规」。
+        # 真要用再来改这里;`run:` 块里不以 `#` 开头的行出现这个键名,同样按引用判。
+        # 零 `uses:` 也判红 —— 那说明 glob 或匹配本身坏了,不是「全都合规」。
         # 零依赖(bash + awk),不联网、无 secrets。
         run: |
-          shopt -s nullglob
+          shopt -s nullglob globstar
           files=(.github/workflows/*.yml .github/workflows/*.yaml)
           [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow files under .github/workflows"; exit 1; }
+          # `uses: ./…` 放行的前提是它指向的复合 action 自己也被查;目录不存在时 nullglob 给空
+          files+=(.github/actions/**/action.yml .github/actions/**/action.yaml)
           # 键名拼出来而不写字面量:本文件也在被扫的集合里,这段脚本自己若含那个字面量就会扫到自己
           awk -v key="use""s:" '
             /^[[:space:]]*#/ { next }
