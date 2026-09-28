@@ -13,8 +13,9 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 
 中间两行「分发家族名」与「来源家族」不同,是 OFL-1.1 §3 的改名结果,见下文「保留字体名(RFN)」。
 
-许可证 OFL-1.1(`REUSE.toml` 的 `web/fonts/**` 特例块声明),版权行见 `THIRD-PARTY-NOTICES.md`
-(四款的家族 / 版本 / 上游 URL 已登记在那张表里)。
+许可证 OFL-1.1(`REUSE.toml` 里四个 `.woff2` 各有一个特例块声明,版权行 = 各文件 `name` 表 nameID 0 原文)。
+`THIRD-PARTY-NOTICES.md` 登记了四款的家族 / 版本 / 上游 URL,其「版权行」一节有同样的四条版权行。
+**换了字体文件就要重读 nameID 0**,两处一起改。
 
 ## 子集怎么定的
 

@@ -3,6 +3,11 @@
 # PLUGIN_CODE=Scvm(Scvi/Scvo/Snb1 已占),厂商码 Snch。0 自动化参数、音频直通、只读 attach。
 juce_add_plugin(SCVBMonitor
   COMPANY_NAME             "Synchain"
+  # 厂商元数据(Windows 文件属性「版权」+ VST3 factory 的 url/email)。版权行与 REUSE.toml 兜底块同口径;
+  # 对外联系方式只用 contact@synchain.ca。只进二进制元数据,不影响插件身份(插件码 / bundle id 见 ADR-001)。
+  COMPANY_COPYRIGHT        "Copyright 2026 Synchain"
+  COMPANY_WEBSITE          "https://synchain.ca"
+  COMPANY_EMAIL            "contact@synchain.ca"
   PLUGIN_MANUFACTURER_CODE Snch
   PLUGIN_CODE              Scvm
   FORMATS                  VST3

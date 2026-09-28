@@ -257,8 +257,12 @@ TEST_CASE("viz 段:owner 线程绑在首次 publish,不是 open()", "[viz][ipc][
     // viz 段静默保持全零 —— 没有任何报错。所以要绑在首次 publish。
     scvb::SegmentBackendInProcess backend;
     scvb::VizPlane w2(backend, 12);
-    std::thread opener([&] { REQUIRE(w2.open() == scvb::InitResult::kOk); }); // 在**别的**线程 open
-    opener.join();
+    // 在**别的**线程 open。[SL-453] 断言宏不进工作线程(Catch2 不是线程安全的,失败时在
+    // 工作线程里抛出还会直接 std::terminate):只把结果带出来,join 之后在主线程上断言。
+    scvb::InitResult openResult = scvb::InitResult::kFailed;
+    std::thread opener([&] { openResult = w2.open(); });
+    opener.join(); // join 建立 happens-before,主线程读 openResult 无数据竞争
+    REQUIRE(openResult == scvb::InitResult::kOk);
 
     auto f = std::make_unique<scvb::VizSnapshot>();
     f->laneRevision = 9;
