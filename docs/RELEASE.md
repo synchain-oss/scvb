@@ -60,7 +60,7 @@ semver 语义(音频插件特化):
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿。
-5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经人工审校不得发版**(05 §5:机翻安全警告发到公开产品是明确禁止项)。
+5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号(该步当前解析错行,见上方现状表第 2 条)。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。

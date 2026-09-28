@@ -428,7 +428,7 @@ if (flags.skipGuideRules) {
             fail(
                 "fr." +
                     key +
-                    " 与 en 逐字相同 —— fr 红字必须经人工审校,机翻/照抄英文不得发布(05 §5)",
+                    " 与 en 逐字相同 —— fr 红字必须经审校,照抄英文不得发布(05 §5)",
             );
         }
         if (isAscii(vals.fr) && !isAscii(vals.zh)) {
