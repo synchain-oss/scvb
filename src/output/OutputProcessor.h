@@ -725,6 +725,29 @@ private:
     // 「什么都不做就是原样回写」的前提当场失效,那份不认识的字节永久消失(#147 三轮复审)。
     std::vector<std::uint8_t> preservedFeatChunk_;
 
+    // [SL-524] CRVS 拒载(chunk 在、decodeCrvs 不收:字节坏 / [SL-483] 段值非有限或越界 / minor 更高)
+    // 之后要原样带走的**原始 CRVS 字节**。此前保存一律从 live crvsData_ 重编码,而拒载时 live 表
+    // 是「保留下来的旧表」(新开实例 = 空表)⇒ 下一次保存就把用户原来的段表与版本永久覆盖掉。
+    // [J122] 口径:拒载后保存**原样写回**这份字节(不重编码),直到用户做了任何改变段表/版本的操作;
+    // 从那以后保存写新表(否则会反过来丢掉用户之后的编辑)。
+    // 「改过没有」按**内容**判:拒载那一刻把 live 表编码存进 crvsAtRejectEncoded_,保存时 live 编码
+    // 与它不同 ⇒ 改过。这样不必在每个写 crvsData_ 的入口各挂一个标记(漏一个就是丢用户编辑),
+    // 任何改动路径(编辑 / 分析 / 重新识别 / 复制版本 / 改名 / 撤销重做)都被同一处比较覆盖。
+    // 这里的「保存」指**任何一次** getStateInformation 调用,不只是用户手动存盘:宿主在撤销点、自动保存、
+    // 预设比对时都会调。所以「改了又撤销回原样」之后写原字节还是新表,取决于中间宿主有没有取过 state:
+    // 没取过 ⇒ live 表与拒载时逐字节相同,仍写原字节;取过 ⇒ 那一次已判出「改过」,保留态解除且不再恢复,
+    // 之后写 live 表(原字节从此不再写回)。两种结果都不丢用户的编辑。
+    // 已开实例的情形(有意,按 [J122] 同一口径):实例里已有段表 A,再载入一份 CRVS 被拒的 B,
+    // 界面仍显示 A(SL-217 保留),保存却写回 B 的原字节 —— 那份字节才是宿主给的工程内容;
+    // 代价是 A 在下次重开时不再出现(B 仍被拒 ⇒ 空表),除非用户在此之前改动过段表。
+    // 拒载时界面没有提示,这一半未接线。
+    // 解除只在两处:判出「改过」且容器编码成功的那次保存,或下一次 CRVS 成功解码。载入**不带** CRVS 的
+    // blob(轨道/参数预设) 不动它 —— 与 [SL-217]「缺 chunk 不等于删除」同口径,也不能指望 loadedChunks_ 还留着原字节
+    // (那条路会把 loadedChunks_ 整个换成 {PRMS},理由同上面 preservedFeatChunk_)。
+    bool crvsPreserved_ = false;
+    std::vector<std::uint8_t> preservedCrvsChunk_;
+    std::vector<std::uint8_t> crvsAtRejectEncoded_;
+
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。
     std::atomic<double> sampleRate_{0.0}; // 0 = 未 prepare(宿主 prepareToPlay 前),防御零除(PR#55 第7轮)
