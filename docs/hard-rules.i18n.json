@@ -11,14 +11,14 @@
   ],
   "frReview": {
     "status": "reviewed",
-    "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127;J149 改动的两句按同一方式复核)",
+    "reviewer": "AI 三语交叉核对(用户 2026-09-28 授权代替人工抽检,J127;J149 改动的两句与 J153 改动的标题句按同一方式复核)",
     "date": "2026-09-28",
-    "note": "【J149 复核,2026-09-28】rule2 / rule9 两条里的 `docs/DAW_COMPATIBILITY.md` 换成 prod 分支上的完整地址 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`(用户裁定 J149:插件内文档链接固定指向 prod),zh / en / fr 三语同一处同一串替换,其余字节未动;按 J127 同一口径以 zh 为准重核这两句的 en 与 fr(rule2「各宿主对这一格的具体叫法见 <地址>」↔ for what each host calls that slot, see <地址> ↔ pour le nom de cette case dans chaque hôte, voir <地址>;rule9「先按 <地址> 的通用坑清单排查路由」↔ Work through the common-pitfalls list in <地址> to check your routing first ↔ Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de <地址>):意思、极性与用户要做的动作均一致,地址三语逐字相同。status 按本文件规则先回 pending、复核完再置 reviewed;rule2 / rule9 的 zhSha256 随之更新,标题与其余七条的 zhSha256 不变,沿用下面 J127 那一轮的结论。【J127 那一轮】以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
+    "note": "【J153 轮】用户裁定 J153 把 zh 标题里的「错音」改成「声像位置错误」(用户原话:「就是声像位置错误。中文错音确实不严谨,改了吧」),title.zhSha256 随之更新。按 J127 的同一方式(以 zh 为准的 AI 三语交叉核对,用户授权)复核了改动的这一句:en 的 wrong panning 与 fr 的 panoramique erroné 说的本来就是「声像位置错误」,极性与三项并列(静音 / 声像位置错误 / 分析失效)都对得上,译文一字未改;J153 没有动 rule1..9 的 zh,本轮不改任何一条的 zhSha256,不在本轮复核面内(rule2 / rule9 的 zhSha256 在下面 J149 轮已随 prod 地址更新)。【J149 轮】rule2 / rule9 两条里的 `docs/DAW_COMPATIBILITY.md` 换成 prod 分支上的完整地址 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`(用户裁定 J149:插件内文档链接固定指向 prod),zh / en / fr 三语同一处同一串替换,其余字节未动;按 J127 同一口径以 zh 为准重核这两句的 en 与 fr(rule2「各宿主对这一格的具体叫法见 <地址>」↔ for what each host calls that slot, see <地址> ↔ pour le nom de cette case dans chaque hôte, voir <地址>;rule9「先按 <地址> 的通用坑清单排查路由」↔ Work through the common-pitfalls list in <地址> to check your routing first ↔ Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de <地址>):意思、极性与用户要做的动作均一致,地址三语逐字相同。status 按本文件规则先回 pending、复核完再置 reviewed;rule2 / rule9 的 zhSha256 随之更新,标题与其余七条的 zhSha256 在该轮不变,沿用下面 J127 轮的结论(标题其后在上面 J153 轮改过并复核)。【J127 轮】以 zh 真源为准逐条核对 title + rule1..9 的 en 与 fr(意思、极性、数字与单位、用户要做的动作):九条与标题的 en/fr 均与 zh 一致,本轮未改红字译文,zhSha256 不变。同一轮也核对了 web/shared/i18n.js 的全部界面词条。本轮判据是「en/fr 与 zh 说的是不是同一件事」:zh 本身过时、三语跟着一起错的那一类核不出来,也不在本轮改动范围内(zh 真源不动),这类疑点另列给统筹。之后 zh 真源或 en/fr 译文再改,status 须改回 pending,重新审校(人工,或经用户授权的同类交叉核对)后再置 reviewed。"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
     "fr": "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
-    "zhSha256": "0fa6700a86364afa724e4fe1c4d7c7de33a38e958e7d4f8c0ff43d87847a3474"
+    "zhSha256": "d1241b70cba4791a3edfa9dcb4726bc435afc2f8b4fffd4f055238439bb9d59c"
   },
   "rules": [
     {
