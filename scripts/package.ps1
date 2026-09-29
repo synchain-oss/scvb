@@ -16,7 +16,8 @@
        全文、third_party/notices/ 全部上游版权 / 许可声明原文(与仓库同一相对路径,所以 NOTICES 里写的
        `third_party/notices/...` 在解压目录里原样可查);THIRD-PARTY-NOTICES.md「随二进制分发」表点名的每个
        许可证 + 本项目的 GPL-3.0-or-later 都必须在 LICENSES/ 里有全文,缺就红(演练 tag 用
-       -AllowMissingLicenseTexts 降为警告)。THIRD-PARTY-NOTICES.md 全文里点名的每个声明文件路径
+       -AllowMissingLicenseTexts 降为警告);反过来 LICENSES/ 里的每份全文也必须被这张表(或
+       GPL-3.0-or-later)点名,多出来就红,演练 tag 也不放行。THIRD-PARTY-NOTICES.md 全文里点名的每个声明文件路径
        (`third_party/notices/<文件>` / `LICENSES/<文件>`)都必须是仓库里存在、且在上面打包范围内的文件,
        否则红,演练 tag 也不放行。
        U2 裁定不附 LICENSE-EXCEPTION.md,所以没有它。
@@ -190,6 +191,14 @@ if ($missingLicenseTexts.Count -gt 0) {
   if ($AllowMissingLicenseTexts) { Write-Host "[WARN] $msg —— 演练模式放行,记进 package-summary.md" -ForegroundColor Yellow }
   else { Fail $msg }
 }
+# [SL-571] 反方向:LICENSES/ 里的每份全文,都得有「随二进制分发」表的一行(或本项目自己的 GPL-3.0-or-later)
+# 点名它。上面那道只管「表里点名了就得有全文」;删掉表里一行却留着全文、或只放全文不登记组件,原先都静默通过。
+# 两道合起来(不带 -AllowMissingLicenseTexts 时),LICENSES/ 的份数就钉在表上,不写字面量。区分大小写(List.Contains 是序数比较):文件名要与表里的
+# SPDX 标识逐字相同。演练 tag 也不放行 —— 多出来的全文不是缺口,是登记错了。
+$unlistedLicenseTexts = @($licenseFiles | Where-Object { -not $spdxIds.Contains($_.BaseName) } | ForEach-Object { $_.Name })
+if ($unlistedLicenseTexts.Count -gt 0) {
+  Fail ("LICENSES/ 里有这些全文,THIRD-PARTY-NOTICES.md 的「随二进制分发」表却没有一行点名它们(补上表里那一行,或删掉全文):" + ($unlistedLicenseTexts -join ', '))
+}
 # THIRD-PARTY-NOTICES.md 全文(不止「随二进制分发」表:HarfBuzz 的指向写在「版权行」一节)里点名的每个
 # 声明文件路径 —— `third_party/notices/<文件>` 与 `LICENSES/<文件>`,以 / 结尾的目录引用不算 —— 都必须是
 # 本次要打进 zip 的文件。NOTICES 进 zip 后,这些路径就是用户手里唯一的指引,指向包里没有的文件等于没给。
@@ -333,7 +342,7 @@ $installText = (($install.ToArray() -join "`r`n") -replace '\*\*', '')
 # INSTALL.txt 的规则提取)就退出。
 # release.yml 的 verify-tag 在 20 分钟的构建之前先跑它,这几类问题不必等构建完才红。
 if ($Preflight) {
-  Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,NOTICES 点名的声明文件 $($citedNoticePaths.Count) 个已核,规则 en/zh 各 3 条)"
+  Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,LICENSES/ 全文 $($licenseFiles.Count) 份,NOTICES 点名的声明文件 $($citedNoticePaths.Count) 个已核,规则 en/zh 各 3 条)"
   exit 0
 }
 
