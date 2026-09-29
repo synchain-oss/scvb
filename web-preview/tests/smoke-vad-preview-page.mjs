@@ -15,14 +15,26 @@
 //       与按下之前不同(门限拉高 ⇒ 绿带变窄 ⇒ 像素变少)—— 量的是**画出来的像素**,不是数据;
 //   (d) 松手 ⇒ 松手档那一趟落地 ⇒ 预览收尾:1s 内 `active` 归假、虚影归零
 //       (空闲收尾要 1.5s,1s 内归零只能是「落地即收尾」那条路)。
-// 拖动期间要**一直在动**:契约 §1.18 的防抖对象是「调用流」,停手 300ms 松手档就会自己起跑
-// (不必等 pointerup)—— 所以断 (a)(b)(c) 的轮询里每一拍都小幅来回挪一下,让防抖始终排着。
+// 断 (a)(b)(c) 的轮询里每一拍都小幅来回挪一下:那三格量的是「拖动中」,不该依赖下面 (f) 钉的保活。
+//
+// [SL-561] 按住不动(rc.1 用户实测 B61:「不松手的时候只要不动,绿色的虚线就没了」):
+//   根因 —— 契约 §1.18 的松手档防抖防的是**调用流**、不是 pointerup,而拖动档只在值变了才发;
+//   「按住不动」= 停止调用 ⇒ 300ms 后松手那一趟自己起跑、落地收尾预览(被抑制时则是 1.5s
+//   空闲收尾)。修法是 tab-wave.js 的按住保活(`SLIDER_HOLD_KEEPALIVE_MS`)。本套加四格:
+//   (f) 按住不动 2.5s(跨过 300ms 防抖 + 落地、也跨过 1.5s 空闲收尾):预览一直在、虚影一直画着、
+//       期间没有 §2.8 段表帧、没有 active:false 帧;保活真的在发(mock 收到的调用数);
+//   (e) 松手那一拍保活计时器当场撤掉(不等下一拍自己发现);松手后那一趟照常落地(§2.8 reason:"vad");
+//   (h) 按住时窗口失焦 ⇒ 视为松手:保活停、1s 内落地收尾;
+//   (i) 按住时丢了指针捕获 ⇒ 同上。
 //
 // 删除式(每格只动一处,见 PR 描述):
 //   W1 app.js 不订阅 `scvb.vadPreview` ⇒ (a) 红;W2 动态层不画虚影 ⇒ (b) 红;
 //   W3 onVadPreview 不刷 VAD 列 ⇒ (c) 红;W4 mock 的 vad 列不读预览 ⇒ (c) 红;
 //   W5 mock 的 setVadParams 不发预览 ⇒ (a) 红;W6 onVadPreview 丢掉收尾帧 ⇒ (d) 红;
 //   W7 mock 落地不收尾 ⇒ (d) 红。
+//   [SL-561] K1 保活不发(`sliderHoldTick` 里那次 sendParams 注释掉)⇒ (f) 红;
+//   K2 `up` 里不调 stopSliderHold ⇒ (e) 红;K3 不挂窗口 blur ⇒ (h) 红;
+//   K4 不挂 lostpointercapture ⇒ (i) 红。
 //
 // 用法:node web-preview/tests/smoke-vad-preview-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -589,6 +601,43 @@ check(
 );
 check(!!tr && tr.w > 20, `阈值滑杆量得到(${JSON.stringify(tr)})`);
 const xAt = (p) => tr.x + tr.w * p;
+
+// [SL-561] 页内记录器:mock 收到的 setVadParams 调用时刻、§2.8 段表帧、§2.10 收尾帧。
+// 按住期间「段表没动 / 没有收尾帧 / 保活真的在发」三件事画面上分不开,只能在桥的 mock 端数。
+// 桥按名字现取 `mock[name]`(bridge.js makeMockBridge),所以包一层即可,不改 mock 本身。
+check(
+    await evaluate(
+        IN(`const mk = w.__SCVB_MOCK__;
+            if (!mk || typeof mk.setVadParams !== "function") return false;
+            const rec = (w.__sl561 = { calls: [], segs: [], ends: [] });
+            const orig = mk.setVadParams;
+            mk.setVadParams = function () {
+                rec.calls.push(Date.now());
+                return orig.apply(this, arguments);
+            };
+            mk.addEventListener("scvb.segments", (e) =>
+                rec.segs.push({ at: Date.now(), reason: e && e.reason }));
+            mk.addEventListener("scvb.vadPreview", (e) => {
+                if (e && e.active === false) rec.ends.push(Date.now());
+            });
+            return true;`),
+    ),
+    "前置:[SL-561] 页内记录器装上(mock 的 setVadParams / 段表帧 / 收尾帧)",
+);
+// 记录器在某一时刻之后的增量。
+const REC_SINCE = (t) =>
+    IN(`const r = w.__sl561;
+        if (!r) return null;
+        const t = ${Number(t)};
+        const calls = r.calls.filter((x) => x >= t);
+        let gap = 0;
+        for (let i = 1; i < calls.length; i++) gap = Math.max(gap, calls[i] - calls[i - 1]);
+        return {
+            calls: calls.length,
+            maxGap: gap,
+            segs: r.segs.filter((s) => s.at >= t).map((s) => s.reason),
+            ends: r.ends.filter((x) => x >= t).length,
+        };`);
 // 按在当前值(−38 ⇒ p=0.44)上:按下本身不改值,改值从拖动开始 —— 与真人一样。
 await mouse("mouseMoved", xAt(0.44), tr.y);
 await mouse("mousePressed", xAt(0.44), tr.y);
@@ -597,7 +646,7 @@ for (const p of [0.55, 0.7, 0.85, 1.0]) {
     await sleep(30);
 }
 
-// ---- 不松手:一边小幅来回挪(让防抖一直排着),一边等 (a)(b)(c) --------------
+// ---- 不松手:一边小幅来回挪(拖动中的样子),一边等 (a)(b)(c) ------------------
 let seen = null;
 let greenDrag = green0;
 const t0 = Date.now();
@@ -647,8 +696,68 @@ check(
     `(c) 刷 VAD 列那条路真的走过(refetches=${seen && seen.refetches})`,
 );
 
+// ---- [SL-561] (f) 按住不动 2.5s:预览一直在、段表不动,直到松手 ------------------
+// 手停在最后那一拍(1.0),此后一个鼠标事件都不发。2.5s 同时跨过两个旧的收尾时刻:
+// 300ms 防抖 → 松手那一趟起跑 → 落地收尾(mock 里是同步落地),以及 1.5s 空闲收尾;各留约 1s 余量。
+// 每 ~150ms 采一次诊断,**每一拍**都要在预览中 —— 只看最后一拍会放过「中途收掉、下一发又开」的闪断。
+const HOLD_MS = 2500;
+await mouse("mouseMoved", xAt(1.0), tr.y); // 落在 1.0,之后不再动
+await sleep(60);
+const holdVal = (await evaluate(TRACK)) || {};
+const holdT0 = Date.now();
+const holdSamples = [];
+while (Date.now() - holdT0 < HOLD_MS) {
+    await sleep(150);
+    const d = await evaluate(DIAG);
+    holdSamples.push({ t: Date.now() - holdT0, d });
+}
+const holdRec = await evaluate(REC_SINCE(holdT0));
+const holdEndVal = (await evaluate(TRACK)) || {};
+const firstOff = holdSamples.find(
+    (s) => !s.d || s.d.active !== true || !(s.d.edgesDrawn > 0),
+);
+log(
+    `  [按住不动 ${HOLD_MS}ms] 采样 ${holdSamples.length} 拍;首个失守 ${
+        firstOff ? `${firstOff.t}ms ${JSON.stringify(firstOff.d)}` : "无"
+    };记录器 ${JSON.stringify(holdRec)}`,
+);
+check(
+    holdSamples.length >= 8 && holdVal.now === holdEndVal.now,
+    `(f) 前置:采样够密(${holdSamples.length} 拍)且期间滑杆值没变(${holdVal.now} → ${holdEndVal.now})`,
+);
+check(
+    holdSamples.every((s) => !!s.d && s.d.active === true),
+    `(f) **按住不动期间预览一直在**(每一拍 active;首个失守 ${
+        firstOff ? `${firstOff.t}ms` : "无"
+    };修前:约 300ms 防抖到点、松手那一趟落地即收尾)`,
+);
+check(
+    holdSamples.every((s) => !!s.d && s.d.edgesDrawn > 0),
+    "(f) 按住不动期间绿色点划线一直画着(每一拍 edgesDrawn > 0)",
+);
+check(
+    holdSamples.every((s) => !!s.d && s.d.sliderDrag === true),
+    "(f) 前置:整段都还是按住态(没有别的路径替它松了手)",
+);
+check(
+    !!holdRec && holdRec.segs.length === 0 && holdRec.ends === 0,
+    `(f) 按住期间段表不动、没有收尾帧(实得 段表帧 ${JSON.stringify(holdRec && holdRec.segs)}、` +
+        `收尾帧 ${holdRec && holdRec.ends})`,
+);
+check(
+    !!holdRec && holdRec.calls >= Math.floor(HOLD_MS / 300),
+    `(f) 保活真的在发:按住期间 mock 收到 ${holdRec && holdRec.calls} 次 setVadParams` +
+        `(至少每 300ms 一次 ⇒ ≥ ${Math.floor(HOLD_MS / 300)};最大间隔 ${holdRec && holdRec.maxGap}ms)`,
+);
+
 // ---- 松手 ⇒ 松手档落地 ⇒ 收尾 -------------------------------------------------
+const relT0 = Date.now();
 await mouse("mouseReleased", xAt(1.0), tr.y);
+const diagRel = await evaluate(DIAG);
+check(
+    !!diagRel && diagRel.sliderDrag === false && diagRel.holdTimer === false,
+    `(e) [SL-561] 松手那一拍按住态与保活计时器当场撤掉(实得 ${JSON.stringify(diagRel)})`,
+);
 const closed = await waitFor(
     `(() => { const d = ${DIAG}; return !!d && d.active === false && d.edgesDrawn === 0; })()`,
     1000,
@@ -665,6 +774,87 @@ const greenEnd = await evaluate(GREEN);
 check(
     greenEnd >= 0 && greenEnd < green0,
     `(d) 落地后 VAD 标注带保持新门限的样子(${greenEnd} < 基线 ${green0};与 native「vadP 按同一组参数写」同形)`,
+);
+const relRec = await evaluate(REC_SINCE(relT0));
+log(`  [松手后记录器] ${JSON.stringify(relRec)}`);
+check(
+    !!relRec && relRec.segs.includes("vad") && relRec.ends >= 1,
+    `(e) 松手后那一趟照常落地:§2.8 reason:"vad" 与收尾帧都在松手之后(实得 ${JSON.stringify(relRec)})`,
+);
+
+// ---- [SL-561] (h)(i) 按住时失焦 / 丢捕获 ⇒ 视为松手 ---------------------------
+// 按住保活让「拖拽态没收尾」从无害变成有害(保活一直续着防抖,松手那一趟永远不跑、预览永远不收),
+// 所以 pointerup / pointercancel 之外的两个出口也要收尾。每格:按下 → 拖一下改值 → 等预览出来 →
+// 按住不动 400ms(保活在跑)→ 触发 → 断「当场松手 + 1s 内落地收尾」→ 真鼠标抬起收场。
+async function holdThenTrigger(label, pFrom, pTo, what, triggerJs) {
+    await mouse("mouseMoved", xAt(pFrom), tr.y);
+    await mouse("mousePressed", xAt(pFrom), tr.y);
+    for (const p of [(pFrom + pTo) / 2, pTo]) {
+        await mouse("mouseMoved", xAt(p), tr.y);
+        await sleep(30);
+    }
+    check(
+        await waitFor(
+            `(() => { const d = ${DIAG}; return !!d && d.active === true && d.sliderDrag === true && d.holdTimer === true; })()`,
+            3000,
+        ),
+        `(${label}) 前置:按住中、预览已出、保活在跑`,
+    );
+    await sleep(400);
+    const pre = await evaluate(DIAG);
+    check(
+        !!pre && pre.active === true && pre.sliderDrag === true,
+        `(${label}) 前置:按住不动 400ms 后仍在预览中(实得 ${JSON.stringify(pre)})`,
+    );
+    const t0 = Date.now();
+    const trig = await evaluate(IN(triggerJs));
+    check(
+        trig === true,
+        `(${label}) 触发${what}(实得 ${JSON.stringify(trig)})`,
+    );
+    const released = await waitFor(
+        `(() => { const d = ${DIAG}; return !!d && d.sliderDrag === false && d.holdTimer === false; })()`,
+        500,
+    );
+    const closedX = await waitFor(
+        `(() => { const d = ${DIAG}; return !!d && d.active === false && d.edgesDrawn === 0; })()`,
+        1000,
+    );
+    const rec = await evaluate(REC_SINCE(t0));
+    const dEnd = await evaluate(DIAG);
+    log(
+        `  [${label} ${what}后] diag=${JSON.stringify(dEnd)} 记录器=${JSON.stringify(rec)}`,
+    );
+    check(released, `(${label}) **${what} ⇒ 视为松手**:按住态与保活计时器撤掉`);
+    check(
+        closedX && !!rec && rec.segs.includes("vad"),
+        `(${label}) ${what}后 1s 内松手那一趟落地、预览收尾(段表帧 ${JSON.stringify(rec && rec.segs)})`,
+    );
+    await mouse("mouseReleased", xAt(pTo), tr.y); // 已不在按住态:up 早退,之后的丢捕获同样早退
+    await sleep(300);
+}
+await holdThenTrigger(
+    "h",
+    1.0,
+    0.7,
+    "窗口失焦",
+    `w.dispatchEvent(new Event("blur")); return true;`,
+);
+await holdThenTrigger(
+    "i",
+    0.7,
+    0.5,
+    "丢指针捕获",
+    `const box = gb("wave-vad-threshold");
+     const t = box && box.querySelector(".wave-slider__track");
+     if (!t) return "no-track";
+     for (const id of [1, 0, 2, 3]) {
+         if (t.hasPointerCapture(id)) {
+             t.releasePointerCapture(id);
+             return true;
+         }
+     }
+     return "no-capture";`,
 );
 
 // ---- 页面零 console.error / 零未捕获异常(全套通用底线)-----------------------

@@ -1268,6 +1268,22 @@
                 background-color: var(--w-24);
                 border-color: rgba(var(--acc), 0.6);
             }
+            /* [SL-562 顺查] 触发钮上的「NN 轨名」与选项里的轨名一律单行 + 省略号,
+               全名走 title(tab-master.js 写)。改前两处都没有这组属性:无空格的长轨名
+               (如 24 个拉丁字母连写)从 196px 的卡里横向溢出、越过窗口右缘被裁;中文长名
+               则折成三行,把整排顶部卡片撑高、压矮下面的分布图。选项面板同理出横向滚动条。
+               margin-right 给触发钮右侧的下拉箭头(背景图,贴右 10px、宽 8px)让位,
+               截断后的文字不压到箭头上。 */
+            .lead-select > [data-gb="master-leadselect-label"],
+            .lead-select__name {
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .lead-select > [data-gb="master-leadselect-label"] {
+                margin-right: var(--sp-12);
+            }
             .lead-select__panel {
                 position: absolute;
                 z-index: 9;
@@ -2756,7 +2772,10 @@
                    同一件配方(.sc-modal)。改掉琥珀盖层的理由有两条 ——
                    ① 一致性:全界面「需要一个决定」的浮层从此只有一种长相;
                    ② 可读性:行内浮层叠在下一行**内容**之上,深色不透明兜底比浅色盖层压得住底文。
-                   不透明兜底仍然保留(纯 .15 玻璃会透出底行文字打架,统筹亲验 2026-08-20)。 */
+                   不透明兜底仍然保留(纯 .15 玻璃会透出底行文字打架,统筹亲验 2026-08-20)。
+                   [SL-560] 底换成深色时条里的次按钮没跟着换:「取消」还是浅色面那枚裸 .sc-btn
+                   (白 .3 底 + 深灰字),在深底上几乎看不见。现在它带 .sc-btn--dark,
+                   理由与对比度数字见 tab-tracks.js trackRowHtml 头注。 */
                 background-color: var(--dark-solid);
                 background-image: var(--dark-modal);
                 border: 1px solid rgba(var(--wh), 0.16);

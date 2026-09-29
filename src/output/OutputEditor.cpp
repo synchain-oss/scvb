@@ -2007,19 +2007,23 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     // ⚠ **必须在 `if (changed)` 之外**([SL-255] 复审②)。契约 §1.18 的措辞是「UI
     // **停止调用**后」—— 防抖的对象是**调用流**,不是变化流;mock 的
     // `debounceAnalysisPipeline` 也是每次调用无条件 clearTimeout + 重排。
-    // 放进 `changed` 里会漏掉最常见的一种手势:`tab-wave.js::releaseSlider` 在本次手势
-    // 动过值(`s.dirty`)时补发尾值,而 `dirty` 记的是「这一手势动过没」、**不是**「与上次
-    // 下发的值不同」。于是「拖到某值 → 停手挑一会儿(>300ms,防抖已到点跑完并发过事件)
-    // → 再松手」,尾包与上次逐字相同 ⇒ changed==false ⇒ 不重排 ⇒ 松手时 `armCountdown`
-    // 挂上的倒计时条等不到任何新事件,2s 兜底静默撤掉,用户看到的又是「拖了没效果」。
+    // 放进 `changed` 里会漏掉 web 侧两条**原样重发**上一发值的路径(changed==false,却必须重排):
+    //   ① `tab-wave.js::releaseSlider` 在本次手势动过值(`s.dirty`)时补发尾值,而 `dirty` 记的是
+    //      「这一手势动过没」、**不是**「与上次下发的值不同」。[SL-255] 当时的形态:「拖到某值 → 停手
+    //      挑一会儿(>300ms,防抖已到点跑完并发过事件)→ 再松手」,尾包与上次逐字相同 ⇒ 不重排 ⇒
+    //      松手时 `armCountdown` 挂上的倒计时条等不到任何新事件,2s 兜底静默撤掉(「拖了没效果」)。
+    //      [SL-561] 之后按住不动已不会让防抖到点(见 ②),但尾包照样与最后一发逐字相同。
+    //   ② [SL-561] 按住保活 `tab-wave.js::sliderHoldTick`:按住不动时每 `SLIDER_HOLD_KEEPALIVE_MS`
+    //      (150ms)把当前值原样再发一次,靠「调一次 = 重排一次」让松手那一趟在手还按着时不起跑。
+    //      放进 `changed` 里它就失效 ⇒ 按住 300ms 后照样起跑、落地收掉预览,即 SL-561 的原样。
     // 代价(同参数多跑一遍流水线)由 `finishAnalysis` 的「段表没变就不压撤销步」兜住。
     //
     // ⚠ **给将来接新调用点的人**([SL-255] 复审顺带登记):提到 `changed` 之外以后,
-    // 「值没改就别跑整条流水线」这道闸**只剩 web 侧** `tab-wave.js::releaseSlider` 的
-    // `!dirty` 早退。当前 `setVadParams`/`setSegmentation` 的生产调用点只有
-    // `sendParamsThrottled` / `releaseSlider`(全仓 grep 过,开窗/hydrate 都不做初始下发),
-    // 所以现在没问题;但从此**调一次 = 排一整条流水线**。若要接状态恢复、预设加载、
-    // Input 远端同步这类新调用方,得在那一侧自己去重,别指望这里替你挡。
+    // 「值没改就别跑整条流水线」这道闸**只剩 web 侧**的 `dirty` 闸(`releaseSlider` 的 `!dirty`
+    // 早退;`sliderHoldTick` 同样只在 `s.dirty` 时发)。当前 `setVadParams`/`setSegmentation` 的
+    // 生产调用点只有 `sendParamsThrottled` / `releaseSlider` / `sliderHoldTick`([SL-561] 起;开窗 /
+    // hydrate 都不做初始下发),所以现在没问题;但从此**调一次 = 排一整条流水线**。若要接状态恢复、
+    // 预设加载、Input 远端同步这类新调用方,得在那一侧自己去重,别指望这里替你挡。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
     // [J146] 拖动档(§1.18):每次调用即时重判决,预览经 §2.10 `scvb.vadPreview` 当场回发。
     // 放在 `armResegment` 之后:空闲结束判据要看「防抖排上了没有」,顺序反了第一拍会被误收。

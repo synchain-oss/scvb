@@ -15,6 +15,9 @@
 //      只能打到 processor 那一半 —— 「handler 真的调了 requestVadPreview 并当场发事件」
 //      「emitTick 真的补发收尾帧」这两跳只能在这里按源码钉(与 smoke-tab3 ⑮(f) 同一做法)。
 //      删除式见 PR 描述(D-S1..D-S3)。
+//   ④ [SL-561] 按住保活:`SLIDER_HOLD_KEEPALIVE_MS` 与 native / mock 的松手档防抖常量按源码对拍
+//      (2 × 周期 ≤ 防抖);mock 上以保活周期同值重发 2s 不起跑、预览不收,停发后照常落地。
+//      按住期间页面真的在发、真的一直有点划线,在页面级那套(smoke-vad-preview-page.mjs (f))。
 //
 // 用法:node web-preview/tests/smoke-vad-preview.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -288,6 +291,69 @@ log("=== ③ C++ 接线的源码钉子(OutputEditor 编不进测试目标)===");
             !code(src).includes("processor_.vadPreview()"),
         "(D-S4) editor 全文件只走加锁的 vadPreviewHead / vadPreviewSnapshot(无锁引用只给 host 用例)",
     );
+}
+
+// -----------------------------------------------------------------------------
+log(
+    "=== ④ [SL-561] 按住保活:周期对拍防抖常量 + mock 上「一直在调用」就不起跑 ===",
+);
+{
+    // 保活周期必须短于松手档防抖,否则按住不动时防抖照样到点(SL-561 的原样)。
+    // 界线按机制给:**漏掉一拍(或晚一整拍)仍不到点** ⇒ 2 × 周期 ≤ 防抖。native 的到点检查挂在
+    // 25Hz 定时器上(300ms 实际落在 300~340ms),web 定时器与桥也会排队 —— 余量要留给它们。
+    const K = TW.SLIDER_HOLD_KEEPALIVE_MS;
+    const hdr = readFileSync(
+        join(ROOT, "src/output/OutputProcessor.h"),
+        "utf8",
+    );
+    const m = /kResegmentDebounceMs\s*=\s*(\d+)\s*;/.exec(hdr);
+    const deb = m ? Number(m[1]) : NaN;
+    const mockSrc = readFileSync(
+        join(ROOT, "web-preview/mock/juce-bridge-mock.js"),
+        "utf8",
+    );
+    const mm = /function debounceAnalysisPipeline[\s\S]*?later\((\d+),/.exec(
+        mockSrc,
+    );
+    const mockDeb = mm ? Number(mm[1]) : NaN;
+    check(
+        Number.isFinite(deb) && Number.isFinite(mockDeb),
+        `取到 native / mock 的防抖常量(实得 ${deb} / ${mockDeb})`,
+    );
+    check(
+        Number.isFinite(K) && K >= TW.PARAM_THROTTLE_MS,
+        `保活周期是有限数且不快于拖动节流(${K}ms ≥ ${TW.PARAM_THROTTLE_MS}ms,≤50Hz 纪律)`,
+    );
+    check(
+        2 * K <= deb && 2 * K <= mockDeb,
+        `保活周期 × 2 ≤ 防抖(${K} × 2 ≤ native ${deb} / mock ${mockDeb}):漏一拍仍不到点`,
+    );
+
+    // 保活靠的是契约 §1.18「防抖的是调用流」—— **同值重发也重排**。mock 上以保活周期原样重发
+    // 2s(> 防抖、> 1.5s 空闲收尾):不许出段表、预览一直 active;停发后照常落地收尾。
+    const { s, bridge, pv, seg, snap } = await session();
+    const p = { ...snap.analysis.vad, threshold_db: -15 };
+    await bridge.setVadParams(p);
+    const t0 = Date.now();
+    while (Date.now() - t0 < 2000) {
+        await sleep(K);
+        await bridge.setVadParams({ ...p });
+    }
+    check(
+        seg.length === 0,
+        `(f) 同值重发期间不起跑(段表帧 ${JSON.stringify(seg)})`,
+    );
+    check(
+        pv.length > 0 && pv.every((f) => f.p.active === true),
+        `(f) 同值重发期间预览一直 active(${pv.length} 帧,收尾帧 ${pv.filter((f) => !f.p.active).length})`,
+    );
+    await sleep(900);
+    const endF = pv[pv.length - 1];
+    check(
+        seg.includes("vad") && !!endF && endF.p.active === false,
+        `(f) 停发后照常落地收尾(段表帧 ${JSON.stringify(seg)};末帧 active=${endF && endF.p.active})`,
+    );
+    s.ctl.dispose();
 }
 
 log(fail === 0 ? "\n全绿" : `\n${fail} 条 FAIL`);

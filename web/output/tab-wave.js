@@ -1017,6 +1017,27 @@ export const SNAP_PX = 6;
 export const SLIDER_KEY_RELEASE_MS = 250;
 
 /**
+ * [SL-561] 按住滑杆不动时的**保活重发**周期(ms)。
+ *
+ * 根因:契约 §1.18 的松手档防抖(native `kResegmentDebounceMs` = 300,mock 同值)防的是
+ * **调用流**、不是 pointerup;而拖动档只在值变了才发(`setSliderValue` 没变就不发)。于是
+ * 「按住不动」在 native / mock 看来就是「停止调用」:300ms 后松手那一趟自己起跑,落地即收尾
+ * 预览(§2.10 结束时机 ①)⇒ 手还按着,泳道上的绿色点划线就没了、段表也已按新参数重分;
+ * 那一趟被抑制时(PRINT / 分析在跑)则由 1.5s 空闲收尾(§2.10 结束时机 ③)撤掉,
+ * 绿色标注带同时退回分析时的样子。
+ *
+ * 修法:按住期间(`local.sliderDrag` 在、且本次手势改过值)距上一发满这个周期,就把当前值
+ * 原样再发一次 —— 在契约看来 UI 就是「还在调用」,防抖一直排着、预览一直算着;松手 / 取消 /
+ * 失焦 / 丢捕获即停发,之后的 300ms 防抖与此前逐字相同。取值必须**小于**防抖 300ms,并给
+ * 消息线程排队留余量(native 的到点检查挂在 25Hz 定时器上,300ms 实际落在 300~340ms)。
+ * 代价:按住不动时每周期一次同参数重判决 + 一帧 §2.10 + 一次 VAD 列重拉,与拖动中(≤40Hz)
+ * 走同一条路径、频率更低。
+ * 与 native / mock 防抖常量的大小关系由 `smoke-vad-preview.mjs` ④ 按源码对拍(2 × 周期 > 防抖即红:
+ * 漏一拍仍不到点)。
+ */
+export const SLIDER_HOLD_KEEPALIVE_MS = 150;
+
+/**
  * [SL-497] 在飞写的回声等待上限(ms)。发出 setVadParams / setSegmentation 之后,
  * `state.analysis` 回推的值追平发出的值之前,不拿它覆盖本地乐观值;追不平(native 规整过
  * 数值、或回推被合并掉)时到点放开。native 25Hz emitTick 最坏约 40ms,留足余量。
@@ -1329,6 +1350,7 @@ export function createTabWave(opts) {
         inspRestoreBusy: false, // 「继续」在途(#148 复审【建议】②:快速双击会白跑两趟秒级分析)
         boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
+        sliderHoldTimer: 0, // [SL-561] 按住保活计时器(单槽;见 SLIDER_HOLD_KEEPALIVE_MS)
         autostopUser: false, // 「区域外自动停止」是用户手勾的(撤防不复位它)
         // [SL-496] 键盘档「视为松手」计时**按杆持有**(`s.keyTimer`),不在这里:
         // 原先是这里一个全页单例,第二根杆的按键会把第一根那一发清掉且不再重排
@@ -1797,6 +1819,49 @@ export function createTabWave(opts) {
             },
             PARAM_THROTTLE_MS - (t - local.lastParamSend),
         );
+    }
+
+    /**
+     * [SL-561] 按住保活(根因与取值见 `SLIDER_HOLD_KEEPALIVE_MS` 的头注)。
+     * 单槽计时器、自己续排;`local.sliderDrag` 一空(松手 / 取消 / 失焦 / 丢捕获)下一拍就停,
+     * 不依赖每条收尾路径都记得来清它。
+     *   · 本次手势没改过值(`!s.dirty`)不发:那时 native / mock 侧既没有预览、也没排防抖,
+     *     发了反而让松手后白跑一遍流水线 —— 与 `releaseSlider` 的零改动闸同一条理由;
+     *   · 节流尾包在排(`local.paramTimer`)时不发:它马上就会带着最新值出去。
+     */
+    function armSliderHold() {
+        if (local.sliderHoldTimer) clearTimeout(local.sliderHoldTimer);
+        local.sliderHoldTimer = setTimeout(
+            sliderHoldTick,
+            SLIDER_HOLD_KEEPALIVE_MS,
+        );
+    }
+
+    function sliderHoldTick() {
+        local.sliderHoldTimer = 0;
+        const s = local.sliderDrag;
+        if (!s) return;
+        let wait = SLIDER_HOLD_KEEPALIVE_MS;
+        if (s.dirty) {
+            if (
+                !local.paramTimer &&
+                nowMs() - local.lastParamSend >= SLIDER_HOLD_KEEPALIVE_MS
+            ) {
+                local.lastParamSend = nowMs();
+                sendParams(s.def.api);
+            }
+            // 下一拍对准「上一发 + 周期」;拖动中的发送会把它往后推,最短不低于节流档。
+            wait = Math.max(
+                PARAM_THROTTLE_MS,
+                SLIDER_HOLD_KEEPALIVE_MS - (nowMs() - local.lastParamSend),
+            );
+        }
+        local.sliderHoldTimer = setTimeout(sliderHoldTick, wait);
+    }
+
+    function stopSliderHold() {
+        if (local.sliderHoldTimer) clearTimeout(local.sliderHoldTimer);
+        local.sliderHoldTimer = 0;
     }
 
     /** 值写入本地整包缓存 + 就地刷新该杆视觉(拖动期不等整页 render)。 */
@@ -2568,6 +2633,7 @@ export function createTabWave(opts) {
                     s.dirty = true;
                     sendParamsThrottled(s.def.api);
                 }
+                armSliderHold(); // [SL-561] 按住不动也保持「在调用」,预览不被松手档提前收掉
                 ensureTicker();
             });
             s.track.addEventListener("pointermove", (e) => {
@@ -2581,6 +2647,7 @@ export function createTabWave(opts) {
             const up = (e) => {
                 if (local.sliderDrag !== s) return;
                 local.sliderDrag = null;
+                stopSliderHold();
                 const v = e ? sliderValueFromEvent(s, e) : null;
                 if (v !== null && setSliderValue(s, v)) {
                     s.dirty = true;
@@ -2589,12 +2656,18 @@ export function createTabWave(opts) {
             };
             s.track.addEventListener("pointerup", up);
             s.track.addEventListener("pointercancel", up);
+            // [SL-561] 丢捕获 = 松手(只收尾不取值)。按住保活让「拖拽态没收尾」从无害变成有害:
+            // 保活会一直续着防抖,松手那一趟永远不跑、预览永远不收。正常松手时它排在
+            // pointerup 之后派发,那时 `local.sliderDrag` 已空,`up` 直接早退。
+            s.track.addEventListener("lostpointercapture", () => up(null));
             // 窗级兜底(与两条缩放条同口径):setPointerCapture 抛错 / 指针在窗外
             // 释放时松手事件不回到杆上,拖拽态会卡住 —— 此后任何一次经过本杆的
             // 悬停都会当成拖动直接改值。窗级这一道拿不到杆内坐标,故只收尾不取值。
             if (typeof window !== "undefined") {
                 window.addEventListener("pointerup", () => up(null));
                 window.addEventListener("pointercancel", () => up(null));
+                // [SL-561] 窗口失焦 = 松手(按住时切走,松手事件未必回得来;理由同上)。
+                window.addEventListener("blur", () => up(null));
             }
             // 键盘可达:方向键步进(dp0 → 1,dp2 → 0.01),静默 250ms 视为松手
             s.track.addEventListener("keydown", (e) => {
@@ -5301,6 +5374,9 @@ export function createTabWave(opts) {
                 ),
                 edgesDrawn: local.vadEdgesDrawn,
                 refetches: local.vadRefetchCount,
+                // [SL-561] 按住态与保活计时器:页面级冒烟据此分辨「松手收尾了」与「还按着」。
+                sliderDrag: !!local.sliderDrag,
+                holdTimer: !!local.sliderHoldTimer,
             },
         }),
     };

@@ -510,10 +510,16 @@
                 align-self: stretch;
             }
 
-            /* ---- 通道选择器:4×4 紧凑网格(05 §3) */
+            /* ---- 通道选择器:4×4 紧凑网格(05 §3)
+               [SL-562] 列宽必须写 minmax(0, 1fr),不能写裸 1fr。裸 1fr 的下限是 auto,
+               即格内容的 min-content;轨名那一行是 nowrap,它的 min-content 就是整串轨名
+               的宽度 —— 于是一条长轨名把它那一列、连同整张网格撑宽,卡片向右溢出,
+               内容区出横向滚动,左半边被卷走(用户 rc.1 实测截图 inputbug.png)。
+               下限归零后四列恒等分,轨名在格内按省略号截断,全名走悬停提示
+               (app.js renderChannels 写 title)。判据:smoke-contrast-and-name-fit-page.mjs。 */
             .ipt-channels__grid {
                 display: grid;
-                grid-template-columns: repeat(4, 1fr);
+                grid-template-columns: repeat(4, minmax(0, 1fr));
                 gap: var(--sp-6);
             }
             .ipt-chcard {

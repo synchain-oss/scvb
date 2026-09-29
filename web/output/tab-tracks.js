@@ -710,6 +710,14 @@ const RESTORE_ICON =
  * 全部状态写成 data-*:行 data-status / data-on / data-lead / data-dead,
  * 控件 data-on / data-live / data-disabled / data-frozen / data-alert / data-set / data-pair。
  * 实时几何走内联 CSS 变量:--ang(旋钮角) / --lv(液柱) / --pk(峰线) / --vol(卡箍位)。
+ *
+ * [SL-560] 行内确认条(manual-overwrite-confirm)的「取消」必须带 `sc-btn--dark`。
+ * 这条确认条是**深色玻璃**底(index.html `.tracks-row__confirm`,v5.1 UI-H③ 从琥珀改过来),
+ * 裸 `.sc-btn` 是给浅色面设计的「白 .3 底 + --txt-2 深灰字」,叠在深底上文字对比度实测
+ * 1.13:1,用户 rc.1 实测「颜色跟背景一样」。`sc-btn--dark` 是深色浮层次按钮的既有配方
+ * (缩放确认 / 复制版本 / 重新分析询问 / tour 询问同款),同一位置实测 8.39:1;「继续」
+ * 仍是实心浅紫 CTA,主次层级不变。判据与取值口径:smoke-contrast-and-name-fit-page.mjs C 组。
+ * (说明写在这里而不写进模板:模板里的 HTML 注释会进字体子集扫描。)
  */
 export function trackRowHtml(t) {
     const ch = t.n;
@@ -867,7 +875,7 @@ export function trackRowHtml(t) {
       <div class="sc-confirm tracks-row__confirm" data-gb="${gb("manual-overwrite-confirm")}" hidden>
         <span class="tracks-row__confirm-text" data-t="tracks.manualOverwriteConfirm"></span>
         <span data-t="tracks.manualOverwriteConfirm.locked" data-gb="${gb("manual-overwrite-confirm-locked")}" hidden></span>
-        <button class="sc-btn" data-gb="${gb("manual-overwrite-cancel")}" data-t="common.cancel"></button>
+        <button class="sc-btn sc-btn--dark" data-gb="${gb("manual-overwrite-cancel")}" data-t="common.cancel"></button>
         <button class="sc-btn sc-btn--cta" data-gb="${gb("manual-overwrite-ok")}" data-t="common.continue"></button>
       </div>
       <!-- R2 语义保留(05 §2.2 冻结行):解冻(该位 1→0)且该轨当前版本曲线仍有一维是
