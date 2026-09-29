@@ -90,7 +90,7 @@ struct LeadSubInterval
 
 // [SL-570 / J167] 用吸附后的有效主唱分段 `pieces`(首尾相接,盖满 [intervals.front().t0, intervals.back().t1))
 // 把每个全局区间切成子区间,按时间顺序返回。某个区间里没有切换点 ⇒ 它原样成为一个子区间(t0/t1 不变)。
-// 盖不到的部分(调用方没给片段)按 `fallback`、不切。线性:区间与片段各扫一遍。
+// 片段盖不到的那几截(调用方违约)按 `fallback`,到下一个片段起点为止。线性:区间与片段各扫一遍。
 std::vector<LeadSubInterval> splitIntervalsAtLeadSwitches(const std::vector<GlobalInterval>& intervals,
                                                           const std::vector<LeadPiece>& pieces, int fallback);
 

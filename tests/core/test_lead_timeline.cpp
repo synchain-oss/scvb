@@ -1273,6 +1273,14 @@ TEST_CASE("SL570 切子区间:没有切换点的区间原样成为一个子区�
     w = splitIntervalsAtLeadSwitches(iv, {}, 7);
     REQUIRE(w.size() == 3);
     CHECK((w[1].t0 == 1000 && w[1].t1 == 3000 && w[1].lead == 7));
+    // 片段中间有空档(调用方违约):空档那一截按回落值,只到下一个片段起点为止,之后照常按片段。
+    w = splitIntervalsAtLeadSwitches(iv, {{0, 500, 1}, {1500, 4000, 3}}, 7);
+    REQUIRE(w.size() == 5);
+    CHECK((w[0].interval == 0 && w[0].t0 == 0 && w[0].t1 == 500 && w[0].lead == 1));
+    CHECK((w[1].interval == 0 && w[1].t0 == 500 && w[1].t1 == 1000 && w[1].lead == 7));
+    CHECK((w[2].interval == 1 && w[2].t0 == 1000 && w[2].t1 == 1500 && w[2].lead == 7));
+    CHECK((w[3].interval == 1 && w[3].t0 == 1500 && w[3].t1 == 3000 && w[3].lead == 3)); // ★ 没被回落值吞掉
+    CHECK((w[4].interval == 2 && w[4].t0 == 3000 && w[4].t1 == 4000 && w[4].lead == 3));
 }
 
 TEST_CASE("SL570 管线:一个区间里两人交替 —— 轨 1、轨 2、轨 1 各自那段居中,在换人处原位切开",

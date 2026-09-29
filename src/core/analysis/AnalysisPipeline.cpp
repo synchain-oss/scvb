@@ -104,13 +104,12 @@ std::vector<LeadSubInterval> splitIntervalsAtLeadSwitches(const std::vector<Glob
             {
                 ++pi;
             }
-            if (pi == pieces.size() || pieces[pi].t0 > cur)
-            {
-                out.push_back(LeadSubInterval{i, cur, gi.t1, fallback}); // 片段没盖到:余下整段按 fallback,不切
-                break;
-            }
-            const std::int64_t end = std::min(gi.t1, pieces[pi].t1);
-            out.push_back(LeadSubInterval{i, cur, end, pieces[pi].lead});
+            // 片段没盖到的那一截(调用方违约 —— 管线给的片段首尾相接、盖满窗口,不会出现)按 fallback,
+            // 只到下一个片段的起点为止;后面被片段盖到的部分照常按片段切。
+            const bool covered = pi < pieces.size() && pieces[pi].t0 <= cur;
+            const std::int64_t end = covered ? std::min(gi.t1, pieces[pi].t1)
+                                             : (pi < pieces.size() ? std::min(gi.t1, pieces[pi].t0) : gi.t1);
+            out.push_back(LeadSubInterval{i, cur, end, covered ? pieces[pi].lead : fallback});
             cur = end;
         }
     }
