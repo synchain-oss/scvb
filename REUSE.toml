@@ -49,7 +49,7 @@ SPDX-FileCopyrightText = "2013-2014 RAD Game Tools and Valve Software; 2010-2014
 SPDX-License-Identifier = "MIT"
 
 # ④ JUCE 静态链进 .vst3 的第三方库 + WebView2 静态 loader 的上游许可证原文(逐字副本,
-#    来源:JUCE 8.0.8 modules/ 与 Microsoft.Web.WebView2 1.0.2957.106 nupkg;清单与取舍见
+#    来源:JUCE 8.0.8 modules/ 与 Microsoft.Web.WebView2 1.0.2957.106 nupkg,Unicode 那份除外、见本节末块;清单与取舍见
 #    THIRD-PARTY-NOTICES.md)。这些库的源码不在本仓(JUCE 构建期取、nupkg 构建期取),
 #    这里只放它们的版权/许可声明,让 LICENSES/ 里对应的全文有据可查(reuse lint 不许有未被引用的全文)。
 [[annotations]]
@@ -99,3 +99,11 @@ path = "third_party/notices/sheenbidi.*"
 precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
 SPDX-FileCopyrightText = "2014-2022 Muhammad Tayyab Akram"
 SPDX-License-Identifier = "Apache-2.0"
+
+# [SL-571/J173] HarfBuzz / SheenBidi / JUCE 里由 Unicode 数据生成的查找表(文件清单见 THIRD-PARTY-NOTICES.md)。
+# 与上面各块不同,这份声明原文不来自 JUCE 源码(JUCE 里没有这份文件),逐字取自 https://www.unicode.org/license.txt。
+[[annotations]]
+path = "third_party/notices/unicode.*"
+precedence = "override"   # 以本块为准,与上面各块同一口径;版权行与原文里那一行相同
+SPDX-FileCopyrightText = "1991-2026 Unicode, Inc."
+SPDX-License-Identifier = "Unicode-3.0"

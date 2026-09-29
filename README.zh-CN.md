@@ -12,6 +12,8 @@
 
 SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码与文档完全公开,欢迎在 [GPL-3.0-or-later](LICENSE) 的条款下自由使用、修改与分发。如果它帮你省下了时间,也欢迎去 [synchain.ca](https://synchain.ca) 看看我们的其他产品 —— 用得顺手的话,把 Synchain 推荐给你的朋友和同事,就是对我们最好的支持。
 
+> **状态:预发布(rc)阶段。** 预发布版见 [Releases 页](https://github.com/synchain-oss/scvb/releases)。正式版发布之前,功能与界面仍可能调整;已知限制见 [KNOWN_ISSUES](docs/KNOWN_ISSUES.md)。
+
 ## 它解决什么问题
 
 混音师经常需要花大量时间,为几十轨不同人的主人声和和声画音量与声像自动化:让人声在空间上不要挤在一起,或者确保多个演唱者的唱段之间响度听上去一致。这些工作非常花费时间和精力,大多枯燥无味、重复性强,还会显著加重腱鞘炎风险。
@@ -48,7 +50,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 
 ## 安装
 
-正式版本发布在本仓库的 [Releases 页](https://github.com/synchain-oss/scvb/releases)。如果那里还没有任何版本,请从源码构建(见下)。
+预发布版(rc)与之后的正式版都发布在本仓库的 [Releases 页](https://github.com/synchain-oss/scvb/releases);也可以从源码自行构建(见下)。
 
 1. 从 Releases 页下载 `SCVB-v<版本号>-win64.zip` 与对应的 `.sha256`;
 2. 用 `.sha256` 校验下载到的 zip。**权威校验值以 GitHub Release 正文里的 SHA-256 为准**(它由 CI 在构建时产出),两处应当一致;**对不上就不要安装,并告诉我们**;

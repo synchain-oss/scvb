@@ -43,6 +43,20 @@
   修复「快速起停之后,『宿主自动化在写』徽标仍会在播放中途消失」是 #236;`⚠️ 契约变更` 里五条补上变更文档链接。
   其中「你画的 pan 增益曲线现在真的会响」(#270)合并时没有写变更文档,这次补写了
   `docs/contract-changes/20260919-sl442-pan-curve-realtime.md`,只登记它合并时的事实。条目正文其余一字未改(#334)
+- **发布 zip 补登 Unicode 数据的许可(Unicode-3.0)**:JUCE 编进插件的 HarfBuzz、SheenBidi 与 JUCE 自己带着
+  由 Unicode 数据生成的查找表(共 12 个文件,清单见 `THIRD-PARTY-NOTICES.md`),此前没有登记。现在
+  `THIRD-PARTY-NOTICES.md` 为它们加了一行与对应的版权行,`LICENSES/` 加 `Unicode-3.0.txt` 全文(SPDX 标准文本),
+  `third_party/notices/` 加 unicode.org 发布的声明原文 `unicode.license.txt`,都随发布 zip 分发 —— zip 里的
+  `LICENSES/` 由 11 份变为 12 份,`third_party/notices/` 由 7 份变为 8 份。`scripts/package.ps1` 另加一道反向检查:
+  `LICENSES/` 里的每份全文都必须有「随二进制分发」表的一行点名它,否则构建之前的 preflight 与打包都会红(#340)
+- README(中英)开头加一行状态说明:现在是预发布(rc)阶段,预发布版见 Releases 页;安装一节改为「预发布版(rc)与
+  之后的正式版都发布在 Releases 页,也可以从源码自行构建」。`docs/RELEASE.md` 写明 tag 打在 `dev` 上:发版前先把
+  `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`(新增「里程碑合并」一节,含前置检查、命令与合后回读);
+  `staging` / `prod` 两个分支开着保护,前移时由仓库管理员临时允许绕过、直推快进、推完恢复,推不上时按报错区分
+  是保护还在生效还是祖先问题。插件本身没有变化(#339)
+- CI:`dev` 上的依赖升级合进主支线 —— `build-vst3` 的 `actions/cache` 从 v4.3.0 升到 v6.1.0,DeepSeek 复审用的
+  `claude-code-action` 从 1.0.191 升到 1.0.210,都钉 40 位 commit SHA;`branch-gate.yml` 头注里的预发布分支名
+  改成 `staging`。插件本身没有变化(#339)
 
 ### 修复
 
