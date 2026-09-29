@@ -6,12 +6,15 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进)归浏览器手测 / 截图。
 //
 // 跑什么:
-//   ① 步骤清单:5 步、步号连续、首步无 spotlight、末步 = header「?」自指(J62 同款);
+//   ① 步骤清单:6 步([J80] 5 步 + [J176] 渲染警告)、步号连续、首步无 spotlight、
+//      第 ⑤ 步 = 渲染警告(居中卡,紧跟第 ④ 步连接状态)、末步 = header「?」自指(J62 同款);
 //   ② shouldShowInputGuide 四种组合(J50a 镜像)+ 会话闸门;
 //   ③ mock 端到端:input-first-run 两级 guide_seen 全 false → 首启链可达;
 //      setGuideSeen(true, true) 落工程位与全局位,再取快照往返不丢 → seen 后不再弹;
 //      「?」重看不依赖 seen(guide_seen 已置位也能再开);
-//   ④ 词条:tour-in.* 三语齐、占位符一致;第 ④ 步与九条红字第 3 条口径同源、禁旧表述;
+//   ④ 词条:tour-in.* 三语齐、占位符一致、与步骤表一一对应(不多不少);第 ④ 步与九条红字
+//      第 3 条口径同源、禁旧表述;第 ⑤ 步与 KNOWN_ISSUES KI-4 口径同源(静音文件 / 替换原音频 /
+//      对总线整体导出 / Bypass 或移除本轨 Input);
 //   ⑤ 源码级:零 Audio API、唯一桥调用 = setGuideSeen、role=dialog、aria-live、
 //      Esc=Skip、←/→、左键推进 + 说明框按钮例外;四锚点与「?」落点齐;
 //      画法与语言卡确实**复用共享件**(web/shared/tour-paint.js / lang-start.js)。
@@ -65,13 +68,25 @@ async function withInput(params, fn) {
 }
 
 // =============================================================================
-log("=== ① 步骤清单(mini tour 5 步)===");
+log("=== ① 步骤清单(mini tour 6 步)===");
 {
-    eq(TOURIN.TOUR_IN_STEPS.length, 5, "步数 == 5([J80] 5 步基线)");
+    eq(
+        TOURIN.TOUR_IN_STEPS.length,
+        6,
+        "步数 == 6([J80] 5 步基线 + [J176] 第 ⑤ 步渲染警告)",
+    );
     eq(
         TOURIN.TOUR_IN_ANCHORS,
-        [null, "group", "channel", "pill", "help"],
-        "锚点逐条 = 居中 / group / channel / pill / help",
+        [null, "group", "channel", "pill", null, "help"],
+        "锚点逐条 = 居中 / group / channel / pill / 居中(渲染警告)/ help",
+    );
+    // [SL-574 / J176] 顺序:渲染警告紧跟「连接状态」(讲完「本轨改由总线上的 Output 发声」
+    // 才讲它的后果),且在末步「?」自指之前。
+    check(
+        TOURIN.TOUR_IN_STEPS[3].anchor === "pill" &&
+            TOURIN.TOUR_IN_STEPS[4].anchor === null &&
+            TOURIN.TOUR_IN_STEPS[5].anchor === "help",
+        "第 ⑤ 步(渲染警告)夹在第 ④ 步连接状态与末步「?」之间,且是居中卡",
     );
     check(
         TOURIN.TOUR_IN_STEPS[0].anchor === null,
@@ -199,12 +214,22 @@ log("=== ③ mock 端到端:input-first-run + setGuideSeen 往返 ===");
 }
 
 // =============================================================================
-log("=== ④ 词条:tour-in.* 三语 + 第 ④ 步口径 ===");
+log("=== ④ 词条:tour-in.* 三语 + 第 ④ ⑤ 步口径 ===");
 {
+    // 说明文本按**步号**取词条(tour-in.js updateText):键集必须与步骤表一一对应。
+    const N = TOURIN.TOUR_IN_STEPS.length;
     const keys = ["tour-in.help"];
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= N; i++) {
         keys.push("tour-in.step" + i + ".title");
         keys.push("tour-in.step" + i + ".body");
+    }
+    // 反向:步骤表之外不许有孤儿步号(删了一步却没删/没重编号词条 ⇒ 这里红)
+    for (const l of LANGS) {
+        const orphan = Object.keys(T[l]).filter((k) => {
+            const m = /^tour-in\.step(\d+)\./.exec(k);
+            return m && (Number(m[1]) < 1 || Number(m[1]) > N);
+        });
+        eq(orphan, [], l + " 无超出步骤表的 tour-in.stepN.* 词条(N=" + N + ")");
     }
     for (const k of keys) {
         for (const l of LANGS) {
@@ -252,6 +277,54 @@ log("=== ④ 词条:tour-in.* 三语 + 第 ④ 步口径 ===");
         /pas un bug/i.test(T.fr["tour-in.step4.body"]) &&
             /sans aucun son/i.test(T.fr["tour-in.step4.body"]),
         "fr 第 ④ 步与 fr guide.rule3 同源用词(pas un bug / sans aucun son)",
+    );
+
+    // [SL-574 / J176] 第 ⑤ 步 = KNOWN_ISSUES KI-4 的场景化改写(现象 + 正确做法),
+    // 与两份用户手册「导出与渲染」一节同源。逐语言钉住四件事:静音文件 / 替换原音频会丢原素材 /
+    // 对人声总线整体导出 / 要单轨素材先 Bypass 或移除本轨 Input。
+    const RENDER_WARN = {
+        zh: [
+            "静音文件",
+            "冻结",
+            "就地渲染",
+            "替换原音频",
+            "原素材",
+            "人声总线整体导出",
+            "Bypass",
+            "移除",
+        ],
+        en: [
+            "silent file",
+            "Freeze",
+            "Render in Place",
+            "replace the original audio",
+            "vocal bus as a whole",
+            "bypass",
+            "remove",
+        ],
+        fr: [
+            "fichier silencieux",
+            "Freeze",
+            "Render in Place",
+            "remplacer l’audio d’origine",
+            "bus de voix dans son ensemble",
+            "bypass",
+            "retirez",
+        ],
+    };
+    for (const l of LANGS) {
+        const b5 = T[l]["tour-in.step5.body"] || "";
+        for (const phrase of RENDER_WARN[l]) {
+            check(b5.includes(phrase), l + " 第 ⑤ 步含「" + phrase + "」");
+        }
+        check(!/(TODO|TBD|FIXME|xxx)/i.test(b5), l + " 第 ⑤ 步无占位符标记");
+    }
+    // 末步仍是「?」自指(重编号没漏:原第 5 步的话挪到第 6 步,而不是被覆盖掉)
+    check(
+        T.zh["tour-in.step6.body"].includes("？") &&
+            T.en["tour-in.step6.body"].includes("?") &&
+            T.fr["tour-in.step6.body"].includes("?"),
+        "末步(第 ⑥ 步)正文仍指向「?」重看入口",
     );
 
     // 占位符三语一致(本组全部无占位符)

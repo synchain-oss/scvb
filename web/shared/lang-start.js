@@ -3,7 +3,7 @@
 // SCVB · 首启语言选择卡(T36b 第四轮;[J80] T48 由 web/output/ 提到 shared,Output 侧零行为变化)
 // -----------------------------------------------------------------------------
 // 职责边界:
-//   • 首启链最前:guide overlay(Output = 红字九条页 / Input = 5 步 mini tour)会显示时
+//   • 首启链最前:guide overlay(Output = 红字九条页 / Input = mini tour)会显示时
 //     (ui.guide_seen=false)先显示本卡,用户选中语言后关闭本卡 → 露出各自的下一环。
 //   • **两侧共用一件**而不是各写一份:判据字段名(工程 `ui.guide_seen` + 快照
 //     `guide_seen_global`)两侧逐字相同(契约 §1.1 / §3.1),视觉与文案(`lang-start.*`)

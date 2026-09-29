@@ -238,11 +238,13 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
-        // Input 首启轻量引导 mini tour(**[J80] / 07 T48**;5 步基线,词条 tour-in.*)。
+        // Input 首启轻量引导 mini tour(**[J80] / 07 T48**;词条 tour-in.*,步数以 web/input/tour-in.js 的 TOUR_IN_STEPS 为准)。
         // 按钮行/交互提示复用 tour.* 同一份(措辞相同,不另立第二套)。
         // 第 4 步 = 九条硬约束第 3 条的场景化改写:用词与 12 §3.4 / guide.rule3 同源
         //(「设计行为,不是 bug」「检测不到健康 Output 时(未装、未连上、对端已退出)自动切回直通」
         // 「不会因为只装了一个插件就得到一条没有声音的轨道」),禁「永久静音 / 哑轨」类旧表述。
+        // 第 5 步 = KI-4 渲染警告([J176] / SL-574,插在第 4 步之后;原第 5 步顺延为第 6 步),
+        // 口径与 docs/KNOWN_ISSUES.md KI-4、两份用户手册「导出与渲染」一节同源。
         "tour-in.help": "重看引导",
         "tour-in.step1.title": "欢迎使用 SCVB Input",
         "tour-in.step1.body":
@@ -256,8 +258,11 @@ export const T = {
         "tour-in.step4.title": "连接状态",
         "tour-in.step4.body":
             "连接成功后，本轨会向下游输出静音、由总线上的 SCVB Output 接管发声——这是设计行为，不是 bug。检测不到健康的 Output 时（未装、未连上、对端已退出），本轨自动切回直通，所以你不会因为只装了一个插件就得到一条没有声音的轨道。",
-        "tour-in.step5.title": "完整控制在 Output",
+        "tour-in.step5.title": "别单独渲染这条轨",
         "tour-in.step5.body":
+            "本轨的声音改由总线上的 SCVB Output 输出，所以单独渲染、冻结（Freeze）或就地渲染（Render in Place）这条轨，得到的是静音文件；若选了「替换原音频」，原素材会被换成静音。要导出请对人声总线整体导出；确实需要单轨素材，先对本轨的 SCVB Input 开启 Bypass 或将其移除，再渲染。",
+        "tour-in.step6.title": "完整控制在 Output",
+        "tour-in.step6.body":
             "分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。",
 
         // tour 全参数导览 43 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
@@ -1317,8 +1322,11 @@ export const T = {
         "tour-in.step4.title": "Connection status",
         "tour-in.step4.body":
             "Once connected, this track outputs silence downstream and the SCVB Output on the bus takes over — this is by design, not a bug. When no healthy Output is detected (not installed, not connected, peer has quit), this track falls back to passthrough automatically, so installing only one of the two plugins will never leave you with a track that has no sound.",
-        "tour-in.step5.title": "Full control lives in Output",
+        "tour-in.step5.title": "Don’t render this track on its own",
         "tour-in.step5.body":
+            "This track’s sound now comes out of the SCVB Output on the bus, so rendering this track on its own — a single-track export, Freeze or Render in Place — gives you a silent file; if you choose to replace the original audio, the original is replaced with that silence. Export the vocal bus as a whole; if you really need a file of this track alone, bypass or remove this track’s SCVB Input before rendering.",
+        "tour-in.step6.title": "Full control lives in Output",
+        "tour-in.step6.body":
             "Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.",
 
         // tour full-parameter 43 steps (final copy; EN self-translated, pending U17 review).
@@ -2175,8 +2183,11 @@ export const T = {
         "tour-in.step4.title": "État de la connexion",
         "tour-in.step4.body":
             "Une fois connectée, cette piste envoie du silence en aval et le SCVB Output du bus prend le relais — c’est le comportement voulu, pas un bug. Si aucun Output sain n’est détecté (non installé, non connecté, pair quitté), cette piste repasse automatiquement en direct : n’installer qu’un seul des deux plugins ne vous laissera donc jamais une piste sans aucun son.",
-        "tour-in.step5.title": "Le contrôle complet est dans Output",
+        "tour-in.step5.title": "Ne faites pas le rendu de cette piste seule",
         "tour-in.step5.body":
+            "Le son de cette piste sort désormais par le SCVB Output du bus : faire le rendu de cette piste seule — export de piste isolée, Freeze ou Render in Place — donne donc un fichier silencieux ; si vous choisissez de remplacer l’audio d’origine, l’original est remplacé par ce silence. Exportez le bus de voix dans son ensemble ; s’il vous faut vraiment un fichier de cette seule piste, contournez (bypass) ou retirez le SCVB Input de cette piste avant le rendu.",
+        "tour-in.step6.title": "Le contrôle complet est dans Output",
+        "tour-in.step6.body":
             "L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.",
 
         // tour complet 43 étapes (copie finale ; FR auto-traduite, à relire).

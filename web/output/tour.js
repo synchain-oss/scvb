@@ -39,7 +39,7 @@ import {
 // =============================================================================
 
 // 蒙版/亮区/说明框的几何常量与画法在 web/shared/tour-paint.js([J80] T48 提取)——
-// Output 43 步与 Input 5 步共用同一份画法,免得羽化/内边距/避让间距两处漂移。
+// Output 43 步导览与 Input mini tour 共用同一份画法,免得羽化/内边距/避让间距两处漂移。
 // 三个常量原样再导出:它们是 05 §2.6 对本页的规格断言面(smoke-tour ② 读 SPOT_PAD)。
 export { SPOT_RADIUS, SPOT_PAD, SPOT_FEATHER } from "../shared/tour-paint.js";
 
