@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-09-28
+> 最后更新:2026-09-29
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -23,7 +23,7 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 - 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc 构建在插件设置页里显示的版本号不带 `-rc.N`(它来自 CMake 版本),区分 rc 几要看 zip 文件名或 Release 页。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
 - 其他形态(`v1.2.3-beta.1`、`v1.2` 等)一律被拒。
-- tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。
+- tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。v1 的改动都在主支线 `feature/v1` 上,所以发版前先按下方「里程碑合并:`feature/v1` → `dev`」把它压成一个提交合进 `dev`,tag 打在 `dev` 上的这个提交(J170)。
 - tag push 时,`.github/workflows/release.yml` 的 `verify-tag` job 先比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(判据 `scripts/check-release-tag.ps1`,带自测),不一致即 fail,不会进入 20 分钟的构建。
 
 semver 语义(音频插件特化):
@@ -73,21 +73,84 @@ semver 语义(音频插件特化):
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
-6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
+6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(两个分支都开着保护,前移时由仓库管理员临时允许绕过、推完恢复,J172;命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
-## `staging` 与 `prod` 两个分支(J163 / J163a)
+## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
+
+v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`,tag 打在 `dev` 上(J170)。合法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
+
+为什么不把 `feature/v1` 直接开 PR 合进 `dev`:主支线累积了几百个提交,`branch-gate` 的 DCO 步读 PR 提交列表的接口最多返回 250 条,所以到 250 条就直接判红(见 `branch-gate.yml` 里的注释);历史里也有少数提交缺 `Signed-off-by`,不改写历史补不上。压成一个提交之后,DCO 只看这一个提交。
+
+**前置:`dev` 必须是 `feature/v1` 的祖先。** `dev` 上可能有主支线没有的提交(dependabot 的依赖升级、直接修在 `dev` 上的 CI 配置)。不是祖先时,下面第 1 步的 `git merge --squash` 就得当场解冲突,而那一步没有 PR 复审。所以先查:
+
+```bash
+git fetch origin
+git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$?"   # 必须是 0
+```
+
+不是 0 就先开一个 PR 把 `dev` 合进 `feature/v1`:从 `feature/v1` 拉分支,`git merge --signoff origin/dev`,逐个文件解冲突并在提交说明里写清取舍(原则:功能与发版流水线以 `feature/v1` 为准,`dev` 上的钉版与依赖升级保留),**用「Create a merge commit」合并(`gh pr merge --merge`),不要 squash** —— squash 不会把 `dev` 记成祖先,上面的检查仍然过不了。
+
+前置满足后,由维护者执行:
+
+1. 记下这次要压的 `feature/v1` 提交,从 `dev` 拉一条临时分支,把它压进来(前置满足时是快进形态,没有冲突):
+
+   ```bash
+   git fetch origin
+   FV1=$(git rev-parse origin/feature/v1)
+   git switch -c feat/v1-milestone-<版本> origin/dev
+   git merge --squash "$FV1"
+   git commit -s -F <提交说明文件>
+   ```
+
+   提交说明写:本次版本号、压的是 `feature/v1` 的哪个提交(完整 sha)、完整历史见 `feature/v1`、本版内容见 CHANGELOG 对应版本节;末行是 `Signed-off-by`。
+2. 推之前核三件事 —— 树与 `$FV1` 逐字相同、恰好一个提交、带签名:
+
+   ```bash
+   git diff --quiet "$FV1" HEAD; echo "diff-exit=$?"          # 必须是 0
+   git rev-list --count origin/dev..HEAD                      # 必须是 1
+   git log -1 --format=%B | grep -c '^Signed-off-by:'         # 必须 >= 1
+   ```
+3. 推这条临时分支,开 PR 到 `dev`(`dev` 要求走 PR,不能直推;分支名要符合 `branch-gate` 的 `feat/*` / `feature/*`)。这个 PR 只有一个提交,DCO 与冻结契约守卫照常判。
+4. CI 全绿、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名):
+
+   ```bash
+   gh pr merge <PR 号> --squash -t "<标题> (#<PR 号>)" -b "<正文>"
+   ```
+5. 合后回读:`dev` 上的新提交与 `$FV1` 的树逐字相同、带签名:
+
+   ```bash
+   git fetch origin
+   git diff --quiet "$FV1" origin/dev; echo "diff-exit=$?"     # 必须是 0
+   git log -1 --format=%B origin/dev | grep -c '^Signed-off-by:'   # 必须 >= 1
+   ```
+
+   push→`dev` 会自动跑一次全量 `build-vst3`;它绿了才进发版清单第 6 步打 tag。
+
+合完之后,`dev` 上的这个提交不在 `feature/v1` 的历史里,下次里程碑的前置检查会不过。趁 `dev` 上还没有别的新提交,可以立刻把它以 `-s ours` 合回 `feature/v1` —— 它的内容 `feature/v1` 全有,这一步只记一笔「已合并」,不改任何文件:从 `feature/v1` 拉分支,`git merge -s ours --signoff origin/dev`,开 PR 到 `feature/v1`,用「Create a merge commit」合并。`dev` 上已经有了别的新提交时不要用 `-s ours`(会把那些提交的改动丢掉),改走上面「前置」那条正常合并。
+
+## `staging` 与 `prod` 两个分支(J163 / J163a / J172)
 
 | 分支 | 指向 | 什么时候前移 |
 |---|---|---|
 | `staging` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算) |
 | `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 一律不动 `prod` |
 
-- rc 发布后:`git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging`
-- 正式版发布后,两条都推:`git push origin vX.Y.Z^{commit}:refs/heads/staging`,然后 `git push origin vX.Y.Z^{commit}:refs/heads/prod`
-- 都**不加 `--force`**:推不上说明目标分支不是这次 tag 的祖先,先查清再动。
+- rc 发布后前移 `staging`;正式版发布后先前移 `staging`,再前移 `prod`。两个分支都要指向**这次 tag 指向的那个提交本身**(快进),所以不走 PR —— GitHub 的 PR 合并不做快进,会多出一个合并提交,分支就不等于 tag 提交了。
+- **两个分支都开着保护,直推会被拒**:保护要求走 PR,而且「管理员也不能绕过」(`enforce_admins`)是开着的。按 J172,前移时**由用户(仓库管理员)临时允许管理员绕过,直推快进,推完立刻恢复**;也可以临时整条放开该分支的保护,推完原样恢复。每次只动正在前移的那一个分支。以 rc 前移 `staging` 为例(正式版把 tag 换成 `vX.Y.Z`;前移 `prod` 时把命令里的 `staging` 全部换成 `prod`,整组再走一遍):
+
+  ```bash
+  gh api -X DELETE repos/synchain-oss/scvb/branches/staging/protection/enforce_admins     # 临时允许管理员绕过
+  git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging                                  # 快进,不加 --force
+  gh api -X POST repos/synchain-oss/scvb/branches/staging/protection/enforce_admins       # 立刻恢复
+  gh api repos/synchain-oss/scvb/branches/staging/protection/enforce_admins -q .enabled   # 必须输出 true
+  git ls-remote origin refs/heads/staging                                                   # 必须等于下一行的输出
+  git rev-parse vX.Y.Z-rc.N^{commit}
+  ```
+
+- 都**不加 `--force`**。推不上时先看报错:带 `GH006` / `protected branch` 的是保护还在生效(第一条命令没执行或没生效),与祖先关系无关;报 `non-fast-forward` / `fetch first` 的才是目标分支不是这次 tag 的祖先,先查清再动。
 - 前移发生在「点了发布」之后,不在推 tag 时:tag 推上去只建草稿,草稿不算已发布。演练 tag(`v0.0.0-test*`)从不发布,两个分支都不动。
 - 预发布分支用仓库里**已有的** `staging`,不另建新分支(J163a)。`staging` 与 `prod` 截至 2026-09-28 都停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表);它是之后所有提交的祖先,所以首个 rc(`v0.9.0-rc.1`)那次前移 `staging`、首个正式版那次前移 `prod`,都是快进。
 
