@@ -57,6 +57,11 @@
 - CI:`dev` 上的依赖升级合进主支线 —— `build-vst3` 的 `actions/cache` 从 v4.3.0 升到 v6.1.0,DeepSeek 复审用的
   `claude-code-action` 从 1.0.191 升到 1.0.210,都钉 40 位 commit SHA;`branch-gate.yml` 头注里的预发布分支名
   改成 `staging`。插件本身没有变化(#339)
+- CI:CHANGELOG 机检(docs-truth 的「Changelog drafts not stranded」)在 `dev` 上也认得 `feature/v1` 上合并过的
+  PR 号了。把 `feature/v1` 压成一个提交合进 `dev` 之后,`dev` 的历史里没有那些合并提交的标题,这一步此前会把
+  正文里两百多处 PR 号判成「没合并过」。现在里程碑提交说明的最后一段带一行 `Landed-PRs: #… #…`(由
+  `node scripts/check-changelog-drafts.mjs --landed-trailer <ref>` 从本地 git 历史生成),机检把提交正文末段这类
+  尾注列出的号也算已合并;`docs/RELEASE.md`「里程碑合并」一节补上生成、核对与合后回读的命令。插件本身没有变化(#346)
 
 ### 修复
 
