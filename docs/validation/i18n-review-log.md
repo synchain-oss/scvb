@@ -124,17 +124,17 @@
 
 #### 12. `guide.rule2`(改动,#320)
 
-- zh:SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)
-- en(核前):SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)
-- fr(核前):SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)
+- zh:SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。(ADR-002 / J45)
+- en(核前):SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)
+- fr(核前):SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)
 - 结论:红字生成物;已在 frReview【J149 轮】复核(prod 地址替换),本轮不重复。
 - 改后:无
 
 #### 13. `guide.rule9`(改动,#320)
 
-- zh:看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
-- en(核前):Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
-- fr(核前):Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.
+- zh:看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
+- en(核前):Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
+- fr(核前):Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.
 - 结论:同上一条(frReview【J149 轮】)。
 - 改后:无
 
