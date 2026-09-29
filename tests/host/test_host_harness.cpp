@@ -8033,10 +8033,10 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
 
     // **先关输出再挂监听器**,原因有二:
-    //   ① `outputEnabled_` 的**成员初始化值就是 true**(见 ScvbOutputAudioProcessor 的
-    //      `bool outputEnabled_ = true;`),分析一出段表、走带一进
-    //      区间,打印器当场就进 Print 并把 gesture 全开了 —— 不先清干净,下面「重新 begin」
-    //      的计数会因为 gesture 早就开着(begin 是幂等的)而恒为 0;
+    //   ① 让起点不依赖 `outputEnabled_` 的成员初值。[J169] 起新插实例的初值已经是关;这里仍显式
+    //      关一次,是因为初值一旦是开,分析一出段表、走带一进区间,打印器当场就进 Print 并把
+    //      gesture 全开了 —— 不先清干净,下面「重新 begin」的计数会因为 gesture 早就开着
+    //      (begin 是幂等的)而恒为 0;
     //   ② 关输出会走 Follow 分支的 endAllGestures,正好给出一个干净起点。
     r.out.setOutputEnabled(false);
     MonoMultiRig::pump(300);
@@ -8156,8 +8156,9 @@ TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToP
     int replaced = 0;
     int locked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
-    // 先关输出再挂监听器(理由同 SL-231 那格的 ①②:outputEnabled_ 初值就是 true,不先关的话
-    // gesture 早已开着,begin 幂等 ⇒ 下面的 begins 恒 0;关输出走 endAllGestures 给出干净起点)。
+    // 先关输出再挂监听器(理由同 SL-231 那格的 ①②:[J169] 起新插实例的输出初值已经是关,仍显式关一次,
+    // 让起点不依赖那个初值 —— 初值若是开,gesture 早已开着,begin 幂等 ⇒ 下面的 begins 恒 0;
+    // 关输出走 endAllGestures 给出干净起点)。
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     r.out.addListener(&spy);
