@@ -80,7 +80,7 @@ Before you start, read these. Breaking any one of them does not make the result 
 > 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
 
-> ⚠️ **Do not render a vocal track that has SCVB Input on it by itself.** Render in Place, Freeze or a single-track export of one vocal track gives you a silent file; if you choose to replace the original audio, the original is replaced with silence. Export the vocal bus as a whole; if you really need a single-track file, bypass or remove that track's SCVB Input before rendering. Details in the [User Guide, "Exporting and rendering"](docs/USER_GUIDE.md#exporting-and-rendering).
+> ⚠️ **Do not render a vocal track that has SCVB Input on it by itself.** Once Input is connected to SCVB Output, Render in Place, Freeze or a single-track export of one vocal track gives you a silent file; if you choose to replace the original audio, the original is replaced with silence. Export the vocal bus as a whole; if you really need a single-track file, bypass or remove that track's SCVB Input before rendering. Details in the [User Guide, "Exporting and rendering"](docs/USER_GUIDE.md#exporting-and-rendering).
 
 ## Privacy
 

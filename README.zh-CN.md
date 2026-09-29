@@ -80,7 +80,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 > 9. **看到"时间线缺口 / 重叠"警告时,不要继续导出。** 先按 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。
 <!-- END GENERATED hard-rules:zh -->
 
-> ⚠️ **别单独渲染装了 SCVB Input 的人声轨。** 对单条人声轨做就地渲染(Render in Place)、冻结(Freeze)或单轨导出,得到的是静音文件;如果选了「替换原音频」,原素材会被换成静音。请对人声总线整体导出;确实需要单轨素材,先旁路或移除该轨的 SCVB Input 再渲染。详见[用户手册「导出与渲染」](docs/USER_GUIDE.zh-CN.md#导出与渲染)。
+> ⚠️ **别单独渲染装了 SCVB Input 的人声轨。** Input 连上 SCVB Output 之后,对单条人声轨做就地渲染(Render in Place)、冻结(Freeze)或单轨导出,得到的是静音文件;如果选了「替换原音频」,原素材会被换成静音。请对人声总线整体导出;确实需要单轨素材,先旁路或移除该轨的 SCVB Input 再渲染。详见[用户手册「导出与渲染」](docs/USER_GUIDE.zh-CN.md#导出与渲染)。
 
 ## 隐私
 

@@ -260,7 +260,7 @@ export const T = {
             "连接成功后，本轨会向下游输出静音、由总线上的 SCVB Output 接管发声——这是设计行为，不是 bug。检测不到健康的 Output 时（未装、未连上、对端已退出），本轨自动切回直通，所以你不会因为只装了一个插件就得到一条没有声音的轨道。",
         "tour-in.step5.title": "别单独渲染这条轨",
         "tour-in.step5.body":
-            "本轨的声音改由总线上的 SCVB Output 输出，所以单独渲染、冻结（Freeze）或就地渲染（Render in Place）这条轨，得到的是静音文件；若选了「替换原音频」，原素材会被换成静音。要导出请对人声总线整体导出；确实需要单轨素材，先对本轨的 SCVB Input 开启 Bypass 或将其移除，再渲染。",
+            "连接成功后，本轨的声音改由总线上的 SCVB Output 输出，所以单独渲染、冻结（Freeze）或就地渲染（Render in Place）这条轨，得到的是静音文件；若选了「替换原音频」，原素材会被换成静音。要导出请对人声总线整体导出；确实需要单轨素材，先对本轨的 SCVB Input 开启 Bypass 或将其移除，再渲染。",
         "tour-in.step6.title": "完整控制在 Output",
         "tour-in.step6.body":
             "分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。",
@@ -1324,7 +1324,7 @@ export const T = {
             "Once connected, this track outputs silence downstream and the SCVB Output on the bus takes over — this is by design, not a bug. When no healthy Output is detected (not installed, not connected, peer has quit), this track falls back to passthrough automatically, so installing only one of the two plugins will never leave you with a track that has no sound.",
         "tour-in.step5.title": "Don’t render this track on its own",
         "tour-in.step5.body":
-            "This track’s sound now comes out of the SCVB Output on the bus, so rendering this track on its own — a single-track export, Freeze or Render in Place — gives you a silent file; if you choose to replace the original audio, the original is replaced with that silence. Export the vocal bus as a whole; if you really need a file of this track alone, bypass or remove this track’s SCVB Input before rendering.",
+            "Once connected, this track’s sound comes out of the SCVB Output on the bus, so rendering this track on its own — a single-track export, Freeze or Render in Place — gives you a silent file; if you choose to replace the original audio, the original is replaced with that silence. Export the vocal bus as a whole; if you really need a file of this track alone, bypass or remove this track’s SCVB Input before rendering.",
         "tour-in.step6.title": "Full control lives in Output",
         "tour-in.step6.body":
             "Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.",
@@ -2185,7 +2185,7 @@ export const T = {
             "Une fois connectée, cette piste envoie du silence en aval et le SCVB Output du bus prend le relais — c’est le comportement voulu, pas un bug. Si aucun Output sain n’est détecté (non installé, non connecté, pair quitté), cette piste repasse automatiquement en direct : n’installer qu’un seul des deux plugins ne vous laissera donc jamais une piste sans aucun son.",
         "tour-in.step5.title": "Ne faites pas le rendu de cette piste seule",
         "tour-in.step5.body":
-            "Le son de cette piste sort désormais par le SCVB Output du bus : faire le rendu de cette piste seule — export de piste isolée, Freeze ou Render in Place — donne donc un fichier silencieux ; si vous choisissez de remplacer l’audio d’origine, l’original est remplacé par ce silence. Exportez le bus de voix dans son ensemble ; s’il vous faut vraiment un fichier de cette seule piste, contournez (bypass) ou retirez le SCVB Input de cette piste avant le rendu.",
+            "Une fois la connexion établie, le son de cette piste sort par le SCVB Output du bus : faire le rendu de cette piste seule — export de piste isolée, Freeze ou Render in Place — donne donc un fichier silencieux ; si vous choisissez de remplacer l’audio d’origine, l’original est remplacé par ce silence. Exportez le bus de voix dans son ensemble ; s’il vous faut vraiment un fichier de cette seule piste, contournez (bypass) ou retirez le SCVB Input de cette piste avant le rendu.",
         "tour-in.step6.title": "Le contrôle complet est dans Output",
         "tour-in.step6.body":
             "L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.",
