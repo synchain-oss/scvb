@@ -1249,9 +1249,10 @@ void ScvbOutputAudioProcessor::timerCallback()
         scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
         if (outputEnabled_)
         {
-            // 加载守卫未确认 ⇒ 行为止于 ARMED(契约 §1.3 / §1.34):零 gesture、零写入;DSP 仍由
+            // 写入守卫未确认 ⇒ 行为止于 ARMED(契约 §1.3 / §1.34):零 gesture、零写入;DSP 仍由
             // 引擎驱动(authority_.processBlock 读的是 session_.outputEnabled(),不看守卫),试听不受影响。
-            const bool guardPending = runtime_.printGuardPending.load(std::memory_order_acquire);
+            // 两种来由(加载守卫 / [J166] 首次开输出)走的是**这同一行**判据,不分来由。
+            const bool guardPending = printGuardPending();
             mode = (playing && inRange && !guardPending) ? scvb::engine::AuthorityMode::Print
                                                          : scvb::engine::AuthorityMode::Armed;
         }
@@ -2524,7 +2525,9 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 三态求值)。恢复 OFF ⇒ 清掉(上一个工程残留的待确认不该带进这个工程)。
     // 此前这一位**没有任何写 true 的地方**:横幅⑦与确认钮都在,引擎却照常进 PRINT,
     // 重开工程一按播放就把 DAW 车道(常留在 Latch)上已录的自动化覆盖掉。
-    runtime_.printGuardPending.store(outputEnabled_, std::memory_order_release);
+    runtime_.printGuard.store(outputEnabled_ ? scvb::output::PrintGuardReason::Restore
+                                             : scvb::output::PrintGuardReason::None,
+                              std::memory_order_release);
     versionActive_ = static_cast<int>(s.versionActive);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
@@ -2924,11 +2927,12 @@ void ScvbOutputAudioProcessor::applyOutputEnabled(bool on)
     // 调用方须已持 lifecycleMutex_。与 applyCaptureEnabled 对称的**内部**写点:不触发 J92a 互斥。
     outputEnabled_ = on;
     session_.setOutputEnabled(on);
-    // [加载守卫] 输出一关即解除(见 OutputRuntimeState::printGuardPending 的头注)。桥面 OFF 与
-    // [J92a] 手动开采集连带关输出都走这里。只清不置:再打开时走的是 UI 的 OFF→ON 一次性确认。
+    // [加载守卫] 输出一关即解除(见 OutputRuntimeState::printGuard 的头注)。桥面 OFF 与
+    // [J92a] 手动开采集连带关输出都走这里。只清不置:再打开时要不要守卫由调用方决定
+    // (桥面 §1.3 的 opts.requireConfirm,[J166];置位在 setOutputEnabled 里,不在这个内核里)。
     if (!on)
     {
-        runtime_.printGuardPending.store(false, std::memory_order_release);
+        runtime_.printGuard.store(scvb::output::PrintGuardReason::None, std::memory_order_release);
     }
 }
 
@@ -3022,14 +3026,27 @@ void ScvbOutputAudioProcessor::disarmRecaptureLocked()
 void ScvbOutputAudioProcessor::confirmPrintGuard()
 {
     // 契约 §1.34:幂等;只动这一位,不碰输出开关、不开 gesture。下一拍 25Hz tick 若满足
-    // PRINT 三与条件即恢复正常打印。
-    runtime_.printGuardPending.store(false, std::memory_order_release);
+    // PRINT 三与条件即恢复正常打印。加载守卫与 [J166] 首次开输出共用这一个确认入口。
+    runtime_.printGuard.store(scvb::output::PrintGuardReason::None, std::memory_order_release);
 }
 
-void ScvbOutputAudioProcessor::setOutputEnabled(bool on)
+void ScvbOutputAudioProcessor::setOutputEnabled(bool on, bool requireConfirm)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     applyOutputEnabled(on);
+
+    // [J166] 首次开输出:「开」与「置守卫」在同一次调用里完成。本函数与 timerCallback(三态求值)
+    // 都在消息线程,所以两者之间没有 25Hz tick 能插进来把这一拍判成 PRINT —— 这正是不拆成
+    // 「先开、再发一次置守卫」两次桥调用的理由。
+    // 只在「此刻不待确认」时置:已有 Restore(重开工程的加载守卫)就留着它 —— 横幅⑦就是那次确认,
+    // 换成 FirstEnable 会让界面从横幅换成确认条,两处说法打架。只置不清:清除走 confirmPrintGuard
+    // 与 applyOutputEnabled(false) 两条既有的路。
+    if (on && requireConfirm)
+    {
+        auto expected = scvb::output::PrintGuardReason::None;
+        runtime_.printGuard.compare_exchange_strong(expected, scvb::output::PrintGuardReason::FirstEnable,
+                                                    std::memory_order_acq_rel);
+    }
 
     // [J92a] 反方向的互斥:手动开跟随引擎 ⇒ 关采集。
     //

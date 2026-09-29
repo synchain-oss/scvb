@@ -810,6 +810,583 @@ try {
     }
 
     // =========================================================================
+    // [J166] ⑥b 首次开输出:点「知道了,开始」之前**不写**(用户 rc.1 实测:「没点知道了开始,
+    // 自动化还是写入了」)。本档钉的是**钮的接线**与**界面落点**;「守卫在场 ⇒ 引擎零写入」由
+    // host harness 的 [J166] 两格钉(真 processor + 宿主替身 listener),这里不重复。
+    //
+    // 本窗口「确认过」(`session.writeConfirmSeen`)只在 §1.34 confirmPrintGuard **成功回执之后**记
+    // (确认条「知道了,开始」与横幅⑦「继续写入自动化」两处);板子上过屏、点了撤销、调用失败都不算。
+    // 「零写入」在本档的落点 = 守卫待确认 + 播放中 ∧ 在区间内时页脚**不**进写入(outputPhase 止于 ARMED);
+    // 引擎侧「守卫在场 ⇒ 零 gesture」由 host harness 的 [J166] 格钉。
+    //
+    //   a. 首次点开关 ⇒ 桥调用带 `{requireConfirm:true}`,状态回推 print_guard = {pending, firstEnable};
+    //      确认板出现,横幅⑦**不**出现(它说的是「随工程恢复」,来由不对);
+    //   b. 点「知道了,开始」⇒ 调 §1.34 confirmPrintGuard,守卫解除,板子收起;
+    //      b2. 此后同一窗口关、再开 ⇒ 不带 requireConfirm、不置守卫、不出板、页脚进写入(确认过 ⇒ 开了就写);
+    //   c. 新页面(= 关窗再开)点「撤销」⇒ 关输出,守卫随之解除;
+    //   d. 新页面上**没有意图位**、只有 C++ 侧的首次开输出守卫(关窗再开时的真实处境)⇒ 板子照样
+    //      出现、横幅⑦照样不亮,点「开始」照样确认;之后在同一窗口再关、再开 ⇒ 不重复出板、
+    //      不带 requireConfirm(点过「开始」= 本窗口确认过);
+    //   e. 首次那一下被拒 ⇒ 板子没上屏,第二次拨开仍带 requireConfirm;
+    //   f. **没点「开始」就把输出关掉再打开**(#337 独立复核;J166 用户原话「能不能不点开始就不开这个开关」):
+    //      板子出现后不点开始,依次经 f1 开关直接关 / f2 开 01 采集(J92a 连带关)/ f3 宿主重灌出 OFF 把输出
+    //      关掉,每次再拨开 ⇒ 仍带 requireConfirm、守卫待确认(firstEnable)、板子再出现、播放中页脚不进写入;
+    //      最后点「开始」⇒ 页脚这时才进写入(对照:同一个观测量分辨得出写与不写),之后关再开 ⇒ 开了就写;
+    //   g. 板子挂着时宿主重灌出 ON(守卫来由换成 restore,横幅⑦与板子并存),点横幅⑦的钮确认 ⇒
+    //      守卫解除、开始写,板子跟着收起;g 尾:横幅⑦点过也算确认过 ⇒ 开采集连带关、再拨开 ⇒ 不带
+    //      requireConfirm、不置守卫,板子**不许**凭残留的意图位(横幅⑦的钮不清它)重新上屏;
+    //   h. 点「开始」但 §1.34 调用失败(桥抛错,`call()` 回 null)⇒ 不算确认过:关、再开仍带 requireConfirm。
+    // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红(没有守卫就不出板,
+    // 所以 c/e/f/g/h 的「确认板出现」与 ⑥ 的「开引擎 ⇒ 出现」也一起红);去掉 ok 钮里的
+    // `call("confirmPrintGuard")` ⇒ b、d 红;横幅⑦改回只看 pending ⇒ a、d 的「横幅⑦不亮」红;
+    // render 里去掉 `guardAsks` ⇒ d 红;把「确认过」的记号挪回 renderFlow 板子上屏时置 ⇒ f、h 红;
+    // 去掉 ok 钮里置记号那句 ⇒ b2、d 末尾红;去掉 app.js 横幅⑦置记号那句 ⇒ g 尾红;
+    // ok 钮里的 `res && res.ok !== false` 改回 `!res || …` ⇒ h 红(app.js 横幅⑦那处同样改法本档不红,
+    // 由 smoke-tab1 源码格钉);去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」
+    // 与 h 的「板子收起」红;在首次分支里提前置 `writeConfirmSeen` ⇒ e、f、h 红;render 显隐里去掉
+    // `&& guardHeld` ⇒ g、g 尾的 ★ 红;mock `setCaptureEnabled` 去掉连带清守卫那一支 ⇒ f2 的「守卫随之解除」
+    // 与「仍带 requireConfirm」红(g 尾不红:开采集之前守卫已由横幅⑦解除)。
+    log(
+        "=== ⑥b [J166] 首次开输出:点「开始」之前守卫在场;开始 / 撤销的接线 ===",
+    );
+    {
+        const shell = (body) =>
+            evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.mock) return null;
+                ${body}
+            })()`);
+        // 包住两个桥函数记实参(UI 走 bridge.js 的 `mock[name](...)` 动态取,包在 s.mock 上即生效)。
+        const spy = () =>
+            shell(`
+                const calls = [];
+                window.__j166Calls = calls;
+                for (const name of ["setOutputEnabled", "confirmPrintGuard"]) {
+                    const orig = s.mock[name];
+                    s.mock[name] = function (...a) {
+                        calls.push({ name, args: JSON.parse(JSON.stringify(a)) });
+                        return orig.apply(this, a);
+                    };
+                }
+                return true;`);
+        const calls = async () =>
+            (await evaluate(`window.__j166Calls || null`)) || [];
+        const guard = () =>
+            shell(
+                `return JSON.parse(JSON.stringify(s.ctl.model.snapshot.print_guard || null));`,
+            );
+        const outOn = () =>
+            shell(`return !!s.ctl.model.snapshot.global.output_enabled;`);
+        const boardShown = IN(
+            `const n = gb("master-write-confirm"); return !!n && !n.hidden;`,
+        );
+        const boardHidden = IN(
+            `const n = gb("master-write-confirm"); return !!n && n.hidden;`,
+        );
+        const bannerShown = () =>
+            evaluate(
+                IN(
+                    `const n = gb("banner-printGuard"); return !!n && !n.hidden;`,
+                ),
+            );
+        const click = (name) =>
+            evaluate(
+                IN(
+                    `const n = gb(${JSON.stringify(name)}); if (!n) return false; n.click(); return true;`,
+                ),
+            );
+        const toMaster = async () => {
+            await click("tabnav-master");
+            await sleep(200);
+        };
+        // 点钮并在**同一个 JS 回合里**读板子的 hidden:回推(mock 250ms 一帧)不可能插进同一回合,
+        // 所以读到的是「点下当拍」的状态,不靠计时。守的是 `writeConfirmDismissed`:
+        // 没有它,点完到回推之间守卫位还是旧的,板子会多挂一帧。
+        const clickHidesNow = (name) =>
+            evaluate(
+                IN(
+                    `const b = gb(${JSON.stringify(name)}); if (!b) return null; b.click();
+                     const n = gb("master-write-confirm"); return !!n && n.hidden;`,
+                ),
+            );
+        const switchIs = (v) =>
+            IN(
+                `const n = gb("master-output-toggle-switch"); return !!n && n.getAttribute("aria-checked") === "${v}";`,
+            );
+        const lastSetOutput = async () => {
+            const c = (await calls())
+                .filter((x) => x.name === "setOutputEnabled")
+                .pop();
+            return c ? c.args : null;
+        };
+        // 「零写入」的页面级观测量:页脚 data-mode 进 "print" / "follow" = outputPhase 判 PRINT(写入中)。
+        // 守卫待确认时 outputPhase 止于 armed,页脚留在 "default"。前提是 mock 走带真在播、且在区间内 ——
+        // 否则「页脚没进写入」只是因为没在播,不分辨守卫(见 playingInRange 前置格)。
+        const footerWriting = IN(
+            `const ft = gb("footer"); const m = ft && ft.getAttribute("data-mode");
+             return m === "print" || m === "follow";`,
+        );
+        const footerNotWriting = IN(
+            `const ft = gb("footer"); const m = ft && ft.getAttribute("data-mode");
+             return !!ft && m !== "print" && m !== "follow";`,
+        );
+        const playingInRange = () =>
+            shell(
+                `const t = s.ctl.model.transport; return t.isPlaying === true && s.ctl.inRangeAt(t.timeS) === true;`,
+            );
+        const guardFirstEnable = `(() => { const s = window.__SCVB_PREVIEW__;
+            const g = s && s.ctl.model.snapshot.print_guard;
+            return !!g && g.pending === true && g.reason === "firstEnable"; })()`;
+        const guardReleased = `(() => { const s = window.__SCVB_PREVIEW__;
+            return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`;
+
+        // ---- a / b:首次开 → 开始
+        check((await open("connected")) !== null, "⑥b 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b 前置:桥函数装上记录器");
+        check((await outOn()) === false, "⑥b 前置:输出开关初始是关的");
+        check(await click("master-output-toggle-switch"), "⑥b 点输出开关");
+        check(await waitFor(boardShown, 5000), "⑥b-a 确认板出现");
+        const c1 = await calls();
+        eq(
+            c1.map((c) => [c.name, c.args]),
+            [["setOutputEnabled", [true, { requireConfirm: true }]]],
+            "⑥b-a ★ 首次开输出的桥调用带 {requireConfirm:true}(同一次调用里置守卫)",
+        );
+        eq(
+            await guard(),
+            { pending: true, reason: "firstEnable" },
+            "⑥b-a ★ 状态回推:写入守卫待确认、来由 firstEnable",
+        );
+        check(
+            (await bannerShown()) === false,
+            "⑥b-a ★ 横幅⑦(「随工程恢复」)不亮 —— 这不是重开工程",
+        );
+        check(
+            (await clickHidesNow("master-write-confirm-ok")) === true,
+            "⑥b-b 点「知道了,开始」⇒ 板子当拍收起(不等回推)",
+        );
+        check(await waitFor(boardHidden, 5000), "⑥b-b 确认板收起");
+        check(
+            (await calls()).some((c) => c.name === "confirmPrintGuard"),
+            "⑥b-b ★ 「开始」调了 §1.34 confirmPrintGuard",
+        );
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-b ★ 守卫解除(此后播放才会写)",
+        );
+        check((await outOn()) === true, "⑥b-b 输出仍开着");
+
+        // ---- b2:点过「开始」(§1.34 成功)= 本窗口确认过 ⇒ 关、再开:开了就写,不再出板(保持原行为)。
+        //      去掉 ok 钮里置记号那句 ⇒ 下面三个 ★ 红(再开又算首次:带 requireConfirm、置守卫、出板)。
+        check(await waitFor(switchIs("true"), 5000), "⑥b-b2 前置:开关显示为开");
+        check(await click("master-output-toggle-switch"), "⑥b-b2 关输出");
+        check(await waitFor(switchIs("false"), 5000), "⑥b-b2 开关显示为关");
+        check(await click("master-output-toggle-switch"), "⑥b-b2 再开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-b2 开关显示为开");
+        await sleep(400);
+        eq(
+            await lastSetOutput(),
+            [true],
+            "⑥b-b2 ★ 点过「开始」⇒ 再开不带 requireConfirm(开了就写)",
+        );
+        check(
+            await evaluate(guardReleased),
+            "⑥b-b2 ★ 点过「开始」⇒ 再开不置守卫",
+        );
+        check(
+            (await evaluate(boardHidden)) === true,
+            "⑥b-b2 ★ 点过「开始」⇒ 再开不出确认条",
+        );
+        check(
+            await playingInRange(),
+            "⑥b-b2 前置:mock 走带在播且在区间内(页脚那一格才分辨得出写不写)",
+        );
+        check(
+            await waitFor(footerWriting, 5000),
+            "⑥b-b2 页脚进写入(outputPhase = print)",
+        );
+        assertClean("⑥b a/b/b2(首次开 → 开始 → 关再开)");
+
+        // ---- c:新页面,首次开 → 撤销
+        check((await open("connected")) !== null, "⑥b-c 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-c 前置:桥函数装上记录器");
+        check(await click("master-output-toggle-switch"), "⑥b-c 点输出开关");
+        check(await waitFor(boardShown, 5000), "⑥b-c 确认板出现");
+        check(
+            (await clickHidesNow("master-write-confirm-undo")) === true,
+            "⑥b-c 点「撤销」⇒ 板子当拍收起(不等回推)",
+        );
+        check(await waitFor(boardHidden, 5000), "⑥b-c 确认板收起");
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !s.ctl.model.snapshot.global.output_enabled
+                        && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-c ★ 撤销 ⇒ 输出关回跟随宿主,守卫随之解除",
+        );
+        eq(
+            (await calls()).map((c) => [c.name, c.args]),
+            [
+                ["setOutputEnabled", [true, { requireConfirm: true }]],
+                ["setOutputEnabled", [false]],
+            ],
+            "⑥b-c 撤销走 setOutputEnabled(false),不调 confirmPrintGuard",
+        );
+        assertClean("⑥b c(首次开 → 撤销)");
+
+        // ---- d:新页面、没有意图位,只有 C++ 侧的首次开输出守卫(= 关窗再开)
+        check((await open("connected")) !== null, "⑥b-d 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-d 前置:桥函数装上记录器");
+        // 绕过 UI 直接调桥:页面上的意图位保持为假,板子只能靠状态里的守卫出现。
+        eq(
+            await shell(
+                `return s.mock.setOutputEnabled(true, { requireConfirm: true });`,
+            ),
+            { ok: true },
+            "⑥b-d 前置:直接置出首次开输出守卫(页面没点过开关)",
+        );
+        check(
+            await waitFor(boardShown, 5000),
+            "⑥b-d ★ 没有意图位,确认板照样按守卫出现",
+        );
+        check((await bannerShown()) === false, "⑥b-d ★ 横幅⑦照样不亮");
+        check(await click("master-write-confirm-ok"), "⑥b-d 点「知道了,开始」");
+        check(await waitFor(boardHidden, 5000), "⑥b-d 确认板收起");
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-d ★ 「开始」照样确认了守卫",
+        );
+        // 这个窗口里点过「开始」(确认成功;板子是按守卫显示出来的那一次也一样)= 本窗口确认过 ⇒
+        // 再关、再开输出开关不重复出板,也不再带 requireConfirm。删掉 ok 钮里置记号那句 ⇒ 下面两个 ★ 红。
+        check(await waitFor(switchIs("true"), 5000), "⑥b-d 前置:开关显示为开");
+        check(await click("master-output-toggle-switch"), "⑥b-d 关输出");
+        check(await waitFor(switchIs("false"), 5000), "⑥b-d 开关显示为关");
+        check(await click("master-output-toggle-switch"), "⑥b-d 再开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-d 开关显示为开");
+        await sleep(400);
+        check(
+            (await evaluate(boardHidden)) === true,
+            "⑥b-d ★ 本窗口点过「开始」⇒ 再开不重复出板",
+        );
+        eq(
+            await lastSetOutput(),
+            [true],
+            "⑥b-d ★ 再开不带 requireConfirm(开了就写)",
+        );
+        assertClean("⑥b d(关窗再开时的确认板)");
+
+        // ---- e:首次那一下被拒(store 里 noTimeline / 只读还没回推时开关的闸会放行)⇒ 板子没上屏,
+        //      不算确认过,下一次拨开仍带 requireConfirm(#337 复审【重要】)。
+        //      在首次分支里提前置 `writeConfirmSeen` ⇒ 下面两个 ★ 红,「这一次确认板照常出现」也红
+        //      (显隐与上了「守卫待确认」:第二下不带 requireConfirm、不置守卫,残留意图位不再能把板子
+        //      顶上屏。与上那一项之前,这格是绿的 —— 板子挂着却在写,正是 g 尾那一族)。
+        check((await open("connected")) !== null, "⑥b-e 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-e 前置:桥函数装上记录器");
+        // 记录器外再包一层:第一次 setOutputEnabled 回 noTimeline、不改状态(真桥 §1.3 拒绝态同形)。
+        check(
+            await shell(`
+                const inner = s.mock.setOutputEnabled;
+                let n = 0;
+                s.mock.setOutputEnabled = function (...a) {
+                    n += 1;
+                    if (n === 1) {
+                        window.__j166Calls.push({ name: "rejected", args: JSON.parse(JSON.stringify(a)) });
+                        return { ok: false, reason: "noTimeline" };
+                    }
+                    return inner.apply(this, a);
+                };
+                return true;`),
+            "⑥b-e 前置:第一次开输出将被拒",
+        );
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-e 第一次点输出开关(被拒)",
+        );
+        await sleep(600);
+        check((await outOn()) === false, "⑥b-e 被拒 ⇒ 输出仍关");
+        check((await evaluate(boardHidden)) === true, "⑥b-e 被拒 ⇒ 板子没上屏");
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-e 再点一次输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-e 这一次确认板照常出现");
+        eq(
+            (await calls()).map((c) => [c.name, c.args]),
+            [
+                ["rejected", [true, { requireConfirm: true }]],
+                ["setOutputEnabled", [true, { requireConfirm: true }]],
+            ],
+            "⑥b-e ★ 首次被拒之后,第二次拨开仍带 {requireConfirm:true}",
+        );
+        eq(
+            await guard(),
+            { pending: true, reason: "firstEnable" },
+            "⑥b-e ★ 守卫照常置上(板子挂着时不写)",
+        );
+        assertClean("⑥b e(首次开输出被拒)");
+
+        // ---- f:**没点「开始」就把输出关掉再打开**(#337 独立复核;J166 用户原话「能不能不点开始就不开
+        //      这个开关」)。确认条出现后不点「开始」,依次经三条路把输出关掉,每次再拨开都必须仍是「首次」:
+        //      带 requireConfirm、置守卫(firstEnable)、确认条再出现、播放中页脚不进写入。三条路:
+        //        f1 开关直接关(走 hideWriteConfirm,意图位清掉);
+        //        f2 开 01 采集 ⇒ J92a 连带关输出,C++ applyOutputEnabled(false) 清守卫(意图位不清,残留);
+        //        f3 宿主重灌出 OFF(带插件状态的 DAW 撤销 / A/B / 载入预设)⇒ setStateInformation 置 None。
+        //      把「确认过」的记号挪回 renderFlow 板子上屏时置 ⇒ f1 起再开就不带 requireConfirm、开了就写 ⇒ ★ 红。
+        //      最后点「开始」⇒ 页脚这时才进写入:同一个观测量分辨得出写与不写(不是恒绿的空判据)。
+        const outOffCapOn = `(() => { const s = window.__SCVB_PREVIEW__;
+            return !!s && !s.ctl.model.snapshot.global.output_enabled
+                && !!s.ctl.model.snapshot.global.capture_enabled; })()`;
+        // 从第 n0 条起新增的 setOutputEnabled 实参 —— 只看新增的,点开关若没产生调用就是空数组(不会拿到
+        // 上一次那条带 requireConfirm 的调用冒充)。
+        const newSetOutputs = async (n0) =>
+            (await calls())
+                .slice(n0)
+                .filter((c) => c.name === "setOutputEnabled")
+                .map((c) => c.args);
+        const reopenStillAsks = async (tag) => {
+            // 同步点:等**页面**收到「输出关」的回推(mock 250ms 一帧)再点开关 —— 页面 store 还是「开」时
+            // 再点就成了关。
+            check(
+                await waitFor(switchIs("false"), 5000),
+                `⑥b-${tag} 前置:页面上开关已显示为关`,
+            );
+            check(
+                await waitFor(guardReleased, 5000),
+                `⑥b-${tag} 输出关 ⇒ 守卫随之解除(mock 与真桥 applyOutputEnabled(false) / setStateInformation 同款)`,
+            );
+            check(
+                await waitFor(boardHidden, 5000),
+                `⑥b-${tag} 输出关 ⇒ 板子收起`,
+            );
+            const n0 = (await calls()).length;
+            check(
+                await click("master-output-toggle-switch"),
+                `⑥b-${tag} 再拨开输出`,
+            );
+            check(
+                await waitFor(switchIs("true"), 5000),
+                `⑥b-${tag} 开关显示为开`,
+            );
+            eq(
+                await newSetOutputs(n0),
+                [[true, { requireConfirm: true }]],
+                `⑥b-${tag} ★ 没点过「开始」⇒ 再开仍带 {requireConfirm:true}`,
+            );
+            check(
+                await waitFor(guardFirstEnable, 5000),
+                `⑥b-${tag} ★ 守卫待确认(来由 firstEnable)`,
+            );
+            check(
+                await waitFor(boardShown, 5000),
+                `⑥b-${tag} ★ 确认条再次出现`,
+            );
+            check(
+                await playingInRange(),
+                `⑥b-${tag} 前置:mock 走带在播且在区间内(页脚那一格才分辨得出写不写)`,
+            );
+            await sleep(400);
+            check(
+                (await evaluate(footerNotWriting)) === true,
+                `⑥b-${tag} ★ 播放中页脚不进写入(点「开始」之前零写入)`,
+            );
+        };
+        check((await open("connected")) !== null, "⑥b-f 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-f 前置:桥函数装上记录器");
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-f 首次点输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-f 确认板出现(不点「开始」)");
+        // f1:开关直接关
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-f1 开关直接关输出",
+        );
+        await reopenStillAsks("f1");
+        // f2:开 01 采集,连带关输出
+        check(
+            await click("master-capture-toggle-switch"),
+            "⑥b-f2 开 01 采集(J92a 连带关输出)",
+        );
+        check(await waitFor(outOffCapOn, 5000), "⑥b-f2 前置:采集开、输出关");
+        await reopenStillAsks("f2");
+        // f3:宿主重灌出 OFF 的替身(照 OutputProcessor::setStateInformation:恢复出 OFF ⇒ 守卫 None,整帧回推)
+        check(
+            await shell(`
+                const sn = s.ctl.model.snapshot;
+                sn.global.output_enabled = false;
+                sn.print_guard = { pending: false };
+                s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+                return true;`),
+            "⑥b-f3 宿主重灌出 OFF",
+        );
+        await reopenStillAsks("f3");
+        // 对照:这时才点「开始」⇒ 守卫解除,页脚进写入。
+        check(
+            await click("master-write-confirm-ok"),
+            "⑥b-f 最后点「知道了,开始」",
+        );
+        check(
+            await waitFor(guardReleased, 5000),
+            "⑥b-f 点了「开始」⇒ 守卫解除",
+        );
+        check(
+            await waitFor(footerWriting, 5000),
+            "⑥b-f 对照:点了「开始」⇒ 页脚这时才进写入(上面的「不进写入」不是恒绿)",
+        );
+        assertClean("⑥b f(没点开始 → 关输出三条路 → 再开)");
+
+        // ---- g:板子挂着时宿主重灌出 ON(带插件状态的 DAW 撤销 / A/B 对比 / 载入预设)⇒ C++ 的
+        //      setStateInformation 把守卫置成 Restore,横幅⑦出现,同一窗口里板子凭意图位并存。点横幅⑦的
+        //      「继续写入自动化」确认 ⇒ 守卫解除、开始写 —— 板子必须跟着收起,不能挂着说「点开始前不写」。
+        check((await open("connected")) !== null, "⑥b-g 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-g 前置:桥函数装上记录器");
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-g 首次点输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-g 确认板出现");
+        // 宿主重灌的替身:照 OutputProcessor::setStateInformation 恢复出 ON ⇒ Restore,整帧回推。
+        check(
+            await shell(`
+                const sn = s.ctl.model.snapshot;
+                sn.global.output_enabled = true;
+                sn.global.capture_enabled = false;
+                sn.print_guard = { pending: true, reason: "restore" };
+                s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+                return true;`),
+            "⑥b-g 前置:宿主重灌出 ON(守卫来由换成 restore)",
+        );
+        const bannerUp = IN(
+            `const n = gb("banner-printGuard"); return !!n && !n.hidden;`,
+        );
+        const bannerDown = IN(
+            `const n = gb("banner-printGuard"); return !!n && n.hidden;`,
+        );
+        check(await waitFor(bannerUp, 5000), "⑥b-g 前置:横幅⑦出现");
+        check(
+            (await evaluate(boardShown)) === true,
+            "⑥b-g 前置:板子与横幅⑦并存(守卫仍挂着,板上的话此刻成立)",
+        );
+        check(
+            await click("banner-printGuard-confirm"),
+            "⑥b-g 点横幅⑦「继续写入自动化」",
+        );
+        check(
+            await waitFor(guardReleased, 5000),
+            "⑥b-g 前置:守卫解除(此后播放就写)",
+        );
+        check(await waitFor(bannerDown, 5000), "⑥b-g 横幅⑦收起");
+        check(
+            await waitFor(boardHidden, 5000),
+            "⑥b-g ★ 板子跟着收起(守卫已确认,不能再挂着说「点开始前不写」)",
+        );
+        // g 尾:横幅⑦点过 = 本窗口确认过(app.js 那一处置位)。开 01 采集连带关输出、再拨开 ⇒ 非首次:
+        //      不带 requireConfirm、不置守卫、开了就写;意图位还残留着(横幅⑦的钮不走 hideWriteConfirm),
+        //      板子不许凭它重新上屏讲「点开始前不写」(renderFlow 与上 guardHeld)。
+        //      去掉 app.js 横幅⑦置记号那句 ⇒「不带 requireConfirm」红;去掉 `&& guardHeld` ⇒「不重新上屏」红。
+        check(
+            await click("master-capture-toggle-switch"),
+            "⑥b-g 尾 开 01 采集(J92a 连带关输出)",
+        );
+        check(await waitFor(outOffCapOn, 5000), "⑥b-g 尾 前置:采集开、输出关");
+        check(
+            await waitFor(switchIs("false"), 5000),
+            "⑥b-g 尾 前置:页面上开关已显示为关",
+        );
+        check(
+            await waitFor(guardReleased, 5000),
+            "⑥b-g 尾 连带关输出时守卫随之解除",
+        );
+        const gN0 = (await calls()).length;
+        check(await click("master-output-toggle-switch"), "⑥b-g 尾 再拨开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-g 尾 开关显示为开");
+        await sleep(400);
+        eq(
+            await newSetOutputs(gN0),
+            [[true]],
+            "⑥b-g 尾 ★ 横幅⑦确认过 ⇒ 再开不带 requireConfirm(开了就写)",
+        );
+        check(await evaluate(guardReleased), "⑥b-g 尾 前置:守卫没挂");
+        check(
+            (await evaluate(boardHidden)) === true,
+            "⑥b-g 尾 ★ 板子不凭残留的意图位重新上屏(守卫没挂,不能说「点开始前不写」)",
+        );
+        assertClean("⑥b g(板子与横幅⑦并存 → 点横幅⑦确认 → 关再开)");
+
+        // ---- h:点「开始」但 §1.34 调用失败(桥抛错 ⇒ `call()` 回 null;真 handler 恒回 ok,这是兜底路径)
+        //      ⇒ 守卫还挂着,不算确认过:关、再开仍带 requireConfirm。ok 钮里的 `res && res.ok !== false`
+        //      改回 `!res || …`(null 也算确认)⇒ 下面的 ★ 红。
+        check((await open("connected")) !== null, "⑥b-h 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-h 前置:桥函数装上记录器");
+        check(
+            await shell(`
+                s.mock.confirmPrintGuard = function () {
+                    window.__j166Calls.push({ name: "confirmFailed", args: [] });
+                    throw new Error("smoke: bridge call failed");
+                };
+                return true;`),
+            "⑥b-h 前置:confirmPrintGuard 将抛错",
+        );
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-h 首次点输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-h 确认板出现");
+        check(
+            await click("master-write-confirm-ok"),
+            "⑥b-h 点「知道了,开始」(调用失败)",
+        );
+        check(await waitFor(boardHidden, 5000), "⑥b-h 板子收起");
+        await sleep(300);
+        check(
+            (await calls()).some((c) => c.name === "confirmFailed"),
+            "⑥b-h 前置:「开始」真的调了(失败的)confirmPrintGuard",
+        );
+        check(
+            await evaluate(guardFirstEnable),
+            "⑥b-h 前置:确认没成功,守卫仍待确认",
+        );
+        check(await click("master-output-toggle-switch"), "⑥b-h 关输出");
+        check(
+            await waitFor(switchIs("false"), 5000),
+            "⑥b-h 前置:页面上开关已显示为关",
+        );
+        check(await waitFor(guardReleased, 5000), "⑥b-h 关输出 ⇒ 守卫随之解除");
+        const hN0 = (await calls()).length;
+        check(await click("master-output-toggle-switch"), "⑥b-h 再拨开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-h 开关显示为开");
+        eq(
+            await newSetOutputs(hN0),
+            [[true, { requireConfirm: true }]],
+            "⑥b-h ★ 确认调用失败不算确认过 ⇒ 再开仍带 {requireConfirm:true}",
+        );
+        check(
+            await waitFor(guardFirstEnable, 5000),
+            "⑥b-h ★ 守卫待确认(来由 firstEnable)",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-h ★ 确认条再次出现");
+        assertClean("⑥b h(确认调用失败 → 关再开)");
+    }
+
+    // =========================================================================
     // [SL-373] ⑦ 建议类横幅的 ✕:关得掉、本会话内同一条不再出现、条件变了要能再出现。
     //
     // 用户 v5.6.8 原话:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。

@@ -155,6 +155,72 @@ log("=== ① 契约映射的纯函数 ===");
         "armed",
         "加载守卫未确认 ⇒ 止于 ARMED(契约 §1.3/§1.34)",
     );
+    // [J166] 首次开输出的守卫走同一条判据:页脚「写入自动化 V1 · …」(footerPrintKey 看 phase)
+    // 在点「知道了,开始」之前不出现。
+    eq(
+        TM.outputPhase(
+            {
+                global: { output_enabled: true },
+                print_guard: { pending: true, reason: "firstEnable" },
+            },
+            playing,
+        ),
+        "armed",
+        "[J166] 首次开输出守卫未确认 ⇒ 同样止于 ARMED(页脚不显示在写)",
+    );
+}
+
+// [J166] 守卫两种来由各归哪个界面(契约 §2.1 print_guard.reason):firstEnable → write 确认条,
+// 其余(restore / 缺席 / 不认识的值)→ 横幅⑦。两个谓词互斥,且 pending=false 时都不成立 ——
+// mock 增量帧的深合并会留着上一次的 reason,不能只看 reason。
+{
+    const st = (pg) => ({ global: { output_enabled: true }, print_guard: pg });
+    const both = (pg) => [
+        TM.firstEnableGuardPending(st(pg)),
+        TM.restoreGuardPending(st(pg)),
+    ];
+    eq(
+        both({ pending: true, reason: "firstEnable" }),
+        [true, false],
+        "[J166] firstEnable ⇒ 确认条,不亮横幅⑦",
+    );
+    eq(
+        both({ pending: true, reason: "restore" }),
+        [false, true],
+        "[J166] restore ⇒ 横幅⑦",
+    );
+    eq(
+        both({ pending: true }),
+        [false, true],
+        "[J166] 缺 reason(老快照)⇒ 按加载守卫处理",
+    );
+    eq(
+        both({ pending: true, reason: "somethingNew" }),
+        [false, true],
+        "[J166] 不认识的 reason ⇒ 按加载守卫处理(§0.1 容忍纪律)",
+    );
+    // 两个谓词各自的 pending 前提各由一格钉住:删掉 firstEnable 那边的 `g.pending` ⇒ 第一格红;
+    // 删掉 restore 那边的 ⇒ 后两格红(残值是 restore 或缺席时横幅⑦会在守卫已解除后照亮)。
+    eq(
+        both({ pending: false, reason: "firstEnable" }),
+        [false, false],
+        "[J166] 不待确认时 reason 是残值,两者都不成立",
+    );
+    eq(
+        both({ pending: false, reason: "restore" }),
+        [false, false],
+        "[J166] 不待确认、残值 restore ⇒ 横幅⑦不亮",
+    );
+    eq(
+        both({ pending: false }),
+        [false, false],
+        "[J166] 不待确认、无 reason ⇒ 横幅⑦不亮",
+    );
+    eq(
+        [TM.firstEnableGuardPending({}), TM.restoreGuardPending({})],
+        [false, false],
+        "[J166] 无 print_guard ⇒ 两者都不成立",
+    );
 }
 
 // §1.12-§1.14 参数域 + 设计稿读数
@@ -1254,12 +1320,38 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
     );
 
     // P2-5:守卫确认与 write 确认条互斥(05 §2.0 横幅⑦)
-    check(
-        /confirmPrintGuard[\s\S]{0,400}session\.writeConfirmSeen = true/.test(
-            appJs,
-        ),
-        "confirmPrintGuard 确认后置 writeConfirmSeen(守卫已确认即不再补弹)",
-    );
+    // [J166] 本窗口「确认过」(`session.writeConfirmSeen`)只在 §1.34 confirmPrintGuard **成功回执之后**置,
+    // 全仓两处:横幅⑦的钮(app.js)与 Tab1 确认条「知道了,开始」(tab-master.js)。板子上屏时置(#337
+    // 独立复核抓到的那一版)会让「没点开始就关再开」不带 requireConfirm、开了就写。行为由页面级
+    // smoke-output-stale-page ⑥b 的 b2 / d / f / g 尾 / h 钉;这里钉两件页面级钉不全的:
+    //   ① 置位点恰好两处(renderFlow、开关分支里没有第二个);② app.js 那处只认成功回执(null 不算 ——
+    //      页面级 h 只覆盖 tab-master 那处)。先剥注释再匹配:两个文件的注释都在讲这个记号。
+    {
+        const { stripJsComments } = await import(
+            u("scripts/lib/strip-comments.mjs")
+        );
+        const appCode = stripJsComments(appJs, "web/output/app.js");
+        const tabCode = stripJsComments(tabJs, "web/output/tab-master.js");
+        const sets = (code) =>
+            (code.match(/writeConfirmSeen\s*=\s*true/g) || []).length;
+        eq(
+            [sets(appCode), sets(tabCode)],
+            [1, 1],
+            "[J166] 「确认过」的置位点恰好两处:app.js 横幅⑦一处、tab-master.js 确认条「开始」一处",
+        );
+        check(
+            /await call\("confirmPrintGuard"\)[\s\S]{0,120}?if \(res && res\.ok !== false\)\s*store\.session\.writeConfirmSeen = true/.test(
+                appCode,
+            ),
+            "[J166] 横幅⑦:confirmPrintGuard 成功回执之后才置 writeConfirmSeen(null / ok:false 不算确认)",
+        );
+        check(
+            /call\("confirmPrintGuard"\)[\s\S]{0,200}?if \(res && res\.ok !== false\)\s*getStore\(\)\.session\.writeConfirmSeen = true/.test(
+                tabCode,
+            ),
+            "[J166] 确认条「知道了,开始」:confirmPrintGuard 成功回执之后才置 writeConfirmSeen",
+        );
+    }
 
     // P2-6:本波接线的交互组件零硬编码中文
     // [SL-415] 用户 2026-09-14 裁定「sidecar 不上了」⇒ **toast② 收起**

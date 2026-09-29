@@ -8309,7 +8309,8 @@ TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出�
     out.setOutputEnabled(true);
     CHECK(out.printGuardPending());
 
-    // 桥面关输出 ⇒ 解除;再开回来不重新设守卫(走 UI 的 OFF→ON 一次性确认)。
+    // 桥面关输出 ⇒ 解除;不带 requireConfirm 再开回来不重新设守卫(要不要守卫由调用方决定:
+    // UI 的首次开输出带 requireConfirm,见下面 [J166] 两个用例)。
     out.setOutputEnabled(false);
     CHECK_FALSE(out.printGuardPending()); // ← applyOutputEnabled 的清除删掉即红
     out.setOutputEnabled(true);
@@ -8334,6 +8335,148 @@ TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出�
     REQUIRE_FALSE(out.printGuardPending());
     out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
     CHECK(out.printGuardPending()); // ← 改成 (b) 即红
+}
+
+// ---------------------------------------------------------------------------
+// [J166] 首次开输出:确认条点「知道了,开始」之前**不写**宿主自动化(用户 rc.1 实测 B69 附带:
+// 「没点知道了开始，自动化还是写入了」)。
+//
+// 修前:UI 首次 OFF→ON 只是 `setOutputEnabled(true)` + 就地展开确认条,「知道了,开始」只把条收起,
+// 引擎当拍就按「播放中 ∧ 在区间内」进 PRINT —— 确认条挂着、谁都没点,车道已经在写。
+// 修法:复用加载守卫同一个判据(timerCallback 三态求值里的 `!guardPending`),首次开输出由 UI 带
+// `opts.requireConfirm`,C++ 在同一次调用里把守卫置成 FirstEnable;确认入口同 §1.34。
+//
+// 删除式落点 = `setOutputEnabled` 里 `if (on && requireConfirm)` 那段置位:删掉 ⇒ 本格
+// `CHECK(printGuardPending())`、★确认前零写入、ARMED 三格红;下一格的 FirstEnable 各格红。
+// 判据落点同上面加载守卫那格 = 挂在真 processor 上的 AudioProcessorListener(宿主替身)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 首次开输出(J166):点开始之前播放零写入,点开始后恢复打印", "[host][loadguard][print][J166]")
+{
+    HostWriteSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(8);
+
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+
+    // 起点:输出关、无守卫(新建实例的输出初值是开,先关一次让打印器走 endAllGestures 回到干净起点)。
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(r.out.printGuardPending());
+
+    r.out.addListener(&spy);
+
+    // ★ UI 首次 OFF→ON:带 requireConfirm。播放中 ∧ 播放头在区间内(常值段覆盖全时间线)。
+    r.out.setOutputEnabled(true, /*requireConfirm=*/true);
+    REQUIRE(r.out.outputEnabled());
+    CHECK(r.out.printGuardPending()); // ← 删除式落点删掉即红
+    CHECK(r.out.printGuardReason() == scvb::output::PrintGuardReason::FirstEnable);
+
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() == 0); // ★ 确认前零写入 —— 删除式落点删掉即红
+    CHECK(spy.writes.load() == 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
+
+    // 确认条挂着时切版本:ARMED 下允许切(§1.9),守卫不因此解除,仍零写入。
+    REQUIRE(r.out.setVersionActive(2));
+    REQUIRE(r.out.setVersionActive(1));
+    r.runBlocks(20);
+    Rig::pumpMessages(200);
+    CHECK(r.out.printGuardPending());
+    CHECK(spy.begins.load() == 0);
+    CHECK(spy.writes.load() == 0);
+
+    // 点「知道了,开始」(§1.34)⇒ 下一拍起恢复正常 PRINT。条件一点没变,只多了这一次确认 ——
+    // 同时证明上面的「零写入」不是因为区间/走带条件本来就不满足。
+    r.out.confirmPrintGuard();
+    CHECK_FALSE(r.out.printGuardPending());
+    r.runBlocks(40);
+    Rig::pumpMessages(300);
+    CHECK(spy.begins.load() > 0);
+    CHECK(spy.writes.load() > 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+
+    r.out.setOutputEnabled(false);
+    Rig::pumpMessages(200);
+    r.out.removeListener(&spy);
+}
+
+// ---------------------------------------------------------------------------
+// [J166] 首次开输出守卫的其余边界(不跑音频,只看守卫位):
+//   · 「撤销(回溯到跟随宿主)」= setOutputEnabled(false) ⇒ 解除;
+//   · 不带 requireConfirm 的开(非首次)⇒ 不设守卫;requireConfirm 配 on=false ⇒ 不设;
+//   · 已有加载守卫(Restore)时再发 requireConfirm ⇒ 来由保持 Restore(横幅⑦就是那次确认);
+//   · 确认条挂着时宿主存盘 / 重灌 ⇒ 存下的是输出开,重灌后来由换成 Restore,**仍待确认**;
+//   · 确认条挂着时手动开采集([J92a] 连带关输出)⇒ 解除;
+//   · 上桥字面量:"restore" / "firstEnable"(web 按它分横幅⑦与确认条)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 首次开输出(J166):守卫的置位、解除与来由", "[host][loadguard][J166]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    using scvb::output::PrintGuardReason;
+
+    juce::MemoryBlock onBlob;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.setOutputEnabled(true);
+        donor.getStateInformation(onBlob);
+    }
+
+    ScvbOutputAudioProcessor out;
+    out.setOutputEnabled(false);
+    REQUIRE_FALSE(out.printGuardPending());
+
+    // 首次开 ⇒ FirstEnable;点开始 ⇒ 解除。
+    out.setOutputEnabled(true, true);
+    CHECK(out.printGuardReason() == PrintGuardReason::FirstEnable); // ← 删除式落点删掉即红
+    out.confirmPrintGuard();
+    CHECK_FALSE(out.printGuardPending());
+
+    // 撤销 ⇒ 解除。
+    out.setOutputEnabled(false);
+    out.setOutputEnabled(true, true);
+    REQUIRE(out.printGuardReason() == PrintGuardReason::FirstEnable);
+    out.setOutputEnabled(false);
+    CHECK_FALSE(out.printGuardPending());
+
+    // 非首次(不带 requireConfirm)⇒ 不设;on=false 带 requireConfirm ⇒ 不设。
+    out.setOutputEnabled(true);
+    CHECK_FALSE(out.printGuardPending());
+    out.setOutputEnabled(false, true);
+    CHECK_FALSE(out.printGuardPending());
+
+    // 已有加载守卫 ⇒ requireConfirm 不改来由。
+    out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+    REQUIRE(out.printGuardReason() == PrintGuardReason::Restore);
+    out.setOutputEnabled(true, true);
+    CHECK(out.printGuardReason() == PrintGuardReason::Restore);
+    out.setOutputEnabled(false);
+
+    // 确认条挂着时存盘 → 重灌:存下的是「输出开」,重灌后来由换成 Restore,仍待确认。
+    out.setOutputEnabled(true, true);
+    REQUIRE(out.printGuardReason() == PrintGuardReason::FirstEnable);
+    juce::MemoryBlock pendingBlob;
+    out.getStateInformation(pendingBlob);
+    out.setStateInformation(pendingBlob.getData(), static_cast<int>(pendingBlob.getSize()));
+    CHECK(out.outputEnabled());
+    CHECK(out.printGuardReason() == PrintGuardReason::Restore);
+    out.setOutputEnabled(false);
+
+    // 确认条挂着时手动开采集 ⇒ [J92a] 连带关输出 ⇒ 解除。
+    out.setOutputEnabled(true, true);
+    REQUIRE(out.printGuardReason() == PrintGuardReason::FirstEnable);
+    out.setCaptureEnabled(true);
+    REQUIRE_FALSE(out.outputEnabled());
+    CHECK_FALSE(out.printGuardPending());
+    out.setCaptureEnabled(false);
+
+    // 上桥字面量(契约 §2.1 print_guard.reason 的取值域)。
+    CHECK(juce::String(scvb::output::printGuardReasonName(PrintGuardReason::Restore)) == "restore");
+    CHECK(juce::String(scvb::output::printGuardReasonName(PrintGuardReason::FirstEnable)) == "firstEnable");
 }
 
 // ===========================================================================

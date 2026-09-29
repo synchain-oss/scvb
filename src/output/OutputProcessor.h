@@ -43,7 +43,35 @@
 namespace scvb::output
 {
 class OutputEditor; // 桥编辑器(T29),createEditor 实例化。
+
+// 写入守卫待确认的来由(契约 §2.1 `print_guard.reason`)。两种来由**同一套机制、同一条判据**:
+// 不是 None 即待确认,确认前打印器止于 ARMED(零 gesture、零写入;试听照常)。
+//   · Restore     —— 加载守卫(04 §5.3):恢复出 output_enabled=ON。UI 出横幅⑦「继续写入自动化」;
+//   · FirstEnable —— [J166] 首次开输出:UI 请求「开,但先等我确认」(§1.3 opts.requireConfirm)。
+//                    UI 出 Tab1 的 write 确认条,点「知道了,开始」才确认。
+// 确认入口两种来由共用一个:§1.34 confirmPrintGuard。
+enum class PrintGuardReason : std::uint8_t
+{
+    None = 0,
+    Restore = 1,
+    FirstEnable = 2,
+};
+
+// 上桥字面量(契约 §2.1 `print_guard.reason` 的取值域)。None 不上桥(pending=false 时不带 reason)。
+inline const char* printGuardReasonName(PrintGuardReason r) noexcept
+{
+    switch (r)
+    {
+    case PrintGuardReason::Restore:
+        return "restore";
+    case PrintGuardReason::FirstEnable:
+        return "firstEnable";
+    case PrintGuardReason::None:
+        break;
+    }
+    return "";
 }
+} // namespace scvb::output
 
 // Output 桥面的运行时 state(T29;除下面标注的两个首启已读位外,**消息线程独占** ——
 // [M] 写 / OutputEditor::emitTick 读)。
@@ -160,18 +188,27 @@ struct OutputRuntimeState
     std::atomic<bool> langChosen{false};
 
     // 运行时态(不入 state chunk、不随工程持久化)
-    // 加载守卫(04 §5.3 / 契约 §1.3、§1.34 / 05 §2.0 横幅⑦)。三个写点,全在 processor 里:
-    //   · setStateInformation:CFGS 解码成功后置为「恢复出来的 output_enabled」—— 恢复 ON 即待确认;
-    //   · confirmPrintGuard(桥面 §1.34 唯一确认入口):置 false;
-    //   · applyOutputEnabled(false):输出一关,「随工程恢复的 ON」这个条件就不在了,守卫随之解除
-    //     (契约未写这一格;不解除的话横幅会在开关 OFF 时仍说「输出开关处于写入自动化状态」)。
-    // 行为读方 = timerCallback 的三态求值(为真时即便「播放中 ∧ 在区间内」也只给 ARMED);
-    // 展示读方 = 桥面 emit(scvb.state.print_guard,经 printGuardPending())。
+    // 写入守卫(04 §5.3 / 契约 §1.3、§1.34 / 05 §2.0 横幅⑦;[J166] 起也管首次开输出)。
+    // 值 = 待确认的来由(见 PrintGuardReason),None 即不待确认。四个写点,全在 processor 里:
+    //   · setStateInformation:CFGS 解码成功后置为「恢复出来的 output_enabled」—— 恢复 ON 即 Restore,
+    //     恢复 OFF 即 None;
+    //   · setOutputEnabled(true, requireConfirm=true)([J166],桥面 §1.3 opts):此刻不待确认才置
+    //     FirstEnable(已有 Restore 就留着 Restore,它的横幅就是那次确认);
+    //   · confirmPrintGuard(桥面 §1.34 唯一确认入口,两种来由共用):置 None;
+    //   · applyOutputEnabled(false):输出一关,「待确认的那次 ON」这个条件就不在了,守卫随之解除
+    //     (不解除的话横幅会在开关 OFF 时仍说「输出开关处于写入自动化状态」)。
+    // 行为读方 = timerCallback 的三态求值(非 None 时即便「播放中 ∧ 在区间内」也只给 ARMED);
+    // 展示读方 = 桥面 emit(scvb.state.print_guard.{pending, reason},经 printGuardReason())。
     // 同一实例上宿主再次 setStateInformation(带插件状态的宿主撤销、A/B 对比、载入预设)也会
     // 重新置位 —— 有意如此:processor 分不出「重开工程」与「宿主重灌状态」,宁可多要一次确认
     // 也不在状态被换掉之后照旧打印。代价是这类操作后横幅⑦会再出现一次(USER_GUIDE 已写)。
+    // 首次开输出的确认条挂着时宿主重灌 ON ⇒ 来由换成 Restore,仍待确认:横幅⑦随之出现;同一个窗口里
+    // 确认条若还挂着会与它并存(两枚钮都是 §1.34 这一个入口,点哪个都算确认)。
     // atomic:setStateInformation 可在宿主线程上跑,桥面 emit 在消息线程 25Hz 读(同 guideSeen 的理由)。
-    std::atomic<bool> printGuardPending{false};
+    // 单个 atomic 装「待确认 + 来由」两件事,读方不会看到「待确认但来由是上一次的」这种撕裂。
+    std::atomic<scvb::output::PrintGuardReason> printGuard{scvb::output::PrintGuardReason::None};
+    static_assert(std::atomic<scvb::output::PrintGuardReason>::is_always_lock_free,
+                  "printGuard 必须 lock-free(§8;宿主线程写、消息线程读)");
     bool recaptureArmed = false;
     std::uint16_t recaptureTracksMask = 0;
     double recaptureStartS = 0.0;
@@ -240,10 +277,17 @@ public:
     // [M] UI/桥入口(T25 冻结契约):group/采集/输出开关/活动版本。
     void setGroupId(int groupId);
     void setCaptureEnabled(bool on);
-    void setOutputEnabled(bool on);
-    // [加载守卫] 契约 §1.34 confirmPrintGuard 的落地方(幂等,零 gesture)。
+    // [J166] requireConfirm = 契约 §1.3 的 `opts.requireConfirm`:`on=true` 时在**同一次调用里**
+    // 置写入守卫(FirstEnable),点「知道了,开始」(→ confirmPrintGuard)之前打印器止于 ARMED。
+    // 与「开」放在同一次调用里是要点:分成两次桥调用的话,中间那一拍 25Hz tick 就可能进 PRINT。
+    void setOutputEnabled(bool on, bool requireConfirm = false);
+    // [加载守卫 / J166] 契约 §1.34 confirmPrintGuard 的落地方(幂等,零 gesture;两种来由共用)。
     void confirmPrintGuard();
-    bool printGuardPending() const { return runtime_.printGuardPending.load(std::memory_order_acquire); }
+    scvb::output::PrintGuardReason printGuardReason() const
+    {
+        return runtime_.printGuard.load(std::memory_order_acquire);
+    }
+    bool printGuardPending() const { return printGuardReason() != scvb::output::PrintGuardReason::None; }
 
     // [J87] 局部重采集布防(04 §4.2;桥面 §1.23 recaptureArm 的落地方)。两个口都在 [M]。
     // 放在 processor 而不是 editor 里,是因为**撤防有两条触发路径**:桥面显式撤防,与 25Hz

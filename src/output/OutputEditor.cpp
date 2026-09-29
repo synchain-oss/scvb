@@ -1045,7 +1045,16 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
-    put(printGuard, "pending", processor_.printGuardPending());
+    // [J166] 单次 atomic 读出「待确认 + 来由」,两个字段取自同一个值(不会一帧里撕成两次读)。
+    const auto guard = processor_.printGuardReason();
+    const bool guardPending = guard != scvb::output::PrintGuardReason::None;
+    put(printGuard, "pending", guardPending);
+    if (guardPending)
+    {
+        // §2.1 `print_guard.reason`:"restore" → 横幅⑦;"firstEnable" → Tab1 write 确认条。
+        // 不待确认时不带这个键(UI 只在 pending=true 时读它)。
+        put(printGuard, "reason", juce::String(scvb::output::printGuardReasonName(guard)));
+    }
     put(o, "print_guard", printGuard);
 
     juce::var recapture = obj();
@@ -1337,13 +1346,15 @@ void OutputEditor::handleSetOutputEnabled(const ArgList& a, Completion c)
         c(noTimelineResp());
         return;
     }
-    bool on = false;
-    if (a.size() < 1 || !strictBool(a[0], on))
+    // [J166] 第二参 opts.requireConfirm:首次开输出时 UI 带上它,「开」与「置写入守卫」在
+    // 同一次调用里完成(点「知道了,开始」→ §1.34 confirmPrintGuard 之前不写宿主自动化)。
+    const auto args = scvb::output::parseSetOutputEnabledArgs(a);
+    if (!args.ok)
     {
         c(badArgResp());
         return;
     }
-    processor_.setOutputEnabled(on);
+    processor_.setOutputEnabled(args.on, args.requireConfirm);
     c(okResp());
 }
 

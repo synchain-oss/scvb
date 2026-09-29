@@ -647,7 +647,12 @@ export function buildWorld(opts = {}) {
         // 走带停在 0(守卫场景=刚打开工程,确认前只允许 ARMED)。
         outputSnapshot = {
             ...outputSnapshot,
-            print_guard: { ...outputSnapshot.print_guard, pending: true },
+            // reason 与真桥同形(契约 §2.1:恢复出 ON 的那种来由是 "restore")。
+            print_guard: {
+                ...outputSnapshot.print_guard,
+                pending: true,
+                reason: "restore",
+            },
         };
         transport = { timeS: 0, isPlaying: false };
     }

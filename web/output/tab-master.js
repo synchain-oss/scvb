@@ -632,8 +632,10 @@ export function connPillModel(n, state, playhead) {
 /**
  * 输出三态(03 §2.2:FOLLOW / ARMED / PRINT)。
  * PRINT = output_enabled ∧ isPlaying ∧ inRange(契约 §2.6 UI 消费行逐字)。
- * **加载守卫未确认时行为止于 ARMED**(契约 §1.3 / §1.34)—— UI 判定同样卡在 armed,
+ * **写入守卫未确认时行为止于 ARMED**(契约 §1.3 / §1.34)—— UI 判定同样卡在 armed,
  * 否则版本 chip 会在守卫未确认时就整组 disabled,而引擎其实没在打印。
+ * 两种来由(加载守卫 / [J166] 首次开输出)一视同仁:只看 pending,页脚「写入自动化 V1 · …」
+ * 也就只在真在写时出现。
  */
 export function outputPhase(state, playhead) {
     if (!state || !state.global || !state.global.output_enabled)
@@ -642,6 +644,22 @@ export function outputPhase(state, playhead) {
     if (guarded) return "armed";
     if (playhead && playhead.isPlaying && playhead.inRange) return "print";
     return "armed";
+}
+
+/**
+ * [J166] 写入守卫的两种来由(契约 §2.1 `print_guard.reason`)各归哪个界面:
+ *   · `"firstEnable"`(首次开输出)→ Tab1 的 write 确认条,「知道了,开始」= 确认;
+ *   · 其余 —— `"restore"`,以及**缺席或不认识的值**(§0.1 容忍纪律,按加载守卫处理)→ 横幅⑦。
+ * 两个谓词互斥,且都要求 pending:reason 只在 pending=true 时有意义(C++ 不待确认时不带这个键,
+ * 而 mock 增量帧的深合并会留着上一次的值)。
+ */
+export function firstEnableGuardPending(state) {
+    const g = state && state.print_guard;
+    return !!(g && g.pending && g.reason === "firstEnable");
+}
+export function restoreGuardPending(state) {
+    const g = state && state.print_guard;
+    return !!(g && g.pending && g.reason !== "firstEnable");
 }
 
 /**
@@ -1069,7 +1087,8 @@ export function createTabMaster(opts) {
     const local = {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
         // [SL-247] 「写入双后果」确认板的**意图位**。显隐不再由 show/hide 直写 DOM,而是
-        // 在 renderFlow 里派生成「意图 ∧ output_enabled」—— 理由见 showWriteConfirm 的注释。
+        // 在 renderFlow 里派生成「意图 ∧ output_enabled」([J166] 起另有守卫两项,见 renderFlow)——
+        // 理由见 showWriteConfirm 的注释。
         //
         // ⛔ **别把它简化掉、退回「只看 output_enabled」的状态单判**:那一版会在真机上把
         // 确认板永久吃掉(#162 复审第二轮的回归)。而且**自动化套件测不出这一退化** ——
@@ -1077,6 +1096,9 @@ export function createTabMaster(opts) {
         // 页面级冒烟照样绿;真机那条 async 回推是 mock 复现不了的。守它的是
         // `smoke-tab3-interactions` 的源码级断言(「showWriteConfirm 不直写 hidden」)。
         writeConfirmOpen: false,
+        // [J166] 点了「知道了,开始 / 撤销」或把开关关掉之后置真:从点下到回推之间守卫位还是旧的,
+        // 别让确认条因为 `firstEnableGuardPending` 多挂一拍。下一次首次开输出时清掉。
+        writeConfirmDismissed: false,
         analyzeFlashUntil: 0, // data-analyze="done" 闪绿的截止时刻
         analyzePending: false, // analyze 受理回执→state 确认之间的在途标志
         preview: null, // previewAnalyze 的最近一次返回
@@ -1215,21 +1237,46 @@ export function createTabMaster(opts) {
                 hideWriteConfirm();
                 return;
             }
-            call("setOutputEnabled", true);
-            // 每工程会话首次 OFF→ON 就地展开双后果文案(非模态);
+            // 「首次」OFF→ON 就地展开双后果文案(非模态);
             // **与加载守卫互斥**:守卫横幅⑦在场时不补弹(05 §2.0 横幅⑦逐字)。
+            // [J166] 这一下带 `requireConfirm`,C++ 在**同一次调用里**置写入守卫,
+            // 点「知道了,开始」(→ §1.34 confirmPrintGuard)之前只试听、不写宿主自动化。
+            // 不能拆成「先开、再单独发一次置守卫」:两次桥调用之间那一拍 25Hz tick 就可能进 PRINT。
+            //
+            // 「首次」= 本页会话(= 这次打开插件窗口)里**还没确认过** ∧ 此刻没有守卫待确认。
+            // 「确认过」(`session.writeConfirmSeen`)只在 §1.34 confirmPrintGuard **成功回执之后**记,
+            // 全仓两处:下面确认条的「知道了,开始」、app.js 横幅⑦「继续写入自动化」。
+            // 板子只是**上过屏**、点了「撤销」、或调用被拒,都**不**记 —— 用户没点「开始」就把输出
+            // 关掉(开关直接关 / 开 01 采集连带关 / 宿主重灌出 OFF)再打开,仍走这里:带 requireConfirm、
+            // 置守卫、出板、点开始之前不写(J166 用户原话:「能不能不点开始就不开这个开关?」)。
+            // 若在这里或在板子上屏时就记,那一关一开就不带 requireConfirm、开了就写(#337 独立复核)。
             const guarded = !!(s.print_guard && s.print_guard.pending);
-            if (!getStore().session.writeConfirmSeen && !guarded) {
-                getStore().session.writeConfirmSeen = true;
-                showWriteConfirm();
+            if (getStore().session.writeConfirmSeen || guarded) {
+                call("setOutputEnabled", true);
+                return;
             }
+            local.writeConfirmDismissed = false;
+            call("setOutputEnabled", true, { requireConfirm: true });
+            showWriteConfirm();
         });
 
         if (el.writeConfirmOk) {
-            el.writeConfirmOk.addEventListener("click", hideWriteConfirm);
+            el.writeConfirmOk.addEventListener("click", async () => {
+                // [J166] 「知道了,开始」= 确认写入守卫(§1.34,幂等;与横幅⑦那枚钮同一个入口)。
+                // 此前这枚钮只收起板子,引擎早在开的那一刻就已经在写了。
+                // 收起在 await 之前、当拍发生(不等回执 / 回推,见 writeConfirmDismissed)。
+                const pending = call("confirmPrintGuard");
+                hideWriteConfirm();
+                const res = await pending;
+                // 本窗口「确认过」只在这里(与 app.js 横幅⑦)记,且只认成功回执:`call()` 在桥抛错时
+                // 回 null,那时守卫可能还挂着,记了就会让下一次关再开不带 requireConfirm、开了就写。
+                if (res && res.ok !== false)
+                    getStore().session.writeConfirmSeen = true;
+            });
         }
         if (el.writeConfirmUndo) {
             el.writeConfirmUndo.addEventListener("click", () => {
+                // 关输出 ⇒ C++ 侧守卫随之解除(applyOutputEnabled(false)),回到跟随宿主。
                 call("setOutputEnabled", false);
                 hideWriteConfirm();
             });
@@ -1265,14 +1312,14 @@ export function createTabMaster(opts) {
     }
 
     // [SL-247] 两个口子只翻**意图位**,不直写 `hidden` —— 真正的显隐在 renderFlow 里
-    // 派生成「意图 ∧ `g.output_enabled`」。
+    // 派生成「意图 ∧ `g.output_enabled`」([J166] 起另有守卫两项,见 renderFlow)。
     //
     // 为什么不能直写(#162 复审第二轮抓到的真机回归,本仓「mock 说谎」那一族):
     // `outSwitch` 的 handler 里 `call("setOutputEnabled", true)` 是 **async 且不 await** 的,
     // 紧接着就同步调 `showWriteConfirm()` → `render()`。那一刻 `scvb.state` 回推还没到,
     // store 里 `output_enabled` **仍是 false**。若 renderFlow 里是「状态单判」的与门,
     // 它会把刚摘掉的 `hidden` 当场扣回去;而等真值到达时**没有任何代码会再摘一次**
-    // (全文只有这里写过 `hidden = false`),偏偏 `writeConfirmSeen` 已经闩死 ——
+    // (全文只有这里写过 `hidden = false`),偏偏当时 `writeConfirmSeen` 在点开那一下就已闩死 ——
     // 净效果是 05 §2.0 要求的那块首次 OFF→ON 知情面板在真机上**彻底消失**。
     //
     // 预览世界看不出来:mock 的 `patchState → emit` 是**同步**派发,store 在
@@ -1283,6 +1330,7 @@ export function createTabMaster(opts) {
     }
     function hideWriteConfirm() {
         local.writeConfirmOpen = false;
+        local.writeConfirmDismissed = true;
         render();
     }
 
@@ -1989,8 +2037,8 @@ export function createTabMaster(opts) {
                 isSwitchBlocked() ? "1" : "0",
             );
 
-        // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**,
-        // 幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。
+        // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**([J166] 起再 ∧ 守卫待确认,
+        // 见下),幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。
         //
         // 这块板此前是**纯命令式**开合,每一条「输出转 OFF」的路都得**手工**配一次
         // hideWriteConfirm()。J92a 新开了一条谁都没配的路:用户开采集 ⇒ C++ 侧把
@@ -1999,9 +2047,30 @@ export function createTabMaster(opts) {
         //
         // ⚠ **不能写成只看状态的与门**:点开那一帧 `output_enabled` 还没回推(桥调用不 await),
         // 单判会把板子当场吃掉且再不复现 —— 详见 showWriteConfirm 的注释。意图位就是为此存在。
+        //
+        // [J166] 意图位之外,C++ 侧的首次开输出守卫(`print_guard.reason === "firstEnable"`)也让它
+        // 显示:关掉插件窗口再打开(新页面没有意图位)时确认条照样在、照样要点「开始」,
+        // 不会换成说「随工程恢复」的横幅⑦。点过「开始 / 撤销」之后到回推之前由
+        // `writeConfirmDismissed` 压住,不多挂那一拍。
+        //
+        // [J166] 再与上「写入守卫真的待确认」(`guardHeld`):板子正文说的是「点『知道了,开始』后才写
+        // (点之前只试听、不写)」,这句话只在守卫挂着时成立。意图位只有 hideWriteConfirm 会清,而横幅⑦的钮
+        // 不走它:② 板子与横幅⑦并存(板子挂着时宿主重灌出 ON)时点横幅⑦的钮确认,守卫解除、开始写,
+        // 板子却还挂着;① 此后(本窗口已算确认过)再经 01 采集连带关输出或宿主重灌出 OFF、再拨开输出,
+        // 走的是非首次分支(不带 requireConfirm、不置守卫、开了就写),残留的意图位会让板子重新上屏。
+        // 与上这一项,两条都跟着收起。(没确认过就关再开走的是首次分支,守卫照常置上,板子上屏是对的。)
+        // 点开那一帧不受影响:C++ 在同一次 setOutputEnabled 里开输出并置守卫,两者随同一帧回推。
+        //
+        // ⛔ 这里**不记**本窗口「确认过」(`session.writeConfirmSeen`):板子上屏 ≠ 用户点了「开始」。
+        // 记号只在 §1.34 confirmPrintGuard 成功回执之后置(ok 钮与 app.js 横幅⑦),理由见 wireFlow 输出开关处。
         if (el.writeConfirm) {
+            const guardAsks =
+                firstEnableGuardPending(s) && !local.writeConfirmDismissed;
+            const guardHeld = !!(s.print_guard && s.print_guard.pending);
             el.writeConfirm.hidden = !(
-                local.writeConfirmOpen && g.output_enabled
+                (local.writeConfirmOpen || guardAsks) &&
+                g.output_enabled &&
+                guardHeld
             );
         }
 

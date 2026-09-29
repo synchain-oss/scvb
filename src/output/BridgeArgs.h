@@ -529,6 +529,38 @@ inline bool noTimelineRejectsCaptureSwitch(bool timelineMissing, const juce::var
 }
 
 // -----------------------------------------------------------------------------
+// [J166] §1.3 `setOutputEnabled(on, opts?)` 的参数形态。
+//   · on:严格布尔(同改前);
+//   · opts:缺席 / undefined / null ⇒ 全取默认(老调用形态逐字不变);否则必须是对象,
+//     `requireConfirm` 缺席 ⇒ false,在席则必须是严格布尔。
+// 其余一律 badArg —— 这一位决定「点开始之前写不写宿主自动化」,传歪了宁可整次拒掉让 UI 看见,
+// 也不按「没要确认」照开(那个方向会直接写)。
+// 抽成纯函数的理由同上面那格:handler 编不进测试目标,判据落在这里才能离线断言;
+// handler 真的在用它,由 smoke-tab2-interactions.mjs 钉源码形态。
+struct SetOutputEnabledArgs
+{
+    bool ok = false;
+    bool on = false;
+    bool requireConfirm = false;
+};
+inline SetOutputEnabledArgs parseSetOutputEnabledArgs(const juce::Array<juce::var>& a)
+{
+    SetOutputEnabledArgs r;
+    if (a.size() < 1 || !strictBool(a[0], r.on))
+        return r;
+    if (a.size() > 1 && !(a[1].isVoid() || a[1].isUndefined()))
+    {
+        if (!a[1].isObject())
+            return r;
+        const juce::var rc = a[1].getProperty("requireConfirm", juce::var());
+        if (!(rc.isVoid() || rc.isUndefined()) && !strictBool(rc, r.requireConfirm))
+            return r;
+    }
+    r.ok = true;
+    return r;
+}
+
+// -----------------------------------------------------------------------------
 // [SL-412] `newerState.detail` 里那两个 abi 数**落 JSON 的口径**。
 //
 // 病灶:`stateAbiSeen_` 直接来自**工程文件里的不可信字节**(`OutputProcessor.cpp` 里那句
