@@ -960,7 +960,12 @@ private:
     // state(params-v0 §二 最小 T24 子集)。
     int groupId_ = 1;
     bool captureEnabled_ = false;
-    bool outputEnabled_ = true;
+    // [J169 / SL-568] 新插实例的输出开关默认「跟随宿主」(关)。此前默认开且不带守卫:新实例不经 01 采集
+    // (J92a 连带关输出)而是先局部重采集(armRecapture 不关输出)→ 分析 → 播放,就会不经确认写宿主自动化。
+    // 这里只管「新插」:载入工程走 setStateInformation,CFGS 解得开就按工程里存的值(开 ⇒ 加载守卫);
+    // CFGS 缺失 / 解不开 / 整份拒载时不动它(保持实例当前值)。音频线程的 DSP 权威读的是 session_ 那一份,
+    // 构造函数里按本成员同步一次。
+    bool outputEnabled_ = false;
     int versionActive_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
