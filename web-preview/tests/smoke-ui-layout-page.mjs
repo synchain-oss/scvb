@@ -146,10 +146,10 @@
 //      b 标题 / 正文**逐字**等于该语言的 `tour-in.step5.*` 词条(键缺失时 tour-in.js 会把键名
 //        本身上屏,逐字比对即红),且正文含该语言的「静音文件」关键词(词条没被别的话顶替);
 //      c 顺序:第 ④ 步标题 = `tour-in.step4.title`(连接状态)在它之前,点下一步后是末步
-//        「?」自指(E1–E3 那一步)在它之后;
+//        「?」自指(E1–E3 那一步)在它之后,末步标题逐字 = `tour-in.step6.title`(zh);
 //      d 这一步不指向任何控件(居中卡,箭头隐藏),且说明框整体落在卡内(法语正文最长)。
-//      删除式(未提交,记录见 PR):删掉 `TOUR_IN_STEPS` 里第 ⑤ 条 ⇒ a / d 与 E1 红;
-//      i18n 三语 step5 退回改前(不重编号)⇒ b 红。
+//      删除式(未提交,记录见 PR):删掉 `TOUR_IN_STEPS` 里第 ⑤ 条 ⇒ a / d 与末步探针红;
+//      i18n 退回改前(没有新 step5、不重编号)⇒ b 的关键词红;只删三语 step6 词条 ⇒ c 末步标题红。
 //   D. 上面每一段跑完都要零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-ui-layout-page.mjs [仓库根绝对路径]
@@ -1280,6 +1280,11 @@ try {
         check(
             tp.step.trim() === `${IN_TOUR_STEPS}/${IN_TOUR_STEPS}`,
             `走到末步(实得 ${JSON.stringify(tp.step)})`,
+        );
+        // E4c 后半:末步上屏的是重编号后的 `tour-in.step6.title`(漏了重编号 ⇒ 这里是键名本身)
+        check(
+            tp.title === DICT.zh["tour-in.step6.title"],
+            `E4c 末步标题 = tour-in.step6.title(实得 ${JSON.stringify(tp.title)})`,
         );
         // E2 说明框整体落在卡内
         check(

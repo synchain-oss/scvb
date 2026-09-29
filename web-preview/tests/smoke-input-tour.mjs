@@ -320,10 +320,11 @@ log("=== ④ 词条:tour-in.* 三语 + 第 ④ ⑤ 步口径 ===");
         check(!/(TODO|TBD|FIXME|xxx)/i.test(b5), l + " 第 ⑤ 步无占位符标记");
     }
     // 末步仍是「?」自指(重编号没漏:原第 5 步的话挪到第 6 步,而不是被覆盖掉)
+    // (缺键时取空串:这一格要以 [FAIL] 红出来,不能抛 TypeError 把后面的断言一起掐掉)
     check(
-        T.zh["tour-in.step6.body"].includes("？") &&
-            T.en["tour-in.step6.body"].includes("?") &&
-            T.fr["tour-in.step6.body"].includes("?"),
+        (T.zh["tour-in.step6.body"] || "").includes("？") &&
+            (T.en["tour-in.step6.body"] || "").includes("?") &&
+            (T.fr["tour-in.step6.body"] || "").includes("?"),
         "末步(第 ⑥ 步)正文仍指向「?」重看入口",
     );
 
