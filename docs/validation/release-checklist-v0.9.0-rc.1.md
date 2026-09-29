@@ -229,7 +229,7 @@
 - [x] **H2 ⚠ 单轨 Freeze / Render in Place 得静音文件的红字,三处一致**
   - 查什么:USER_GUIDE + KNOWN_ISSUES + UI 首次导出提示三处一致。
   - 证据:KNOWN_ISSUES `KI-4` 有(第 33 行起)。**USER_GUIDE 里没有**:`grep -c -i -E "freeze|render in place|静音文件|替换式|原素材"` 在 `USER_GUIDE.zh-CN.md` 为 0,在 `USER_GUIDE.md` 为 2,但那两行说的都是 SCVB 自己的冻结 P / V,不是这条。**UI 里没有首次导出提示**:同一模式在 `web/shared/i18n.js` 0 处。(`5b1c908e`)同一条 grep 在 `USER_GUIDE.zh-CN.md` 仍为 0、`USER_GUIDE.md` 仍为 2;在 `i18n.js` 命中 12 处,逐条看过全是 SCVB 自己的冻结 P / V(`tracks.colFreeze*`、`tour.step26.*`、`workflow.tweak` 等),**不是**宿主 Freeze / Render in Place 的提示 —— 结论不变。
-    (SL-574 / J176,#本卡PR)用户裁定 J176:两份用户手册与两份 README 现在就写;UI 那一处**落在 Input 导览里**,不另做「首次导出提示」。三处现状:
+    (SL-574 / J176,#344)用户裁定 J176:两份用户手册与两份 README 现在就写;UI 那一处**落在 Input 导览里**,不另做「首次导出提示」。三处现状:
     ① `docs/KNOWN_ISSUES.md` 的「KI-4」小节(未改);
     ② 两份用户手册新增「导出与渲染」一节(`docs/USER_GUIDE.zh-CN.md` 的 `## 导出与渲染` / `docs/USER_GUIDE.md` 的 `## Exporting and rendering`),「5 分钟上手」写自动化一步的末尾、故障排查表、已知限制各有一处指向它;两份 README 的快速上手在九条规则之后加了一段简短警告,链到该节;
     ③ Input 导览第 5 步(`web/input/tour-in.js` 的 `TOUR_IN_STEPS` 第 5 条,居中卡;词条 `tour-in.step5.*` zh / en / fr),原末步「完整控制在 Output」顺延为第 6 步。
