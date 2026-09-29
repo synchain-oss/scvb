@@ -178,6 +178,9 @@ const store = {
     loopStale: false,
     session: {
         // 本工程会话内的一次性判定(不入 state chunk)
+        // [J166] 本窗口里**确认过**写入守卫(名字沿用旧称 Seen,语义是「确认过」不是「出现过」):
+        // 只在 §1.34 confirmPrintGuard 成功回执之后置真,置位点只有两处 —— Tab1 确认条「知道了,开始」
+        // (tab-master.js)与横幅⑦「继续写入自动化」(本文件);确认条上过屏、点了撤销都不算。
         writeConfirmSeen: false,
         printDoneUntil: 0,
         wasPrinting: false,
@@ -1212,8 +1215,11 @@ if (guardBtn) {
         const res = await call("confirmPrintGuard"); // 幂等;确认后经 scvb.state.print_guard 回推
         // 05 §2.0 横幅⑦逐字:与 §2.1 输出开关的 OFF→ON 一次性确认**互斥**——守卫已确认
         // 即不再补弹。守卫本身就是「输出 ON 且后果已被告知」的确认,此后再 OFF→ON 不该
-        // 又弹一遍 write 确认条,故在这里把本会话的一次性判定一并置真。
-        if (!res || res.ok !== false) store.session.writeConfirmSeen = true;
+        // 又弹一遍 write 确认条,故在这里把本窗口「确认过」一并置真。
+        // [J166] 全仓只有两处置它:这里与 Tab1 确认条的「知道了,开始」(tab-master.js),都在
+        // §1.34 **成功回执之后**。`call()` 在桥抛错时回 null —— 那时守卫可能还挂着,记了就会让
+        // 下一次关再开不带 requireConfirm、开了就写,所以 null 不算确认。
+        if (res && res.ok !== false) store.session.writeConfirmSeen = true;
         requestRender();
     });
 }

@@ -19,6 +19,7 @@
 
 `contractVersion` 保持 `1.0`:没有改名、删除、改参数顺序或收窄取值域;§0.1 第 3 条允许「在既有 payload 中新增可选字段」。
 §1.3 的第二参是**尾部可选参数**,缺席 / `null` 时行为与改前逐字相同 —— 改前唯一的调用形态 `setOutputEnabled(on)` 不受影响。
+§0.1 的允许面没有逐字列出「给既有函数加尾部可选参数」这一形态;统筹裁定 **J166a** 按「只增」处理,`contractVersion` 与 §0.1 都不改(见文末「审批」)。
 函数名、事件名集合零变化(`node scripts/check-bridge-parity.mjs` 通过)。
 
 ## 变更内容
@@ -63,10 +64,18 @@
   `applyOutputEnabled(false)`(⇒ None):写点不变,只是写的值换成了枚举。
 - `src/output/BridgeArgs.h` `parseSetOutputEnabledArgs`:第二参解析;`OutputEditor::handleSetOutputEnabled` 走它。
 - `OutputEditor::buildStateSubtree`:待确认时 `print_guard` 多带 `reason`。
-- web:`tab-master.js` 首次 OFF→ON 带 `{requireConfirm:true}`;「知道了,开始」调 `confirmPrintGuard`;确认条显隐 =
-  (意图位 ∨ 首次开输出守卫)∧ 输出开 ∧ 守卫待确认(不分来由)—— 条上那句「点开始之前不写」只在守卫挂着时成立,
-  出过条之后经 01 采集把输出连带关掉(守卫随之解除)再打开、或点横幅⑦确认之后,条都不再挂着;`app.js` 横幅⑦只认
-  `reason` 不是 `firstEnable` 的守卫。mock 同形(含 §1.2 连带关输出时解除守卫)。
+- web:`tab-master.js` 首次 OFF→ON 带 `{requireConfirm:true}`;「知道了,开始」调 `confirmPrintGuard`。
+  - **「首次」** = 本窗口(本页会话)里**还没确认过** ∧ 此刻没有守卫待确认。「确认过」(`session.writeConfirmSeen`)
+    只在 §1.34 `confirmPrintGuard` **成功回执之后**记,全仓两处:确认条「知道了,开始」(`tab-master.js`)与横幅⑦
+    「继续写入自动化」(`app.js`);确认条上过屏、点了「撤销」、调用失败(桥抛错,`call()` 回 null)都**不**记。
+    于是没点「开始」就把输出关掉(开关直接关 / 开 01 采集连带关 / 宿主重灌出 OFF)再打开,仍带 `requireConfirm`、
+    仍置守卫、确认条再出、点之前不写;确认过之后在同一窗口关再开,不带 `requireConfirm`、开了就写。页面会话位
+    不入 state,关窗再开重新计。
+  - **确认条显隐** = (意图位 ∨(首次开输出守卫待确认 ∧ `!writeConfirmDismissed`))∧ 输出开 ∧ 守卫待确认(不分来由)。
+    `writeConfirmDismissed` 在点「开始 / 撤销」或把开关关掉时置真、下一次首次开输出时清掉:从点下到回推之间守卫位
+    还是旧的,不让条多挂一拍。条上那句「点开始之前不写」只在守卫挂着时成立 —— 点横幅⑦确认之后条跟着收起;
+    此后(本窗口已确认过)经 01 采集把输出连带关掉再打开,条也不会凭残留的意图位重新上屏。
+  - `app.js` 横幅⑦只认 `reason` 不是 `firstEnable` 的守卫。mock 同形(含 §1.2 连带关输出时解除守卫)。
 
 ## 判据
 
@@ -76,8 +85,10 @@
 - 同文件「HOST 首次开输出(J166):守卫的置位、解除与来由」:撤销解除、非首次不设、Restore 不被改写、确认条挂着时存盘重灌
   ⇒ Restore 仍待确认、J92a 连带关输出解除、上桥字面量。
 - `tests/core/test_bridge_args.cpp`「parseSetOutputEnabledArgs」:第二参的形态与默认。
-- `web-preview/tests/smoke-output-stale-page.mjs` ⑥b:钮的接线与确认条的显隐(页面级,真渲染;f / g 两格钉
-  「守卫没挂 ⇒ 条不上屏 / 跟着收起」)。
+- `web-preview/tests/smoke-output-stale-page.mjs` ⑥b:钮的接线与确认条的显隐(页面级,真渲染)。f 钉「没点开始 ⇒
+  关输出(开关直接关 / 开采集连带关 / 宿主重灌出 OFF)再开仍带 requireConfirm、守卫待确认、条再出、播放中页脚不进写入」;
+  b2 与 d 末尾钉「点过开始 ⇒ 关再开直接写、不出条」;g / g 尾钉「守卫没挂 ⇒ 条不上屏 / 跟着收起」与「横幅⑦也算确认过」;
+  h 钉「确认调用失败不算确认过」。`smoke-tab1-interactions` 源码格钉「确认过」恰好两个置位点、都只认成功回执。
 - 反向注入与读数见 PR 描述。
 
 ## 兼容性影响
@@ -88,8 +99,10 @@
 
 ## 用户文档
 
-`docs/USER_GUIDE.md` / `docs/USER_GUIDE.zh-CN.md`「输出」一节补上「点『知道了,开始』之前只试听、不写」;
-「写自动化」一节加载守卫那一条里「关掉守卫后再打开」的说法随之改准。i18n 三语的确认条正文改为先说「点开始后才写」。
+`docs/USER_GUIDE.md` / `docs/USER_GUIDE.zh-CN.md`「输出」一节补上「点『知道了,开始』之前只试听、不写」,以及
+「没点就关再开仍要确认、确认过一次之后本窗口关再开直接写」;「把结果写进 DAW」一节第 1 步补「先点『知道了,开始』
+(重开工程时点横幅『继续写入自动化』),否则只试听不写」;加载守卫那一条里「关掉守卫后再打开」的说法随之改准。
+i18n 三语的确认条正文改为先说「点开始后才写」。
 
 ## 没改、说法相同的地方(不在本仓)
 
@@ -99,4 +112,7 @@
 ## 审批
 
 - 用户裁定 J166(masterPlan `plan/adjudications.md`)。
+- 统筹裁定 **J166a**(同上,J166 实施细则):给既有桥函数加尾部可选参数(`setOutputEnabled(on, opts?)`)**算「只增」**,
+  `contractVersion` 不变、§0.1 不改 —— 旧调用方不传 `opts` 行为不变、传错回 `badArg`,与「只增」的兼容性要求一致。
+  若以后要在 §0.1 补一句「尾部可选参数属于只增」,另走变更文档。
 - 本 PR 挂 `status/frozen-contract`。

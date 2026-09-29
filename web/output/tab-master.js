@@ -1237,31 +1237,41 @@ export function createTabMaster(opts) {
                 hideWriteConfirm();
                 return;
             }
-            // 每工程会话首次 OFF→ON 就地展开双后果文案(非模态);
+            // 「首次」OFF→ON 就地展开双后果文案(非模态);
             // **与加载守卫互斥**:守卫横幅⑦在场时不补弹(05 §2.0 横幅⑦逐字)。
-            // 「首次」的判法没动(本页会话里还没出过这块板 ∧ 没有加载守卫),[J166] 只改了
-            // 「点开始之前写不写」:首次这一下带 `requireConfirm`,C++ 在**同一次调用里**置写入守卫,
+            // [J166] 这一下带 `requireConfirm`,C++ 在**同一次调用里**置写入守卫,
             // 点「知道了,开始」(→ §1.34 confirmPrintGuard)之前只试听、不写宿主自动化。
             // 不能拆成「先开、再单独发一次置守卫」:两次桥调用之间那一拍 25Hz tick 就可能进 PRINT。
+            //
+            // 「首次」= 本页会话(= 这次打开插件窗口)里**还没确认过** ∧ 此刻没有守卫待确认。
+            // 「确认过」(`session.writeConfirmSeen`)只在 §1.34 confirmPrintGuard **成功回执之后**记,
+            // 全仓两处:下面确认条的「知道了,开始」、app.js 横幅⑦「继续写入自动化」。
+            // 板子只是**上过屏**、点了「撤销」、或调用被拒,都**不**记 —— 用户没点「开始」就把输出
+            // 关掉(开关直接关 / 开 01 采集连带关 / 宿主重灌出 OFF)再打开,仍走这里:带 requireConfirm、
+            // 置守卫、出板、点开始之前不写(J166 用户原话:「能不能不点开始就不开这个开关?」)。
+            // 若在这里或在板子上屏时就记,那一关一开就不带 requireConfirm、开了就写(#337 独立复核)。
             const guarded = !!(s.print_guard && s.print_guard.pending);
             if (getStore().session.writeConfirmSeen || guarded) {
                 call("setOutputEnabled", true);
                 return;
             }
-            // 「出过」**不在这里**预先闩:这次调用可能被拒(store 里 noTimeline / 只读还没回推时,
-            // 上面那道闸会放行),输出没开、板子也不会上屏;若此时已闩,下一次拨开就不带
-            // requireConfirm、当拍可能直接写。「出过」由 renderFlow 在板子真上屏时记。
             local.writeConfirmDismissed = false;
             call("setOutputEnabled", true, { requireConfirm: true });
             showWriteConfirm();
         });
 
         if (el.writeConfirmOk) {
-            el.writeConfirmOk.addEventListener("click", () => {
+            el.writeConfirmOk.addEventListener("click", async () => {
                 // [J166] 「知道了,开始」= 确认写入守卫(§1.34,幂等;与横幅⑦那枚钮同一个入口)。
                 // 此前这枚钮只收起板子,引擎早在开的那一刻就已经在写了。
-                call("confirmPrintGuard");
+                // 收起在 await 之前、当拍发生(不等回执 / 回推,见 writeConfirmDismissed)。
+                const pending = call("confirmPrintGuard");
                 hideWriteConfirm();
+                const res = await pending;
+                // 本窗口「确认过」只在这里(与 app.js 横幅⑦)记,且只认成功回执:`call()` 在桥抛错时
+                // 回 null,那时守卫可能还挂着,记了就会让下一次关再开不带 requireConfirm、开了就写。
+                if (res && res.ok !== false)
+                    getStore().session.writeConfirmSeen = true;
             });
         }
         if (el.writeConfirmUndo) {
@@ -1309,7 +1319,7 @@ export function createTabMaster(opts) {
     // 紧接着就同步调 `showWriteConfirm()` → `render()`。那一刻 `scvb.state` 回推还没到,
     // store 里 `output_enabled` **仍是 false**。若 renderFlow 里是「状态单判」的与门,
     // 它会把刚摘掉的 `hidden` 当场扣回去;而等真值到达时**没有任何代码会再摘一次**
-    // (全文只有这里写过 `hidden = false`),偏偏 `writeConfirmSeen` 已经闩死 ——
+    // (全文只有这里写过 `hidden = false`),偏偏当时 `writeConfirmSeen` 在点开那一下就已闩死 ——
     // 净效果是 05 §2.0 要求的那块首次 OFF→ON 知情面板在真机上**彻底消失**。
     //
     // 预览世界看不出来:mock 的 `patchState → emit` 是**同步**派发,store 在
@@ -2044,11 +2054,15 @@ export function createTabMaster(opts) {
         // `writeConfirmDismissed` 压住,不多挂那一拍。
         //
         // [J166] 再与上「写入守卫真的待确认」(`guardHeld`):板子正文说的是「点『知道了,开始』后才写
-        // (点之前只试听、不写)」,这句话只在守卫挂着时成立。意图位只有 hideWriteConfirm 会清,有两条路
-        // 绕开它:① 出过板之后开 01 采集(J92a 连带关输出,C++ 清守卫)或宿主重灌出 OFF,再拨开输出
-        // 走的是非首次分支(不带 requireConfirm、不置守卫、开了就写),残留的意图位会让板子重新上屏;
-        // ② 板子与横幅⑦并存时点横幅⑦的钮确认,守卫解除、开始写,板子却还挂着。与上这一项,两条都跟着收起。
+        // (点之前只试听、不写)」,这句话只在守卫挂着时成立。意图位只有 hideWriteConfirm 会清,而横幅⑦的钮
+        // 不走它:② 板子与横幅⑦并存(板子挂着时宿主重灌出 ON)时点横幅⑦的钮确认,守卫解除、开始写,
+        // 板子却还挂着;① 此后(本窗口已算确认过)再经 01 采集连带关输出或宿主重灌出 OFF、再拨开输出,
+        // 走的是非首次分支(不带 requireConfirm、不置守卫、开了就写),残留的意图位会让板子重新上屏。
+        // 与上这一项,两条都跟着收起。(没确认过就关再开走的是首次分支,守卫照常置上,板子上屏是对的。)
         // 点开那一帧不受影响:C++ 在同一次 setOutputEnabled 里开输出并置守卫,两者随同一帧回推。
+        //
+        // ⛔ 这里**不记**本窗口「确认过」(`session.writeConfirmSeen`):板子上屏 ≠ 用户点了「开始」。
+        // 记号只在 §1.34 confirmPrintGuard 成功回执之后置(ok 钮与 app.js 横幅⑦),理由见 wireFlow 输出开关处。
         if (el.writeConfirm) {
             const guardAsks =
                 firstEnableGuardPending(s) && !local.writeConfirmDismissed;
@@ -2058,10 +2072,6 @@ export function createTabMaster(opts) {
                 g.output_enabled &&
                 guardHeld
             );
-            // 板子上了屏 = 本窗口里「出过」了。关窗再开、按守卫显示出来的那一次也算 —— 此后在这个
-            // 窗口里再关、再开输出开关不再出板(与点开关出板那一次同口径,「首次」的判法不变)。
-            if (!el.writeConfirm.hidden && st.session)
-                st.session.writeConfirmSeen = true;
         }
 
         // write 确认条正文:follow 档走 .follow 变体(无 {x}–{y} 空洞)
