@@ -64,6 +64,7 @@ add_executable(scvb_tests
   core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
+  core/test_panlaw.cpp # [SL-575] 10 §4.4.1 PANLAW-2..5 渲染层对拍(发版验证清单 D3)
   core/test_output_session.cpp
   core/test_feature_fingerprint.cpp
   core/test_suggestion_export.cpp

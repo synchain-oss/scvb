@@ -326,7 +326,6 @@ const NON_NATIVE_TOP = [
     "screenshots-t48/",
     "screenshots/",
     "scripts/",
-    "spikes/",
     "web-preview/",
 ];
 // **混合**顶层条目:内部既有命中面又有不命中面,所以两张清单哪张都放不下它。
