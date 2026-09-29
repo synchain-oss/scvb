@@ -199,10 +199,22 @@ log("=== ① 契约映射的纯函数 ===");
         [false, true],
         "[J166] 不认识的 reason ⇒ 按加载守卫处理(§0.1 容忍纪律)",
     );
+    // 两个谓词各自的 pending 前提各由一格钉住:删掉 firstEnable 那边的 `g.pending` ⇒ 第一格红;
+    // 删掉 restore 那边的 ⇒ 后两格红(残值是 restore 或缺席时横幅⑦会在守卫已解除后照亮)。
     eq(
         both({ pending: false, reason: "firstEnable" }),
         [false, false],
         "[J166] 不待确认时 reason 是残值,两者都不成立",
+    );
+    eq(
+        both({ pending: false, reason: "restore" }),
+        [false, false],
+        "[J166] 不待确认、残值 restore ⇒ 横幅⑦不亮",
+    );
+    eq(
+        both({ pending: false }),
+        [false, false],
+        "[J166] 不待确认、无 reason ⇒ 横幅⑦不亮",
     );
     eq(
         [TM.firstEnableGuardPending({}), TM.restoreGuardPending({})],

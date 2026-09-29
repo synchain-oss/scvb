@@ -823,7 +823,8 @@ try {
     //      不带 requireConfirm(板子上过屏就算本窗口「出过」,「首次」的判法不变)。
     // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红;去掉 ok 钮里的
     // `call("confirmPrintGuard")` ⇒ b、d 红;横幅⑦改回只看 pending ⇒ a、d 的「横幅⑦不亮」红;
-    // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红。
+    // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红;
+    // 去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」红。
     log(
         "=== ⑥b [J166] 首次开输出:点「开始」之前守卫在场;开始 / 撤销的接线 ===",
     );
@@ -877,6 +878,16 @@ try {
             await click("tabnav-master");
             await sleep(200);
         };
+        // 点钮并在**同一个 JS 回合里**读板子的 hidden:回推(mock 250ms 一帧)不可能插进同一回合,
+        // 所以读到的是「点下当拍」的状态,不靠计时。守的是 `writeConfirmDismissed`:
+        // 没有它,点完到回推之间守卫位还是旧的,板子会多挂一帧。
+        const clickHidesNow = (name) =>
+            evaluate(
+                IN(
+                    `const b = gb(${JSON.stringify(name)}); if (!b) return null; b.click();
+                     const n = gb("master-write-confirm"); return !!n && n.hidden;`,
+                ),
+            );
 
         // ---- a / b:首次开 → 开始
         check((await open("connected")) !== null, "⑥b 取到页内 DOM 快照");
@@ -900,7 +911,10 @@ try {
             (await bannerShown()) === false,
             "⑥b-a ★ 横幅⑦(「随工程恢复」)不亮 —— 这不是重开工程",
         );
-        check(await click("master-write-confirm-ok"), "⑥b-b 点「知道了,开始」");
+        check(
+            (await clickHidesNow("master-write-confirm-ok")) === true,
+            "⑥b-b 点「知道了,开始」⇒ 板子当拍收起(不等回推)",
+        );
         check(await waitFor(boardHidden, 5000), "⑥b-b 确认板收起");
         check(
             (await calls()).some((c) => c.name === "confirmPrintGuard"),
@@ -923,7 +937,10 @@ try {
         check(await spy(), "⑥b-c 前置:桥函数装上记录器");
         check(await click("master-output-toggle-switch"), "⑥b-c 点输出开关");
         check(await waitFor(boardShown, 5000), "⑥b-c 确认板出现");
-        check(await click("master-write-confirm-undo"), "⑥b-c 点「撤销」");
+        check(
+            (await clickHidesNow("master-write-confirm-undo")) === true,
+            "⑥b-c 点「撤销」⇒ 板子当拍收起(不等回推)",
+        );
         check(await waitFor(boardHidden, 5000), "⑥b-c 确认板收起");
         check(
             await waitFor(
