@@ -251,10 +251,17 @@
   - 证据:`docs/USER_GUIDE.zh-CN.md` 九条规则里第 1 条(路由指向总线)、第 4 条(宿主 pan 居中)、第 3 条(J12 措辞)都在。「推子 0 dB」不在手册里(`grep -c -E "0 ?dB" docs/USER_GUIDE.zh-CN.md` = 0),**按 J45 它只是 null test 的可比性前提、不是产品要求**,所以不算缺。
   - 状态:✅ 已核
 
-- [ ] **H2 ⚠ 单轨 Freeze / Render in Place 得静音文件的红字,三处一致**
+- [x] **H2 ⚠ 单轨 Freeze / Render in Place 得静音文件的红字,三处一致**
   - 查什么:USER_GUIDE + KNOWN_ISSUES + UI 首次导出提示三处一致。
   - 证据:KNOWN_ISSUES `KI-4` 有(第 33 行起)。**USER_GUIDE 里没有**:`grep -c -i -E "freeze|render in place|静音文件|替换式|原素材"` 在 `USER_GUIDE.zh-CN.md` 为 0,在 `USER_GUIDE.md` 为 2,但那两行说的都是 SCVB 自己的冻结 P / V,不是这条。**UI 里没有首次导出提示**:同一模式在 `web/shared/i18n.js` 0 处。(`5b1c908e`)同一条 grep 在 `USER_GUIDE.zh-CN.md` 仍为 0、`USER_GUIDE.md` 仍为 2;在 `i18n.js` 命中 12 处,逐条看过全是 SCVB 自己的冻结 P / V(`tracks.colFreeze*`、`tour.step26.*`、`workflow.tweak` 等),**不是**宿主 Freeze / Render in Place 的提示 —— 结论不变。
-  - 状态:⏳ 统筹(USER_GUIDE 补一处指向 KI-4;UI 提示做不做要用户裁)
+    (SL-574 / J176,#344)用户裁定 J176:两份用户手册与两份 README 现在就写;UI 那一处**落在 Input 导览里**,不另做「首次导出提示」。三处现状:
+    ① `docs/KNOWN_ISSUES.md` 的「KI-4」小节(未改);
+    ② 两份用户手册新增「导出与渲染」一节(`docs/USER_GUIDE.zh-CN.md` 的 `## 导出与渲染` / `docs/USER_GUIDE.md` 的 `## Exporting and rendering`),「5 分钟上手」写自动化一步的末尾、故障排查表、已知限制各有一处指向它;两份 README 的快速上手在九条规则之后加了一段简短警告,链到该节;
+    ③ Input 导览第 5 步(`web/input/tour-in.js` 的 `TOUR_IN_STEPS` 第 5 条,居中卡;词条 `tour-in.step5.*` zh / en / fr),原末步「完整控制在 Output」顺延为第 6 步。
+    一致性按四件事逐处核:单轨就地渲染 / 冻结 / 单轨导出得到静音文件;选「替换原音频」会把原素材换成静音;对人声总线整体导出;要单轨素材先旁路(Bypass)或移除该轨的 SCVB Input 再渲染 —— 三处都有,说法不冲突。「不确定时先备份」只在 KI-4 与手册里,导览为求短没写。
+    原来那条 grep 现在:`USER_GUIDE.zh-CN.md` 5 处(原为 0,5 处全是本卡新增:写自动化一步末尾的指引、新增一节里警告的两行、故障排查行、已知限制行)、`USER_GUIDE.md` 3 处(英文这条模式只认得出 `Freeze` / `Render in Place` 两个词,多出的 1 处是新增一节的警告段)。`i18n.js` 里 `tour-in.step5.body` 三语各 1 处是本条,其余仍是 SCVB 自己的冻结 P / V。
+    机检:`web-preview/tests/smoke-input-tour.mjs` ①(步数 6、第 5 步是居中卡且夹在连接状态与末步「?」之间)与 ④(三语词条与步骤表一一对应、第 5 步正文含上面四件事的关键词);`web-preview/tests/smoke-ui-layout-page.mjs` E4(真页面上三语各走到第 5 步:计数 `5/6`、标题与正文逐字等于词条、说明框整体在卡内)。
+  - 状态:✅ 已核
 
 - [x] **H3 DAW 的 mute / solo / 推子对 SCVB 通路无效(J45)**
   - 证据:两份 USER_GUIDE、KNOWN_ISSUES、两份 README 都**没有**这条说明(`grep -i -E "\bmute\b|\bsolo\b|独奏"` 的命中只有 Input 自己「向下游输出静音」的描述)。S1 spike C-10 当时的判据就是「solo / mute 对 SCVB 通路失效」。

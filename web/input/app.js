@@ -634,7 +634,7 @@ if (scaleUi.revert) scaleUi.revert.addEventListener("click", revertScale);
 addEventListener("pagehide", stopScaleCountdown);
 
 // ------------------------------------------------------------- 首启轻量引导([J80] T48)
-// 链条:独立语言卡(web/shared/lang-start.js,与 Output 同一件)→ 5 步 mini tour
+// 链条:独立语言卡(web/shared/lang-start.js,与 Output 同一件)→ mini tour
 // (web/input/tour-in.js)。Output 那条链中间还有红字九条页与询问步 —— Input 侧 J80 定的
 // 是「轻量」:语言卡之后直接进第 1 步(欢迎居中卡),那张卡自带 Skip,不再单设询问步。
 const tour = createInputTour({

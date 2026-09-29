@@ -612,6 +612,22 @@ log("=== ⑤ 词条:tour.* 三语 ===");
             /同一配对的两轨行首显示同色圆点/.test(zh("tour.step23.body")),
         "zh step23 写「同一配对的两轨」而非「同组两轨」(J153 12.4)",
     );
+    // [SL-572] 12.4 改的是主语(「同一配对的两轨」),en/fr 旧句缺主语(Same pair shows… /
+    //      Même paire = …),J127 式三语交叉核对时跟上。同样正反各钉一次,en / fr 各一格。
+    check(
+        !/Same pair shows/.test(T.en["tour.step23.body"]) &&
+            /Both tracks of a pair show the same colored dot/.test(
+                T.en["tour.step23.body"],
+            ),
+        "en step23 主语是「一对里的两条轨」(SL-572,跟 J153 12.4)",
+    );
+    check(
+        !/Même paire =/.test(T.fr["tour.step23.body"]) &&
+            /Les deux pistes d'une même paire affichent le même point coloré/.test(
+                T.fr["tour.step23.body"],
+            ),
+        "fr step23 主语是「一对里的两条轨」(SL-572,跟 J153 12.4)",
+    );
 }
 
 // =============================================================================
