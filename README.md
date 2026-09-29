@@ -12,6 +12,8 @@
 
 SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it under the terms of the [GPL-3.0-or-later](LICENSE). If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
 
+> **Status: pre-release (rc).** Pre-release builds are on the [Releases page](https://github.com/synchain-oss/scvb/releases). Features and the interface may still change before the first stable release; known limitations are listed in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md).
+
 ## What it does
 
 Mixing engineers routinely spend hours drawing volume and pan automation across dozens of tracks of lead and backing vocals from different singers: keeping the voices from crowding the same spot in the stereo image, or making sure passages from different singers sit at a consistent perceived loudness. It is time-consuming and demanding work, mostly tedious and highly repetitive — and a meaningful way to aggravate the repetitive strain injuries that come with the job.
@@ -48,7 +50,7 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 
 ## Install
 
-Releases are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases). If no release is listed there yet, build from source (below).
+Pre-release (rc) builds, and later the stable releases, are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases); you can also build from source yourself (below).
 
 1. From the Releases page, download `SCVB-v<version>-win64.zip` and the matching `.sha256`;
 2. verify the zip against the `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
@@ -79,6 +81,8 @@ Before you start, read these. Breaking any one of them does not make the result 
 > 8. **SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)
 > 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
 <!-- END GENERATED hard-rules:en -->
+
+> ⚠️ **Do not render a vocal track that has SCVB Input on it by itself.** Once Input is connected to SCVB Output, Render in Place, Freeze or a single-track export of one vocal track gives you a silent file; if you choose to replace the original audio, the original is replaced with silence. Export the vocal bus as a whole; if you really need a single-track file, bypass or remove that track's SCVB Input before rendering. Details in the [User Guide, "Exporting and rendering"](docs/USER_GUIDE.md#exporting-and-rendering).
 
 ## Privacy
 

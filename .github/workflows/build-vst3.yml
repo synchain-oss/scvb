@@ -325,7 +325,7 @@ jobs:
       #    先查缓存 —— 键里带 tag,升级 .juce-version 自动换键。
       - name: Restore JUCE cache
         id: juce-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/JUCE
           key: juce-${{ runner.os }}-${{ env.JUCE_TAG }}
@@ -347,7 +347,7 @@ jobs:
           echo "WEBVIEW2_USER_DATA_FOLDER=$env:RUNNER_TEMP\wv2ud" >> $env:GITHUB_ENV
 
       # 4) 缓存 WebView2 NuGet 包(CMake 配置期拉到 build/packages)
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/packages
           key: webview2-nuget-${{ env.WEBVIEW2_NUGET_VERSION }}
@@ -434,7 +434,7 @@ jobs:
       #     不加就永远只写第一次那份,后面新增的编译产物一个都存不下来),靠 restore-keys
       #     的前缀去捞上一次那份。
       - name: Restore sccache disk cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ env.MSVC_VER }}-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'tests/**/CMakeLists.txt', 'cmake/*.cmake', '.juce-version', '.sccache-version') }}-${{ github.run_id }}

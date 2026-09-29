@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803   # v6.1.0
         with: { fetch-depth: 1 }
-      - uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126   # v1.0.191
+      - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10   # v1.0.210
         env:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           # ── 模型切换口 ── 当前 = deepseek-flash(用户 2026-09-10 查证为永久可用的 id;裸名,不带 [1M] 后缀)。
