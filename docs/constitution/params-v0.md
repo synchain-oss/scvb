@@ -1,7 +1,7 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
-状态:**v2.5**(2026-09-29,J177 修订:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点 —— 该位不随工程保存、只在本次会话内有效,实现从没编码过它;**字段 / 类型 / 默认值 / 首启判据 / 容器 abi / 自动化参数面全部零变动**;v2.4 = 2026-09-28 J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
+状态:**v2.5**(2026-09-29,J177 修订:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点 —— 该位不随工程保存、只在本次会话内有效,实现从没编码过它;同段不再写 Input 导览的步数(J177a);**字段 / 类型 / 默认值 / 首启判据 / 容器 abi / 自动化参数面全部零变动**;v2.4 = 2026-09-28 J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
 
 ## 一、Output 插件:自动化参数(共 **123** 个,全部 versionHint=1)[J59/J65]
 
@@ -96,7 +96,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 ```
 其余一切配置从 Output 经控制面 IPC 读写(Input UI 只是远程视图)。
 
-**[J81] Input `ui.guide_seen`**:Input 首启轻量引导([J80]:独立语言卡 + 5 步 mini tour)的**已读位**,bool,默认 `false`(首装 = 没看过)。拼写**逐字沿用 Output 侧的 `guide_seen`**,不新造 `input_guide_seen` 之类的名字 —— 两侧表达的是同一件事(只是引导内容不同),同一语义两个落点正是命名纪律要禁的;判据代码因此可两侧共用(`shouldShowLangStart` 就是一件共用的)。首启判据(两侧同构,J50a):**工程 `ui.guide_seen === false` 且 全局默认 `guide_seen_global === false`** 才弹。header「?」重看入口**不看本位**,已置位也能再开(与 Output 侧 `tour_seen` 的「重看引导」同款)。**不随工程保存**([J177]):本位只在本次会话内有效,每成功载入一份工程 state 就清零;跨工程的「看过了」由全局镜像位承担(Input 的键是 `guide_seen_global_input`,见 §二 末条)。原先登记的编码落点实现从没做过,已撤回,见文末 v2.5 修订节。
+**[J81] Input `ui.guide_seen`**:Input 首启轻量引导([J80]:独立语言卡 + mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准)的**已读位**,bool,默认 `false`(首装 = 没看过)。拼写**逐字沿用 Output 侧的 `guide_seen`**,不新造 `input_guide_seen` 之类的名字 —— 两侧表达的是同一件事(只是引导内容不同),同一语义两个落点正是命名纪律要禁的;判据代码因此可两侧共用(`shouldShowLangStart` 就是一件共用的)。首启判据(两侧同构,J50a):**工程 `ui.guide_seen === false` 且 全局默认 `guide_seen_global === false`** 才弹。header「?」重看入口**不看本位**,已置位也能再开(与 Output 侧 `tour_seen` 的「重看引导」同款)。**不随工程保存**([J177]):本位只在本次会话内有效,每成功载入一份工程 state 就清零;跨工程的「看过了」由全局镜像位承担(Input 的键是 `guide_seen_global_input`,见 §二 末条)。原先登记的编码落点实现从没做过,已撤回,见文末 v2.5 修订节。
 
 ## 四、命名与兼容规则
 
@@ -172,6 +172,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 ## v2.5 修订(2026-09-29,J177 撤回 Input `ui.guide_seen` 的编码落点)
 
 - **[J177→§三 / §四]** 撤回 v2.3([J81e] / [J81f])给 Input `ui.guide_seen` 登记的编码落点「`InputStateCodec` 的 `InputState` 尾部追加 `u32`」。实现从没做过:`InputStateCodec` 的 payload 是 4 个 `u32` + 语言字节,解码严格等长,容不下尾部多出的字节;这一位只活在 Input 实例的内存里,每成功载入一份工程 state 就清零。用户裁定按实现撤回、不补做 —— 跨工程的「看过了」本来就由全局镜像位(Input 键 `guide_seen_global_input`)承担,首启链里走完或跳过 mini tour 都会连全局位一起写。
-- **本文件改了四处**(本节之外):状态行(v2.4 → v2.5);§三 YAML `ui` 行的行尾注释补一句;§三「[J81] Input `ui.guide_seen`」段的末句(原为编码落点)改为「不随工程保存」;§四 编码落点注记里 Input 那一条改写。
-- **§四 那一条里 Output 侧的半句一并删去**:原文说「同批的 Output 侧对应改动是 CFGS 布局尾部追加」guide / tour 两个 `u32`,与紧上一条(`lang_chosen` 条)自述的「与 `guide_seen`/`tour_seen`/`active_tab` 同处」`PRMS` 相矛盾;实现在 `PRMS`(仓内 `src/output/OutputUiState.h`)。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。
+- **本文件改了四处**(本节之外):状态行(v2.4 → v2.5);§三 YAML `ui` 行的行尾注释补一句;§三「[J81] Input `ui.guide_seen`」段:段首括注不再写导览步数(见下),末句(原为编码落点)改为「不随工程保存」;§四 编码落点注记里 Input 那一条改写。
+- **§四 那一条里 Output 侧的半句一并删去**([J177a]):原文说「同批的 Output 侧对应改动是 CFGS 布局尾部追加」guide / tour 两个 `u32`,与紧上一条(`lang_chosen` 条)自述的「与 `guide_seen`/`tour_seen`/`active_tab` 同处」`PRMS` 相矛盾;实现在 `PRMS`(仓内 `src/output/OutputUiState.h`)。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。
+- **[J177a→§三] 导览不再写步数**:§三 括注原写「独立语言卡 + 5 步 mini tour」;[J176] 给 Input 导览加一步(仓内 #344),写死的步数随之过期。改为「mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准」—— 步数是界面内容,不是 state 契约,写在这里每加减一步就得修一次宪。[J80] 立轻量引导时定的 5 步是当时的基线,仓内历史变更文档里的「5 步」照原文保留。
 - **零变动面**:字段名、类型、默认值、首启判据、全局镜像位、state 容器 `abi`、自动化参数面(123 个)与 `tests/golden/` 一律不动;实现侧零行为改动。仓内变更文档 `docs/contract-changes/20260929-j177-withdraw-input-uiguideseen.md`。

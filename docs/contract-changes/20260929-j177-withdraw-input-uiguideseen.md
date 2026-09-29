@@ -2,7 +2,7 @@
 
 > **状态:变更实质已由用户裁定 [J177] 批准,随本 PR 挂 `status/frozen-contract`。** 裁定事项 = 发版前清单第 8 项
 > 「SL-238 / KI-3:`STATE_SCHEMA` 声明了 Input `uiGuideSeen` 而实现没做」,裁定 = **现在就从冻结文档撤回该声明
-> (纯文档、零行为)**。用户原话:「8的话现在就改」。卡 **SL-238**。
+> (纯文档、零行为)**。用户原话:「8的话现在就改」。卡 **SL-238**。实施细则见统筹裁定 **[J177a]**(下文两处引用)。
 > **实现侧零行为改动**:没有改任何 C++ / JS 逻辑;C++ 与 JS 只改了注释(见下「非冻结件」),另加了一组源码级 / 文档级冒烟断言。
 
 ## 变更了哪个冻结契约
@@ -11,14 +11,15 @@
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)—— **不动**。
 - [x] docs/STATE_SCHEMA.md(state schema)—— §二 Input `ui.guide_seen`:YAML 行尾注释、表里「持久化」一行、
       「编码落点」一条改为「无」,「迁移语义」「反向兼容」两条合成一条「迁移 / 兼容:不涉及」;§三「Input 插件 state
-      同用此容器」一句改成实现的实际内容;头注「最后更新」补一条。**零布局 / 零 abi / 零迁移**。
+      同用此容器」一句改成实现的实际内容;表里「语义」一行不再写导览步数([J177a],见下);头注「最后更新」补一条。
+      **零布局 / 零 abi / 零迁移**。
 - [x] docs/SCVB_CONTRACT.md(桥面契约)—— §3.1 `requestInitialState`(Input)语义格里 `ui.guide_seen` 的一句:
       「随工程持久化」改为「只在本次会话内有效、不随工程保存(每成功载入一份工程 state 就清零)」。
       函数名 / 签名 / 事件名 / **载荷字段零变化**,§7 manifest 不动。
 - [ ] tests/golden/(golden 快照)—— **不动**。
 - [x] **宪法** `docs/constitution/params-v0.md`(masterPlan `constitution/params-v0.md` 的仓内只读副本)
-      v2.4 → **v2.5**:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点。字段、类型、默认值、首启判据、
-      state 容器 `abi`、自动化参数面(123 个)**零变化**。
+      v2.4 → **v2.5**:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点;§三 同段不再写导览步数([J177a])。
+      字段、类型、默认值、首启判据、state 容器 `abi`、自动化参数面(123 个)**零变化**。
 
 `contractVersion` 保持 `1.0`,不需要豁免:§0.1 第 3 条的禁止面是改名、改参数顺序、改既有字段语义、删除、收窄取值域。
 `ui.guide_seen` 的名字、类型、取值、什么时候变 `true`(`setGuideSeen` 写入后)、在 §3.1 快照与 §4.1 `scvb.state`
@@ -81,10 +82,19 @@ $ git log --oneline -S "uiGuideSeen" -- src/core/state/
 | ④ | `STATE_SCHEMA.md` §二「迁移语义」「反向兼容」 | 按「老工程无该键 → 默认 false」「旧版忽略未知键」写 | 合成一条「迁移 / 兼容:不涉及」(不在 state chunk 里,新旧字节里都没有它) |
 | ⑤ | `STATE_SCHEMA.md` §三 Input 容器一句 | 只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id + 该位尾扩) | 只含一块 `CFGS`(channel_id + group_id + ui.scale + ui.language),没有 `PRMS`;`ui.guide_seen` 不在其中 |
 | ⑥ | `SCVB_CONTRACT.md` §3.1 语义格 | 随工程持久化 | 只在本次会话内有效、不随工程保存(每成功载入一份工程 state 就清零) |
-| ⑦ | 宪法 `params-v0.md` | 见下一张表 | |
+| ⑦ | `STATE_SCHEMA.md` §二 表「语义」 | 独立语言卡 + 5 步 mini tour | 独立语言卡 + mini tour,步数以 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准([J177a],见下) |
+| ⑧ | 宪法 `params-v0.md` | 见下一张表 | |
 
 ⑤ 那一句里「只含 `PRMS`」与实现也不符(`getStateInformation` 只写 `CFGS`,`ui.scale` / `ui.language` 在 `CFGS` 的
 payload 里,Input 没有参数树)。同一句要改,就按实现一起改实,不另起一张卡。
+
+### 顺带:Input 导览不再写步数([J177a])
+
+`STATE_SCHEMA.md` §二 与宪法 §三 都在括注里写着「独立语言卡 + **5 步** mini tour」。[J176] 给 Input 导览加一步
+(仓内 #344),这个数随之过期。统筹裁定 [J177a]:v2.5 同时把这两处改成**不写步数** ——
+「mini tour,步数以 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准」。步数是界面内容,不是 state 契约;写死在冻结文档里,
+每加减一步都要走一次契约变更。本位的名字、语义、首启判据都不因步数变化。历史记录不改:`20260825-input-guide-seen.md`
+的提案原文、`CHANGELOG.md` 已发版条目里的「5 步」照原样保留,那是当时的事实。
 
 ### 宪法 `params-v0.md` 动了哪几处(原件与副本同改;副本 = 头注行 + 原件逐字节,副本行号 = 原件行号 + 1)
 
@@ -92,7 +102,7 @@ payload 里,Input 没有参数树)。同一句要改,就按实现一起改实,�
 | --- | --- | --- |
 | ① | 状态行(副本第 4 行) | `v2.4` → `v2.5`,补一句本次修订摘要;v2.4 / v2.3 的原描述整句保留 |
 | ② | §三 YAML `ui` 行(副本第 95 行) | 行尾注释补「[J177] guide_seen 不随工程保存(只在本次会话内有效)」 |
-| ③ | §三「[J81] Input `ui.guide_seen`」段(副本第 99 行) | 段末「编码 = …… 尾部追加 …」一句改为「不随工程保存」,写明清零时机与全局位;其余逐字未动 |
+| ③ | §三「[J81] Input `ui.guide_seen`」段(副本第 99 行) | 段首括注「5 步 mini tour」改为不写步数([J177a]);段末「编码 = …… 尾部追加 …」一句改为「不随工程保存」,写明清零时机与全局位;其余逐字未动 |
 | ④ | §四 编码落点注记的 Input 一条(副本第 109 行) | 改为「不落 state chunk」;同一条里 **Output 侧的半句删去**(见下) |
 | ⑤ | 文末 | 追加 `## v2.5 修订(2026-09-29,J177 撤回 Input ui.guide_seen 的编码落点)` 节(修订节只追加,历史节一字未动) |
 
@@ -100,8 +110,8 @@ payload 里,Input 没有参数树)。同一句要改,就按实现一起改实,�
 这与宪法紧上一条(`lang_chosen` 条)自述的「与 `guide_seen` / `tour_seen` / `active_tab` 同处 `PRMS`」矛盾,
 实现也在 `PRMS`(`src/output/OutputUiState.h` 的 `writeUiFlags` / `readUiFlags`;`OutputStateCodec.h` 里没有这两个字段,
 `web-preview/tests/smoke-tab4-settings.mjs` ⑥ 早有一格钉着)。这半句是当年提案时引用的 T37 分支做法,后来 Output 改走了
-`PRMS`。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。**这半句超出 J177 的字面范围**,若统筹认为应另走一次
-修订,可以只从本 PR 的 v2.5 里拿掉这一删(原件与副本同步还原即可),不影响其余改动。
+`PRMS`。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。这半句超出 J177 的字面范围,**已由统筹裁定
+[J177a]:随 v2.5 一并删**(与前一条自相矛盾、代码也在 `PRMS`,属同一处错登记,同一次修宪订正)。
 
 ## 修宪流程落地(`docs/constitution/ADR.md` 文末「修宪流程」第 4 条)
 
@@ -146,8 +156,12 @@ payload 里,Input 没有参数树)。同一句要改,就按实现一起改实,�
   对**未改**的原件跑 ⇒ `params-v0.md` FAIL、其余两份 PASS。
 - **没有**给宪法副本加内容级断言,理由同 J160(`20260928-j160-constitution-guide-keys.md` 的「验证」一节):副本由
   `check-constitution-sync.ps1` 钉成与原件逐字节相等。
+- **导览步数([J177a])没有加断言**:「不写步数」是措辞,钉它的只有回扫。回扫命令与结果见 PR 描述;
+  `STATE_SCHEMA.md` 里「5 步」零命中;宪法副本里只剩文末 v2.5 修订节「导览不再写步数」那一条对旧文的引述;
+  仓内其余命中是历史记录、代码与冒烟里讲导览步数的注释(归 #344),或与导览无关的「发版清单第 5 步」「§3.5 步骤」。
 
 ## 审批
 
 - 用户裁定 **J177**(masterPlan `plan/adjudications.md`),原话见文首。
-- 宪法 §四 Output 半句的删除超出 J177 字面范围,理由见上,由统筹决定留或撤。
+- 统筹裁定 **J177a**(同一文件):① 宪法 §四 Output 半句随 v2.5 一并删;② v2.5 同时把宪法 §三 与 `STATE_SCHEMA.md`
+  的「5 步 mini tour」改成不写步数。
