@@ -332,7 +332,7 @@ log("=== ④ 词条:tour-in.* 三语 + 第 ④ ⑤ 步口径 ===");
     const PH = /\{[A-Za-z_][A-Za-z0-9_]*\}/g;
     for (const k of keys) {
         const sets = LANGS.map((l) =>
-            [...new Set(T[l][k].match(PH) || [])].sort().join(","),
+            [...new Set((T[l][k] || "").match(PH) || [])].sort().join(","),
         );
         check(
             sets[0] === sets[1] && sets[1] === sets[2],
