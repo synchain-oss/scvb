@@ -1247,7 +1247,9 @@ export function createTabMaster(opts) {
                 call("setOutputEnabled", true);
                 return;
             }
-            getStore().session.writeConfirmSeen = true;
+            // 「出过」**不在这里**预先闩:这次调用可能被拒(store 里 noTimeline / 只读还没回推时,
+            // 上面那道闸会放行),输出没开、板子也不会上屏;若此时已闩,下一次拨开就不带
+            // requireConfirm、当拍可能直接写。「出过」由 renderFlow 在板子真上屏时记。
             local.writeConfirmDismissed = false;
             call("setOutputEnabled", true, { requireConfirm: true });
             showWriteConfirm();

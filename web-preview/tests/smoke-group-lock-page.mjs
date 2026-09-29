@@ -716,6 +716,17 @@ try {
         ),
         "点到了输出开关",
     );
+    // [J166] 本窗口首次开输出:写入确认条点「知道了,开始」之前止于 ARMED(不写、也不锁组卡)。
+    check(
+        await waitFor(
+            IN(`const n = gb("master-write-confirm");
+                const b = gb("master-write-confirm-ok");
+                if (!n || n.hidden || !b) return false;
+                b.click(); return true;`),
+            8000,
+        ),
+        "[J166] 首次开输出的写入确认条出现,点了「知道了,开始」",
+    );
     check(
         await waitFor(
             IN(`const c = gb("master-group-selector");

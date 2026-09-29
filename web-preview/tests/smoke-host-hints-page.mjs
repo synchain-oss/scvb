@@ -509,10 +509,23 @@ async function open(host) {
 }
 
 // 点输出开关并等到 PRINT(输出 ON ∧ footer 进入打印行)。
+// [J166] 本窗口里第一次开输出会出写入确认条,点「知道了,开始」之前止于 ARMED、不进 PRINT ——
+// 出了就点掉;同一页第二次起不再出,开关一亮、板子不在就直接往下走。
 async function outputOnIntoPrint(label) {
     check(
         await clickGb("master-output-toggle-switch"),
         `${label}:点到了输出开关`,
+    );
+    check(
+        await waitFor(
+            IN(`const n = gb("master-write-confirm");
+                const b = gb("master-write-confirm-ok");
+                const sw = gb("master-output-toggle-switch");
+                if (n && !n.hidden && b) { b.click(); return true; }
+                return !!sw && sw.getAttribute("aria-checked") === "true" && (!n || n.hidden);`),
+            8000,
+        ),
+        `${label}:[J166] 写入确认条(若出)已点「知道了,开始」`,
     );
     const p = await until((x) => x.outputOn && printing(x));
     check(

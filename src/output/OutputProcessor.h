@@ -202,10 +202,13 @@ struct OutputRuntimeState
     // 同一实例上宿主再次 setStateInformation(带插件状态的宿主撤销、A/B 对比、载入预设)也会
     // 重新置位 —— 有意如此:processor 分不出「重开工程」与「宿主重灌状态」,宁可多要一次确认
     // 也不在状态被换掉之后照旧打印。代价是这类操作后横幅⑦会再出现一次(USER_GUIDE 已写)。
-    // 首次开输出的确认条挂着时宿主重灌 ON ⇒ 来由换成 Restore(界面从确认条换成横幅⑦),仍待确认。
+    // 首次开输出的确认条挂着时宿主重灌 ON ⇒ 来由换成 Restore,仍待确认:横幅⑦随之出现;同一个窗口里
+    // 确认条若还挂着会与它并存(两枚钮都是 §1.34 这一个入口,点哪个都算确认)。
     // atomic:setStateInformation 可在宿主线程上跑,桥面 emit 在消息线程 25Hz 读(同 guideSeen 的理由)。
     // 单个 atomic 装「待确认 + 来由」两件事,读方不会看到「待确认但来由是上一次的」这种撕裂。
     std::atomic<scvb::output::PrintGuardReason> printGuard{scvb::output::PrintGuardReason::None};
+    static_assert(std::atomic<scvb::output::PrintGuardReason>::is_always_lock_free,
+                  "printGuard 必须 lock-free(§8;宿主线程写、消息线程读)");
     bool recaptureArmed = false;
     std::uint16_t recaptureTracksMask = 0;
     double recaptureStartS = 0.0;

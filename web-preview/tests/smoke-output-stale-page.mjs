@@ -820,11 +820,13 @@ try {
     //   c. 新页面(= 关窗再开)点「撤销」⇒ 关输出,守卫随之解除;
     //   d. 新页面上**没有意图位**、只有 C++ 侧的首次开输出守卫(关窗再开时的真实处境)⇒ 板子照样
     //      出现、横幅⑦照样不亮,点「开始」照样确认;之后在同一窗口再关、再开 ⇒ 不重复出板、
-    //      不带 requireConfirm(板子上过屏就算本窗口「出过」,「首次」的判法不变)。
+    //      不带 requireConfirm(板子上过屏就算本窗口「出过」,「首次」的判法不变);
+    //   e. 首次那一下被拒 ⇒ 板子没上屏、不算「出过」,第二次拨开仍带 requireConfirm。
     // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红;去掉 ok 钮里的
     // `call("confirmPrintGuard")` ⇒ b、d 红;横幅⑦改回只看 pending ⇒ a、d 的「横幅⑦不亮」红;
     // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红;
-    // 去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」红。
+    // 去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」红;
+    // 在首次分支里提前置 `writeConfirmSeen` ⇒ e 红。
     log(
         "=== ⑥b [J166] 首次开输出:点「开始」之前守卫在场;开始 / 撤销的接线 ===",
     );
@@ -1014,6 +1016,56 @@ try {
             "⑥b-d ★ 再开不带 requireConfirm(开了就写)",
         );
         assertClean("⑥b d(关窗再开时的确认板)");
+
+        // ---- e:首次那一下被拒(store 里 noTimeline / 只读还没回推时开关的闸会放行)⇒ 板子没上屏,
+        //      「出过」不许被闩,下一次拨开仍带 requireConfirm(#337 复审【重要】)。
+        //      在首次分支里提前置 `writeConfirmSeen` ⇒ 下面两个 ★ 红(板子那格照样绿:第一下留下的
+        //      意图位还在,输出一开板子就出 —— 可那时没有守卫,正是这格要抓的「板子挂着却在写」)。
+        check((await open("connected")) !== null, "⑥b-e 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-e 前置:桥函数装上记录器");
+        // 记录器外再包一层:第一次 setOutputEnabled 回 noTimeline、不改状态(真桥 §1.3 拒绝态同形)。
+        check(
+            await shell(`
+                const inner = s.mock.setOutputEnabled;
+                let n = 0;
+                s.mock.setOutputEnabled = function (...a) {
+                    n += 1;
+                    if (n === 1) {
+                        window.__j166Calls.push({ name: "rejected", args: JSON.parse(JSON.stringify(a)) });
+                        return { ok: false, reason: "noTimeline" };
+                    }
+                    return inner.apply(this, a);
+                };
+                return true;`),
+            "⑥b-e 前置:第一次开输出将被拒",
+        );
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-e 第一次点输出开关(被拒)",
+        );
+        await sleep(600);
+        check((await outOn()) === false, "⑥b-e 被拒 ⇒ 输出仍关");
+        check((await evaluate(boardHidden)) === true, "⑥b-e 被拒 ⇒ 板子没上屏");
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-e 再点一次输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-e 这一次确认板照常出现");
+        eq(
+            (await calls()).map((c) => [c.name, c.args]),
+            [
+                ["rejected", [true, { requireConfirm: true }]],
+                ["setOutputEnabled", [true, { requireConfirm: true }]],
+            ],
+            "⑥b-e ★ 首次被拒之后,第二次拨开仍带 {requireConfirm:true}",
+        );
+        eq(
+            await guard(),
+            { pending: true, reason: "firstEnable" },
+            "⑥b-e ★ 守卫照常置上(板子挂着时不写)",
+        );
+        assertClean("⑥b e(首次开输出被拒)");
     }
 
     // =========================================================================
