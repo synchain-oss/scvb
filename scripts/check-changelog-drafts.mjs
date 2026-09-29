@@ -337,7 +337,9 @@ function judgeBody(body, landed, selfPr, bodyAllow) {
                 r.num +
                 ")`,也不是 `Merge pull request #" +
                 r.num +
-                " from`)—— 多半是引了一个**关掉没合**的 PR;" +
+                " from`,也不在任何提交正文末段的 `" +
+                TRAILER_KEY +
+                "` 尾注里)—— 多半是引了一个**关掉没合**的 PR;" +
                 "去找真正落地的那个号(例:#106 从未合并,那件事落在 `6af6653` / #111,标题写着「接替 #106」);" +
                 "确认这个号是对的、机检判错了,就去 CHANGELOG 注释块的「" +
                 BODY_ALLOW_HEAD +
@@ -639,13 +641,21 @@ function leaks(block, titles, forms = FORMS, trailers = []) {
                 shipped.PR.set(n, {
                     sha: tr.sha,
                     title: TRAILER_KEY + " 尾注(提交正文末段)",
+                    trailer: true,
                 });
     const out = [];
     for (const token of tokens) {
         if (allow.has(token)) continue;
         const { form, num } = classify(token);
         const hit = shipped[form].get(num);
-        if (hit) out.push({ token, form, sha: hit.sha, title: hit.title });
+        if (hit)
+            out.push({
+                token,
+                form,
+                sha: hit.sha,
+                title: hit.title,
+                trailer: hit.trailer === true,
+            });
     }
     return out.sort((a, b) => a.token.localeCompare(b.token));
 }
@@ -1424,9 +1434,24 @@ if (selfTest) {
                 [...la].join(","),
         );
         // ⓑ 块里那半:尾注里的号在块里还有预写条目 ⇒ 判漏搬(两半量同一个集合)。
+        const lb = leaks(wrap("修复\n- 条目" + mark("7")), [], FORMS, TR);
         check(
-            leaks(wrap("修复\n- 条目" + mark("7")), [], FORMS, TR).length === 1,
+            lb.length === 1,
             "尾注里的号在块里还有预写条目,leaks 却没判漏搬 —— 正文侧与块里那半量的不是同一个集合",
+        );
+        // 话术按来源分支:尾注来的要说是尾注(标题里找不到这个号),标题来的照旧。
+        const lt = leaks(
+            wrap("修复\n- 条目" + mark("5")),
+            [{ sha: "t000001", title: "feat: x (#5)" }],
+            FORMS,
+            TR,
+        );
+        check(
+            lb.length === 1 &&
+                lb[0].trailer === true &&
+                lt.length === 1 &&
+                lt[0].trailer === false,
+            "漏搬条目的来源标记不对(尾注来的没标 trailer,或标题来的被标了)—— 判红话术会指错地方",
         );
         // ⓒ 生成器格式:按**数值**排序(字典序会把 #10 排在 #9 前面),解析回来一个不差。
         const line = formatTrailer(new Set(["207", "9", "10"]));
@@ -1694,16 +1719,25 @@ try {
         // 写成「已随 <sha> 上线」就等于把本卡通篇强调的「标题提到 ≠ 上线」在自己的输出里说反了,
         // 而撞上红的人第一件事就是 `git show <sha>` 去核 —— 核出一条与落地无关的提交,结论会
         // 滑向「机检乱报」,下一步就是删条目(规矩⑤明禁)或滥用放行口(#197 复审第 4 轮【建议】)。
+        // [SL-576] 号是从尾注来的就照实说是尾注,不说「在标题里出现过」—— 去 `git show` 那条提交
+        // 的人在标题里找不到这个号,结论又会滑向「机检乱报」(上面那段说的同一条路)。
         for (const f of found)
             console.error(
                 "  [FAIL] #" +
                     f.token +
                     "(" +
                     FORMS[f.form].label +
-                    ")在主线标题里出现过,预写条目却还留在注释块里;最近一次提到它的是 " +
-                    f.sha +
-                    " —— " +
-                    f.title,
+                    ")" +
+                    (f.trailer
+                        ? "被主线提交 " +
+                          f.sha +
+                          " 正文末段的 " +
+                          TRAILER_KEY +
+                          " 尾注列为已落地,预写条目却还留在注释块里"
+                        : "在主线标题里出现过,预写条目却还留在注释块里;最近一次提到它的是 " +
+                          f.sha +
+                          " —— " +
+                          f.title),
             );
         console.error(
             "  搬法见 CHANGELOG.md 注释块开头那段「搬运规矩」:换成本 PR 号 → 追加到正文同名小节 → 块里整条删掉。",
