@@ -95,39 +95,51 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
 
 前置满足后,由维护者执行:
 
-1. 记下这次要压的 `feature/v1` 提交,从 `dev` 拉一条临时分支,把它压进来(前置满足时是快进形态,没有冲突):
+1. 记下这次要压的 `feature/v1` 提交,从 `dev` 拉一条临时分支,把它压进来(前置满足时是快进形态,没有冲突),提交说明末段带上 `Landed-PRs` 尾注:
 
    ```bash
    git fetch origin
    FV1=$(git rev-parse origin/feature/v1)
    git switch -c feat/v1-milestone-<版本> origin/dev
    git merge --squash "$FV1"
-   git commit -s -F <提交说明文件>
+   { cat <提交说明文件>; printf '\n\n'; node scripts/check-changelog-drafts.mjs --landed-trailer "$FV1"; } > <带尾注的说明文件>
+   git commit -s -F <带尾注的说明文件>
    ```
 
-   提交说明写:本次版本号、压的是 `feature/v1` 的哪个提交(完整 sha)、完整历史见 `feature/v1`、本版内容见 CHANGELOG 对应版本节;末行是 `Signed-off-by`。
-2. 推之前核三件事 —— 树与 `$FV1` 逐字相同、恰好一个提交、带签名:
+   提交说明写:本次版本号、压的是 `feature/v1` 的哪个提交(完整 sha)、完整历史见 `feature/v1`、本版内容见 CHANGELOG 对应版本节。说明文件里**不要**自己写 `Signed-off-by`:`-s` 会把它加在尾注下面,与尾注同在最后一段。
+
+   为什么要尾注:docs-truth 的「Changelog drafts not stranded」一步要求 CHANGELOG 里每个 `(#N)` 都在 base 分支上落过地,它原本只认提交标题尾部的 `(#N)`。压成一个提交之后,`dev` 的历史里没有 `feature/v1` 上那几百个合并提交的标题,这一步会对正文里几乎每个号判红。上面第五行生成一行 `Landed-PRs: #… #…`,列的是这道机检在 `$FV1` 上认的全部落地 PR 号(只读本地 git 历史,不联网);它进了 `dev` 的历史之后,机检把它列出的号也算已落地,与 `feature/v1` 这个分支还在不在无关。git 只把正文**最后一段**当尾注读,所以它必须与 `Signed-off-by` 同在最后一段,中间不空行。
+2. 推之前核五件事 —— 树与 `$FV1` 逐字相同、恰好一个提交、带签名、尾注被 git 认出且与生成的一致、CHANGELOG 机检在 `dev` 上是绿的:
 
    ```bash
    git diff --quiet "$FV1" HEAD; echo "diff-exit=$?"          # 必须是 0
    git rev-list --count origin/dev..HEAD                      # 必须是 1
    git log -1 --format=%B | grep -c '^Signed-off-by:'         # 必须 >= 1
+   test "$(git log -1 --format='%(trailers:key=Landed-PRs)')" = "$(node scripts/check-changelog-drafts.mjs --landed-trailer "$FV1")"; echo "trailer-exit=$?"   # 必须是 0
+   node scripts/check-changelog-drafts.mjs --base origin/dev; echo "drafts-exit=$?"   # 必须是 0
    ```
+
+   最后一条读的是 `origin/dev..HEAD` 上的尾注(这时它还只在本地这个提交上),输出里有一行 `[BASE] Landed-PRs 尾注 <sha>(只在 HEAD 上)`。
 3. 推这条临时分支,开 PR 到 `dev`(`dev` 要求走 PR,不能直推;分支名要符合 `branch-gate` 的 `feat/*` / `feature/*`)。这个 PR 只有一个提交,DCO 与冻结契约守卫照常判。它会碰到冻结契约文件(`feature/v1` 期间对它们的改动),按 `CLAUDE.md` §5 挂 `status/frozen-contract` 标签;对应的变更文档已随 `feature/v1` 一起进来,不另写。
-4. CI 绿了、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名):
+4. CI 绿了、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名)。正文用第 1 步那个提交的正文原样带过去 —— 末段就是 `Landed-PRs` 尾注加 `Signed-off-by`,不要手抄:
 
    ```bash
-   gh pr merge <PR 号> --squash -t "<标题> (#<PR 号>)" -b "<正文>"
+   git log -1 --format=%b HEAD > <正文文件>                   # HEAD = 第 1 步那个提交
+   gh pr merge <PR 号> --squash -t "<标题> (#<PR 号>)" -F <正文文件>
    ```
 
-   ⚠ 已知例外:docs-truth 里的「Changelog drafts not stranded」一步按 **base 分支的提交标题**判 CHANGELOG 正文里的每个 `(#N)` 有没有落地,而 `dev` 的历史里没有 `feature/v1` 上那些合并提交的标题 —— 所以它在这个 PR 上会成片判红(压进 `dev` 之后,push→`dev` 与之后 base=`dev` 的 PR 也一样),红的原因不是 CHANGELOG 写错。这一步怎么处理(让它改读 `feature/v1` 的落地记录,或确认后带着这条红合并)要在里程碑合并之前定。
-5. 合后回读:`dev` 上的新提交与 `$FV1` 的树逐字相同、带签名:
+   正文里漏了尾注,这个 PR 上的 CI 看不出来(它读的是 PR 自己那个提交上的尾注),要到合进 `dev` 之后 docs-truth 才成片判红 —— 所以第 5 步要在 `dev` 上再跑一次。
+5. 合后回读:`dev` 上的新提交与 `$FV1` 的树逐字相同、带签名、CHANGELOG 机检在 `dev` 上是绿的:
 
    ```bash
    git fetch origin
    git diff --quiet "$FV1" origin/dev; echo "diff-exit=$?"     # 必须是 0
    git log -1 --format=%B origin/dev | grep -c '^Signed-off-by:'   # 必须 >= 1
+   git switch --detach origin/dev
+   node scripts/check-changelog-drafts.mjs --base origin/dev; echo "drafts-exit=$?"   # 必须是 0
    ```
+
+   `switch --detach` 是为了让 HEAD 就是 `origin/dev`:留在第 1 步的分支上跑,读到的是本地那个提交上的尾注,`dev` 上漏了尾注也照样绿。`drafts-exit` 不是 0 就先别打 tag,看 `git log -1 --format=%B origin/dev` 的末段有没有那行尾注;机检认 `dev` 历史里**任何一个**提交末段的尾注,不限于里程碑这个,所以补救是再合一个正文末段带同一行尾注的提交进 `dev`。
 
    push→`dev` 会自动跑一次全量 `build-vst3`;它绿了才进发版清单第 6 步打 tag。
 

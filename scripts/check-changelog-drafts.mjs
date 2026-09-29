@@ -7,7 +7,8 @@
 //   (最早的一条随 `11fb039` / #107 上线),而正文里一个字都没有。没有任何门禁看得见:
 //   注释块渲染不出来,发版清单第 1 步「每条带 PR 号」查的是**正文**,漏搬的条目不在它眼里。
 //
-// 判据:注释块里任何 `pending #<号>`,只要那个号出现在 **base 分支的提交标题**里,就是漏搬。
+// 判据:注释块里任何 `pending #<号>`,只要那个号出现在 **base 分支的提交标题**里,就是漏搬
+//   (PR 号另认 base 历史里提交正文末段的 `Landed-PRs:` 尾注,[SL-576],见下面 §边界)。
 //   号有三种形态,各有各的抽法(见 FORMS):
 //     · `#SL204` —— 卡号,标题里写作 `SL-204`;
 //     · `#83`    —— PR 号,标题里写作**尾部**的 `(#83)`(或老式 `Merge pull request #83 from`);
@@ -39,8 +40,9 @@
 //     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **本地跑时 base 可能是陈旧的** remote-tracking ref(谁也不保证跑 gates 之前 fetch 过),
 //     陈旧 ⇒ 已上线集合变小 ⇒ **静默变绿**。在 gates 里联网去挡不合适,所以改为**显形**:
-//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题(落地位 K 个,最大 #M);
-//     块里 T 个待合并的号`。[SL-319] 起中间那段是**落地位基线**:下面那道 fail-closed 只挡
+//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题、A 条 Landed-PRs 尾注
+//     (只在 HEAD 上的另有 B 条;落地位 K 个,最大 #M);块里 T 个待合并的号`,
+//     每条尾注再各打一行它在哪个提交、几个号([SL-576])。[SL-319] 起「落地位」那段是**落地位基线**:下面那道 fail-closed 只挡
 //     「集合为空」,挡不住「集合被缩小」,而缩小的失效形态一样(maxLanded 变小 ⇒ 正文几乎
 //     每个号都走 WARN)。基线绿时也报,下次不对劲才有对照
 //     (#197 复审 gates【建议】①、第 6/7 轮【建议】)。判红时它回答「这次拿哪天的 base 比的」,
@@ -56,6 +58,27 @@
 //     `(#N)`,那个号从此不出现在主线任何一条标题里,对应条目会**永远判绿**(不是假红,
 //     是这道门禁最反对的那种「永远绿」)。卡号 / 裁定号两支不受影响 —— 它们写在标题正文里,
 //     与合并方式无关。这条不改判据(该禁掉的是 rebase 合并,不是脚本能管的事)。
+//   · [SL-576] **里程碑 squash 之后,base 的标题里没有支线的落地记录**:`feature/v1` 压成一个
+//     提交合进 `dev`(J171)之后,几百个 `(#N)` 落地提交只留在 `feature/v1` 上,`dev` 的历史里
+//     只有那一个 squash 提交 ⇒ 正文里几乎每个 `(#N)` 都判红(在 `origin/dev` 上实测 208 处)。
+//     所以 PR 号另认一个来源:提交正文**最后一段**的 git 尾注 `Landed-PRs: #12 #13 …`。它由
+//     `--landed-trailer <ref>` 现算 —— 就是本脚本在那个 ref 上认的落地位集合(同一个
+//     `landingFor`,不另写抽取器),写进里程碑提交说明;步骤见 docs/RELEASE.md「里程碑合并」。
+//     不写死分支名、也不去读那条支线:它将来被删掉,`dev` 历史里那行尾注照样在。
+//     · 读的是 git 自己认的**尾注块**(`%(trailers)` 只看正文最后一段),所以散文里引一句
+//       `Landed-PRs: …` 不会被当真(自测有一格真 git 仓的夹具钉这条)。值里只取 `#<数字>`,
+//       其余字符忽略、**不判红**:尾注一旦进了 base 就改不掉,判红会变成永久硬红 ——
+//       少收的号在正文侧照常判红,补救是再合一个带尾注的提交,或走正文放行。
+//     · 除 base 的历史之外,还读 **`base..HEAD`** 上的尾注:里程碑 PR 自己跑 CI 时尾注还只在
+//       PR 的提交上,不读它这个 PR 就成片红;顺带让「尾注漏了号」在合并**之前**就照出来。
+//       代价:任何 PR 都能在自己的提交里写一行尾注放过正文侧的号 —— 那是一种**不带理由**的
+//       显式豁免,所以 BASE 行逐条报出尾注所在的提交与号数(区分在 base 上 / 只在 HEAD 上),
+//       不静默。PR 合并时尾注要跟着正文进 base,只在 PR 的提交上是留不下来的(squash 合并时
+//       正文由合并的人给,见 docs/RELEASE.md 里程碑第 4 步)。
+//     · **只管 PR 号**:卡号 / 裁定号两支不经尾注。里程碑之后在 `dev` 上看不见支线的那些标题,
+//       块里若还留着支线时代的 `pending #SL…` / `pending #J…`,在 `dev` 上会是**永远绿**。
+//       里程碑那一刻块里只剩 `pending #83`(从未合并的夹具),这一档今天是空的;
+//       往后要压新的支线时,先确认块里没有别的 SL / J 形态的预写条目。
 //   · 它**不校验搬过去的位置对不对**(小节挑错了它看不见)。
 //   · [SL-316] 起**正文也在判定面内**:每个 `(#N)` 必须在主线落过地、`(#TBD)` 即红 ——
 //     与上面那半共用同一条 `landedPrs`(取号见 BODY_PAREN_RE 那一段)。它判不出「这个号是不是
@@ -79,7 +102,9 @@
 //
 // 用法:
 //     node scripts/check-changelog-drafts.mjs [--help] [--self-test] [--base <ref>]
+//     node scripts/check-changelog-drafts.mjs --landed-trailer <ref>   (只打一行尾注,见 §边界 [SL-576])
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -87,6 +112,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHANGELOG = path.join(ROOT, "CHANGELOG.md");
 const DEFAULT_BASE = "origin/feature/v1";
+// [SL-576] 里程碑 squash 提交正文末段的 git 尾注键:列出被压进来的那条支线上已落地的 PR 号。
+const TRAILER_KEY = "Landed-PRs";
 // 删除式夹具:压缩写法的**真标题**,不手抄(手抄的夹具会跟着真源漂,漂完还一直绿)。
 // 写满 40 位而不写缩写:`git log -1 <缩写>` 在缩写歧义时会直接失败,而那条红的原因与被守护的
 // 判据毫无关系,排查成本全落在下一个人身上(#197 复审【建议】②)。
@@ -237,9 +264,12 @@ const lineOf = (text, at) => text.slice(0, at).split("\n").length;
 
 // 落地位集合:与 `leaks()` 内部的 `shipped.PR` 是同一件东西,抽出来给两边用,
 // 少一处「将来只改一边」的机会(#203 复审【建议】)。
-const landedPrs = (titles) => {
+// [SL-576] 第二个来源:`Landed-PRs` 尾注列出的号(`landedTrailers` 的产物)。`leaks()` 那半
+// 收同一份 `trailers`,两半仍量同一个集合。
+const landedPrs = (titles, trailers = []) => {
     const s = new Set();
     for (const t of titles) for (const n of FORMS.PR.extract(t.title)) s.add(n);
+    for (const tr of trailers) for (const n of tr.nums) s.add(n);
     return s;
 };
 
@@ -472,9 +502,11 @@ function allowList(block, headText = ALLOW_HEAD) {
 }
 
 // ---- git ------------------------------------------------------------------
-function git(args, { allowFail = false } = {}) {
+// `cwd` / `input` 只给自测那一格用(在临时 git 仓里造提交,走生产的读取函数);生产调用一律默认值。
+function git(args, { allowFail = false, cwd = ROOT, input } = {}) {
     const r = spawnSync("git", args, {
-        cwd: ROOT,
+        cwd,
+        input,
         encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
     });
@@ -493,14 +525,18 @@ function git(args, { allowFail = false } = {}) {
     return r.stdout;
 }
 
-function shippedTitles(base) {
-    if ((git(["rev-parse", "--is-shallow-repository"]) || "").trim() === "true")
+function shippedTitles(base, opts = {}) {
+    if (
+        (git(["rev-parse", "--is-shallow-repository"], opts) || "").trim() ===
+        "true"
+    )
         throw new Error(
             "仓库是浅克隆 —— `git log` 看不见历史,已上线集合会近乎为空、门禁会假绿。" +
                 "CI 上给这一步的 checkout 加 `fetch-depth: 0`(见 .github/workflows/format.yml 的 docs-truth)",
         );
     if (
         git(["rev-parse", "--verify", "--quiet", base + "^{commit}"], {
+            ...opts,
             allowFail: true,
         }) === null
     )
@@ -509,7 +545,7 @@ function shippedTitles(base) {
                 base +
                 "` —— 本地跑请先 `git fetch origin`;CI 上请确认 checkout 拉到了远端分支",
         );
-    return git(["log", "--format=%h\t%s", base])
+    return git(["log", "--format=%h\t%s", base], opts)
         .split("\n")
         .filter(Boolean)
         .map((l) => {
@@ -518,11 +554,66 @@ function shippedTitles(base) {
         });
 }
 
+// ---- [SL-576] Landed-PRs 尾注 ---------------------------------------------
+// 口径与边界见头注 §边界 [SL-576]。这里只留读代码时会问的几句:
+//   · `%(trailers:key=…)` 是 git 自己的尾注解析,**只看正文最后一段**(且那一段得是尾注块)——
+//     散文里引一句 `Landed-PRs: …` 不会被读到;`unfold` 把续行接回一行;
+//   · 值里只取 `#<数字>`,别的字符忽略、不抛:尾注进了 base 就改不掉,抛错会是永久硬红;
+//   · 字段之间用 `%x1f`、提交之间用 `%x1e` 分隔:值本身可能有多行(一个提交写了多行尾注)。
+const trailerNums = (value) => [...value.matchAll(/#(\d+)/g)].map((m) => m[1]);
+function landedTrailers(range, opts = {}) {
+    const out = git(
+        [
+            "log",
+            "--format=%h%x1f%(trailers:key=" +
+                TRAILER_KEY +
+                ",valueonly,unfold)%x1e",
+            ...range,
+        ],
+        opts,
+    );
+    const recs = [];
+    for (const rec of out.split("\x1e")) {
+        const i = rec.indexOf("\x1f");
+        if (i < 0) continue;
+        const value = rec.slice(i + 1);
+        if (!value.trim()) continue;
+        recs.push({ sha: rec.slice(0, i).trim(), nums: trailerNums(value) });
+    }
+    return recs;
+}
+// 生成器的输出格式(`--landed-trailer`):号按**数值**升序,`#` 前缀、空格分隔、一行写完。
+const formatTrailer = (landed) =>
+    TRAILER_KEY +
+    ": " +
+    [...landed]
+        .map(Number)
+        .sort((a, b) => a - b)
+        .map((n) => "#" + n)
+        .join(" ");
+
+// 一个 base 上的全部落地记录:提交标题 + 尾注(base 历史里的,加上 `base..head` 上的)。
+// 实跑、自测、生成器三处都走这一个函数 —— 生成器传 `head = null`(只要那个 ref 自己认的集合),
+// 所以「尾注写的」与「机检认的」按构造同源,不会出现两份抽取器各认各的。
+function landingFor(base, head = "HEAD", opts = {}) {
+    const titles = shippedTitles(base, opts);
+    const onBase = landedTrailers([base], opts);
+    const onHead =
+        head === null
+            ? []
+            : landedTrailers([base + ".." + head], opts).map((t) => ({
+                  ...t,
+                  headOnly: true,
+              }));
+    const trailers = onBase.concat(onHead);
+    return { titles, trailers, landed: landedPrs(titles, trailers) };
+}
+
 // base 的 tip 是哪一天的 —— 陈旧的 remote-tracking ref 会让门禁静默变绿,只能靠显形。
 const baseStamp = (b) => git(["log", "-1", "--format=%h (%cs)", b]).trim();
 
 // ---- 核心判定(纯函数,自测直接喂它)--------------------------------------
-function leaks(block, titles, forms = FORMS) {
+function leaks(block, titles, forms = FORMS, trailers = []) {
     const allow = allowList(block);
     const tokens = new Set(pendingTokens(block));
     const dead = [...allow.keys()].filter((t) => !tokens.has(t));
@@ -539,6 +630,16 @@ function leaks(block, titles, forms = FORMS) {
         for (const form of Object.keys(shipped))
             for (const n of forms[form].extract(t.title))
                 if (!shipped[form].has(n)) shipped[form].set(n, t);
+    // [SL-576] 尾注里的 PR 号同样算已上线 —— 与正文侧 `landedPrs` 收同一份 `trailers`,否则
+    // 「正文认它落了地、块里却不认它漏搬」,两半量的不是同一个集合。排在标题之后:同一个号
+    // 标题里也有时,报标题那条(`git show` 去核时更具体)。
+    for (const tr of trailers)
+        for (const n of tr.nums)
+            if (!shipped.PR.has(n))
+                shipped.PR.set(n, {
+                    sha: tr.sha,
+                    title: TRAILER_KEY + " 尾注(提交正文末段)",
+                });
     const out = [];
     for (const token of tokens) {
         if (allow.has(token)) continue;
@@ -551,6 +652,7 @@ function leaks(block, titles, forms = FORMS) {
 
 // ---- CLI ------------------------------------------------------------------
 let selfTest = false;
+let trailerRef = null;
 let base = process.env.SCVB_CHANGELOG_BASE || DEFAULT_BASE;
 for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
@@ -564,12 +666,22 @@ for (let i = 2; i < process.argv.length; i++) {
                 "  --base <ref>   已上线集合取自哪个 ref(默认 " +
                     DEFAULT_BASE +
                     ";亦可用环境变量 SCVB_CHANGELOG_BASE)",
+                "  --landed-trailer <ref>  只打一行 `" +
+                    TRAILER_KEY +
+                    ": #… #…` —— 本机检在 <ref> 上认的全部落地 PR 号;" +
+                    "写进里程碑 squash 提交说明的末段(见 docs/RELEASE.md「里程碑合并」),只读本地 git 历史",
                 "退出码:0 = 没有漏搬 / 1 = 有漏搬,或判据无从下手(浅克隆、base 解析不出、注释块找不到)",
             ].join("\n"),
         );
         process.exit(0);
     } else if (a === "--self-test") {
         selfTest = true;
+    } else if (a === "--landed-trailer") {
+        trailerRef = process.argv[++i];
+        if (!trailerRef) {
+            console.error("--landed-trailer 后面要跟一个 ref");
+            process.exit(1);
+        }
     } else if (a === "--base") {
         base = process.argv[++i];
         if (!base) {
@@ -578,6 +690,33 @@ for (let i = 2; i < process.argv.length; i++) {
         }
     } else {
         console.error("未知参数:" + a);
+        process.exit(1);
+    }
+}
+
+// ---- [SL-576] 生成尾注 ------------------------------------------------------
+// 输出**只有一行**,好直接拼进提交说明;诊断走 stderr。集合为空时与实跑同一条纪律 fail-closed:
+// 空尾注写进里程碑提交,合进去之后正文侧照样成片红,而那时已经改不掉了。
+if (trailerRef !== null) {
+    if (selfTest) {
+        console.error("--landed-trailer 与 --self-test 不能一起用");
+        process.exit(1);
+    }
+    try {
+        const { titles, landed } = landingFor(trailerRef, null);
+        if (!landed.size)
+            throw new Error(
+                trailerRef +
+                    " 的 " +
+                    titles.length +
+                    " 条提交标题里一个落地位都抽不出来 —— 写一行空尾注进里程碑提交没有意义",
+            );
+        console.log(formatTrailer(landed));
+        process.exit(0);
+    } catch (e) {
+        console.error(
+            "check-changelog-drafts --landed-trailer 失败:" + e.message,
+        );
         process.exit(1);
     }
 }
@@ -799,8 +938,10 @@ if (selfTest) {
                 "写进 FIXTURE_UNMERGED_PR,并在注释块里给它留一条预写条目 —— " +
                 "**不要直接把这条断言删掉**,那正是它要防的动作",
         );
+        // [SL-576] 与实跑同一个 `landingFor`:尾注列出的号也在判定面内,#83 同样不该在里面。
+        const realRec = landingFor(base);
         check(
-            !leaks(realBlock, shippedTitles(base)).some(
+            !leaks(realBlock, realRec.titles, FORMS, realRec.trailers).some(
                 (l) => l.token === FIXTURE_UNMERGED_PR,
             ),
             "从未合并的 PR #" + FIXTURE_UNMERGED_PR + " 被判成漏搬 —— 误报",
@@ -1269,6 +1410,115 @@ if (selfTest) {
         bad.push("判定层那一组跑不起来:" + e.message);
     }
 
+    // ---- [SL-576] Landed-PRs 尾注 --------------------------------------------
+    // 落点有四处(landedPrs / leaks / landingFor 的 base 支 / landingFor 的 base..HEAD 支),
+    // 外加生成器的输出格式;每处删掉都要有一格红。前三格是纯函数,第四格在临时 git 仓里
+    // 造真提交,走生产的 `landingFor` —— 尾注是 git 解析的,纯函数格子量不到「git 认不认」。
+    try {
+        const TR = [{ sha: "t000000", nums: ["7"] }];
+        // ⓐ 正文侧:尾注里的号进落地位集合(标题那一支照旧)。
+        const la = landedPrs([{ title: "feat: x (#5)" }], TR);
+        check(
+            la.has("5") && la.has("7"),
+            "landedPrs 没收尾注里的号 —— 里程碑 squash 之后正文侧会成片判红;实得 " +
+                [...la].join(","),
+        );
+        // ⓑ 块里那半:尾注里的号在块里还有预写条目 ⇒ 判漏搬(两半量同一个集合)。
+        check(
+            leaks(wrap("修复\n- 条目" + mark("7")), [], FORMS, TR).length === 1,
+            "尾注里的号在块里还有预写条目,leaks 却没判漏搬 —— 正文侧与块里那半量的不是同一个集合",
+        );
+        // ⓒ 生成器格式:按**数值**排序(字典序会把 #10 排在 #9 前面),解析回来一个不差。
+        const line = formatTrailer(new Set(["207", "9", "10"]));
+        check(
+            line === TRAILER_KEY + ": #9 #10 #207" &&
+                trailerNums(line).join(",") === "9,10,207",
+            "生成的尾注行不对(排序或格式)—— 实得 " + line,
+        );
+    } catch (e) {
+        bad.push("尾注那一组(纯函数)跑不起来:" + e.message);
+    }
+    // ⓓ 接线:临时 git 仓里造提交(`hash-object -w` 直接写提交对象,不走 commit 命令,
+    //    不需要身份配置、不触发钩子与签名),走生产的 `landingFor` / `formatTrailer`。
+    let tmp = null;
+    try {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), "scvb-drafts-"));
+        const o = { cwd: tmp };
+        const g = (args, input) => git(args, { ...o, input });
+        g(["init", "-q"]);
+        const tree = g(["mktree"], "").trim();
+        const who = "t <t@example.invalid> 0 +0000";
+        const commit = (parents, msg) =>
+            g(
+                ["hash-object", "-t", "commit", "-w", "--stdin"],
+                "tree " +
+                    tree +
+                    "\n" +
+                    parents.map((p) => "parent " + p + "\n").join("") +
+                    "author " +
+                    who +
+                    "\ncommitter " +
+                    who +
+                    "\n\n" +
+                    msg,
+            ).trim();
+        const SOB = "Signed-off-by: t <t@example.invalid>";
+        const c0 = commit([], "chore: 起点 (#1)\n");
+        const s1 = commit([c0], "feat: a (#3)\n");
+        // 散文段里写一句尾注形态(不在末段)—— git 不认它,生成器也不该收 #99。
+        const s2 = commit(
+            [s1],
+            "docs: b (#4)\n\n散文里引一句\n" +
+                TRAILER_KEY +
+                ": #99\n\n" +
+                SOB +
+                "\n",
+        );
+        const genLine = formatTrailer(landingFor(s2, null, o).landed);
+        check(
+            genLine === TRAILER_KEY + ": #1 #3 #4",
+            "生成器在支线上算出的尾注不对(散文里那句被当真了?标题那支没收?)—— 实得 " +
+                genLine,
+        );
+        // 里程碑:从起点压成一个提交,末段 = 生成的尾注 + 签名(与 docs/RELEASE.md 第 1 步同形)。
+        const msg = (tail) =>
+            "release: 里程碑 (#5)\n\n说明\n\n" + tail + SOB + "\n";
+        const m = commit([c0], msg(genLine + "\n"));
+        const m0 = commit([c0], msg(""));
+        const has = (s, ns) => ns.every((n) => s.has(n));
+        // 合并之后(base 就是里程碑提交):尾注在 base 的历史里。
+        const after = landingFor(m, m, o);
+        check(
+            has(after.landed, ["1", "3", "4", "5"]) &&
+                !after.landed.has("99") &&
+                after.trailers.length === 1 &&
+                !after.trailers[0].headOnly,
+            "里程碑提交进了 base 之后,尾注里的号没算落地 —— 合进 dev 之后正文侧会成片判红;实得 " +
+                [...after.landed].join(","),
+        );
+        // 里程碑 PR 上(base 是起点、HEAD 是里程碑提交):尾注只在 base..HEAD 上。
+        const onPr = landingFor(c0, m, o);
+        check(
+            has(onPr.landed, ["1", "3", "4"]) &&
+                onPr.trailers.length === 1 &&
+                onPr.trailers[0].headOnly === true,
+            "尾注只在 base..HEAD 上时没被读到 —— 里程碑 PR 自己的 CI 会成片判红,漏号也照不出来;实得 " +
+                [...onPr.landed].join(","),
+        );
+        // 反例:同一个里程碑不带尾注 ⇒ 支线的号一个都不在(证明上面两格绿是尾注带来的)。
+        const without = landingFor(m0, m0, o);
+        check(
+            !without.landed.has("3") &&
+                !without.landed.has("4") &&
+                without.trailers.length === 0,
+            "不带尾注的里程碑提交也让支线的号算落地了 —— 上面两格证明不了尾注是必需的",
+        );
+    } catch (e) {
+        bad.push("尾注那一组(临时 git 仓)跑不起来:" + e.message);
+    } finally {
+        if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
     // 块首尾被改坏时必须 fail-closed,而不是「找不到块 ⇒ 没有泄漏 ⇒ 绿」。
     check(
         threw(() => draftBlock("# Changelog\n\n没有注释块\n")),
@@ -1296,7 +1546,8 @@ if (selfTest) {
 try {
     const md = fs.readFileSync(CHANGELOG, "utf8");
     const block = draftBlock(md);
-    const titles = shippedTitles(base);
+    // [SL-576] 标题 + `Landed-PRs` 尾注(base 历史里的,加上 base..HEAD 上的),一次取齐。
+    const { titles, trailers, landed } = landingFor(base);
     const tokens = new Set(pendingTokens(block));
     // 正文 = **整份文件**,只把注释块原地抹成同长空白(`[^\n]` 保住所有换行,行号照旧准确)。
     // 第一版切成「块之前那一段」,于是块**之后**的小节(`## [0.1.0]` 在 326-333 行)一个字都
@@ -1326,8 +1577,12 @@ try {
     // 假标题、①–⑦ 自带 landed,都照绿。那一档**不是全静默**(会打上百行 WARN,小的那个号就在
     // 话术里),但要有人在一片 WARN 里觉得那个号偏小 —— **正常态没有基线就没有对照**。
     // 所以基线放在这里:绿的时候也报,下次不对劲一眼看得出来。
-    const landed = landedPrs(titles);
+    // [SL-576] 尾注条数也进这一行,且**逐条**再报一行在哪个提交、几个号、在 base 上还是只在
+    // HEAD 上:尾注是一种不带理由的显式豁免(头注 §边界),不显形就是静默豁免。
+    // 里程碑之后 `dev` 上的落地位几乎全靠它 —— 基线里看不出来源的话,尾注哪天被漏掉,
+    // 这一行只会显示「落地位变少了」而不说为什么。
     const maxLanded = maxLandedOf(landed);
+    const headOnly = trailers.filter((t) => t.headOnly).length;
     console.log(
         "  [BASE] " +
             base +
@@ -1335,7 +1590,13 @@ try {
             baseStamp(base) +
             " —— " +
             titles.length +
-            " 条提交标题(落地位 " +
+            " 条提交标题、" +
+            (trailers.length - headOnly) +
+            " 条 " +
+            TRAILER_KEY +
+            " 尾注(只在 HEAD 上的另有 " +
+            headOnly +
+            " 条;落地位 " +
             landed.size +
             " 个,最大 #" +
             maxLanded +
@@ -1343,6 +1604,17 @@ try {
             tokens.size +
             " 个待合并的号",
     );
+    for (const t of trailers)
+        console.log(
+            "  [BASE] " +
+                TRAILER_KEY +
+                " 尾注 " +
+                t.sha +
+                (t.headOnly ? "(只在 HEAD 上)" : "(在 base 上)") +
+                ":" +
+                t.nums.length +
+                " 个号",
+        );
 
     // 放行**永远打出来**(红绿都打):豁免不显形就等于没有豁免纪律。
     for (const [token, why] of allowList(block))
@@ -1366,6 +1638,8 @@ try {
     // 块里的号数,**不报落地位集合大小**,所以输出上也照不出来。
     // 这一档有一条无争议的判据(不像「> 最大落地号」那档要拍常数):**有历史的仓库里,
     // 落地位集合不可能为空**。与 `shippedTitles` 的浅克隆那道同一条纪律,fail-closed。
+    // [SL-576] 那次调用现在在 `landingFor` 里,自测 ⓓ 在临时 git 仓上走的就是它(要求标题那支的
+    // #5 也在集合里),所以「实参换成 `[]`」在自测里也有一格会红;这道 fail-closed 照旧留着。
     if (!landed.size)
         throw new Error(
             titles.length +
@@ -1409,7 +1683,7 @@ try {
         for (const b of bodyBad) console.error("  [FAIL] " + b);
     }
 
-    const found = leaks(block, titles);
+    const found = leaks(block, titles, FORMS, trailers);
     if (found.length) {
         console.error(
             "check-changelog-drafts 失败(" + found.length + " 条预写条目漏搬):",
