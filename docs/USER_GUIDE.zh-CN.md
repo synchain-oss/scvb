@@ -282,4 +282,5 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 - run 切换时旧 run 尾部 ≤40ms 可能漏采,补播即复原;
 - Input 侧只做就地 gain,不做就地 pan(否则会和 Output 的 dual-pan 双重处理);
 - **DAW 的静音(Mute)、独奏(Solo)与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关。详见 `docs/KNOWN_ISSUES.md` 的 KI-8;
+- **波形页上建选区、选段与改分段(拖动、分割或删除段边界)暂时只能用鼠标或触控板**,计划在 v1.0.0 之前补上键盘做法。详见 `docs/KNOWN_ISSUES.md` 的 KI-10;
 - v2 方向:精确模式 VAD(Silero)、更多平台。

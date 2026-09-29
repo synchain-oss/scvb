@@ -74,7 +74,7 @@
     (`5b1c908e`,2026-09-28 晚)合并 61、关闭未合 9、在飞 0(`gh pr list --state merged|closed|open --label status/frozen-contract`,closed 70 含合并的 61);`docs/contract-changes/` 下 60 份(不含 `TEMPLATE.md`)。
     (SL-575,`61b7575d`)合并 63(多了 #337 / #338)、关闭未合 9、在飞 0。**本项对 rc.1 写 N/A**:10 §6.1 这一条防的是「破坏已发布的参数面 / IPC / state 的改动没经用户点头就发出去」,前提是有一个已发布的版本;首发之前没有已发布的东西可以被破坏 —— J21 定的冻结点就是首个公开 rc,G1 / G2 / G4 按同一理由写了 N/A。rc.1 之后,碰冻结契约的 PR 照本项原义逐个对到用户批准。
     顺带按上面的「怎么查」把 63 个 PR 的标题与描述扫了一遍,**只看有没有引用裁定号,没有逐个核引用的那条裁定是不是就批准了该 PR 的契约改动**:50 个引用了至少一条「来源」列以「用户」开头的裁定(masterPlan `plan/adjudications.md`);13 个没有引用任何裁定号,其中 #231 / #259 / #262 / #264 的描述写了用户的裁定或批准,#232 / #240 / #261 / #263 写的是统筹裁定,#41 / #81 / #87 / #238 / #258 没写批准来源。
-  - 状态:N/A(J21:首个公开 rc 才是冻结点,此前没有可被破坏的已发布版本)
+  - 状态:N/A(J21:首个公开 rc 才是冻结点,此前没有可被破坏的已发布版本;统筹认可,J178⑧)
 
 - [x] **A4 `spikes/` 为空、无 spike 残留**
   - 查什么:`spikes/` 目录为空(J16);无 spike 调试代码(`SpikeCurve`、`--flap-heartbeat`、FPS 角标、processBlock 计时)。`tests/tools/scvb_diag` 是常驻工具,不删。
@@ -131,7 +131,8 @@
   - 查什么:全量(不加 `-Quick`),含 gate 8 的 GUI pluginval 与 gate 9 / 10。
   - 实况:维护者本机长期可用内存不足,J142 临时以 PR head 上的 CI 全量代替本地 gates;但 **GUI pluginval 只能在有桌面的本机跑**(CI 是 `--skip-gui-tests`),CI 代替不了这一半。
   - 证据(SL-575):依据 J142(统筹 2026-09-28,在 J121 授权内):本机长期可用内存不足 2 GB,PR 合并门禁改为「PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿」,本地整套 gates 不再强制,本地只做经排队器的定向构建。此后合入 `feature/v1` 的每个 PR 都按这条过的门;#345 改了 `tests/`,落在 `build-vst3.yml` 的 `NATIVE_RE` 里,CI 自动跑全量,run 号记在 #345 的描述里。CI 代替不了的 GUI pluginval:按「出包前本机自测」的惯例,第二包出包前跑过 pluginval 含 GUI 6/6(masterPlan 发布盘点 2026-09-29 M8 所记);第三包出包前同样要跑一次,那一次在第三包的提交上。
-  - 状态:N/A(J142:本地全量 gates 由 PR head 上的 CI 全量代替;GUI pluginval 由出包前本机自测补)
+    (J178⑧)统筹认可本项 N/A,并要求在 `docs/RELEASE.md` 发版清单第 4 步(「跑全量门禁」)注明 J142:#345 已在该步末尾加了一句 —— v1 这一次本地全量门禁由 PR head 上 CI 的 `build-and-validate` 代替,GUI pluginval 由出包前本机自测补。
+  - 状态:N/A(J142:本地全量 gates 由 PR head 上的 CI 全量代替;GUI pluginval 由出包前本机自测补;统筹认可,J178⑧)
 
 ### C. UI 与无障碍
 
@@ -147,14 +148,15 @@
   - 证据(SL-575,`61b7575d`):没有走 `@axe-core/cli`(它要一份与本机 Chrome 版本对得上的 chromedriver),改用同一个引擎直接注入:照 web-preview 页面级冒烟的做法起静态服务与无头 Chrome(CDP),把 axe-core 4.13.0 的 `axe.min.js` 注入壳页 iframe 里的真源页面,跑默认规则集 `axe.run(document)`。扫了 7 个面:Output(`?fixture=fifteen-tracks`)的总览 / 轨道 / 波形 / 设置四个 tab,Input(`?fixture=channel-conflict` 与默认 fixture 各一次),Monitor。**serious 0、critical 0**。moderate 三类,记在这里备查:`region`(有内容不在地标区域里 —— Output 首启引导的询问段、Input 组选择区的几行、Monitor 的图例)、`landmark-one-main`(Input / Monitor 没有 `main` 地标)、`page-has-heading-one`(Input 没有一级标题)。脚本是一次性的,没有入库;复跑按上面的「怎么查」即可(同一套规则)。
   - 状态:✅ 已核
 
-- [ ] **C3 缩放全档位无横向溢出;键盘可达**
+- [x] **C3 缩放全档位无横向溢出;键盘可达**
   - 查什么:Output 7 档 / Input 10 档(05 §1.2)。
   - 线索:`smoke-shell-fit*.mjs`、`smoke-ui-layout-page.mjs`、`smoke-a11y-tabs.mjs` 相关;**还没逐条核它们是否覆盖全部档位**。
   - 证据(SL-575,`61b7575d`):
     **覆盖面**:`smoke-shell-fit-page.mjs` 在三侧各量设计盒 / 缩到 60% / 放到 150% / 宽高比不匹配四种视口,再经真 UI 选**一个**档位(Output 0.5、Input 0.75、Monitor 0.8),没有逐档走;档位表在 `web/shared/design-box.js`(Output 7 档、Input 10 档、Monitor 7 档,与 05 §1.2 一致)。
     **补测全档位**(一次性脚本,起法同 C2):把宿主窗口(壳页的 iframe)依次设成「设计盒 × 档位」四舍五入后的尺寸 —— 与宿主按档位 `setSize` 同一口径 —— 等两帧后量文档与 body 的 scroll 尺寸和外壳包围盒。Output 7 档 × 4 个 tab、Input 10 档 × 2 个 fixture、Monitor 7 档,共 55 格,**全部零溢出**(横向、纵向都没有,外壳都落在窗口内)。
     **键盘**:同一脚本在 C2 的 7 个面上列出看得见的交互元素(按钮、链接、表单控件、带交互 `role` 的自定义控件、带 `data-gb` 的 canvas),共 395 个;除波形页的 16 个 canvas 外都能用 Tab 到(`tabIndex ≥ 0`,或属于有一个成员可 Tab 到的 roving 组)。那 16 个是 15 条轨的静态波形层与 1 个交互层(`wave-overlay`):**在波形上框选区间、点选或拖动段边界没有键盘做法** —— 波形页的页级键盘只有 Esc 取消选择、选中相邻两段后 Delete 合并,而「选中」本身要用鼠标。Output tab 条的 ←/→ / Home / End 由 `smoke-a11y-tabs.mjs` 钉着。
-  - 状态:⏳ 统筹(溢出已核,全档位通过;波形页画布的键盘缺口要定:记为已知限制,或在 v1.0.0 前补键盘选段)
+    **键盘缺口的处置**(J178⑤):rc.1 记为已知限制,v1.0.0 前补。#345 在 `docs/KNOWN_ISSUES.md` 新增 KI-10「波形页上建选区、选段与改分段只能用鼠标」,两份用户手册的「已知限制」各加一条指向它。写 KI-10 前回读了 `web/output/tab-wave.js` 与 `web/output/index.html`,比上面那段多核出两点,都写进了 KI-10:选区是在时间标尺上拖出来的(标尺 `aria-hidden`、不可聚焦);选区一旦存在,两端手柄是 `role="slider"`、`tabindex="0"`,←/→ 按视口跨度的 1% 微调。只能用鼠标的是四件:标尺上拖出选区、泳道上点选段、拖段边界、泳道上双击分割 / 删边界。两份 README 的「已知限制」没有加:那一节列的是 v1 已裁定接受的限制,这一条按 J178⑤ 要在 v1.0.0 前补掉(同 KI-7,README 也没列)。
+  - 状态:✅ 已核(全档位零溢出);键盘缺口 N/A(J178⑤:rc.1 记为已知限制 KI-10,v1.0.0 前补)
 
 - [ ] **C4 i18n 新增文案都有 key,无硬编码字面量**
   - 怎么查:`node scripts/check-i18n.mjs`(与 CI `docs-truth` 同一条命令,查 zh / en / fr 键对等与红字九条);「无硬编码字面量」靠复审 prompt 第 6 节,没有机检。
@@ -164,11 +166,11 @@
 ### D. 音质(10 §4)
 
 - [ ] **D1 模式 A null test**
-  - 查什么:透明性 null;判据 10 §1.1.3 S1-P1 / P2(样本偏移 0、残差峰值 < −120 dBFS)。10 §6.1 要求「至少在 REAPER 上重跑一遍」;首发只验 Cubase(J124),用 Cubase 代替要统筹认可。
-  - ⚠ **补偿量要按成品重算**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。所以宿主 pan law 为 −3 dB 等功率(Cubase 默认)时 mono 部分理论上不用补偿,宿主为 0 dB 时 mono 部分要 +3.01 dB 而 stereo 部分不用 —— **0 dB 档下 mono + stereo 的完整格用单一增益调不平**,完整格只能在 −3 dB 等功率下跑。`scripts/nulltest.ps1` 的 `-PanLawDb` 也是按 spike 口径写的(补偿 = 取反),成品口径下传进去的是「补偿量取反」,不是宿主设置。**这段是按源码推的,没有实跑过。**
+  - 查什么:透明性 null;判据 10 §1.1.3 S1-P1 / P2(样本偏移 0、残差峰值 < −120 dBFS)。10 §6.1 要求「至少在 REAPER 上重跑一遍」;首发只验 Cubase(J124),统筹已认可用 Cubase 代替(J178②)。
+  - ⚠ **补偿量要按成品重算**:10 §4.2 的补偿公式按 S1 spike 口径写(spike 版 Output 把 mono 原样复制到 L / R,0 dB);**成品 Output 对居中 mono 轨每侧给 0.7071(−3.01 dB)**(`tests/core/test_transition.cpp` 的 PAN-1)。所以宿主 pan law 选等功率(Equal Power)时 mono 部分理论上不用补偿,宿主为 0 dB 时 mono 部分要 +3.01 dB 而 stereo 部分不用 —— **0 dB 档下 mono + stereo 的完整格用单一增益调不平**,完整格只能在等功率档下跑。`scripts/nulltest.ps1` 的 `-PanLawDb` 也是按 spike 口径写的(补偿 = 取反),成品口径下传进去的是「补偿量取反」,不是宿主设置。**这段是按源码推的,没有实跑过。**
   - 怎么查:§3 的 U-3。
-  - 补偿口径(SL-575 推导,**待统筹确认**):在上面这段的基础上补两点,都已写进 U-3。① 宿主要选**等功率**那一档(Cubase 列表里的「Equal Power」):它在居中时每侧正好 1/√2 = −3.0103 dB,与成品 Output 相同,mono 与 stereo 都不用补偿;若 Cubase 的「−3 dB」档按字面是 −3.000 dB,它与成品差 0.0103 dB,残差只会比信号低约 58 dB,远到不了 −120 dBFS。② 0 dB 档的纯 mono 定口径跑,补偿量要写到 `-PanLawDb -3.0103`,不能写 `-3.01`:少掉的 0.0003 dB 会让残差停在信号以下约 89 dB,比判据的 −120 dBFS 高得多。「用 Cubase 代替 REAPER」按 J124 / J175 需要统筹在第三包说明里认可。
-  - 状态:⏳ 用户(第三包;J175。跑之前统筹先定补偿口径)
+  - 补偿口径(SL-575 推导,**已定(J178①)**:c = 宿主居中增益(dB)+ 3.0103,`-PanLawDb` = −c;Equal Power 档填 0,mono 与 stereo 都不补,完整格只用这一档;0 dB 档填 `-3.0103`,只限纯 mono;先纯 mono、再完整格各跑一遍,用来分辨 Cubase 对居中的 stereo 轨是否也施加 pan law):在上面这段的基础上补两点,都已写进 U-3。① 宿主要选**等功率**那一档(Cubase 列表里的「Equal Power」):它在居中时每侧正好 1/√2 = −3.0103 dB,与成品 Output 相同,mono 与 stereo 都不用补偿;若 Cubase 的「−3 dB」档按字面是 −3.000 dB,它与成品差 0.0103 dB,残差只会比信号低约 58 dB,远到不了 −120 dBFS。② 0 dB 档的纯 mono 定口径跑,补偿量要写到 `-PanLawDb -3.0103`,不能写 `-3.01`:少掉的 0.0003 dB 会让残差停在信号以下约 89 dB,比判据的 −120 dBFS 高得多。
+  - 状态:⏳ 用户(第三包;J175。补偿口径已定(J178①);只在 Cubase 上跑,Cubase 代替 10 §6.1 要求的 REAPER(J178②,依据 J124 / J175))
 
 - [ ] **D2 模式 B null test(engine vs follow)**
   - 判据:残差 RMS < −40 dBFS(S2-P5)。
@@ -181,10 +183,10 @@
     删除式(每次只改 `MixMath.h` 一处、重编、只跑 `[panlaw]`,跑完还原):mono 路径左右增益对调 ⇒ PANLAW-2 红(PANLAW-3 也红,其余绿);mono 路径忽略全局 width ⇒ 只有 PANLAW-3 红;mono 增益乘一个随 pan 变的系数(左右比不变、总能量起伏)⇒ 只有 PANLAW-4 红;stereo 两个子声像左右对调 ⇒ 只有 5a 红;右子声像多偏 1 ⇒ 只有 5b 红;音量随每轨 width 缩放(「简单混合」而非等功率)⇒ 只有 5c 红;stereo 输出做 M/S 拉宽(side × 3)⇒ 5d 红(5a、5c 也红)。还原后 7 个全绿。
   - 状态:✅ 已核
 
-- [ ] **D4 端到端响度对拍(L3)差 ≤ 0.2 LU**
+- [x] **D4 端到端响度对拍(L3)差 ≤ 0.2 LU**
   - 实况:`scvb_bench --render` 能出 wav,但「由特征预测的 10·log10(z_L+z_R)」与渲染结果的比对没有现成工具。
   - 证据(SL-575,`61b7575d`):仍然没有这件工具,本卡没有做。各段零件有用例:`test_loudness.cpp` 的 LOUD-1..5(含 LOUD-4 997 Hz 正弦走 K 加权到段响度的全链)、`test_balance.cpp` 的 BAL-1..10(能量相加模型下的平衡解)、D3 新增的 PANLAW-4(混音原语等功率、总能量不随 pan 变)。缺的是把三段串起来、在渲染结果上量整体响度那一步。这一格的意义在真实人声素材上(10 §4.4.2 的 0.2 LU 容差就是给齐唱 / double 的互相关偏差留的,见 KNOWN_ISSUES KI-9);用合成的互不相关素材做,只会复证上面几条已有的结论。
-  - 状态:⏳ 统筹(提请:rc.1 写 N/A、v1.0.0 前再议,与 J175 对其余上机项的处理一致;要做的话需新写一个端到端工具,并要用户的真实多轨人声素材)
+  - 状态:N/A(rc.1,J178⑥:与 J175 对上机项的处理同向,v1.0.0 前再议;要做的话需新写一个端到端工具,并要用户的真实多轨人声素材)
 
 - [ ] **D5 结果追加到 `audio/nulltest-log.md`**
   - 怎么查:D1 / D2 用 `scripts/nulltest.ps1` 跑,会自动把原始输出追加到该文件末尾;再在它的汇总表里补一行。
@@ -198,16 +200,18 @@
   - 证据(SL-575,`61b7575d`):按 J175 由统筹在本机做。本机就是 U16 那台(Intel Core Ultra 9 275HX / 32 GB 笔记本,Windows 11 build 26200,接交流电)。按 U-4 的两条命令各跑 4 次(构建同 B4,经排队器、`--parallel 1`),结果与机器信息落在 [perf/budget-log.md](perf/budget-log.md)(#345 新建)。**非安静条件**:同机开着另外 4 个开发会话与浏览器,整机 CPU 占用 19–38%、可用内存 2.2–3.5 GB;跑分期间排队器在本卡手里,没有别的构建并行。同档 4 次的 `checksum` 逐字相同。`scvb_bench --dsp` 量的是 Input / Output 的替身(见 budget-log「这把尺子量的是什么」),下一版对比时按同一条命令、同一台机器、同一套工具链(这次是本机的 VS 2019,不是出包用的 VS 2022,见 budget-log)。
   - 状态:✅ 已核(基线已建;非安静条件)
 
-- [x] **E2 PERF-1..17 全部在预算内,无红灯**
+- [ ] **E2 PERF-1..17 全部在预算内,无红灯**
   - 怎么查:PERF-1..4 读 E1 的 `scvb_bench` 输出;PERF-5 / 6 / 7 读 Cubase 的 Audio Performance(10 §5.4 第 3 条,只在同一 DAW 内比);其余按 10 §5.3 各自口径。黄灯要记录并开 issue(10 §5.5)。步骤见 U-4、U-5。
   - 证据(SL-575,`61b7575d`):PERF-1..4 已按 E1 的跑分判过,写在 budget-log:PERF-1 / 3 / 4 两档都在预算内;**PERF-2(Input 最坏单块)在 96k/128 那一档 4 次里 3 次超预算**(4.35–13.37% 对 ≤ 5.0%),48k/512 四次都在预算内(最坏 1.96% 对 ≤ 2.0%)。那一档 mean 与 p99 四次几乎不变而 max 在 58–178 µs 之间变了 3 倍,像是非安静条件下计时线程被调度打断,**没有做能证实这一点的测量**,所以没有定档,要在安静条件下重跑一次才能判。其余 PERF-5..17 要上机。
-  - 状态:N/A(rc.1,J175:用户裁 rc.1 不跑,v1.0.0 前再议;PERF-2 的 96k 读数待统筹定是否要在 rc.1 前安静重跑)
+    (J178④)PERF-2 按字面超预算,**本项在它有结论之前不勾**:打 tag 前在同一台机器、没有并发负载时重跑 96k/128 那一档;仍超就按 10 §5.5 定档。PERF-5..17 的上机部分仍按 J175 为 N/A(rc.1 不跑,v1.0.0 前再议);PERF-1 / 3 / 4 两档在预算内,理由不变。
+  - 状态:⏳ 统筹(PERF-2 待打 tag 前无并发负载重跑,J178④;PERF-5..17 上机部分 N/A,J175)
 
-- [ ] **E3 MEM-1..7 在预算内;5 分钟稳态无泄漏**
+- [x] **E3 MEM-1..7 在预算内;5 分钟稳态无泄漏**
   - 相关已知项:SL-445 拖 Q 滑杆时内存增长(J128;修复 PR #306 已于 2026-09-28 合并,上机时顺带看它)。
   - 怎么查:MEM-5 / MEM-7 与 5 分钟稳态上机量(§3 的 U-5);MEM-1..4 是按设计定容的项,由统筹对照代码常量核;MEM-6 只记录。
   - 证据(SL-575,`61b7575d`,逐条推导见 [perf/budget-log.md](perf/budget-log.md)「E3 的定容项」):**MEM-2 与 MEM-4 在预算内**(特征环 15 条共 15.0 MiB,与预算公式一致;曲线 / state 按 2 版 × 15 轨 × 300 段约 0.86 MB)。**MEM-1 与 MEM-3 超出预算公式**:① 音频环每条都按 stereo 容量建(`1<<19` 帧 × 2 个 float,IPC 几何纪律,防宿主冻结 / 就地渲染时重建段越界),15 条共 60.0 MiB,是预算「15 × `1<<19` × 4 B = 30 MB」的 2 倍 —— 10 §5.2 MEM-1 的备注自己写着「若上调……60 MB,需在此重新裁定」;② FrameStore 20 分钟 × 15 轨按页算约 8.8 MiB,预算 ≤ 3 MB 出自 04 §3.1 一处算术(「8 页 ≈ 40KB/轨」,按同句的 5 B/hop 应是 160 KiB),实现与 04 描述的数据结构一致。两格都要统筹 / 用户定:认可现值并按 10 §5.5 走一次显式的预算修订,或改实现。MEM-5 / MEM-7 与 5 分钟稳态:rc.1 按 J175 不跑(N/A,v1.0.0 前再议);MEM-6 只记录。
-  - 状态:⏳ 统筹(MEM-1 / MEM-3 待裁;上机部分按 J175 为 N/A)
+    (J178③)**MEM-1 / MEM-3 按 10 §5.5 显式修订预算,实现不改**:MEM-1 改为 60 MiB(15 × 4 MiB,段恒按 stereo 容量建),MEM-3 改为约 8.8 MiB(20 分钟 × 15 轨,04 §3.1 原算错);修订前后的数据记在 budget-log 新增的「预算修订」一节。masterPlan 10 §5.2、04 §3.1、01 §5.3 的正文由统筹按 J178③ 改。于是 MEM-1..4 四个定容项都在(修订后的)预算内;MEM-5 / MEM-6 / MEM-7 与 5 分钟稳态要上机,rc.1 按 J175 为 N/A(MEM-6 本来也只记录)。SL-445(拖 Q 滑杆时内存增长)随上机部分留到 v1.0.0 前看。
+  - 状态:✅ 已核(MEM-1..4 定容项;MEM-1 / MEM-3 按修订后的预算,J178③);上机部分 N/A(rc.1,J175)
 
 ### F. DAW 矩阵(10 §3)
 
@@ -237,7 +241,7 @@
   - 实况:v1 出厂不再写 sidecar(SL-395,开关关),只保留读旧工程;自动化用例 `FEAT-SIDECAR-1..11`(`tests/core/test_state_features_roundtrip.cpp`)覆盖「仍能读 embedded=0」「删 sidecar 后特征缺失」「双开同 GUID copy-on-write」「路径穿越防护」等;**「篡改」没有同名用例**。
   - 建议:手测 N/A(新版不产生 sidecar,读路径有用例);认可前先核「篡改」由哪条用例兜着。
   - 证据(SL-575,`61b7575d`):核了「篡改」—— **没有用例兜着**。生产代码里有这道闸:`src/output/OutputProcessor.cpp` 读引用节时把外部文件的 sha256 与工程里记的比,不符就不认这份特征、原样保留引用节(打 `sidecar sha256 mismatch; refusing to load` 的那一支)。`test_state_features_roundtrip.cpp` 里的 `loadFeatures()` 是一份**照着** Output 加载语义写的测试替身,也做同样的比对,但没有任何用例改过 sidecar 的字节再去加载;host 用例里带 sidecar 的两条(`HOST SL-233` 与 `HOST SL395`,`tests/host/test_host_harness.cpp`)用的都是能过 sha256 的文件。缺失与 CoW 各有用例(FEAT-SIDECAR-2 / -3,同样走那份替身)。手测对 rc.1 不适用:v1 出厂不写 sidecar(SL-395;用户 2026-09-14 裁定「sidecar 不上」,SL-415 随之收起全部 sidecar UI),能带着 sidecar 打开的只有内部测试包时期存过、且当时开着 sidecar 的老工程,首发没有这类公开用户。
-  - 状态:N/A(v1 不产生 sidecar;「篡改」只有生产代码里的 sha256 闸、没有用例,记为 v1.0.0 前可补的缺口)
+  - 状态:N/A(v1 不产生 sidecar;「篡改」只有生产代码里的 sha256 闸、没有用例,记为 v1.0.0 前可补的缺口;统筹认可,J178⑧)
 - [x] **G4 golden 文件本版未变更** —— N/A:首个公开版本,没有「上一版」可比。首个公开 tag 起 ParamID 与 state 布局永久冻结(J123 / J21),打 tag 前的冻结评审见 L2。
 
 ### H. 文档
@@ -264,7 +268,7 @@
 - [x] **H5 Output 停摆直通兜底:三处一致 + L-5 / F-1 实测**
   - 证据:KNOWN_ISSUES KI-6 有;用户手册故障排查表「人声突然变成未平衡的原始声像」一行有(`docs/USER_GUIDE.zh-CN.md:203`,含 FL smart disable 规避);FL 作战卡在 masterPlan 03 §4.7,不在本仓。**载体实测 L-5(Live 设备停用)与 F-1(FL)没有跑** —— Live 未上机(J124),FL 不在 v1 矩阵;10 §6.1 写「任一红即不可勾」。
     (SL-575,`61b7575d`)仓内两处的说法对得上:KI-6 与故障排查表那一行都写了约 5.5 秒后人声变成未平衡的原始声像,以及 FL Studio 要对 SCVB Output 所在的总线关掉 smart disable;本卡新加的 README「已知限制」一条同样口径。看门狗的判定逻辑由 core 用例 `停摆看门狗四格(R3/J52)`(`tests/core/test_ipc_lifecycle.cpp`)钉着。L-5 / F-1 两个载体实测都要 Live / FL 上机,本版不做:首发只验 Cubase(J124),Live 为 Tier 3 未验证,FL 不在 v1 矩阵;J175 对上机项的裁定同一方向(rc.1 不跑,v1.0.0 前再议)。
-  - 状态:N/A(J124:Live 未上机、FL 不在 v1 矩阵;仓内说法一致已核)
+  - 状态:N/A(J124:Live 未上机、FL 不在 v1 矩阵;仓内说法一致已核;统筹认可,J178⑧)
 
 - [x] **H6 各 DAW 作战话术与截图与本版行为一致**
   - 实况:话术在 `docs/DAW_COMPATIBILITY.md` §2(每 DAW 一节);「03 §4 宿主专属界面提示」没做(发布盘点第二轮,待用户裁第 6 条);截图未核。
@@ -277,10 +281,11 @@
     (SL-575,`61b7575d`)不靠「链接算不算可见」:两份 README 在「从源码构建」与「文档」之间新增「已知限制」一节(`README.zh-CN.md` 的 `## 已知限制` / `README.md` 的 `## Known limitations`,两边标题序列对等),正文直接列 8 条,每条指向 KNOWN_ISSUES 的条目或红字。对照上面的清单:FRZ / stem 静音产物 → KI-4;mute / solo 失效 → KI-8(本卡新增,见 H3);单工程限制 → KI-5;上游 PDC → 列为「Output 不向 DAW 报告延迟,别用 PDC 去修正」(红字第 8 条;上游插件带延迟时的对齐,S1 在 Cubase 上实测零错位,见 DAW_COMPATIBILITY §1 脚注 1,没有另外的限制可写);齐唱互相关偏差 → KI-9(本卡新增,口径取 masterPlan 02 §6.5「能量模型忽略轨间互相关」);sidecar 不随工程 → **不列**,v1 已不写 sidecar(SL-395 / SL-415,见 G3);「Input 就地 gain 只做音量、不做声像」→ 列了;J60 那条按 J83 改写为「所有轨默认参与自动声像,立体声轨也一样,要保留原声像就在轨道页关掉参与」(红字第 7 条)。另列了 KI-6(宿主停调 Output)。
   - 状态:✅ 已核
 
-- [ ] **H8 `docs/SCVB_CONTRACT.md` 与代码一致,且是唯一一份桥契约**
+- [x] **H8 `docs/SCVB_CONTRACT.md` 与代码一致,且是唯一一份桥契约**
   - 证据:`docs/` 下契约文件只有 `SCVB_CONTRACT.md` 与 `IPC_CONTRACT.md`(后者是 IPC 契约,不是桥契约),没有 `WEB_UI_CONTRACT.md`;机器一致性由 `check-bridge-parity.mjs`(CI `docs-truth`)守。版本行是 `1.0(已冻结)`;J105 只对 #281 那一次豁免了升版本号,**其余契约变更是否要求升号没核**。
     (SL-575,`61b7575d`)「唯一一份」:`docs/` 下名字带 CONTRACT 的仍只有 `SCVB_CONTRACT.md` 与 `IPC_CONTRACT.md`(外加 `contract-changes/` 目录),成立。「版本号」:规则在 `SCVB_CONTRACT.md` §0.1 第 3 条与 §9.0 第 3 条 —— 只增(新增函数 / 事件、在既有载荷里加可选字段)不升;改名、改参数顺序、**改既有字段语义**、删除、收窄取值域才升主版本。逐份读了 `docs/contract-changes/` 下勾了 `SCVB_CONTRACT.md` 的变更文档里关于 `contractVersion` 的那句:多数写明「只增,保持 1.0」,与 §0.1 一致;两份改了既有语义、都有用户豁免 —— #275(`channel_id=0` 的语义,SL-464;用户经 SL-468 裁定豁免)与 #281(J105);**一份改了既有语义、没有专门的豁免**:#302(J131 / SL-180),它的变更文档 `20260928-j131-sl180-manual-one-dim.md` 自己写着「变的是一条行为语义……按 J105 的做法保持 1.0;若统筹认为『改既有语义』须升主版本,请另行裁定」,而 J105 是只对 #281 的一次性豁免。另有 8 份早于 SL-468(2026-09-21)的变更文档勾了 `SCVB_CONTRACT.md`,却没写 `contractVersion` 怎么处置(当时还没有这道核对),其中 `20260822-pan-curve-cut-slope.md`(`points[].q` 的语义按 shape 分化)与 `20260826-j83-participate-default.md`(`participate_in_auto_pan` 的默认档,用户 J83)从内容看碰了既有语义或默认值;这 8 份没有逐份展开核。
-  - 状态:⏳ 统筹(唯一性已核;#302 的版本号要一句裁定 —— 补豁免,或打 tag 前升 2.0;早于 SL-468 的 8 份一并定口径)
+    (J178⑦)**版本号按总口径定**:首个公开 tag 之前的桥面变更一律并入 `contractVersion` 1.0(1.0 = rc.1 tag 上的桥面),rc.1 起严格按 §0.1。#302 与上面 8 份都在首个公开 tag 之前,按这条都并入 1.0,不逐份补豁免,也不升 2.0;所以这 8 份不再需要展开核。这条口径已写进 CHANGELOG `[Unreleased]` 的「变更」(#345)。「与代码一致」:`node scripts/check-bridge-parity.mjs` 在本分支上通过(`contractVersion = 1.0`;output 函数 37 / 事件 10、input 函数 8 / 事件 5,manifest 与 `web/shared/bridge.js`、C++ 常量表、三个编辑器已注册的 handler 逐一零差异,事件载荷字段对拍全过);同一条命令也在 CI `docs-truth` 里跑,打 tag 前 L3 按 tag 提交再看一次。
+  - 状态:✅ 已核(唯一性与机器一致性;版本号按 J178⑦ 总口径,首个公开 tag 之前的桥面变更并入 1.0)
 
 ### I. 许可与合规(GPLv3)
 
@@ -405,20 +410,20 @@ build-val\tests\tools\Release\scvb_diag.exe --out diag-rc1.csv --group 1
 7. 判据:逐声道残差 RMS < −40 dBFS。不过就分开打印(只打印 pan、只打印 vol)各比一次,定位是哪条链(10 §4.2)。
 8. 把 `docs/validation/audio/nulltest-log.md` 新追加的那段交给统筹,并在它的汇总表补一行。
 
-### U-3 模式 A null test(D1 / D5,等统筹定补偿口径后再做)
+### U-3 模式 A null test(D1 / D5;补偿口径已定,J178①)
 
-> 补偿口径(SL-575 按源码推导,**待统筹确认**,没有实跑过):成品 Output 对居中的 mono 轨每侧给 cos 45° = 1/√2(−3.0103 dB),对居中、width 100 的 stereo 轨 L→L、R→R(0 dB)。所以要施加给 test 的补偿 = 宿主居中增益(dB)− (−3.0103);`-PanLawDb` 填它的相反数。只有宿主居中增益恰好是 −3.0103 dB 时,mono 与 stereo 两部分都不用补偿,完整格才能用一个增益调平。
+> 补偿口径(SL-575 按源码推导,统筹已定为 J178①;没有实跑过):成品 Output 对居中的 mono 轨每侧给 cos 45° = 1/√2(−3.0103 dB),对居中、width 100 的 stereo 轨 L→L、R→R(0 dB)。所以要施加给 test 的补偿 = 宿主居中增益(dB)− (−3.0103);`-PanLawDb` 填它的相反数。只有宿主居中增益恰好是 −3.0103 dB 时,mono 与 stereo 两部分都不用补偿,完整格才能用一个增益调平。
 
-1. 新建 48 kHz 工程,导入同一组人声(有 stereo 轨的话建议 13 mono + 2 stereo;先只放 mono 跑一遍,再加 stereo 跑完整格),全部 pan 居中、推子 0 dB,送同一条 stereo Group(VOX BUS),总线同样居中、0 dB。Project → Project Setup 里的 Stereo Pan Law **选「Equal Power」(等功率)**,并把列表里选中那一项的原文记下来:按推导只有等功率这一档 mono 与 stereo 两部分都不用补偿。「−3 dB」那一档若按字面是 −3.000 dB,与成品差 0.0103 dB,残差只会比信号低约 58 dB,过不了 −120 dBFS;0 dB 档下 mono 要补 +3.0103 dB、stereo 要 0 dB,单一增益调不平,**0 dB 档只许用在纯 mono 的定口径跑**。另记下 stereo 轨用的是哪种 panner(Stereo Balance Panner / Stereo Combined Panner)—— Cubase 对居中 stereo 轨是否也施加 pan law 没实测。
+1. 新建 48 kHz 工程,导入同一组人声(有 stereo 轨的话建议 13 mono + 2 stereo;先只放 mono 跑一遍,再加 stereo 跑完整格),全部 pan 居中、推子 0 dB,送同一条 stereo Group(VOX BUS),总线同样居中、0 dB。Project → Project Setup 里的 Stereo Pan Law **选「Equal Power」(等功率)**,并把列表里选中那一项的原文记下来:按推导只有等功率这一档 mono 与 stereo 两部分都不用补偿。「−3 dB」那一档若按字面是 −3.000 dB,与成品差 0.0103 dB,残差只会比信号低约 58 dB,过不了 −120 dBFS;0 dB 档下 mono 要补 +3.0103 dB、stereo 要 0 dB,单一增益调不平,**0 dB 档只许用在纯 mono 的定口径跑**。另记下 stereo 轨用的是哪种 panner(Stereo Balance Panner / Stereo Combined Panner)—— Cubase 对居中 stereo 轨是否也施加 pan law 没实测,先纯 mono、再完整格这两遍就是用来分辨这一点的(J178①)。
 2. **不装 SCVB**,导出区间 → `ref_A.wav`(32-bit float)。
 3. 每条人声轨插件链最后一格插 SCVB Input,总线第一格插 SCVB Output。**不分析、输出开关保持 OFF、不写任何自动化**(此时 pan 0 / vol 0 dB / width 100 / MS Balance 0 / Lead Select 0 都是参数默认值,见 `tests/golden/params_v0.tsv`)。确认各 Input 显示已连接、Output 没有「时间线缺口」横幅,导出同一区间 → `test_B.wav`。
-4. 比对(补偿值以统筹定的为准;下面是按源码推的,没实跑过。wav 同 U-2 写完整路径):
+4. 比对(补偿值按 J178①;它是按源码推的,没实跑过。wav 同 U-2 写完整路径):
    - 宿主 Equal Power(完整格与纯 mono 都用这档):`pwsh scripts/nulltest.ps1 "<导出目录>\ref_A.wav" "<导出目录>\test_B.wav" -PanLawDb 0 -Align -BuildDir build-val`
    - 宿主 0 dB(**只限纯 mono 的定口径跑**):`pwsh scripts/nulltest.ps1 "<导出目录>\ref_A.wav" "<导出目录>\test_B.wav" -PanLawDb -3.0103 -Align -BuildDir build-val` —— **要写到小数点后 4 位**:写成 `-3.01` 少补 0.0003 dB,残差会停在信号以下约 89 dB,整格判红而原因不在插件
    - ⚠ 成品口径下 `-PanLawDb` 传的是「要施加给 test 的补偿量取反」,**不是宿主设置**;脚本会把这个数原样写进原始记录的「宿主 pan law」那一行(同一行括号里的 `--gain-db` 才是实际施加的补偿)。原始记录不手改,**宿主的真实设置以汇总表「宿主 pan law」一列为准**。
 5. 判据:样本偏移 0,残差峰值 < −120 dBFS(理想为按位相等)。**不过就把工具输出的逐声道残差与偏移原样回报,别凭听感调增益去凑**(10 §4.2 明令禁止)。汇总表的「宿主 pan law」一列写 Cubase 里的真实设置,备注写 stereo 轨的 panner 类型。
 
-### U-4 性能基线 `scvb_bench`(E1,E2 的 PERF-1..4;rc.1 已由统筹在本机跑过,见 E1 与 perf/budget-log.md)
+### U-4 性能基线 `scvb_bench`(E1,E2 的 PERF-1..4;rc.1 已由统筹在本机跑过,见 E1 与 perf/budget-log.md;PERF-2 的 96k/128 一档打 tag 前由统筹在无并发负载时重跑,J178④)
 
 在性能参考机上跑(U16:275HX / 32GB 笔记本),插电源、关掉 DAW 与其他重负载程序:
 

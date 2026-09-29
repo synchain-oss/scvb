@@ -284,4 +284,5 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
 - **the DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
+- **on the waveform page, making a selection, selecting a segment and editing segments (dragging, splitting or removing a boundary) need a mouse or touchpad for now**; a keyboard way to do them is planned before v1.0.0. Details in `docs/KNOWN_ISSUES.md` (KI-10);
 - v2 directions: a precise-mode VAD (Silero), and more platforms.
