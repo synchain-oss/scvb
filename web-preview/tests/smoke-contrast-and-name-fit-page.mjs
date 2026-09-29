@@ -16,9 +16,12 @@
 //      A0 基线:演示轨名下 16 张卡等宽,记下格宽;
 //      A1 15 条轨名全换成 53 字的中英混排长名(契约上限是 24 字,这里故意超出留余量)⇒
 //         轨名真的上屏了(防空转)、且真的被截断了(轨名行 scrollWidth > clientWidth,
-//         否则说明这串不够长、本格没测到东西);网格 / 通道区 / 内容区三层
+//         否则说明这串不够长、本格没测到东西);网格 / 通道区 / 组卡片 / 内容区四层
 //         scrollWidth ≤ clientWidth;每张卡宽与基线相同(±0.5px)、右缘不越出网格;
-//      A2 轨名行的 title = 完整轨名(被截掉的半句只剩悬停这条路);空轨名那张卡不挂 title。
+//      A2 悬停提示(被截掉的半句只剩这条路):一张卡只有一个 title,挂在卡上 ——
+//         未被占用的卡 = 完整轨名;被别的实例占用的卡 = 完整轨名 + 换行 + 占用说明;
+//         空轨名那张卡不带轨名行;轨名那一行自己不挂 title(内层 title 会把卡上的占用
+//         说明遮住,#336 复审点出)。两种卡(占用 / 未占用)都必须真的出现,防空转。
 //   B. Output 整体调整页 Lead Select(SL-562 顺查出的同族):
 //      B0 基线:短轨名下选中轨 1,记下触发钮高度、选项高度;
 //      B1 轨名换成 24 个 W 连写(无断点,最宽的不可断串)与 24 个汉字两种,各选中轨 1 ⇒
@@ -38,7 +41,9 @@
 // 删除式(未提交,人工核过,见 PR 描述):
 //   · tab-tracks.js 里「取消」去掉 sc-btn--dark ⇒ C1 的 tracks-row-1-manual-overwrite-cancel 红;
 //   · input/index.html 网格列改回 repeat(4, 1fr) ⇒ A1 三个缩放档全红;
-//   · input/app.js 删掉轨名行的 setAttribute("title") ⇒ A2 红;
+//   · input/app.js 卡片 title 里去掉轨名那一行 ⇒ A2 两种卡红;只去掉占用说明那一行 ⇒
+//     A2「被占用的卡」红;
+//   · 另在轨名那一行上挂回 title ⇒ A2「轨名那一行不另挂」红;
 //   · output/index.html 单行截断规则里去掉触发钮那个选择器 ⇒ B1 触发钮那几格红;
 //     只去掉 .lead-select__name ⇒ B1 面板那几格红;去掉 margin-right ⇒ 「不压箭头」那格红;
 //   · tab-master.js 删掉选项 / 触发钮的 title ⇒ 各自那格红。
@@ -595,14 +600,27 @@ try {
         const gr = g.getBoundingClientRect();
         const lab = (ch) => {
             const x = d.querySelector('[data-gb="input.channels.card"][data-ch="' + ch + '"] .ipt-chcard__label');
-            return x ? { text: x.textContent, title: x.getAttribute("title"), sw: x.scrollWidth, cw: x.clientWidth } : null;
+            return x ? { text: x.textContent, sw: x.scrollWidth, cw: x.clientWidth } : null;
         };
         const sc = (e) => [e.scrollWidth, e.clientWidth];
+        // 每张卡的悬停提示面:卡自己的 title、轨名、占用角标是否可见、是否本实例选中的那张。
+        const tips = cards.map((x) => {
+            const l = x.querySelector(".ipt-chcard__label");
+            const o = x.querySelector(".ipt-chcard__occupied");
+            return {
+                ch: Number(x.getAttribute("data-ch")),
+                name: l ? l.textContent : "",
+                labelTitle: l ? l.getAttribute("title") : null,
+                title: x.getAttribute("title"),
+                occ: !!o && !o.hidden,
+                pressed: x.getAttribute("aria-pressed") === "true",
+            };
+        });
         return {
             grid: sc(g), chans: sc(chans), content: sc(content), panel: sc(panel),
             widths: cards.map((x) => x.getBoundingClientRect().width),
             overRight: cards.filter((x) => x.getBoundingClientRect().right > gr.right + 0.5).length,
-            l5: lab(5), l3: lab(3),
+            l5: lab(5), tips: tips,
         };
     `);
     const fits = (pair) => Array.isArray(pair) && pair[0] <= pair[1];
@@ -670,10 +688,45 @@ try {
             m.overRight === 0,
             `${tag} A1:没有卡片右缘越出网格(越出 ${m.overRight} 张)`,
         );
-        eq(m.l5 && m.l5.title, LONG, `${tag} A2:轨名行 title = 完整轨名`);
+        // A2 悬停提示:一张卡只有一个 title(挂在卡上),第一行完整轨名,被别的实例占用时
+        // 第二行接「已被占用」说明。夹具 fifteen-tracks 的 occupiedMask 是全 15 位 ⇒ 除本实例
+        // 选中的那张外都带占用角标 —— 两种卡都要真的出现,否则本组没测到东西。
+        const tips = m.tips || [];
+        const occLong = tips.find((x) => x.occ && x.name === LONG);
+        const freeLong = tips.find((x) => !x.occ && x.name === LONG);
+        const empty = tips.find((x) => x.ch === 3);
+        const TIP = (x) => JSON.stringify(x && x.title);
+        if (
+            check(
+                !!occLong && !!freeLong,
+                `${tag} A2:夹具里同时有「长名 + 被占用」与「长名 + 未被占用」两种卡(实得 ${!!occLong} / ${!!freeLong})`,
+            )
+        ) {
+            const lines = (occLong.title || "").split("\n");
+            check(
+                lines.length === 2 &&
+                    lines[0] === LONG &&
+                    lines[1].trim() !== "" &&
+                    lines[1] !== LONG,
+                `${tag} A2:被占用的卡 title = 完整轨名 + 换行 + 占用说明(卡 ${occLong.ch} 实得 ${TIP(occLong)})`,
+            );
+            eq(
+                freeLong.title,
+                LONG,
+                `${tag} A2:未被占用的卡 title = 完整轨名(卡 ${freeLong.ch})`,
+            );
+        }
         check(
-            m.l3 && m.l3.text === "" && m.l3.title === null,
-            `${tag} A2:空轨名那张卡不挂 title(实得 text=${JSON.stringify(m.l3 && m.l3.text)} title=${JSON.stringify(m.l3 && m.l3.title)})`,
+            tips.every((x) => x.labelTitle === null),
+            `${tag} A2:轨名那一行不另挂 title(内层 title 会遮住卡上的占用说明)`,
+        );
+        check(
+            !!empty &&
+                empty.name === "" &&
+                (empty.occ
+                    ? !!empty.title && !empty.title.includes("\n")
+                    : empty.title === null),
+            `${tag} A2:空轨名那张卡不带轨名行(占用时只剩占用说明、未占用时不挂 title;实得 occ=${empty && empty.occ} title=${TIP(empty)})`,
         );
         assertClean(tag);
     }
