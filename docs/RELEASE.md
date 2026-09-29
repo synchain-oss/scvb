@@ -80,7 +80,7 @@ semver 语义(音频插件特化):
 
 ## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
 
-v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`,tag 打在 `dev` 上(J170)。合法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
+v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`,tag 打在 `dev` 上(J170)。做法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
 
 为什么不把 `feature/v1` 直接开 PR 合进 `dev`:主支线累积了几百个提交,`branch-gate` 的 DCO 步读 PR 提交列表的接口最多返回 250 条,所以到 250 条就直接判红(见 `branch-gate.yml` 里的注释);历史里也有少数提交缺 `Signed-off-by`,不改写历史补不上。压成一个提交之后,DCO 只看这一个提交。
 
@@ -113,8 +113,8 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
    git rev-list --count origin/dev..HEAD                      # 必须是 1
    git log -1 --format=%B | grep -c '^Signed-off-by:'         # 必须 >= 1
    ```
-3. 推这条临时分支,开 PR 到 `dev`(`dev` 要求走 PR,不能直推;分支名要符合 `branch-gate` 的 `feat/*` / `feature/*`)。这个 PR 只有一个提交,DCO 与冻结契约守卫照常判。
-4. CI 全绿、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名):
+3. 推这条临时分支,开 PR 到 `dev`(`dev` 要求走 PR,不能直推;分支名要符合 `branch-gate` 的 `feat/*` / `feature/*`)。这个 PR 只有一个提交,DCO 与冻结契约守卫照常判。它会碰到冻结契约文件(`feature/v1` 期间对它们的改动),按 `CLAUDE.md` §5 挂 `status/frozen-contract` 标签;对应的变更文档已随 `feature/v1` 一起进来,不另写。
+4. CI 绿了、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名)。⚠ 已知例外:docs-truth 里的「Changelog drafts not stranded」一步按 **base 分支的提交标题**判 CHANGELOG 正文里的每个 `(#N)` 有没有落地,而 `dev` 的历史里没有 `feature/v1` 上那些合并提交的标题 —— 所以它在这个 PR 上会成片判红(压进 `dev` 之后,push→`dev` 与之后 base=`dev` 的 PR 也一样),红的原因不是 CHANGELOG 写错。这一步怎么处理(让它改读 `feature/v1` 的落地记录,或确认后带着这条红合并)要在里程碑合并之前定:
 
    ```bash
    gh pr merge <PR 号> --squash -t "<标题> (#<PR 号>)" -b "<正文>"
@@ -129,7 +129,17 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
 
    push→`dev` 会自动跑一次全量 `build-vst3`;它绿了才进发版清单第 6 步打 tag。
 
-合完之后,`dev` 上的这个提交不在 `feature/v1` 的历史里,下次里程碑的前置检查会不过。趁 `dev` 上还没有别的新提交,可以立刻把它以 `-s ours` 合回 `feature/v1` —— 它的内容 `feature/v1` 全有,这一步只记一笔「已合并」,不改任何文件:从 `feature/v1` 拉分支,`git merge -s ours --signoff origin/dev`,开 PR 到 `feature/v1`,用「Create a merge commit」合并。`dev` 上已经有了别的新提交时不要用 `-s ours`(会把那些提交的改动丢掉),改走上面「前置」那条正常合并。
+合完之后,`dev` 上的这个提交不在 `feature/v1` 的历史里,下次里程碑的前置检查会不过。所以**里程碑 PR 一合完就**把它以 `-s ours` 合回 `feature/v1` —— 它的内容 `feature/v1` 全有,这一步只记一笔「已合并」,不改任何文件:
+
+```bash
+git fetch origin
+git rev-list --count <里程碑提交>..origin/dev                   # 必须是 0:dev 上还没有别的新提交
+git switch -c feat/v1-milestone-<版本>-backmerge origin/feature/v1
+git merge -s ours --signoff -m "<说明>" origin/dev
+git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一个文件都不改
+```
+
+然后开 PR 到 `feature/v1`,它的 Files changed 应当是 0(不是 0 就停下),用「Create a merge commit」合并(`gh pr merge --merge`)。第二条命令不是 0(`dev` 上已经有了别的新提交)就**不要**用 `-s ours` —— 它会把那些提交的改动一起丢掉;改走上面「前置」那条正常合并。那时 `dev` 上的里程碑提交会与 `$FV1` 之后 `feature/v1` 改过的每一处冲突,要逐个文件对照 `$FV1` 解,量可能很大 —— 这正是要「一合完就做」的原因。
 
 ## `staging` 与 `prod` 两个分支(J163 / J163a / J172)
 
@@ -139,12 +149,13 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
 | `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 一律不动 `prod` |
 
 - rc 发布后前移 `staging`;正式版发布后先前移 `staging`,再前移 `prod`。两个分支都要指向**这次 tag 指向的那个提交本身**(快进),所以不走 PR —— GitHub 的 PR 合并不做快进,会多出一个合并提交,分支就不等于 tag 提交了。
-- **两个分支都开着保护,直推会被拒**:保护要求走 PR,而且「管理员也不能绕过」(`enforce_admins`)是开着的。按 J172,前移时**由用户(仓库管理员)临时允许管理员绕过,直推快进,推完立刻恢复**;也可以临时整条放开该分支的保护,推完原样恢复。每次只动正在前移的那一个分支。以 rc 前移 `staging` 为例(正式版把 tag 换成 `vX.Y.Z`;前移 `prod` 时把命令里的 `staging` 全部换成 `prod`,整组再走一遍):
+- **两个分支都开着保护,直推会被拒**:保护要求走 PR,而且「管理员也不能绕过」(`enforce_admins`)是开着的。按 J172,前移时**由用户(仓库管理员)临时允许管理员绕过,直推快进,推完立刻恢复**;也可以临时整条放开该分支的保护,推完原样恢复。每次只动正在前移的那一个分支。**push 不管成败,都先执行恢复那一行再排查** —— 别让保护开着口子等排查;下面把 push 的退出码先存下来,恢复之后再看。以 rc 前移 `staging` 为例(正式版把 tag 换成 `vX.Y.Z`;前移 `prod` 时把命令里的 `staging` 全部换成 `prod`,整组再走一遍):
 
   ```bash
   gh api -X DELETE repos/synchain-oss/scvb/branches/staging/protection/enforce_admins     # 临时允许管理员绕过
-  git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging                                  # 快进,不加 --force
-  gh api -X POST repos/synchain-oss/scvb/branches/staging/protection/enforce_admins       # 立刻恢复
+  git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging; rc=$?                           # 快进,不加 --force
+  gh api -X POST repos/synchain-oss/scvb/branches/staging/protection/enforce_admins       # 不管 push 成败,立刻恢复
+  echo "push-exit=$rc"                                                                      # 不是 0 就按下一条排查
   gh api repos/synchain-oss/scvb/branches/staging/protection/enforce_admins -q .enabled   # 必须输出 true
   git ls-remote origin refs/heads/staging                                                   # 必须等于下一行的输出
   git rev-parse vX.Y.Z-rc.N^{commit}
