@@ -821,12 +821,18 @@ try {
     //   d. 新页面上**没有意图位**、只有 C++ 侧的首次开输出守卫(关窗再开时的真实处境)⇒ 板子照样
     //      出现、横幅⑦照样不亮,点「开始」照样确认;之后在同一窗口再关、再开 ⇒ 不重复出板、
     //      不带 requireConfirm(板子上过屏就算本窗口「出过」,「首次」的判法不变);
-    //   e. 首次那一下被拒 ⇒ 板子没上屏、不算「出过」,第二次拨开仍带 requireConfirm。
-    // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红;去掉 ok 钮里的
+    //   e. 首次那一下被拒 ⇒ 板子没上屏、不算「出过」,第二次拨开仍带 requireConfirm;
+    //   f. 出过板之后开 01 采集(J92a 连带关输出、守卫解除),再拨开输出 ⇒ 非首次、不置守卫、开了就写,
+    //      板子**不许**凭残留的意图位重新上屏讲「点开始前不写」;
+    //   g. 板子挂着时宿主重灌出 ON(守卫来由换成 restore,横幅⑦与板子并存),点横幅⑦的钮确认 ⇒
+    //      守卫解除、开始写,板子跟着收起。
+    // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红(没有守卫就不出板,
+    // 所以 c/e/f/g 的「确认板出现」与 ⑥ 的「开引擎 ⇒ 出现」也一起红);去掉 ok 钮里的
     // `call("confirmPrintGuard")` ⇒ b、d 红;横幅⑦改回只看 pending ⇒ a、d 的「横幅⑦不亮」红;
-    // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红;
-    // 去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」红;
-    // 在首次分支里提前置 `writeConfirmSeen` ⇒ e 红。
+    // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红(f 也红:
+    // 再开又算首次);去掉 hideWriteConfirm 里的 `writeConfirmDismissed = true` ⇒ b、c 的「当拍收起」红;
+    // 在首次分支里提前置 `writeConfirmSeen` ⇒ e 红;render 显隐里去掉 `&& guardHeld` ⇒ f、g 的 ★ 红;
+    // mock `setCaptureEnabled` 去掉连带清守卫那一支 ⇒ f 的两个 ★ 与「守卫没挂」前置红。
     log(
         "=== ⑥b [J166] 首次开输出:点「开始」之前守卫在场;开始 / 撤销的接线 ===",
     );
@@ -1019,8 +1025,9 @@ try {
 
         // ---- e:首次那一下被拒(store 里 noTimeline / 只读还没回推时开关的闸会放行)⇒ 板子没上屏,
         //      「出过」不许被闩,下一次拨开仍带 requireConfirm(#337 复审【重要】)。
-        //      在首次分支里提前置 `writeConfirmSeen` ⇒ 下面两个 ★ 红(板子那格照样绿:第一下留下的
-        //      意图位还在,输出一开板子就出 —— 可那时没有守卫,正是这格要抓的「板子挂着却在写」)。
+        //      在首次分支里提前置 `writeConfirmSeen` ⇒ 下面两个 ★ 红,「这一次确认板照常出现」也红
+        //      (显隐与上了「守卫待确认」:第二下不带 requireConfirm、不置守卫,残留意图位不再能把板子
+        //      顶上屏。与上那一项之前,这格是绿的 —— 板子挂着却在写,正是 f 那一族)。
         check((await open("connected")) !== null, "⑥b-e 取到页内 DOM 快照");
         await toMaster();
         check(await spy(), "⑥b-e 前置:桥函数装上记录器");
@@ -1066,6 +1073,109 @@ try {
             "⑥b-e ★ 守卫照常置上(板子挂着时不写)",
         );
         assertClean("⑥b e(首次开输出被拒)");
+
+        // ---- f:出过板之后开 01 采集 ⇒ J92a 连带关输出,C++ 的 applyOutputEnabled(false) 清守卫;意图位
+        //      只有 hideWriteConfirm 会清,采集开关不走它,于是残留。再拨开输出走非首次分支:不带
+        //      requireConfirm、不置守卫、开了就写 —— 板子若凭残留意图位重新上屏,讲的「点开始前不写」
+        //      就是假话(#337 独立复核)。宿主重灌出 OFF 之后再拨开是同一条路。
+        const outOffCapOn = `(() => { const s = window.__SCVB_PREVIEW__;
+            return !!s && !s.ctl.model.snapshot.global.output_enabled
+                && !!s.ctl.model.snapshot.global.capture_enabled; })()`;
+        check((await open("connected")) !== null, "⑥b-f 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-f 前置:桥函数装上记录器");
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-f 首次点输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-f 确认板出现");
+        check(
+            await click("master-capture-toggle-switch"),
+            "⑥b-f 开 01 采集(J92a 连带关输出)",
+        );
+        check(await waitFor(outOffCapOn, 5000), "⑥b-f 前置:采集开、输出关");
+        check(await waitFor(boardHidden, 5000), "⑥b-f 输出关 ⇒ 板子收起");
+        // 同步点:等**页面**收到「输出关」的回推(mock 250ms 一帧)再点开关。只靠上一格不够 ——
+        // 板子若本来就没上屏(删除式 W1 的处境),上一格当场就绿,页面 store 还是「开」,再点就成了关。
+        check(
+            await waitFor(switchIs("false"), 5000),
+            "⑥b-f 前置:页面上开关已显示为关",
+        );
+        check(
+            ((await guard()) || {}).pending === false,
+            "⑥b-f ★ 连带关输出时守卫随之解除(mock 与真桥 applyOutputEnabled(false) 同款)",
+        );
+        check(await click("master-output-toggle-switch"), "⑥b-f 再拨开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-f 开关显示为开");
+        await sleep(400);
+        const fLast = (await calls())
+            .filter((c) => c.name === "setOutputEnabled")
+            .pop();
+        eq(
+            fLast && fLast.args,
+            [true],
+            "⑥b-f 前置:这一下走非首次分支(不带 requireConfirm)",
+        );
+        check(
+            ((await guard()) || {}).pending === false,
+            "⑥b-f 前置:守卫没挂 —— 开了就写",
+        );
+        check(
+            (await evaluate(boardHidden)) === true,
+            "⑥b-f ★ 板子不凭残留的意图位重新上屏(守卫没挂,不能说「点开始前不写」)",
+        );
+        assertClean("⑥b f(出过板 → 开采集 → 再开输出)");
+
+        // ---- g:板子挂着时宿主重灌出 ON(带插件状态的 DAW 撤销 / A/B 对比 / 载入预设)⇒ C++ 的
+        //      setStateInformation 把守卫置成 Restore,横幅⑦出现,同一窗口里板子凭意图位并存。点横幅⑦的
+        //      「继续写入自动化」确认 ⇒ 守卫解除、开始写 —— 板子必须跟着收起,不能挂着说「点开始前不写」。
+        check((await open("connected")) !== null, "⑥b-g 取到页内 DOM 快照");
+        await toMaster();
+        check(
+            await click("master-output-toggle-switch"),
+            "⑥b-g 首次点输出开关",
+        );
+        check(await waitFor(boardShown, 5000), "⑥b-g 确认板出现");
+        // 宿主重灌的替身:照 OutputProcessor::setStateInformation 恢复出 ON ⇒ Restore,整帧回推。
+        check(
+            await shell(`
+                const sn = s.ctl.model.snapshot;
+                sn.global.output_enabled = true;
+                sn.global.capture_enabled = false;
+                sn.print_guard = { pending: true, reason: "restore" };
+                s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+                return true;`),
+            "⑥b-g 前置:宿主重灌出 ON(守卫来由换成 restore)",
+        );
+        const bannerUp = IN(
+            `const n = gb("banner-printGuard"); return !!n && !n.hidden;`,
+        );
+        const bannerDown = IN(
+            `const n = gb("banner-printGuard"); return !!n && n.hidden;`,
+        );
+        check(await waitFor(bannerUp, 5000), "⑥b-g 前置:横幅⑦出现");
+        check(
+            (await evaluate(boardShown)) === true,
+            "⑥b-g 前置:板子与横幅⑦并存(守卫仍挂着,板上的话此刻成立)",
+        );
+        check(
+            await click("banner-printGuard-confirm"),
+            "⑥b-g 点横幅⑦「继续写入自动化」",
+        );
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-g 前置:守卫解除(此后播放就写)",
+        );
+        check(await waitFor(bannerDown, 5000), "⑥b-g 横幅⑦收起");
+        check(
+            await waitFor(boardHidden, 5000),
+            "⑥b-g ★ 板子跟着收起(守卫已确认,不能再挂着说「点开始前不写」)",
+        );
+        assertClean("⑥b g(板子与横幅⑦并存 → 点横幅⑦确认)");
     }
 
     // =========================================================================

@@ -876,11 +876,13 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             );
             // [J166] 意图位之外多了一条「C++ 首次开输出守卫在场(且没点过开始/撤销)」,仍须与
             // output_enabled **与门**:互斥拨掉引擎时 C++ 同时清了守卫,两半一起落空,板子收起。
+            // 其后还与着一项「守卫待确认」(`guardHeld`):本条只钉前半,那一项由页面级
+            // smoke-output-stale-page ⑥b-f / ⑥b-g 按行为钉(残留意图位 ⇒ 板子不上屏 / 跟着收起)。
             check(
                 /\(local\.writeConfirmOpen \|\| guardAsks\)\s*&&\s*g\.output_enabled/.test(
                     tmSrc,
                 ),
-                "确认板显隐 = (意图位 ∨ 首次开输出守卫) ∧ output_enabled(互斥拨掉引擎时跟着收起)",
+                "确认板显隐 = (意图位 ∨ 首次开输出守卫) ∧ output_enabled ∧ …(互斥拨掉引擎时跟着收起)",
             );
         }
 

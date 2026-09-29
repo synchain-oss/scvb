@@ -1087,7 +1087,8 @@ export function createTabMaster(opts) {
     const local = {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
         // [SL-247] 「写入双后果」确认板的**意图位**。显隐不再由 show/hide 直写 DOM,而是
-        // 在 renderFlow 里派生成「意图 ∧ output_enabled」—— 理由见 showWriteConfirm 的注释。
+        // 在 renderFlow 里派生成「意图 ∧ output_enabled」([J166] 起另有守卫两项,见 renderFlow)——
+        // 理由见 showWriteConfirm 的注释。
         //
         // ⛔ **别把它简化掉、退回「只看 output_enabled」的状态单判**:那一版会在真机上把
         // 确认板永久吃掉(#162 复审第二轮的回归)。而且**自动化套件测不出这一退化** ——
@@ -1301,7 +1302,7 @@ export function createTabMaster(opts) {
     }
 
     // [SL-247] 两个口子只翻**意图位**,不直写 `hidden` —— 真正的显隐在 renderFlow 里
-    // 派生成「意图 ∧ `g.output_enabled`」。
+    // 派生成「意图 ∧ `g.output_enabled`」([J166] 起另有守卫两项,见 renderFlow)。
     //
     // 为什么不能直写(#162 复审第二轮抓到的真机回归,本仓「mock 说谎」那一族):
     // `outSwitch` 的 handler 里 `call("setOutputEnabled", true)` 是 **async 且不 await** 的,
@@ -2026,8 +2027,8 @@ export function createTabMaster(opts) {
                 isSwitchBlocked() ? "1" : "0",
             );
 
-        // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**,
-        // 幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。
+        // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**([J166] 起再 ∧ 守卫待确认,
+        // 见下),幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。
         //
         // 这块板此前是**纯命令式**开合,每一条「输出转 OFF」的路都得**手工**配一次
         // hideWriteConfirm()。J92a 新开了一条谁都没配的路:用户开采集 ⇒ C++ 侧把
@@ -2041,12 +2042,21 @@ export function createTabMaster(opts) {
         // 显示:关掉插件窗口再打开(新页面没有意图位)时确认条照样在、照样要点「开始」,
         // 不会换成说「随工程恢复」的横幅⑦。点过「开始 / 撤销」之后到回推之前由
         // `writeConfirmDismissed` 压住,不多挂那一拍。
+        //
+        // [J166] 再与上「写入守卫真的待确认」(`guardHeld`):板子正文说的是「点『知道了,开始』后才写
+        // (点之前只试听、不写)」,这句话只在守卫挂着时成立。意图位只有 hideWriteConfirm 会清,有两条路
+        // 绕开它:① 出过板之后开 01 采集(J92a 连带关输出,C++ 清守卫)或宿主重灌出 OFF,再拨开输出
+        // 走的是非首次分支(不带 requireConfirm、不置守卫、开了就写),残留的意图位会让板子重新上屏;
+        // ② 板子与横幅⑦并存时点横幅⑦的钮确认,守卫解除、开始写,板子却还挂着。与上这一项,两条都跟着收起。
+        // 点开那一帧不受影响:C++ 在同一次 setOutputEnabled 里开输出并置守卫,两者随同一帧回推。
         if (el.writeConfirm) {
             const guardAsks =
                 firstEnableGuardPending(s) && !local.writeConfirmDismissed;
+            const guardHeld = !!(s.print_guard && s.print_guard.pending);
             el.writeConfirm.hidden = !(
                 (local.writeConfirmOpen || guardAsks) &&
-                g.output_enabled
+                g.output_enabled &&
+                guardHeld
             );
             // 板子上了屏 = 本窗口里「出过」了。关窗再开、按守卫显示出来的那一次也算 —— 此后在这个
             // 窗口里再关、再开输出开关不再出板(与点开关出板那一次同口径,「首次」的判法不变)。

@@ -64,7 +64,9 @@
 - `src/output/BridgeArgs.h` `parseSetOutputEnabledArgs`:第二参解析;`OutputEditor::handleSetOutputEnabled` 走它。
 - `OutputEditor::buildStateSubtree`:待确认时 `print_guard` 多带 `reason`。
 - web:`tab-master.js` 首次 OFF→ON 带 `{requireConfirm:true}`;「知道了,开始」调 `confirmPrintGuard`;确认条显隐 =
-  (意图位 ∨ 首次开输出守卫)∧ 输出开;`app.js` 横幅⑦只认 `reason` 不是 `firstEnable` 的守卫。mock 同形。
+  (意图位 ∨ 首次开输出守卫)∧ 输出开 ∧ 守卫待确认(不分来由)—— 条上那句「点开始之前不写」只在守卫挂着时成立,
+  出过条之后经 01 采集把输出连带关掉(守卫随之解除)再打开、或点横幅⑦确认之后,条都不再挂着;`app.js` 横幅⑦只认
+  `reason` 不是 `firstEnable` 的守卫。mock 同形(含 §1.2 连带关输出时解除守卫)。
 
 ## 判据
 
@@ -74,7 +76,8 @@
 - 同文件「HOST 首次开输出(J166):守卫的置位、解除与来由」:撤销解除、非首次不设、Restore 不被改写、确认条挂着时存盘重灌
   ⇒ Restore 仍待确认、J92a 连带关输出解除、上桥字面量。
 - `tests/core/test_bridge_args.cpp`「parseSetOutputEnabledArgs」:第二参的形态与默认。
-- `web-preview/tests/smoke-output-stale-page.mjs` ⑥b:钮的接线(页面级,真渲染)。
+- `web-preview/tests/smoke-output-stale-page.mjs` ⑥b:钮的接线与确认条的显隐(页面级,真渲染;f / g 两格钉
+  「守卫没挂 ⇒ 条不上屏 / 跟着收起」)。
 - 反向注入与读数见 PR 描述。
 
 ## 兼容性影响
