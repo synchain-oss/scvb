@@ -14,7 +14,7 @@
 | 系统 | Windows 11 家庭中文版,build 26200 |
 | 机型 | 笔记本;测时接交流电,电源计划「平衡」 |
 | 音频接口与驱动 | 不适用 —— `scvb_bench` 离线跑,不经音频设备 |
-| 编译 | MSVC 19.29.30159(VS 2019 16.11),x64 Release,`/O2 /Ob2`,默认指令集(未开 AVX) |
+| 编译 | MSVC 19.29.30159(VS 2019 16.11 生成工具),x64 Release,`/O2 /Ob2`,默认指令集(未开 AVX)。**不是出包工具链**:CLAUDE.md §6 定的是 MSVC 2022,CI 与出包在 `windows-2022` 上用 Ninja 编;这台机器只装了 VS 2019 生成工具 |
 | 被测提交 | `feature/v1` @ `61b7575d`(#338 合并后) |
 
 这台就是 U16 所说的「275HX / 32GB 笔记本」性能参考机。
@@ -35,6 +35,8 @@
 scvb_bench.exe --dsp --fs 48000 --block 512 --tracks 15 --stereo-tracks 2 --blocks 100000 --json bench-48k-512.json
 scvb_bench.exe --dsp --fs 96000 --block 128 --tracks 15 --stereo-tracks 2 --blocks 100000 --json bench-96k-128.json
 ```
+
+下一版要跟这份基线比,就在同一台机器、同一套 VS 2019 工具链上重编;换成 VS 2022(或出包产物)的话先重建一次基线再比 —— 编译器不同,`std::sin` / `cos` / `pow` 的内联与向量化就不同,差异说不清来自代码还是来自编译器。
 
 4 次的 `checksum` 逐字相同(48k/512 为 `2103990.986`,96k/128 为 `2249898.094`):输入数据与计算路径固定,次与次之间变的只有计时。计时分辨率 100 ns(`steady_clock` 在 Windows 上走 QPC,10 MHz),96k/128 那一档的 p50–p99 只有 5–7 个刻度。
 

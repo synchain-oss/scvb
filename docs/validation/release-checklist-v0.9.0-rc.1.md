@@ -193,9 +193,9 @@
 ### E. 性能(10 §5)
 
 - [x] **E1 `scvb_bench --dsp` 对比上一 release 无 >10% 退化**
-  - 首发没有上一 release ⇒ **本次建基线**:记下基线机器(10 §5.0 / U16)与两档结果,存 `docs/validation/perf/budget-log.md`(10 §0.4 的冻结路径,本 PR 未建)。
+  - 首发没有上一 release ⇒ **本次建基线**:记下基线机器(10 §5.0 / U16)与两档结果,存 `docs/validation/perf/budget-log.md`(10 §0.4 的冻结路径;建清单的那个 PR 没建,由 #345 新建)。
   - 怎么查:§3 的 U-4。
-  - 证据(SL-575,`61b7575d`):按 J175 由统筹在本机做。本机就是 U16 那台(Intel Core Ultra 9 275HX / 32 GB 笔记本,Windows 11 build 26200,接交流电)。按 U-4 的两条命令各跑 4 次(构建同 B4,经排队器、`--parallel 1`),结果与机器信息落在 [perf/budget-log.md](perf/budget-log.md)(#345 新建)。**非安静条件**:同机开着另外 4 个开发会话与浏览器,整机 CPU 占用 19–38%、可用内存 2.2–3.5 GB;跑分期间排队器在本卡手里,没有别的构建并行。同档 4 次的 `checksum` 逐字相同。`scvb_bench --dsp` 量的是 Input / Output 的替身(见 budget-log「这把尺子量的是什么」),下一版对比时按同一条命令、同一台机器。
+  - 证据(SL-575,`61b7575d`):按 J175 由统筹在本机做。本机就是 U16 那台(Intel Core Ultra 9 275HX / 32 GB 笔记本,Windows 11 build 26200,接交流电)。按 U-4 的两条命令各跑 4 次(构建同 B4,经排队器、`--parallel 1`),结果与机器信息落在 [perf/budget-log.md](perf/budget-log.md)(#345 新建)。**非安静条件**:同机开着另外 4 个开发会话与浏览器,整机 CPU 占用 19–38%、可用内存 2.2–3.5 GB;跑分期间排队器在本卡手里,没有别的构建并行。同档 4 次的 `checksum` 逐字相同。`scvb_bench --dsp` 量的是 Input / Output 的替身(见 budget-log「这把尺子量的是什么」),下一版对比时按同一条命令、同一台机器、同一套工具链(这次是本机的 VS 2019,不是出包用的 VS 2022,见 budget-log)。
   - 状态:✅ 已核(基线已建;非安静条件)
 
 - [x] **E2 PERF-1..17 全部在预算内,无红灯**
