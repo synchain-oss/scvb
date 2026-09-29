@@ -60,7 +60,7 @@ semver 语义(音频插件特化):
 
 - 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
 - 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
-- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。这项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
+- 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。反过来,`LICENSES/` 里的每份全文也都必须有这张表的一行(或本项目的 GPL-3.0-or-later)点名它 —— 删了表里一行却留着全文、或只放全文不登记组件,都红,演练 tag 也不放行。这两项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
 - 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
 - **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
@@ -112,7 +112,8 @@ SCVB-vX.Y.Z-win64.zip
 ├── THIRD-PARTY-NOTICES.md      第三方依赖与各自许可证
 ├── LICENSES/                   仓库 LICENSES/ 下的全部许可证全文(应有哪些由 THIRD-PARTY-NOTICES.md 的「随二进制分发」表决定)
 ├── third_party/notices/        仓库同名目录的全部文件:JUCE 内置库与 WebView2 loader 的上游版权 / 许可声明原文
-│                               (NOTICES 对 HarfBuzz 只写了首行版权,其余各行见这里的 harfbuzz.COPYING)
+│                               (NOTICES 对 HarfBuzz 只写了首行版权,其余各行见这里的 harfbuzz.COPYING;
+│                               JUCE 里由 Unicode 数据生成的查找表,声明原文是这里的 unicode.license.txt)
 └── INSTALL.txt                 安装步骤 + 未签名插件的「解除锁定」与 SmartScreen 说明 + 九条规则前 3 条
                                 + 精确到 tag 的源码获取地址(GPLv3 §6 的书面声明)
 ```
