@@ -7,7 +7,8 @@ name: Branch Gate
 # [SL-277/J96,2026-09-02] 子 PR 已回到轻档 CI(不跑 build-vst3);本工作流的触发面不受影响
 # —— 它本来就只挂 pull_request→dev。
 # 发版里程碑再打开下面被注释的 prod/staging 规则(预发布分支名是 staging,J163a / SL-557)。
-# staging / prod 本身不经 PR 前移:发布后由维护者临时放开分支保护、直推快进(J163 / J172,见 docs/RELEASE.md)。
+# staging / prod 本身不经 PR 前移:发布后由维护者临时放开分支保护、直推快进(J163 / J172,见 docs/RELEASE.md),
+# 所以这两条规则只对误开到这两个分支的 PR 起作用,不代表前移要走 PR。
 
 on:
   pull_request:
