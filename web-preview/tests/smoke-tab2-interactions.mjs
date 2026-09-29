@@ -1607,6 +1607,8 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
     // (en/fr 是 on by default / activé par défaut),在整串里只找这几个词会被音量段满足。
     // 正反各钉一次(理由同 smoke-tour ⑤ 的 J153 那组)。
     // ⚠ fr 正向模式带左括号:`activé par défaut` 是旧句 `désactivé par défaut` 的子串。
+    // [SL-572] fr 的「stéréo compris」按 J127 式三语交叉核对改为「pistes stéréo comprises」
+    // (zh「含 stereo 轨」;`compris` 放在名词后要配合,且与 tour.step25.body 同一说法)。
     const LEGEND_PAN = {
         zh: ["声像", /默认关/, /\(默认开,含 stereo 轨;关掉后仍参与音量平衡\)/],
         en: [
@@ -1617,7 +1619,7 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
         fr: [
             "Pan",
             /désactivé par défaut/,
-            /\(activé par défaut, stéréo compris ; équilibrage conservé une fois désactivé\)/,
+            /\(activé par défaut, pistes stéréo comprises ; équilibrage conservé une fois désactivé\)/,
         ],
     };
     for (const [lang, [term, stale, fresh]] of Object.entries(LEGEND_PAN)) {

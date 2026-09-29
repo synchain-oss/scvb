@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB web-preview —— 三张 UI 卡的**页面级**冒烟(SL-272 / SL-275 / SL-276 / SL-273)
+// SCVB web-preview —— 三张 UI 卡的**页面级**冒烟(SL-272 / SL-275 / SL-276 / SL-273;E4 = SL-574)
 // =============================================================================
 // 为什么必须页面级:这一批改的全是**几何与时序**——
 //   • SL-272 「已接管…」要单行:折不折行只有排完版才知道,源码正则读不出来;
@@ -132,13 +132,24 @@
 //
 // **本段量的不是 spotlight 本身**:亮区是画在 canvas 上的,取不到 DOM 矩形。
 // 量的是它的输入(锚点的 bounding rect)与输出(说明框的落位),这两样才是挪位会改的东西:
-//   E. `input.html?scenario=input-first-run` 的 mini tour 末步([J80] 第 ⑤ 步):
+//   E. `input.html?scenario=input-first-run` 的 mini tour 末步(第 ⑥ 步;[J80] 时是第 ⑤ 步,
+//      [J176] 在它前面插了一步):
 //      「?」按 SL-272② 从 header 右上挪到了卡片右下 —— 它同时是 tour 的 spotlight 锚点,
 //      挪动锚点会改说明框的落位方向(placeCallout 的 fitsBelow 从真变假)。所以这条不是
 //      「顺手多测一点」,而是本卡改动的直接受害面:
-//      E1 走到 5/5,且「?」确实落在卡片下半部(挪位本身);
+//      E1 走到 6/6,且「?」确实落在卡片下半部(挪位本身);
 //      E2 说明框整体仍落在卡内(改前它在锚点下方,锚点到了底边就只能翻到上方);
 //      E3 说明框与「?」不相交(翻错方向的典型症状是盖住自己要讲的东西)。
+//   E4 [SL-574 / J176] 渲染警告步(KI-4:单独渲染 / 冻结 / 就地渲染本轨得静音文件)× 三语:
+//      同一条首启路径走到第 ⑤ 步 ——
+//      a 计数是「5/6」(这一步真的在表里、且总步数 = 6);
+//      b 标题 / 正文**逐字**等于该语言的 `tour-in.step5.*` 词条(键缺失时 tour-in.js 会把键名
+//        本身上屏,逐字比对即红),且正文含该语言的「静音文件」关键词(词条没被别的话顶替);
+//      c 顺序:第 ④ 步标题 = `tour-in.step4.title`(连接状态)在它之前,点下一步后是末步
+//        「?」自指(E1–E3 那一步)在它之后,末步标题逐字 = `tour-in.step6.title`(zh);
+//      d 这一步不指向任何控件(居中卡,箭头隐藏),且说明框整体落在卡内(法语正文最长)。
+//      删除式(未提交,记录见 PR):删掉 `TOUR_IN_STEPS` 里第 ⑤ 条 ⇒ a / d 与末步探针红;
+//      i18n 退回改前(没有新 step5、不重编号)⇒ b 的关键词红;只删三语 step6 词条 ⇒ c 末步标题红。
 //   D. 上面每一段跑完都要零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-ui-layout-page.mjs [仓库根绝对路径]
@@ -164,7 +175,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT =
     process.argv[2] && !process.argv[2].startsWith("--")
@@ -698,13 +709,107 @@ const TOUR_PROBE = IN(`
     if (!help || !callout || !shell || !overlay || overlay.hidden) return null;
     // spotlight 是画在 canvas 上的,取不到 DOM 矩形;改用 tour-in 自己算亮区那条路
     // (spotRectOf 的输入 = 锚点的 bounding rect),故这里直接量锚点与说明框。
+    const arrow = q(".tour-callout__arrow");
     return {
         step: (q(".tour-callout__step") || {}).textContent || "",
+        title: (q(".tour-callout__title") || {}).textContent || "",
+        body: (q(".tour-callout__body") || {}).textContent || "",
+        arrowHidden: !!arrow && arrow.hidden,
         help: R(help),
         callout: R(callout),
         shell: R(shell),
     };
 `);
+
+// ---- E4. [SL-574 / J176] 渲染警告步:期望值取自真词典(与 smoke-input-tour 同一份 import)
+const { T: DICT } = await import(
+    pathToFileURL(join(ROOT, "web/shared/i18n.js")).href
+);
+// 各语言正文里必须出现的「静音文件」说法(KI-4 的现象本身;词条被顶替成别的话即红)
+const RENDER_WARN_KEYWORD = {
+    zh: "静音文件",
+    en: "silent file",
+    fr: "fichier silencieux",
+};
+const RENDER_WARN_STEP = 5; // 第 ⑤ 步:紧跟第 ④ 步「连接状态」,在末步「?」之前
+const IN_TOUR_STEPS = 6; // [J80] 5 步 + [J176] 渲染警告 1 步
+
+/** 从首启语言卡起,按所选语言走到第 ⑤ 步,逐条断 E4 a–d。 */
+async function assertRenderWarnStep(lang, alreadyStarted) {
+    if (!alreadyStarted) {
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/input.html?scenario=input-first-run`,
+        });
+        check(
+            await waitFor(
+                IN(`const n = gb("lang-start"); return !!n && !n.hidden;`),
+            ),
+            `${lang}:首启语言卡弹出`,
+        );
+        check(
+            await click(`[data-lang-pick="${lang}"]`),
+            `${lang}:选语言 ⇒ mini tour 起`,
+        );
+        check(
+            await waitFor(
+                IN(
+                    `const n = q("[data-tour-overlay]"); return !!n && !n.hidden;`,
+                ),
+            ),
+            `${lang}:mini tour 起来了`,
+        );
+    }
+    // 走到第 ④ 步,先断「它前面那一步」是连接状态(E4c 的前半)
+    for (let i = 1; i < RENDER_WARN_STEP - 1; i++) {
+        check(
+            await click('[data-tour-btn="next"]'),
+            `${lang}:mini tour 第 ${i} 次「下一步」可点`,
+        );
+        await sleep(200);
+    }
+    const p4 = await evaluate(TOUR_PROBE);
+    if (check(p4, `${lang}:第 ④ 步探针取到`)) {
+        check(
+            p4.title === DICT[lang]["tour-in.step4.title"],
+            `${lang}:E4c 第 ④ 步 = 连接状态(实得 ${JSON.stringify(p4.title)})`,
+        );
+    }
+    check(
+        await click('[data-tour-btn="next"]'),
+        `${lang}:第 ④ → ⑤ 步「下一步」可点`,
+    );
+    await sleep(200);
+    const p5 = await evaluate(TOUR_PROBE);
+    if (!check(p5, `${lang}:第 ⑤ 步探针取到`)) return;
+    check(
+        p5.step.trim() === `${RENDER_WARN_STEP}/${IN_TOUR_STEPS}`,
+        `${lang}:E4a 计数 = ${RENDER_WARN_STEP}/${IN_TOUR_STEPS}(实得 ${JSON.stringify(p5.step)})`,
+    );
+    const wantTitle = DICT[lang]["tour-in.step5.title"];
+    const wantBody = DICT[lang]["tour-in.step5.body"];
+    check(
+        typeof wantTitle === "string" &&
+            wantTitle !== "" &&
+            p5.title === wantTitle,
+        `${lang}:E4b 标题逐字 = tour-in.step5.title(实得 ${JSON.stringify(p5.title)})`,
+    );
+    check(
+        typeof wantBody === "string" && wantBody !== "" && p5.body === wantBody,
+        `${lang}:E4b 正文逐字 = tour-in.step5.body(实得 ${JSON.stringify(p5.body.slice(0, 40))}…)`,
+    );
+    check(
+        p5.body.includes(RENDER_WARN_KEYWORD[lang]),
+        `${lang}:E4b 正文含「${RENDER_WARN_KEYWORD[lang]}」`,
+    );
+    check(p5.arrowHidden, `${lang}:E4d 居中卡,不指向任何控件(箭头隐藏)`);
+    check(
+        p5.callout.x >= p5.shell.x &&
+            p5.callout.r <= p5.shell.r &&
+            p5.callout.y >= p5.shell.y &&
+            p5.callout.b <= p5.shell.b,
+        `${lang}:E4d 说明框整体在卡内(callout=${p5.callout.x},${p5.callout.y},${p5.callout.r},${p5.callout.b} / shell=${p5.shell.x},${p5.shell.y},${p5.shell.r},${p5.shell.b})`,
+    );
+}
 
 // ---- B. 建议表留白(SL-275)
 const SUGGEST_PROBE = IN(`
@@ -1142,7 +1247,7 @@ try {
     // 「?」既是重看入口、也是 mini tour 末步的 spotlight 锚点。它从 header 右上挪到
     // 卡片右下之后,placeCallout 的落位分支从 fitsBelow 翻到 fitsAbove —— 这一段就是
     // 在真页面上确认「翻对了方向、没盖住自己要讲的按钮、也没掉出卡外」。
-    log("E. SL-272② 「?」挪位后 mini tour 末步仍指得准");
+    log("E. SL-272② 「?」挪位后 mini tour 末步仍指得准(途经 E4 渲染警告步,zh)");
     newBucket("input-tour");
     await cdp.send("Page.navigate", {
         url: `${base}/web-preview/input.html?scenario=input-first-run`,
@@ -1163,19 +1268,23 @@ try {
         ),
         "mini tour 起来了",
     );
-    // 5 步基线:点 4 次「下一步」到末步(末步的按钮变成「完成」,不再点)。
-    for (let i = 0; i < 4; i++) {
-        check(
-            await click('[data-tour-btn="next"]'),
-            `mini tour 第 ${i + 1} 次「下一步」可点`,
-        );
-        await sleep(200);
-    }
+    // E4(zh):先走到第 ⑤ 步渲染警告并断它,再点一次「下一步」到末步(E4c 的后半:末步在它之后)。
+    await assertRenderWarnStep("zh", true);
+    check(
+        await click('[data-tour-btn="next"]'),
+        "mini tour 第 ⑤ → ⑥ 步「下一步」可点",
+    );
+    await sleep(200);
     const tp = await evaluate(TOUR_PROBE);
     if (check(tp, "tour 探针取到锚点")) {
         check(
-            tp.step.trim() === "5/5",
+            tp.step.trim() === `${IN_TOUR_STEPS}/${IN_TOUR_STEPS}`,
             `走到末步(实得 ${JSON.stringify(tp.step)})`,
+        );
+        // E4c 后半:末步上屏的是重编号后的 `tour-in.step6.title`(漏了重编号 ⇒ 这里是键名本身)
+        check(
+            tp.title === DICT.zh["tour-in.step6.title"],
+            `E4c 末步标题 = tour-in.step6.title(实得 ${JSON.stringify(tp.title)})`,
         );
         // E2 说明框整体落在卡内
         check(
@@ -1202,6 +1311,14 @@ try {
         );
     }
     assertClean("input-tour");
+
+    // E4(en / fr):同一条首启路径,换语言各走一次到第 ⑤ 步(法语正文最长,卡内那条最吃紧)。
+    for (const lang of LANGS.filter((l) => l !== "zh")) {
+        log(`E4. SL-574 渲染警告步(${lang})`);
+        newBucket(`input-tour/${lang}`);
+        await assertRenderWarnStep(lang, false);
+        assertClean(`input-tour/${lang}`);
+    }
 
     // =========================================================== B. SL-275
     log("B. SL-275 建议表标题区留白");
@@ -3408,7 +3525,7 @@ try {
 
 if (fail === 0) {
     console.log(
-        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 / SL-374 / SL-396 全绿",
+        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 / SL-374 / SL-396 / SL-574 全绿",
     );
     process.exit(0);
 }

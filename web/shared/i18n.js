@@ -28,6 +28,9 @@
 // [J127] 2026-09-28:本文件全部词条已做过一轮 AI 三语交叉核对(以 zh 为准核 en/fr,用户授权代替人工抽检)。
 // 下面各段注释里的「待人工审校 / 待 U17 审校 / U17 review pending」是写那段时的记录,由这一轮结清,
 // 不再逐条改写;此后新增或改动的 en/fr 词条仍要重新审校。
+// [SL-572] 2026-09-29:J127(#299)之后到 #338 为止新增或改动的 en/fr 词条(新增 13、改动 13),
+// 连同 zh 改过而 en/fr 没动的 4 条,按 J127 同一方式补核了一轮,逐条记录见
+// docs/validation/i18n-review-log.md。此后再新增或改动的 en/fr 词条,照样补核并追加到那份记录。
 // ======================================================================
 export const T = {
     zh: {
@@ -238,11 +241,13 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
-        // Input 首启轻量引导 mini tour(**[J80] / 07 T48**;5 步基线,词条 tour-in.*)。
+        // Input 首启轻量引导 mini tour(**[J80] / 07 T48**;词条 tour-in.*,步数以 web/input/tour-in.js 的 TOUR_IN_STEPS 为准)。
         // 按钮行/交互提示复用 tour.* 同一份(措辞相同,不另立第二套)。
         // 第 4 步 = 九条硬约束第 3 条的场景化改写:用词与 12 §3.4 / guide.rule3 同源
         //(「设计行为,不是 bug」「检测不到健康 Output 时(未装、未连上、对端已退出)自动切回直通」
         // 「不会因为只装了一个插件就得到一条没有声音的轨道」),禁「永久静音 / 哑轨」类旧表述。
+        // 第 5 步 = KI-4 渲染警告([J176] / SL-574,插在第 4 步之后;原第 5 步顺延为第 6 步),
+        // 口径与 docs/KNOWN_ISSUES.md KI-4、两份用户手册「导出与渲染」一节同源。
         "tour-in.help": "重看引导",
         "tour-in.step1.title": "欢迎使用 SCVB Input",
         "tour-in.step1.body":
@@ -256,8 +261,11 @@ export const T = {
         "tour-in.step4.title": "连接状态",
         "tour-in.step4.body":
             "连接成功后，本轨会向下游输出静音、由总线上的 SCVB Output 接管发声——这是设计行为，不是 bug。检测不到健康的 Output 时（未装、未连上、对端已退出），本轨自动切回直通，所以你不会因为只装了一个插件就得到一条没有声音的轨道。",
-        "tour-in.step5.title": "完整控制在 Output",
+        "tour-in.step5.title": "别单独渲染这条轨",
         "tour-in.step5.body":
+            "连接成功后，本轨的声音改由总线上的 SCVB Output 输出，所以单独渲染、冻结（Freeze）或就地渲染（Render in Place）这条轨，得到的是静音文件；若选了「替换原音频」，原素材会被换成静音。要导出请对人声总线整体导出；确实需要单轨素材，先对本轨的 SCVB Input 开启 Bypass 或将其移除，再渲染。",
+        "tour-in.step6.title": "完整控制在 Output",
+        "tour-in.step6.body":
             "分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。",
 
         // tour 全参数导览 43 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
@@ -1220,7 +1228,7 @@ export const T = {
             "Output is in WRITE AUTOMATION (restored with project)",
         "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
-            "Write automation {v} starts only when you press “Got it, start” (monitoring only until then) · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
+            "Writing automation {v} starts only when you press “Got it, start” (monitoring only until then) · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
         //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
@@ -1234,7 +1242,7 @@ export const T = {
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Write automation {v} starts only when you press “Got it, start” (monitoring only until then) · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
+            "Writing automation {v} starts only when you press “Got it, start” (monitoring only until then) · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
         "footer.printing.follow":
             "WRITE AUTOMATION {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
@@ -1317,8 +1325,11 @@ export const T = {
         "tour-in.step4.title": "Connection status",
         "tour-in.step4.body":
             "Once connected, this track outputs silence downstream and the SCVB Output on the bus takes over — this is by design, not a bug. When no healthy Output is detected (not installed, not connected, peer has quit), this track falls back to passthrough automatically, so installing only one of the two plugins will never leave you with a track that has no sound.",
-        "tour-in.step5.title": "Full control lives in Output",
+        "tour-in.step5.title": "Don’t render this track on its own",
         "tour-in.step5.body":
+            "Once connected, this track’s sound comes out of the SCVB Output on the bus, so rendering this track on its own — a single-track export, Freeze or Render in Place — gives you a silent file; if you choose to replace the original audio, the original is replaced with that silence. Export the vocal bus as a whole; if you really need a file of this track alone, bypass or remove this track’s SCVB Input before rendering.",
+        "tour-in.step6.title": "Full control lives in Output",
+        "tour-in.step6.body":
             "Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.",
 
         // tour full-parameter 43 steps (final copy; EN self-translated, pending U17 review).
@@ -1390,7 +1401,7 @@ export const T = {
             "Whether this track joins pan redistribution (on by default, stereo tracks included); when off, it is still level-balanced.",
         "tour.step23.title": "Pair",
         "tour.step23.body":
-            "Pair two tracks; their pan is linked and the pair moves as one. Same pair shows the same colored dot at the row head.",
+            "Pair two tracks; their pan is linked and the pair moves as one. Both tracks of a pair show the same colored dot at the start of their rows.",
         "tour.step26.title": "Freeze PAN / VOL",
         "tour.step26.body":
             "The two freeze switches bypass the engine for that dimension; the knob and fader unlock to pure manual control.",
@@ -2076,7 +2087,7 @@ export const T = {
             "La sortie est en ÉCRITURE AUTOMATION (restauré avec le projet)",
         "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
-            "L'écriture d'automation {v} ne démarre qu'après « Compris, démarrer » (écoute seule d'ici là) · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+            "L'écriture d'automation {v} ne démarre qu'après un clic sur « Compris, démarrer » (écoute seule d'ici là) · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
         //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
@@ -2090,7 +2101,7 @@ export const T = {
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "L'écriture d'automation {v} ne démarre qu'après « Compris, démarrer » (écoute seule d'ici là) · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "L'écriture d'automation {v} ne démarre qu'après un clic sur « Compris, démarrer » (écoute seule d'ici là) · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
             "ÉCRITURE AUTOMATION {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
@@ -2175,8 +2186,11 @@ export const T = {
         "tour-in.step4.title": "État de la connexion",
         "tour-in.step4.body":
             "Une fois connectée, cette piste envoie du silence en aval et le SCVB Output du bus prend le relais — c’est le comportement voulu, pas un bug. Si aucun Output sain n’est détecté (non installé, non connecté, pair quitté), cette piste repasse automatiquement en direct : n’installer qu’un seul des deux plugins ne vous laissera donc jamais une piste sans aucun son.",
-        "tour-in.step5.title": "Le contrôle complet est dans Output",
+        "tour-in.step5.title": "Ne faites pas le rendu de cette piste seule",
         "tour-in.step5.body":
+            "Une fois la connexion établie, le son de cette piste sort par le SCVB Output du bus : faire le rendu de cette piste seule — export de piste isolée, Freeze ou Render in Place — donne donc un fichier silencieux ; si vous choisissez de remplacer l’audio d’origine, l’original est remplacé par ce silence. Exportez le bus de voix dans son ensemble ; s’il vous faut vraiment un fichier de cette seule piste, contournez (bypass) ou retirez le SCVB Input de cette piste avant le rendu.",
+        "tour-in.step6.title": "Le contrôle complet est dans Output",
+        "tour-in.step6.body":
             "L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.",
 
         // tour complet 43 étapes (copie finale ; FR auto-traduite, à relire).
@@ -2249,7 +2263,7 @@ export const T = {
             "Si la piste entre dans la redistribution du pan (activé par défaut, pistes stéréo comprises) ; une fois désactivé, l'équilibrage du volume est conservé.",
         "tour.step23.title": "Paire",
         "tour.step23.body":
-            "Appairez deux pistes ; leur panoramique est lié et la paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
+            "Appairez deux pistes ; leur panoramique est lié et la paire se déplace comme un tout. Les deux pistes d'une même paire affichent le même point coloré en tête de ligne.",
         "tour.step26.title": "Gel PAN / VOL",
         "tour.step26.body":
             "Les deux interrupteurs de gel contournent le moteur pour cette dimension ; le potentiomètre et le fader se déverrouillent en pur manuel.",
@@ -2466,7 +2480,7 @@ export const T = {
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
-            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (activé par défaut, stéréo compris ; équilibrage conservé une fois désactivé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (activé par défaut, pistes stéréo comprises ; équilibrage conservé une fois désactivé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
@@ -2722,7 +2736,7 @@ export const T = {
         "banner.reaperPrintNote":
             "REAPER : si aucune automation n'a été enregistrée après l'écriture, réglez Parameter automation notifications sur process all notifications dans Preferences → Plug-ins → VST → VST compatibility",
         "banner.liveReEnable":
-            "Live : l'écriture est terminée. Le bouton Re-Enable Automation allumé est normal — cliquez dessus pour reprendre la lecture de l'automation",
+            "Live : l'écriture est terminée. Il est normal que le bouton Re-Enable Automation soit allumé — cliquez dessus pour reprendre la lecture de l'automation",
         "banner.dismiss": "Masquer cet avis",
         "wave.staleTrack":
             "Les caractéristiques capturées sur cette piste sont périmées (l'audio en amont ou la fréquence d'échantillonnage a changé depuis la capture) — recapture recommandée",

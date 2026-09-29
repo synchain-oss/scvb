@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-09-28
+> Last updated: 2026-09-29
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -99,6 +99,8 @@ Turn on the **Output** switch. What you now hear on the bus is the balanced resu
 ### Write automation
 
 Set the DAW's automation mode to **Write** or **Latch** and play through once more. SCVB Output prints the current version's curves as host automation at the playback position (15 tracks x pan/vol, 30 lanes in total). When it is done, switch automation back to Read and the plugin follows your DAW automation faithfully. From then on you can fine-tune the automation by hand in the DAW, and nothing will be overwritten by the plugin unless you write again. The plugin reproduces what is on the automation lanes, faithfully.
+
+**Before exporting audio, read [Exporting and rendering](#exporting-and-rendering)**: rendering a vocal track that has SCVB Input on it by itself gives you a silent file.
 
 ## Interface tour
 
@@ -202,6 +204,20 @@ Things worth knowing:
 - Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON — if you have not confirmed yet in this window (neither "Got it, start" on the confirmation bar described under "Output" nor "Continue write automation" on this banner), the confirmation bar appears and writing starts only after "Got it, start", once playback enters the analyzed range; if you have, output writes as soon as it is on. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
 - Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
+## Exporting and rendering
+
+> ⚠️ **Do not render a vocal track that has SCVB Input on it by itself, and above all do not let the render replace the original audio — the original would be replaced with silence.**
+>
+> Once a healthy SCVB Output is connected, Input sends silence downstream from its track (hard rule 3), and that track's sound comes out of the Output, summed on the bus, instead. So Render in Place, Freeze or a single-track stem export of **one** vocal track — each of these renders takes only that track's own output — gives you a **silent file**. If the host is set to **replace** the original audio with the render (a "replace original audio"-style option), the original is replaced with that silence.
+
+What to do instead:
+
+- **Export the vocal bus as a whole** (Cubase Export → Audio Mixdown, REAPER File → Render and so on);
+- if you really need a single-track file, **bypass or remove** the SCVB Input on that track before rendering, and do **not** pick a "replace original audio"-style option;
+- if in doubt, back up the project and its audio first.
+
+The Input's first-run guide covers this too (it appears the first time you open an Input; click the "?" at the bottom right of the Input window to see it again at any time). The full entry is KI-4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
 ## Pan curve editor
 
 The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
@@ -252,6 +268,7 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 | **"Could not connect: the shared memory the plug-ins communicate through could not be opened" after clicking a channel card or switching group** | The Input could not open or set up the shared-memory segment it uses to talk to the Output (for example, a segment with the same name was created by a different SCVB version) | Try again; if it keeps failing, restart the host and make sure no other DAW with a different SCVB version is running on the same machine. If it happens while switching channels, the track stays on its previous channel and keeps working |
 | **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **The whole image is skewed to one side** | Host pan on a vocal track or on the bus is not centred | Return every host pan to centre (hard rule 4) |
+| **Rendering or freezing one vocal track on its own gives a silent file** | By design: once connected to the Output, the track itself sends silence downstream and its sound comes out of the Output on the bus | Export the vocal bus as a whole; for a single-track file, bypass or remove that track's SCVB Input before rendering, and do not pick "replace original audio". See [Exporting and rendering](#exporting-and-rendering) |
 | **The exported audio differs from what you heard live** | A routing or ordering problem under offline rendering | Timeline addressing holds under offline rendering too; if it still differs, note your DAW and version and open an issue |
 | **The write pass recorded nothing** | Wrong automation mode / a known pitfall in that DAW | Confirm Write or Latch; in REAPER, do not close the plugin GUI; see [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **A track is disabled with a sample-rate mismatch notice** | That track's sample rate differs from the Output's | Use one sample rate throughout the project |
@@ -279,6 +296,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 - 15 tracks per group, 2 version slots;
 - one active Output per group at a time;
 - **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
+- **rendering a vocal track that has SCVB Input on it by itself gives a silent file**, and a render that replaces the original audio replaces it with silence; what to do is under "Exporting and rendering" above, details in KI-4 of `docs/KNOWN_ISSUES.md`;
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);

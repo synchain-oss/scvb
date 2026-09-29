@@ -6,11 +6,13 @@ name: Branch Gate
 # 子 PR(base=feature/*)故意不受此命名门禁约束(D2)。
 # [SL-277/J96,2026-09-02] 子 PR 已回到轻档 CI(不跑 build-vst3);本工作流的触发面不受影响
 # —— 它本来就只挂 pull_request→dev。
-# 发版里程碑再打开下面被注释的 prod/stage 规则。
+# 发版里程碑再打开下面被注释的 prod/staging 规则(预发布分支名是 staging,J163a / SL-557)。
+# staging / prod 本身不经 PR 前移:发布后由维护者临时放开分支保护、直推快进(J163 / J172,见 docs/RELEASE.md),
+# 所以这两条规则只对误开到这两个分支的 PR 起作用,不代表前移要走 PR。
 
 on:
   pull_request:
-    branches: [dev] # 发版后改为 [prod, stage, dev]
+    branches: [dev] # 发版后改为 [prod, staging, dev]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -63,8 +65,8 @@ jobs:
             esac
           fi
           # --- 发版后启用 ---
-          # if [ "$BASE" = "prod" ] && [ "$HEAD" != "stage" ] && [ "$HEAD" != "dev" ]; then ... fi
-          # if [ "$BASE" = "stage" ] && [ "$HEAD" != "dev" ]; then ... fi
+          # if [ "$BASE" = "prod" ] && [ "$HEAD" != "staging" ] && [ "$HEAD" != "dev" ]; then ... fi
+          # if [ "$BASE" = "staging" ] && [ "$HEAD" != "dev" ]; then ... fi
           echo "Branch gate passed: '$HEAD' -> '$BASE'"
 
       # DCO —— 12 §1.4 把 Signed-off-by 定为贡献前提,而 PR 模板里的勾选框是纯自觉。
