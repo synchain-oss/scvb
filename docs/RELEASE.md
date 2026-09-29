@@ -114,11 +114,13 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
    git log -1 --format=%B | grep -c '^Signed-off-by:'         # 必须 >= 1
    ```
 3. 推这条临时分支,开 PR 到 `dev`(`dev` 要求走 PR,不能直推;分支名要符合 `branch-gate` 的 `feat/*` / `feature/*`)。这个 PR 只有一个提交,DCO 与冻结契约守卫照常判。它会碰到冻结契约文件(`feature/v1` 期间对它们的改动),按 `CLAUDE.md` §5 挂 `status/frozen-contract` 标签;对应的变更文档已随 `feature/v1` 一起进来,不另写。
-4. CI 绿了、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名)。⚠ 已知例外:docs-truth 里的「Changelog drafts not stranded」一步按 **base 分支的提交标题**判 CHANGELOG 正文里的每个 `(#N)` 有没有落地,而 `dev` 的历史里没有 `feature/v1` 上那些合并提交的标题 —— 所以它在这个 PR 上会成片判红(压进 `dev` 之后,push→`dev` 与之后 base=`dev` 的 PR 也一样),红的原因不是 CHANGELOG 写错。这一步怎么处理(让它改读 `feature/v1` 的落地记录,或确认后带着这条红合并)要在里程碑合并之前定:
+4. CI 绿了、PR 上的讨论全部解决(`dev` 开着 `required_conversation_resolution`)之后,用 squash 合并,**标题与正文显式给出,正文末行带 `Signed-off-by`**(不显式给时,正文由 GitHub 按仓库设置生成,不保证带签名):
 
    ```bash
    gh pr merge <PR 号> --squash -t "<标题> (#<PR 号>)" -b "<正文>"
    ```
+
+   ⚠ 已知例外:docs-truth 里的「Changelog drafts not stranded」一步按 **base 分支的提交标题**判 CHANGELOG 正文里的每个 `(#N)` 有没有落地,而 `dev` 的历史里没有 `feature/v1` 上那些合并提交的标题 —— 所以它在这个 PR 上会成片判红(压进 `dev` 之后,push→`dev` 与之后 base=`dev` 的 PR 也一样),红的原因不是 CHANGELOG 写错。这一步怎么处理(让它改读 `feature/v1` 的落地记录,或确认后带着这条红合并)要在里程碑合并之前定。
 5. 合后回读:`dev` 上的新提交与 `$FV1` 的树逐字相同、带签名:
 
    ```bash
@@ -155,7 +157,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
   gh api -X DELETE repos/synchain-oss/scvb/branches/staging/protection/enforce_admins     # 临时允许管理员绕过
   git push origin vX.Y.Z-rc.N^{commit}:refs/heads/staging; rc=$?                           # 快进,不加 --force
   gh api -X POST repos/synchain-oss/scvb/branches/staging/protection/enforce_admins       # 不管 push 成败,立刻恢复
-  echo "push-exit=$rc"                                                                      # 不是 0 就按下一条排查
+  echo "push-exit=$rc"                                                                      # 不是 0 就按下面「推不上时」那条排查
   gh api repos/synchain-oss/scvb/branches/staging/protection/enforce_admins -q .enabled   # 必须输出 true
   git ls-remote origin refs/heads/staging                                                   # 必须等于下一行的输出
   git rev-parse vX.Y.Z-rc.N^{commit}
