@@ -299,6 +299,15 @@ log("=== ③ 词条(三语)===");
             );
         }
     }
+    // [SL-572] ⑭ fr 按 J127 式三语交叉核对改过:zh「按钮亮起属正常现象」说的是「亮着是正常的」,
+    // 旧 fr「Le bouton … allumé est normal」字面是「亮着的按钮是正常的」。正反各钉一次。
+    check(
+        !/allumé est normal/.test(T.fr["banner.liveReEnable"]) &&
+            T.fr["banner.liveReEnable"].includes(
+                "Il est normal que le bouton Re-Enable Automation soit allumé",
+            ),
+        "fr ⑭ 说的是「按钮亮着属正常」(SL-572)",
+    );
     const daw = src("docs/DAW_COMPATIBILITY.md");
     check(
         daw.includes(

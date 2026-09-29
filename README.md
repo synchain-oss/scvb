@@ -12,6 +12,8 @@
 
 SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it under the terms of the [GPL-3.0-or-later](LICENSE). If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
 
+> **Status: pre-release (rc).** Pre-release builds are on the [Releases page](https://github.com/synchain-oss/scvb/releases). Features and the interface may still change before the first stable release; known limitations are listed in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md).
+
 ## What it does
 
 Mixing engineers routinely spend hours drawing volume and pan automation across dozens of tracks of lead and backing vocals from different singers: keeping the voices from crowding the same spot in the stereo image, or making sure passages from different singers sit at a consistent perceived loudness. It is time-consuming and demanding work, mostly tedious and highly repetitive — and a meaningful way to aggravate the repetitive strain injuries that come with the job.
@@ -48,7 +50,7 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 
 ## Install
 
-Releases are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases). If no release is listed there yet, build from source (below).
+Pre-release (rc) builds, and later the stable releases, are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases); you can also build from source yourself (below).
 
 1. From the Releases page, download `SCVB-v<version>-win64.zip` and the matching `.sha256`;
 2. verify the zip against the `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
