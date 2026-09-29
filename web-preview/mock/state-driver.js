@@ -108,7 +108,7 @@ export const SCENARIO_MAP = Object.freeze({
     "recapture-armed": "fifteen-tracks",
     // T36b 首启交互式引导:完整首启链(语言卡 → 红字九条 → 询问步 → tour 43 步);见 buildWorld 覆写
     "first-run-tour": "fifteen-tracks",
-    // T48([J80])Input 首启轻量引导:语言卡 → 5 步 mini tour。落在健康满配世界上,
+    // T48([J80])Input 首启轻量引导:语言卡 → mini tour。落在健康满配世界上,
     // 于是 group / channel / pill 三个锚点都有真内容可讲(第 ④ 步讲的正是「已接管」这一态)。
     "input-first-run": "fifteen-tracks",
     // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
