@@ -32,6 +32,7 @@ import {
     connectedCount,
     misalignedTracks,
     outputPhase,
+    restoreGuardPending,
     footerPrintKey,
     secondsToTimecode,
     shouldShowGuide,
@@ -1704,7 +1705,9 @@ function renderBanners() {
     show($("banner-stateNotRestored"), err.has("stateNotFullyRestored"));
 
     // ⑦ 加载守卫(数据源 scvb.state.print_guard,不是 error code)
-    show($("banner-printGuard"), !!(s.print_guard && s.print_guard.pending));
+    // [J166] 只认「随工程恢复」那一种来由:首次开输出的守卫(reason === "firstEnable")由 Tab1 的
+    // write 确认条承载,这里再亮一条「(随工程恢复)」就是两处说两套话,而且说错了来由。
+    show($("banner-printGuard"), restoreGuardPending(s));
 
     // ⑧ 上游改动 → 采集数据过期(04 §4.5 fingerprint watchdog;数据源 = §2.8
     //    segments.channels[].stale,不是 error code)。只提示,不 disable 任何控件。

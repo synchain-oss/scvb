@@ -1413,9 +1413,22 @@ function buildOutputBackend(ctx) {
         },
 
         // ---- §1.3 -------------------------------------------------------------
-        setOutputEnabled(on) {
+        setOutputEnabled(on, opts) {
             if (readOnly()) return OBSERVER(); // [SL-478] 同 setCaptureEnabled
             if (noTimeline()) return { ok: false, reason: "noTimeline" };
+            // [J166] 第二参 opts.requireConfirm(真桥 BridgeArgs.h parseSetOutputEnabledArgs 同口径):
+            // 缺席 / null ⇒ 默认;在席必须是对象,requireConfirm 在席必须是布尔(真桥的 strictBool
+            // 另收整数,UI 不这么传,这里不复刻)。传歪了整次 badArg,不按「没要确认」照开。
+            let requireConfirm = false;
+            if (opts !== undefined && opts !== null) {
+                if (typeof opts !== "object" || Array.isArray(opts))
+                    return { ok: false, reason: "badArg" };
+                if (opts.requireConfirm !== undefined) {
+                    if (typeof opts.requireConfirm !== "boolean")
+                        return { ok: false, reason: "badArg" };
+                    requireConfirm = opts.requireConfirm;
+                }
+            }
             // [J92a] 反方向互斥:手动开跟随引擎 ⇒ 关采集,并视为用户**接管**采集闸
             // (清 recaptureAutoEnabledCapture,与真桥 §1.3 副作用逐条对应)。
             // 布防期这样做 = 本次重采集作废,但**布防位保留** —— 于是
@@ -1423,6 +1436,10 @@ function buildOutputBackend(ctx) {
             if (on && model.snapshot.global.capture_enabled) {
                 model.recaptureAutoEnabledCapture = false;
             }
+            // [J166] 首次开输出:与「开」同一帧置写入守卫(来由 firstEnable);已有守卫(加载守卫)
+            // 就留着它的来由 —— 与真桥 OutputProcessor::setOutputEnabled 的 compare_exchange 同款。
+            const pg = model.snapshot.print_guard || {};
+            const armFirst = !!on && requireConfirm && !pg.pending;
             patchState({
                 global: {
                     output_enabled: !!on,
@@ -1430,7 +1447,16 @@ function buildOutputBackend(ctx) {
                 },
                 // [加载守卫] 与真桥同款:输出一关守卫即解除(OutputProcessor::applyOutputEnabled);
                 // 开输出不算确认,确认入口只有 §1.34 confirmPrintGuard。
-                ...(on ? {} : { print_guard: { pending: false } }),
+                ...(on
+                    ? armFirst
+                        ? {
+                              print_guard: {
+                                  pending: true,
+                                  reason: "firstEnable",
+                              },
+                          }
+                        : {}
+                    : { print_guard: { pending: false } }),
             });
             return OK();
         },

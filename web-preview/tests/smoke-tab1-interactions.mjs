@@ -155,6 +155,60 @@ log("=== ① 契约映射的纯函数 ===");
         "armed",
         "加载守卫未确认 ⇒ 止于 ARMED(契约 §1.3/§1.34)",
     );
+    // [J166] 首次开输出的守卫走同一条判据:页脚「写入自动化 V1 · …」(footerPrintKey 看 phase)
+    // 在点「知道了,开始」之前不出现。
+    eq(
+        TM.outputPhase(
+            {
+                global: { output_enabled: true },
+                print_guard: { pending: true, reason: "firstEnable" },
+            },
+            playing,
+        ),
+        "armed",
+        "[J166] 首次开输出守卫未确认 ⇒ 同样止于 ARMED(页脚不显示在写)",
+    );
+}
+
+// [J166] 守卫两种来由各归哪个界面(契约 §2.1 print_guard.reason):firstEnable → write 确认条,
+// 其余(restore / 缺席 / 不认识的值)→ 横幅⑦。两个谓词互斥,且 pending=false 时都不成立 ——
+// mock 增量帧的深合并会留着上一次的 reason,不能只看 reason。
+{
+    const st = (pg) => ({ global: { output_enabled: true }, print_guard: pg });
+    const both = (pg) => [
+        TM.firstEnableGuardPending(st(pg)),
+        TM.restoreGuardPending(st(pg)),
+    ];
+    eq(
+        both({ pending: true, reason: "firstEnable" }),
+        [true, false],
+        "[J166] firstEnable ⇒ 确认条,不亮横幅⑦",
+    );
+    eq(
+        both({ pending: true, reason: "restore" }),
+        [false, true],
+        "[J166] restore ⇒ 横幅⑦",
+    );
+    eq(
+        both({ pending: true }),
+        [false, true],
+        "[J166] 缺 reason(老快照)⇒ 按加载守卫处理",
+    );
+    eq(
+        both({ pending: true, reason: "somethingNew" }),
+        [false, true],
+        "[J166] 不认识的 reason ⇒ 按加载守卫处理(§0.1 容忍纪律)",
+    );
+    eq(
+        both({ pending: false, reason: "firstEnable" }),
+        [false, false],
+        "[J166] 不待确认时 reason 是残值,两者都不成立",
+    );
+    eq(
+        [TM.firstEnableGuardPending({}), TM.restoreGuardPending({})],
+        [false, false],
+        "[J166] 无 print_guard ⇒ 两者都不成立",
+    );
 }
 
 // §1.12-§1.14 参数域 + 设计稿读数

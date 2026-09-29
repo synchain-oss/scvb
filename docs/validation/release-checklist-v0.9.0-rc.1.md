@@ -362,7 +362,7 @@ build-val\tests\tools\Release\scvb_diag.exe --out diag-rc1.csv --group 1
 1. 打开一份已采集、已分析的测试工程副本(自有多轨人声素材,不入库);人声轨与总线 pan 居中,主输出无限制器、无 dither,总线上除 SCVB Output 外没有别的处理。
 2. 用左右定位器圈一段 30–60 秒的区间(含独唱与重叠段),记下起止。
 3. Output 输出开关 **ON**,Cubase 自动化保持 Read —— File → Export → Audio Mixdown,32-bit float,导出 `engine_C.wav`。
-4. 打开 Output 窗口,轨道自动化设 **Write**(或 Latch),从区间起点播到终点,停,切回 **Read**(打印的车道在 Ins 隐藏车道下,见 `docs/DAW_COMPATIBILITY.md` §2.1;若出现加载守卫横幅,先点「继续写入自动化」)。
+4. 打开 Output 窗口,轨道自动化设 **Write**(或 Latch),从区间起点播到终点,停,切回 **Read**(打印的车道在 Ins 隐藏车道下,见 `docs/DAW_COMPATIBILITY.md` §2.1;若出现加载守卫横幅,先点「继续写入自动化」;若第 3 步开输出时出了写入确认条,先点「知道了,开始」—— 点之前只试听、不写,[J166])。
 5. Output 输出开关 **OFF**,同一区间、同一导出设置导出 `follow_D.wav`。
 6. 比对并自动写日志(在仓库根目录跑;两份 wav 写完整路径 —— 脚本一开始就切到仓库根目录,只写文件名时只会在仓库根目录里找,找不到就报「无法打开文件」):
 

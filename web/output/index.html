@@ -6226,7 +6226,7 @@
                                         data-gb="master-output-pulse"
                                         aria-hidden="true"
                                     ></span>
-                                    <!-- 加载守卫小锁(设计稿 L341-343):输出态随工程恢复、尚未确认时出现 -->
+                                    <!-- 写入守卫小锁(设计稿 L341-343):输出态随工程恢复、或 [J166] 首次开输出,尚未确认时出现 -->
                                     <span
                                         class="out-lock"
                                         data-gb="master-output-lock"
@@ -6277,8 +6277,9 @@
                                 data-t="out.master.writeConfirm"
                                 data-gb="master-write-confirm-text"
                             >
-                                写入自动化 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW
-                                侧已激活
+                                点「知道了,开始」后才写入自动化
+                                {v}(点之前只试听、不写) · 范围 {x}–{y} · 30
+                                条轨道;若 DAW 侧已激活
                                 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存
                             </span>
                             <button

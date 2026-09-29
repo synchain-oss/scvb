@@ -561,10 +561,35 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         //     (只拒严格的 true;单测在 test_bridge_args.cpp),入参是 hostTimelineMissing() 与 a[0]。
         //     删除式:把采集 handler 改回裸 `if (processor_.hostTimelineMissing())` ⇒ 下面第二、三条红。
         check(
-            /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(
+            /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(processor_\.hostTimelineMissing\(\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?parseSetOutputEnabledArgs\(a\)/m.test(
                 fnBodyOf("handleSetOutputEnabled"),
             ),
             "[SL-478] handleSetOutputEnabled:observer 之后、badArg 之前有 noTimeline 拒绝分支(两向都拒)",
+        );
+        // [J166] §1.3 第二参 opts.requireConfirm:handler 的参数走 parseSetOutputEnabledArgs(解析口径的
+        // 单测在 test_bridge_args.cpp),并把 requireConfirm **传到** processor —— 那一位是 host harness
+        // [J166] 两格的输入,不传的话首次开输出照旧当场写。两格都带行形态锚(注释掉整行 ⇒ 不匹配)。
+        // 删除式:把调用改回 `processor_.setOutputEnabled(args.on);` ⇒ 第二条红。
+        check(
+            /^[ \t]*const auto args = scvb::output::parseSetOutputEnabledArgs\(a\);[ \t]*$/m.test(
+                fnBodyOf("handleSetOutputEnabled"),
+            ),
+            "[J166] handleSetOutputEnabled 的参数走 parseSetOutputEnabledArgs",
+        );
+        check(
+            /^[ \t]*processor_\.setOutputEnabled\(args\.on, args\.requireConfirm\);[ \t]*$/m.test(
+                fnBodyOf("handleSetOutputEnabled"),
+            ),
+            "[J166] handleSetOutputEnabled 把 requireConfirm 传给 processor",
+        );
+        // [J166] §2.1 `print_guard.reason` 上桥:web 按它把守卫分给横幅⑦(restore)或 write 确认条(firstEnable)。
+        // 删掉这一行 ⇒ 首次开输出的守卫在 web 眼里没有来由,按容忍纪律当成加载守卫,亮出说
+        // 「(随工程恢复)」的横幅⑦。
+        check(
+            /^[ \t]*put\(printGuard, "reason", juce::String\(scvb::output::printGuardReasonName\(guard\)\)\);[ \t]*$/m.test(
+                oe,
+            ),
+            "[J166] scvb.state.print_guard 在待确认时带 reason",
         );
         check(
             /^[ \t]*c\(observerResp\(\)\);[\s\S]*?^[ \t]*if \(scvb::output::noTimelineRejectsCaptureSwitch\(processor_\.hostTimelineMissing\(\),\s*a\.size\(\) > 0 \? a\[0\] : juce::var\(\)\)\)\s*\{\s*c\(noTimelineResp\(\)\);\s*return;\s*\}[\s\S]*?strictBool\(/m.test(

@@ -94,7 +94,7 @@ Once capture covers the whole song, press **Analyse**. Analysis runs voice detec
 
 ### Output
 
-Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next.
+Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next; **until you press "Got it, start" on that bar, you only monitor — no host automation is written** (and the footer does not show "WRITE AUTOMATION …"), while "Undo (back to Follow Host)" switches it back off. "First time" counts per opening of the plug-in window: once the bar has appeared, switching output off and on again in the same window does not bring it back, and output writes as soon as it is on. If you close and reopen the plug-in window while the bar is showing, the bar is still there and still needs "Got it, start".
 
 ### Write automation
 
@@ -199,7 +199,7 @@ Things worth knowing:
 - The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself; the engine neither prints them nor overwrites them — **those three always follow the value in your DAW**.
 - With the output switch **ON**, the DSP for those 30 takes engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
-- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON and starts writing as soon as playback enters the analyzed range. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
+- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON — if the confirmation bar described under "Output" has not appeared yet in this window, it appears now and writing starts only after "Got it, start", once playback enters the analyzed range; if it has, output writes as soon as it is on. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
 - Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
 ## Pan curve editor

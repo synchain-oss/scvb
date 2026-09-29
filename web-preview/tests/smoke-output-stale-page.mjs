@@ -810,6 +810,196 @@ try {
     }
 
     // =========================================================================
+    // [J166] ⑥b 首次开输出:点「知道了,开始」之前**不写**(用户 rc.1 实测:「没点知道了开始,
+    // 自动化还是写入了」)。本档钉的是**钮的接线**与**界面落点**;「守卫在场 ⇒ 引擎零写入」由
+    // host harness 的 [J166] 两格钉(真 processor + 宿主替身 listener),这里不重复。
+    //
+    //   a. 首次点开关 ⇒ 桥调用带 `{requireConfirm:true}`,状态回推 print_guard = {pending, firstEnable};
+    //      确认板出现,横幅⑦**不**出现(它说的是「随工程恢复」,来由不对);
+    //   b. 点「知道了,开始」⇒ 调 §1.34 confirmPrintGuard,守卫解除,板子收起;
+    //   c. 新页面(= 关窗再开)点「撤销」⇒ 关输出,守卫随之解除;
+    //   d. 新页面上**没有意图位**、只有 C++ 侧的首次开输出守卫(关窗再开时的真实处境)⇒ 板子照样
+    //      出现、横幅⑦照样不亮,点「开始」照样确认;之后在同一窗口再关、再开 ⇒ 不重复出板、
+    //      不带 requireConfirm(板子上过屏就算本窗口「出过」,「首次」的判法不变)。
+    // 删除式(各只动一处,见 PR):去掉 `{ requireConfirm: true }` ⇒ a 红;去掉 ok 钮里的
+    // `call("confirmPrintGuard")` ⇒ b、d 红;横幅⑦改回只看 pending ⇒ a、d 的「横幅⑦不亮」红;
+    // render 里去掉 `guardAsks` ⇒ d 红;去掉 render 里记「出过」的那句 ⇒ d 末尾两个 ★ 红。
+    log(
+        "=== ⑥b [J166] 首次开输出:点「开始」之前守卫在场;开始 / 撤销的接线 ===",
+    );
+    {
+        const shell = (body) =>
+            evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.mock) return null;
+                ${body}
+            })()`);
+        // 包住两个桥函数记实参(UI 走 bridge.js 的 `mock[name](...)` 动态取,包在 s.mock 上即生效)。
+        const spy = () =>
+            shell(`
+                const calls = [];
+                window.__j166Calls = calls;
+                for (const name of ["setOutputEnabled", "confirmPrintGuard"]) {
+                    const orig = s.mock[name];
+                    s.mock[name] = function (...a) {
+                        calls.push({ name, args: JSON.parse(JSON.stringify(a)) });
+                        return orig.apply(this, a);
+                    };
+                }
+                return true;`);
+        const calls = async () =>
+            (await evaluate(`window.__j166Calls || null`)) || [];
+        const guard = () =>
+            shell(
+                `return JSON.parse(JSON.stringify(s.ctl.model.snapshot.print_guard || null));`,
+            );
+        const outOn = () =>
+            shell(`return !!s.ctl.model.snapshot.global.output_enabled;`);
+        const boardShown = IN(
+            `const n = gb("master-write-confirm"); return !!n && !n.hidden;`,
+        );
+        const boardHidden = IN(
+            `const n = gb("master-write-confirm"); return !!n && n.hidden;`,
+        );
+        const bannerShown = () =>
+            evaluate(
+                IN(
+                    `const n = gb("banner-printGuard"); return !!n && !n.hidden;`,
+                ),
+            );
+        const click = (name) =>
+            evaluate(
+                IN(
+                    `const n = gb(${JSON.stringify(name)}); if (!n) return false; n.click(); return true;`,
+                ),
+            );
+        const toMaster = async () => {
+            await click("tabnav-master");
+            await sleep(200);
+        };
+
+        // ---- a / b:首次开 → 开始
+        check((await open("connected")) !== null, "⑥b 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b 前置:桥函数装上记录器");
+        check((await outOn()) === false, "⑥b 前置:输出开关初始是关的");
+        check(await click("master-output-toggle-switch"), "⑥b 点输出开关");
+        check(await waitFor(boardShown, 5000), "⑥b-a 确认板出现");
+        const c1 = await calls();
+        eq(
+            c1.map((c) => [c.name, c.args]),
+            [["setOutputEnabled", [true, { requireConfirm: true }]]],
+            "⑥b-a ★ 首次开输出的桥调用带 {requireConfirm:true}(同一次调用里置守卫)",
+        );
+        eq(
+            await guard(),
+            { pending: true, reason: "firstEnable" },
+            "⑥b-a ★ 状态回推:写入守卫待确认、来由 firstEnable",
+        );
+        check(
+            (await bannerShown()) === false,
+            "⑥b-a ★ 横幅⑦(「随工程恢复」)不亮 —— 这不是重开工程",
+        );
+        check(await click("master-write-confirm-ok"), "⑥b-b 点「知道了,开始」");
+        check(await waitFor(boardHidden, 5000), "⑥b-b 确认板收起");
+        check(
+            (await calls()).some((c) => c.name === "confirmPrintGuard"),
+            "⑥b-b ★ 「开始」调了 §1.34 confirmPrintGuard",
+        );
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-b ★ 守卫解除(此后播放才会写)",
+        );
+        check((await outOn()) === true, "⑥b-b 输出仍开着");
+        assertClean("⑥b a/b(首次开 → 开始)");
+
+        // ---- c:新页面,首次开 → 撤销
+        check((await open("connected")) !== null, "⑥b-c 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-c 前置:桥函数装上记录器");
+        check(await click("master-output-toggle-switch"), "⑥b-c 点输出开关");
+        check(await waitFor(boardShown, 5000), "⑥b-c 确认板出现");
+        check(await click("master-write-confirm-undo"), "⑥b-c 点「撤销」");
+        check(await waitFor(boardHidden, 5000), "⑥b-c 确认板收起");
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !s.ctl.model.snapshot.global.output_enabled
+                        && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-c ★ 撤销 ⇒ 输出关回跟随宿主,守卫随之解除",
+        );
+        eq(
+            (await calls()).map((c) => [c.name, c.args]),
+            [
+                ["setOutputEnabled", [true, { requireConfirm: true }]],
+                ["setOutputEnabled", [false]],
+            ],
+            "⑥b-c 撤销走 setOutputEnabled(false),不调 confirmPrintGuard",
+        );
+        assertClean("⑥b c(首次开 → 撤销)");
+
+        // ---- d:新页面、没有意图位,只有 C++ 侧的首次开输出守卫(= 关窗再开)
+        check((await open("connected")) !== null, "⑥b-d 取到页内 DOM 快照");
+        await toMaster();
+        check(await spy(), "⑥b-d 前置:桥函数装上记录器");
+        // 绕过 UI 直接调桥:页面上的意图位保持为假,板子只能靠状态里的守卫出现。
+        eq(
+            await shell(
+                `return s.mock.setOutputEnabled(true, { requireConfirm: true });`,
+            ),
+            { ok: true },
+            "⑥b-d 前置:直接置出首次开输出守卫(页面没点过开关)",
+        );
+        check(
+            await waitFor(boardShown, 5000),
+            "⑥b-d ★ 没有意图位,确认板照样按守卫出现",
+        );
+        check((await bannerShown()) === false, "⑥b-d ★ 横幅⑦照样不亮");
+        check(await click("master-write-confirm-ok"), "⑥b-d 点「知道了,开始」");
+        check(await waitFor(boardHidden, 5000), "⑥b-d 确认板收起");
+        check(
+            await waitFor(
+                `(() => { const s = window.__SCVB_PREVIEW__;
+                    return !!s && !(s.ctl.model.snapshot.print_guard || {}).pending; })()`,
+                5000,
+            ),
+            "⑥b-d ★ 「开始」照样确认了守卫",
+        );
+        // 板子在这个窗口里已经「出过」(按守卫显示的那一次也算)⇒ 再关、再开输出开关不重复出板,
+        // 也不再带 requireConfirm —— 「首次」的判法不变。删掉 renderFlow 里那句
+        // `st.session.writeConfirmSeen = true` ⇒ 下面两个 ★ 红。
+        const switchIs = (v) =>
+            IN(
+                `const n = gb("master-output-toggle-switch"); return !!n && n.getAttribute("aria-checked") === "${v}";`,
+            );
+        check(await waitFor(switchIs("true"), 5000), "⑥b-d 前置:开关显示为开");
+        check(await click("master-output-toggle-switch"), "⑥b-d 关输出");
+        check(await waitFor(switchIs("false"), 5000), "⑥b-d 开关显示为关");
+        check(await click("master-output-toggle-switch"), "⑥b-d 再开输出");
+        check(await waitFor(switchIs("true"), 5000), "⑥b-d 开关显示为开");
+        await sleep(400);
+        check(
+            (await evaluate(boardHidden)) === true,
+            "⑥b-d ★ 本窗口出过板 ⇒ 再开不重复出板",
+        );
+        const lastOn = (await calls())
+            .filter((c) => c.name === "setOutputEnabled")
+            .pop();
+        eq(
+            lastOn && lastOn.args,
+            [true],
+            "⑥b-d ★ 再开不带 requireConfirm(开了就写)",
+        );
+        assertClean("⑥b d(关窗再开时的确认板)");
+    }
+
+    // =========================================================================
     // [SL-373] ⑦ 建议类横幅的 ✕:关得掉、本会话内同一条不再出现、条件变了要能再出现。
     //
     // 用户 v5.6.8 原话:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。

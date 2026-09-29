@@ -767,6 +767,72 @@ TEST_CASE("noTimelineRejectsCaptureSwitch:无时间线只拒打开,关照常受�
 }
 
 // ---------------------------------------------------------------------------
+// [J166] §1.3 `setOutputEnabled(on, opts?)`:第二参 `opts.requireConfirm` 的解析。
+//
+// 首次开输出时 UI 带 `{requireConfirm:true}`,C++ 在同一次调用里置写入守卫,点「知道了,开始」
+// 之前不写宿主自动化。本格钉参数形态;「置了守卫之后确实零写入」由 host harness 的 [J166] 那格钉;
+// handler 真的在用本函数由 `smoke-tab2-interactions.mjs` 的 [J166] 行形态钉子锁住。
+// 删除式:把 `parseSetOutputEnabledArgs` 里读 `requireConfirm` 的那两行(strictBool 与 return)删掉
+// ⇒ ★requireConfirm 两格与「传歪了 "yes"」那格红(实跑:3 条红,其余 24 条仍绿)。
+// ---------------------------------------------------------------------------
+TEST_CASE("parseSetOutputEnabledArgs:opts.requireConfirm 的形态与默认", "[output][bridge][J166]")
+{
+    using scvb::output::parseSetOutputEnabledArgs;
+    using Args = juce::Array<juce::var>;
+
+    auto withOpts = [](juce::var on, const juce::var& rc) {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("requireConfirm", rc);
+        return Args{on, juce::var(o)};
+    };
+
+    // 老调用形态逐字不变:只传 on ⇒ 不要确认。
+    {
+        const auto r = parseSetOutputEnabledArgs(Args{juce::var(true)});
+        CHECK(r.ok);
+        CHECK(r.on);
+        CHECK_FALSE(r.requireConfirm);
+    }
+    // ★requireConfirm:true ⇒ 带出来。
+    {
+        const auto r = parseSetOutputEnabledArgs(withOpts(juce::var(true), juce::var(true)));
+        CHECK(r.ok);
+        CHECK(r.on);
+        CHECK(r.requireConfirm);
+    }
+    // ★整数形态与 strictBool 同口径(非 0 = 真)。
+    {
+        const auto r = parseSetOutputEnabledArgs(withOpts(juce::var(true), juce::var(1)));
+        CHECK(r.ok);
+        CHECK(r.requireConfirm);
+    }
+    // 显式 false / 空对象 / null ⇒ 不要确认,但受理。
+    {
+        const auto r = parseSetOutputEnabledArgs(withOpts(juce::var(true), juce::var(false)));
+        CHECK(r.ok);
+        CHECK_FALSE(r.requireConfirm);
+    }
+    {
+        const auto r = parseSetOutputEnabledArgs(Args{juce::var(true), juce::var(new juce::DynamicObject())});
+        CHECK(r.ok);
+        CHECK_FALSE(r.requireConfirm);
+    }
+    {
+        const auto r = parseSetOutputEnabledArgs(Args{juce::var(false), juce::var()});
+        CHECK(r.ok);
+        CHECK_FALSE(r.on);
+        CHECK_FALSE(r.requireConfirm);
+    }
+    // 传歪了一律 badArg(不按「没要确认」照开 —— 那个方向会直接写)。
+    CHECK_FALSE(parseSetOutputEnabledArgs(withOpts(juce::var(true), juce::var("yes"))).ok);
+    CHECK_FALSE(parseSetOutputEnabledArgs(Args{juce::var(true), juce::var(true)}).ok); // opts 不是对象
+    CHECK_FALSE(parseSetOutputEnabledArgs(Args{juce::var(true), juce::var("x")}).ok);
+    // on 本身的口径同改前:缺参 / 非严格布尔 ⇒ badArg。
+    CHECK_FALSE(parseSetOutputEnabledArgs(Args{}).ok);
+    CHECK_FALSE(parseSetOutputEnabledArgs(Args{juce::var("true")}).ok);
+}
+
+// ---------------------------------------------------------------------------
 // [J157] pan 曲线点表的桥面解析(setPanCurve §1.17 / previewPanCurve §1.37 共用)。
 // 这段此前写在 `OutputEditor::handleSetPanCurve` 里,没有任何测试目标编得到;抽出来之后逐条钉住
 // 抽出前的口径(见 BridgeArgs.h 那段注释)。

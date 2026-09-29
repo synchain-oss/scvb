@@ -134,8 +134,10 @@ export const T = {
             "两端 SCVB 版本不匹配,已拒绝连接(Output abi {a} / Input abi {b})——请把两个插件升到同一版本",
         "banner.printGuard": "输出开关处于写入自动化状态(随工程恢复)",
         "banner.printGuard.confirm": "继续写入自动化",
+        // [J166] 开头那半句是新的:确认条挂着时**还没在写**,点「知道了,开始」才写(此前板子一出来
+        // 引擎就已经在写,文案也读得像「已经开始」)。后半句「轨道 / 已激活 / 不保存」照 J97 不动。
         "out.master.writeConfirm":
-            "写入自动化 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
+            "点「知道了,开始」后才写入自动化 {v}(点之前只试听、不写) · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
         // app.js 里 footer 的填值处(`secondsToTimecode(range.start_s)`)把这两个占位符
         // 一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
@@ -165,7 +167,7 @@ export const T = {
         //   **别再照规格改回去** —— 那正是本卡在修的那次(「晚出的用户裁定没有 J 号」那一族:
         //   规格停在裁定之前,照规格改等于把用户已经拍过的板推翻)。
         "out.master.writeConfirm.follow":
-            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
+            "点「知道了,开始」后才写入自动化 {v}(点之前只试听、不写) · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
         "footer.printing.follow": "写入自动化 {v} · 全曲跟随(已分析区域内)",
         "footer.printDone.follow":
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
@@ -1218,7 +1220,7 @@ export const T = {
             "Output is in WRITE AUTOMATION (restored with project)",
         "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
-            "Write automation {v} · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
+            "Write automation {v} starts only when you press “Got it, start” (monitoring only until then) · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
         //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
@@ -1232,7 +1234,7 @@ export const T = {
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
+            "Write automation {v} starts only when you press “Got it, start” (monitoring only until then) · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
         "footer.printing.follow":
             "WRITE AUTOMATION {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
@@ -2074,7 +2076,7 @@ export const T = {
             "La sortie est en ÉCRITURE AUTOMATION (restauré avec le projet)",
         "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
-            "Écriture d'automation {v} · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+            "L'écriture d'automation {v} ne démarre qu'après « Compris, démarrer » (écoute seule d'ici là) · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
         //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
@@ -2088,7 +2090,7 @@ export const T = {
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "L'écriture d'automation {v} ne démarre qu'après « Compris, démarrer » (écoute seule d'ici là) · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
             "ÉCRITURE AUTOMATION {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
