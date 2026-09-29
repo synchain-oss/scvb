@@ -2120,7 +2120,10 @@ export function createTabMaster(opts) {
             // label 为空(空工程、轨未命名)时只显轨号,不留一个悬空的轨名位
             if (labels[ch - 1]) {
                 const name = document.createElement("span");
+                // [SL-562 顺查] 单行 + 省略号(index.html .lead-select__name),全名挂 title
+                name.className = "lead-select__name";
                 name.textContent = labels[ch - 1];
+                opt.setAttribute("title", tt(ch) + " " + labels[ch - 1]);
                 opt.appendChild(name);
             }
             frag.appendChild(opt);
@@ -2165,6 +2168,7 @@ export function createTabMaster(opts) {
                 el.leadLabel.setAttribute("data-t", "leadFollowAnalysis");
                 el.leadLabel.textContent =
                     getT().leadFollowAnalysis || "自动选择";
+                el.leadLabel.removeAttribute("title");
             } else {
                 el.leadLabel.removeAttribute("data-t");
                 const chans = (getStore().state || {}).channels || [];
@@ -2173,6 +2177,10 @@ export function createTabMaster(opts) {
                 el.leadLabel.textContent = label
                     ? tt(leadV) + " " + label
                     : tt(leadV);
+                // [SL-562 顺查] 触发钮单行截断(index.html 同批规则),全名走悬停
+                if (label)
+                    el.leadLabel.setAttribute("title", tt(leadV) + " " + label);
+                else el.leadLabel.removeAttribute("title");
             }
         }
         if (el.leadPanel) {

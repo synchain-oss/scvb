@@ -864,27 +864,31 @@ function renderChannels() {
     for (const card of $all("input.channels.card")) {
         const ch = Number(card.getAttribute("data-ch"));
         card.setAttribute("aria-pressed", String(ch === cur));
+        const name = ch >= 1 && ch <= labels.length ? labels[ch - 1] : "";
         const label = card.querySelector(".ipt-chcard__label");
-        if (label) {
-            label.textContent =
-                ch >= 1 && ch <= labels.length ? labels[ch - 1] : "";
-        }
+        if (label) label.textContent = name;
         // 占用 = 本组该 slot 被心跳新鲜实例占(含自己),UI 以 channel_id 区分自身
         const occupiedByOther =
             ch >= 1 && ((occupiedMask >>> (ch - 1)) & 1) === 1 && ch !== cur;
         const occ = card.querySelector(".ipt-chcard__occupied");
         if (occ) occ.hidden = !occupiedByOther;
-        if (occupiedByOther) {
-            card.setAttribute(
-                "title",
-                format(dictNow["ch.occupied"] || "", {
-                    n: ch,
-                    g: groupLetter(store.state.group_id),
-                }),
-            );
-        } else {
-            card.removeAttribute("title");
-        }
+        // [SL-562] 格宽固定、长轨名按省略号截断(index.html .ipt-channels__grid 头注),
+        // 被截掉的那半只剩悬停这一条通路。悬停提示挂在**整张卡**上、一张卡只有一个 title:
+        // 第一行完整轨名,被别的实例占用时第二行接「已被占用」说明。不另挂在轨名那一行上 ——
+        // 那样停在轨名上只看得到名字,「已被占用」会被内层 title 遮住(#336 复审)。
+        const tip = [
+            name,
+            occupiedByOther
+                ? format(dictNow["ch.occupied"] || "", {
+                      n: ch,
+                      g: groupLetter(store.state.group_id),
+                  })
+                : "",
+        ]
+            .filter(Boolean)
+            .join("\n");
+        if (tip) card.setAttribute("title", tip);
+        else card.removeAttribute("title");
     }
     // 首开空态引导(未选 channel)
     show($("input.channels.emptyHint"), cur === 0);
