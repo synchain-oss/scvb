@@ -48,7 +48,7 @@
   `THIRD-PARTY-NOTICES.md` 为它们加了一行与对应的版权行,`LICENSES/` 加 `Unicode-3.0.txt` 全文(SPDX 标准文本),
   `third_party/notices/` 加 unicode.org 发布的声明原文 `unicode.license.txt`,都随发布 zip 分发 —— zip 里的
   `LICENSES/` 由 11 份变为 12 份,`third_party/notices/` 由 7 份变为 8 份。`scripts/package.ps1` 另加一道反向检查:
-  `LICENSES/` 里的每份全文都必须有「随二进制分发」表的一行点名它,否则构建之前的 preflight 与打包都会红
+  `LICENSES/` 里的每份全文都必须有「随二进制分发」表的一行点名它,否则构建之前的 preflight 与打包都会红(#340)
 
 ### 修复
 
