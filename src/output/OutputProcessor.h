@@ -1016,7 +1016,7 @@ private:
     // [SL-216 / J136] lead_select 的时间线记录:音频线程在走带播放时每块 record 一条(无锁 SPSC),
     // 消息线程在 timerCallback / startAnalysis / getStateInformation 里排干进 leadTimeline_。
     // leadTimeline_ 只在持 lifecycleMutex_ 时读写(get/setStateInformation 不保证在消息线程)。
-    // 分析按区间取它的多数值,选中轨在该区间并入集合 C(见 AnalysisPipeline.h `leadRuns`)。
+    // 分析在它的值变化处切开区间([SL-570 / J167]),选中轨在它被选中的那段并入集合 C(见 AnalysisPipeline.h `leadRuns`)。
     scvb::analysis::LeadRecorder leadRecorder_;
     scvb::analysis::LeadTimeline leadTimeline_;
     // [SL-545 / J143b] lead_select 最近一次改值是谁写的(插件自己 / 宿主);processBlock 每块连同值一起

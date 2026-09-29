@@ -4874,7 +4874,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     leadRecorder_.drainInto(leadTimeline_);
     cfg.leadRuns = leadTimeline_.runsOverlapping(cfg.rangeStartSample, cfg.rangeEndSample);
     // [SL-545 / J143 + J143b] **点分析这一刻**的 lead_select:计算窗里没有宿主写的记录时整窗用它,
-    // 有时只补宿主记录盖不到的区间(判据在管线里,见 AnalysisPipeline.h `leadFallback`)。
+    // 有时只补宿主记录盖不到的地方(判据在管线里,见 AnalysisPipeline.h `leadFallback`)。
     // ⚠ 计算窗是整条已采集时间线,所以「有没有宿主记录」判的是**全部已记录部分**,不只是这次 scope。
     // 取值口径与 processBlock 记录那一句同(截断取整 + 夹到 0..15),记下的与回落的是同一把尺子。
     cfg.leadFallback = handles_.rawLeadSelect != nullptr
