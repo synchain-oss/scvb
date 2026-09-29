@@ -587,10 +587,11 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
     uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
-    // [SL-258 复审【重要】] `ui.guide_seen` 按 §3.1 是**随工程走**的。它现在只是会话内运行时态
-    // (持久化待 SL-238),所以换载另一份工程 state 时必须**显式清零** —— 否则上一个工程的已读位
-    // 会原样带进新工程(宿主切 preset / 复制轨道后 load state 都走这条路),与契约语义正好相反。
-    // 失败方向也安全:至多多弹一次引导,而不是该弹不弹。SL-238 落了尾扩字段后改成解码值。
+    // [SL-258 复审【重要】] `ui.guide_seen` 是会话内运行时态,**不随工程保存**([J177] 撤回了
+    // STATE_SCHEMA 原先登记的尾部落点,codec 不编码它),所以换载另一份工程 state 时必须**显式清零**
+    // —— 否则上一个工程的已读位会原样带进新载入的这一份(宿主切 preset / 复制轨道后 load state
+    // 都走这条路)。契约写明「每成功载入一份工程 state 就清零」(§3.1 语义行 / STATE_SCHEMA §二),
+    // 这一行就是它的实现。失败方向也安全:至多多弹一次引导,而不是该弹不弹。
     uiGuideSeen_ = false;
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
