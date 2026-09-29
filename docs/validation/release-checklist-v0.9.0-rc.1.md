@@ -1,7 +1,7 @@
 # 发布前验证清单 —— v0.9.0-rc.1
 
 > 状态:进行中 —— **任何一项未勾不得发布**
-> 最后更新:2026-09-29(SL-575 按 J175 把「⏳ 统筹」各项逐格收口、把 J175 裁定的用户项改了状态,这一轮的证据标「(SL-575,`61b7575d`)」,在 `feature/v1` @ `61b7575d`(#338 合并后)+ 本卡 PR 的改动上核对;下面是此前的记录)2026-09-28(核对基线:`feature/v1` @ `e3a7f5a1`;切 rc.1 版本节的那个 PR 在 `5b1c908e`(#332 合并后)+ 该 PR 自身的改动上刷新了一轮,刷新过的项在证据里标「(`5b1c908e`)」;A2 又在 `19267527`(#333 合并后)+ #334 上刷新过一次,证据里标「(`19267527` + #334)」)
+> 最后更新:2026-09-29(SL-575 按 J175 把「⏳ 统筹」各项逐格收口、把 J175 裁定的用户项改了状态,这一轮的证据标「(SL-575,`61b7575d`)」,在 `feature/v1` @ `61b7575d`(#338 合并后)+ #345 的改动上核对;下面是此前的记录)2026-09-28(核对基线:`feature/v1` @ `e3a7f5a1`;切 rc.1 版本节的那个 PR 在 `5b1c908e`(#332 合并后)+ 该 PR 自身的改动上刷新了一轮,刷新过的项在证据里标「(`5b1c908e`)」;A2 又在 `19267527`(#333 合并后)+ #334 上刷新过一次,证据里标「(`19267527` + #334)」)
 > 来源:masterPlan 10 §6.1 的 A–K 逐项照搬;L 段是本版裁定追加的硬门。
 > 相关:上机矩阵 [daw-matrix.md](daw-matrix.md) · 支持等级 [daw-support-tiers.md](daw-support-tiers.md) · null test 记录 [audio/nulltest-log.md](audio/nulltest-log.md)
 
@@ -80,7 +80,7 @@
   - 查什么:`spikes/` 目录为空(J16);无 spike 调试代码(`SpikeCurve`、`--flap-heartbeat`、FPS 角标、processBlock 计时)。`tests/tools/scvb_diag` 是常驻工具,不删。
   - 怎么查:`git ls-tree -r --name-only HEAD spikes/`;`git grep -n "SpikeCurve\|flap-heartbeat" -- src tests web`;`git grep -n -i "fps" -- src`。
   - 证据:`spikes/` 下只剩 `spikes/README.md` 一个文件(内容仍写「S2–S4 的验证代码放这里」,已过期);`SpikeCurve` 只在 `tests/tools/scvb_bench.cpp:154` 的一行注释里,`flap-heartbeat` 0 处;`src/` 里 `fps` 的命中全是特征指纹常量 `kFp*`,不是帧率角标。
-    (SL-575,`61b7575d`)本卡 PR 删掉 `spikes/README.md`,`spikes/` 随之从仓库消失;`scripts/check-native-paths.mjs` 顶层白名单里的 `spikes/` 一并删掉(否则它按「清单里列着、仓库里已经没有」报僵尸条目),改后 `node scripts/check-native-paths.mjs` 通过。上面三条 grep 重跑:`git ls-tree -r --name-only HEAD spikes/` 为空;`SpikeCurve` 仍只有 `scvb_bench.cpp` 那一行注释(说它造的测试曲线与 S2 的 SpikeCurve 同构;`scvb_bench` 是常驻工具);`flap-heartbeat` 0 处;`src/` 里不分大小写的 `fps` 命中仍全是特征指纹的 `kFp*` / `fp*` 标识符;processBlock 计时的形态 `QueryPerformanceCounter` 在 `src tests web` 下 0 处。
+    (SL-575,`61b7575d`)#345 删掉 `spikes/README.md`,`spikes/` 随之从仓库消失;`scripts/check-native-paths.mjs` 顶层白名单里的 `spikes/` 一并删掉(否则它按「清单里列着、仓库里已经没有」报僵尸条目),改后 `node scripts/check-native-paths.mjs` 通过。上面三条 grep 重跑:`git ls-tree -r --name-only HEAD spikes/` 为空;`SpikeCurve` 仍只有 `scvb_bench.cpp` 那一行注释(说它造的测试曲线与 S2 的 SpikeCurve 同构;`scvb_bench` 是常驻工具);`flap-heartbeat` 0 处;`src/` 里不分大小写的 `fps` 命中仍全是特征指纹的 `kFp*` / `fp*` 标识符;processBlock 计时的形态 `QueryPerformanceCounter` 在 `src tests web` 下 0 处。
   - 状态:✅ 已核
 
 - [x] **A5 git 历史无 secret**
@@ -130,7 +130,7 @@
 - [x] **B6 本地全量 `pwsh scripts/gates.ps1` 全绿**
   - 查什么:全量(不加 `-Quick`),含 gate 8 的 GUI pluginval 与 gate 9 / 10。
   - 实况:维护者本机长期可用内存不足,J142 临时以 PR head 上的 CI 全量代替本地 gates;但 **GUI pluginval 只能在有桌面的本机跑**(CI 是 `--skip-gui-tests`),CI 代替不了这一半。
-  - 证据(SL-575):依据 J142(统筹 2026-09-28,在 J121 授权内):本机长期可用内存不足 2 GB,PR 合并门禁改为「PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿」,本地整套 gates 不再强制,本地只做经排队器的定向构建。此后合入 `feature/v1` 的每个 PR 都按这条过的门;本卡 PR 改了 `tests/`,落在 `build-vst3.yml` 的 `NATIVE_RE` 里,CI 自动跑全量,run 号记在本卡 PR 的描述里。CI 代替不了的 GUI pluginval:按「出包前本机自测」的惯例,第二包出包前跑过 pluginval 含 GUI 6/6(masterPlan 发布盘点 2026-09-29 M8 所记);第三包出包前同样要跑一次,那一次在第三包的提交上。
+  - 证据(SL-575):依据 J142(统筹 2026-09-28,在 J121 授权内):本机长期可用内存不足 2 GB,PR 合并门禁改为「PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿」,本地整套 gates 不再强制,本地只做经排队器的定向构建。此后合入 `feature/v1` 的每个 PR 都按这条过的门;#345 改了 `tests/`,落在 `build-vst3.yml` 的 `NATIVE_RE` 里,CI 自动跑全量,run 号记在 #345 的描述里。CI 代替不了的 GUI pluginval:按「出包前本机自测」的惯例,第二包出包前跑过 pluginval 含 GUI 6/6(masterPlan 发布盘点 2026-09-29 M8 所记);第三包出包前同样要跑一次,那一次在第三包的提交上。
   - 状态:N/A(J142:本地全量 gates 由 PR head 上的 CI 全量代替;GUI pluginval 由出包前本机自测补)
 
 ### C. UI 与无障碍
@@ -177,7 +177,7 @@
 
 - [x] **D3 PANLAW-1..5 绿**
   - 实况:仓里没有以 PANLAW 命名的用例。PANLAW-1 由 `PAN-1 equal-power pan gains`(`tests/core/test_transition.cpp:25`)覆盖;`DUALPAN-1..3`、`WIDTH-1`、`MixMath stereo dual-pan + width` 覆盖 PANLAW-3 / 5 的公式层;**PANLAW-2 / 4 的渲染实测、PANLAW-5 的「width=50 与 width=100 总能量差 ≤0.05 dB」与「无极性反转」断言,没找到对应用例**(`git grep -n -i "PANLAW\|polarity" -- tests` 无相关用例)。
-  - 证据(SL-575,`61b7575d`):本卡 PR 新增 `tests/core/test_panlaw.cpp`(标签 `[panlaw]`,在 `scvb_tests` 里,默认集,CI 每次跑),7 个用例对 10 §4.4.1 逐格:PANLAW-2(9 个 pan 值,L/R 电平比与 `20·log10(cot θ)` 差 ≤ 0.05 dB;±100 两端改判「另一侧低 120 dB 以上」)、PANLAW-3(全局 width 0 / 50 / 100 / 150 把 P=60 缩成 0 / 30 / 60 / 90,由两声道能量反解)、PANLAW-4(单轨 −100 → +100 每 5 取一点,总能量起伏 ≤ 0.05 dB 且等于输入)、PANLAW-5a–5d(每轨 width=100 原样还原源的 L/R;width=0 左右逐样本相等;width=50 相关介于两端且总能量与 width=100 差 ≤ 0.05 dB;width 0 / 50 / 100 下都没有极性反转)。「渲染」走的是 Output 实时混音循环逐样本调用的同一对原语 `output/MixMath.h` 的 `mixMonoSample` / `mixStereoSample`,不含读环、平滑、`busXfade` 与宿主 —— 即 10 §4.5 说的数学层端到端,不替代 D1 / D2。本地 `scvb_tests.exe "[panlaw]"`:`All tests passed (26 assertions in 7 test cases)`,7 个用例合计约 0.25 s;`test_panlaw.cpp` 编译 0 条 `warning C`。
+  - 证据(SL-575,`61b7575d`):#345 新增 `tests/core/test_panlaw.cpp`(标签 `[panlaw]`,在 `scvb_tests` 里,默认集,CI 每次跑),7 个用例对 10 §4.4.1 逐格:PANLAW-2(9 个 pan 值,L/R 电平比与 `20·log10(cot θ)` 差 ≤ 0.05 dB;±100 两端改判「另一侧低 120 dB 以上」)、PANLAW-3(全局 width 0 / 50 / 100 / 150 把 P=60 缩成 0 / 30 / 60 / 90,由两声道能量反解)、PANLAW-4(单轨 −100 → +100 每 5 取一点,总能量起伏 ≤ 0.05 dB 且等于输入)、PANLAW-5a–5d(每轨 width=100 原样还原源的 L/R;width=0 左右逐样本相等;width=50 相关介于两端且总能量与 width=100 差 ≤ 0.05 dB;width 0 / 50 / 100 下都没有极性反转)。「渲染」走的是 Output 实时混音循环逐样本调用的同一对原语 `output/MixMath.h` 的 `mixMonoSample` / `mixStereoSample`,不含读环、平滑、`busXfade` 与宿主 —— 即 10 §4.5 说的数学层端到端,不替代 D1 / D2。本地 `scvb_tests.exe "[panlaw]"`:`All tests passed (26 assertions in 7 test cases)`,7 个用例合计约 0.25 s;`test_panlaw.cpp` 编译 0 条 `warning C`。
     删除式(每次只改 `MixMath.h` 一处、重编、只跑 `[panlaw]`,跑完还原):mono 路径左右增益对调 ⇒ PANLAW-2 红(PANLAW-3 也红,其余绿);mono 路径忽略全局 width ⇒ 只有 PANLAW-3 红;mono 增益乘一个随 pan 变的系数(左右比不变、总能量起伏)⇒ 只有 PANLAW-4 红;stereo 两个子声像左右对调 ⇒ 只有 5a 红;右子声像多偏 1 ⇒ 只有 5b 红;音量随每轨 width 缩放(「简单混合」而非等功率)⇒ 只有 5c 红;stereo 输出做 M/S 拉宽(side × 3)⇒ 5d 红(5a、5c 也红)。还原后 7 个全绿。
   - 状态:✅ 已核
 
@@ -195,7 +195,7 @@
 - [x] **E1 `scvb_bench --dsp` 对比上一 release 无 >10% 退化**
   - 首发没有上一 release ⇒ **本次建基线**:记下基线机器(10 §5.0 / U16)与两档结果,存 `docs/validation/perf/budget-log.md`(10 §0.4 的冻结路径,本 PR 未建)。
   - 怎么查:§3 的 U-4。
-  - 证据(SL-575,`61b7575d`):按 J175 由统筹在本机做。本机就是 U16 那台(Intel Core Ultra 9 275HX / 32 GB 笔记本,Windows 11 build 26200,接交流电)。按 U-4 的两条命令各跑 4 次(构建同 B4,经排队器、`--parallel 1`),结果与机器信息落在 [perf/budget-log.md](perf/budget-log.md)(本卡 PR 新建)。**非安静条件**:同机开着另外 4 个开发会话与浏览器,整机 CPU 占用 19–38%、可用内存 2.2–3.5 GB;跑分期间排队器在本卡手里,没有别的构建并行。同档 4 次的 `checksum` 逐字相同。`scvb_bench --dsp` 量的是 Input / Output 的替身(见 budget-log「这把尺子量的是什么」),下一版对比时按同一条命令、同一台机器。
+  - 证据(SL-575,`61b7575d`):按 J175 由统筹在本机做。本机就是 U16 那台(Intel Core Ultra 9 275HX / 32 GB 笔记本,Windows 11 build 26200,接交流电)。按 U-4 的两条命令各跑 4 次(构建同 B4,经排队器、`--parallel 1`),结果与机器信息落在 [perf/budget-log.md](perf/budget-log.md)(#345 新建)。**非安静条件**:同机开着另外 4 个开发会话与浏览器,整机 CPU 占用 19–38%、可用内存 2.2–3.5 GB;跑分期间排队器在本卡手里,没有别的构建并行。同档 4 次的 `checksum` 逐字相同。`scvb_bench --dsp` 量的是 Input / Output 的替身(见 budget-log「这把尺子量的是什么」),下一版对比时按同一条命令、同一台机器。
   - 状态:✅ 已核(基线已建;非安静条件)
 
 - [x] **E2 PERF-1..17 全部在预算内,无红灯**
@@ -254,7 +254,7 @@
 
 - [x] **H3 DAW 的 mute / solo / 推子对 SCVB 通路无效(J45)**
   - 证据:两份 USER_GUIDE、KNOWN_ISSUES、两份 README 都**没有**这条说明(`grep -i -E "\bmute\b|\bsolo\b|独奏"` 的命中只有 Input 自己「向下游输出静音」的描述)。S1 spike C-10 当时的判据就是「solo / mute 对 SCVB 通路失效」。
-    (SL-575,`61b7575d`)本卡 PR 补了四处:`docs/KNOWN_ISSUES.md` 新增 KI-8(现象 / 原因 / 影响 / 缓解 / 彻底修复方向,缓解 = 用 Output 轨道页每轨的「ON」开关);两份用户手册的故障排查表各加一行、「已知限制」各加一条,指向 KI-8;两份 README 新增的「已知限制」一节(见 H7)各有一条。10 §6.1 要的「红字」没有照做:九条红字的条数被三道机检锁在 9(同 H5 那段说明),所以这条落在已知限制与故障排查里,不进红字。KI-8 写的「推子在插件链之后」只对 Input 放在推子之前成立,那正是红字第 2 条与 DAW_COMPATIBILITY §2.1(Cubase 要放在 pre-fader 区)的要求。
+    (SL-575,`61b7575d`)#345 补了四处:`docs/KNOWN_ISSUES.md` 新增 KI-8(现象 / 原因 / 影响 / 缓解 / 彻底修复方向,缓解 = 用 Output 轨道页每轨的「ON」开关);两份用户手册的故障排查表各加一行、「已知限制」各加一条,指向 KI-8;两份 README 新增的「已知限制」一节(见 H7)各有一条。10 §6.1 要的「红字」没有照做:九条红字的条数被三道机检锁在 9(同 H5 那段说明),所以这条落在已知限制与故障排查里,不进红字。KI-8 写的「推子在插件链之后」只对 Input 放在推子之前成立,那正是红字第 2 条与 DAW_COMPATIBILITY §2.1(Cubase 要放在 pre-fader 区)的要求。
   - 状态:✅ 已核
 
 - [x] **H4 同机同时只支持一个使用 SCVB 的工程**
@@ -295,7 +295,7 @@
 
 - [x] **I3 README 与 release notes 写明 GPLv3 源码获取途径**
   - 证据:README 已写(`README.zh-CN.md` 第 13 行许可证、第 51 行 Releases、第 83 行起从源码构建,含 `git clone https://github.com/synchain-oss/scvb.git`);release notes 模板有「自行从源码构建」链接;`INSTALL.txt` 精确到 tag 的源码地址由 #297 的 `package.ps1` 生成。
-    (SL-575,`61b7575d`)模板原来只有「自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)」一句,没有直接写出源码在哪。本卡 PR 在 `docs/RELEASE.md` 发布说明模板「下载与安装」一节加了一行:「源码(GPL-3.0-or-later):本版对应的完整源码在 `https://github.com/synchain-oss/scvb/tree/v{X.Y.Z}`(Release 页下方 GitHub 自动附带的 Source code 压缩包是同一份),构建方法见 README『从源码构建』」,两个链接都 pin 在 tag 上。README 一侧上面已核。定稿的发布说明从这个模板改写,J5 发布前按 U-8 第 2 步对模板核一遍。
+    (SL-575,`61b7575d`)模板原来只有「自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)」一句,没有直接写出源码在哪。#345 在 `docs/RELEASE.md` 发布说明模板「下载与安装」一节加了一行:「源码(GPL-3.0-or-later):本版对应的完整源码在 `https://github.com/synchain-oss/scvb/tree/v{X.Y.Z}`(Release 页下方 GitHub 自动附带的 Source code 压缩包是同一份),构建方法见 README『从源码构建』」,两个链接都 pin 在 tag 上。README 一侧上面已核。定稿的发布说明从这个模板改写,J5 发布前按 U-8 第 2 步对模板核一遍。
   - 状态:✅ 已核(README 与模板;定稿随 J5)
 
 - [x] **I4 二进制未内嵌不兼容许可的资源(字体尤其)**
@@ -339,7 +339,7 @@
 - [x] **K1 上一 release 的 zip 仍可下载** —— N/A:首个公开版本,没有上一 release。
 - [x] **K2 release notes 写明如何回退**
   - 实况:模板「升级须知」写了新版工程在旧版会被拒载,但**没有「如何回退」步骤**(卸载新版 `.vst3` 目录、装回旧版)。
-  - 证据(SL-575,`61b7575d`):本卡 PR 在模板「升级须知」之后加了「如遇问题如何回退」一节,三步:关掉 DAW、删掉 `C:\Program Files\Common Files\VST3\` 下三个 SCVB 的 `.vst3` 文件夹;从 Releases 页下载上一版 zip、核 SHA-256、三个一起装回;工程兼容性提醒(本版保存过的工程在 state abi 更低的旧版里会被拒载,回退前先确认手上有旧版存的副本)。节头注释写明首个公开版本之前没有公开版本可回时怎么改写(第 2 步改成装回之前在用的版本,或只留第 1、3 步)—— rc.1 正是这种情况。
+  - 证据(SL-575,`61b7575d`):#345 在模板「升级须知」之后加了「如遇问题如何回退」一节,三步:关掉 DAW、删掉 `C:\Program Files\Common Files\VST3\` 下三个 SCVB 的 `.vst3` 文件夹;从 Releases 页下载上一版 zip、核 SHA-256、三个一起装回;工程兼容性提醒(本版保存过的工程在 state abi 更低的旧版里会被拒载,回退前先确认手上有旧版存的副本)。节头注释写明首个公开版本之前没有公开版本可回时怎么改写(第 2 步改成装回之前在用的版本,或只留第 1、3 步)—— rc.1 正是这种情况。
   - 状态:✅ 已核(模板;定稿随 J5)
 
 ### L. 本版追加(不在 10 §6.1,来自发版流程与裁定)
