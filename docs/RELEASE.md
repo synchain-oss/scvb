@@ -108,7 +108,7 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
 
    提交说明写:本次版本号、压的是 `feature/v1` 的哪个提交(完整 sha)、完整历史见 `feature/v1`、本版内容见 CHANGELOG 对应版本节。说明文件里**不要**自己写 `Signed-off-by`:`-s` 会把它加在尾注下面,与尾注同在最后一段。
 
-   为什么要尾注:docs-truth 的「Changelog drafts not stranded」一步要求 CHANGELOG 里每个 `(#N)` 都在 base 分支上落过地,它原本只认提交标题尾部的 `(#N)`。压成一个提交之后,`dev` 的历史里没有 `feature/v1` 上那几百个合并提交的标题,这一步会对正文里几乎每个号判红。上面第五行生成一行 `Landed-PRs: #… #…`,列的是这道机检在 `$FV1` 上认的全部落地 PR 号(只读本地 git 历史,不联网);它进了 `dev` 的历史之后,机检把它列出的号也算已落地,与 `feature/v1` 这个分支还在不在无关。git 只把正文**最后一段**当尾注读,所以它必须与 `Signed-off-by` 同在最后一段,中间不空行。
+   为什么要尾注:docs-truth 的「Changelog drafts not stranded」一步要求 CHANGELOG 里每个 `(#N)` 都在 base 分支上落过地,它原本只认提交标题尾部的 `(#N)`。压成一个提交之后,`dev` 的历史里没有 `feature/v1` 上那几百个合并提交的标题,这一步会对正文里几乎每个号判红。上面第五行生成一行 `Landed-PRs: #… #…`,列的是 `$FV1` 历史里提交标题上的全部落地 PR 号(与机检同一套抽取,只读本地 git 历史,不联网;`$FV1` 历史里已有的尾注不转手,只在尾注里出现的号会在屏幕上点名);它进了 `dev` 的历史之后,机检把它列出的号也算已落地,与 `feature/v1` 这个分支还在不在无关。git 只把正文**最后一段**当尾注读,所以它必须与 `Signed-off-by` 同在最后一段,中间不空行。
 2. 推之前核五件事 —— 树与 `$FV1` 逐字相同、恰好一个提交、带签名、尾注被 git 认出且与生成的一致、CHANGELOG 机检在 `dev` 上是绿的:
 
    ```bash
@@ -139,7 +139,7 @@ git merge-base --is-ancestor origin/dev origin/feature/v1; echo "ancestor-exit=$
    node scripts/check-changelog-drafts.mjs --base origin/dev; echo "drafts-exit=$?"   # 必须是 0
    ```
 
-   `switch --detach` 是为了让 HEAD 就是 `origin/dev`:留在第 1 步的分支上跑,读到的是本地那个提交上的尾注,`dev` 上漏了尾注也照样绿。`drafts-exit` 不是 0 就先别打 tag,看 `git log -1 --format=%B origin/dev` 的末段有没有那行尾注;机检认 `dev` 历史里**任何一个**提交末段的尾注,不限于里程碑这个,所以补救是再合一个正文末段带同一行尾注的提交进 `dev`。
+   `switch --detach` 是为了让 HEAD 就是 `origin/dev`:留在第 1 步的分支上跑,读到的是本地那个提交上的尾注,`dev` 上漏了尾注也照样绿。`drafts-exit` 不是 0 就先别打 tag,看 `git log -1 --format=%B origin/dev` 的末段有没有那行尾注;机检认 `dev` 历史里**任何一个**提交末段的尾注,不限于里程碑这个,所以补救是再合一个提交进 `dev`,并在合并时给出的正文末段带上同一行尾注(同第 4 步,用 `-F` 给正文)—— 只写在 PR 分支的提交里,squash 之后留不进 `dev`。
 
    push→`dev` 会自动跑一次全量 `build-vst3`;它绿了才进发版清单第 6 步打 tag。
 
