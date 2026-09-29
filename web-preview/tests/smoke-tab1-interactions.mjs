@@ -385,6 +385,29 @@ log("=== ① 契约映射的纯函数 ===");
             `follow 变体 ${key} 不得含 {x}/{y} 空洞`,
         );
     }
+    // [SL-572] 确认条正文开头引的是**确认条上那枚钮的真名**(`master.writeConfirm.ok`),
+    // 且句子按 J127 式三语交叉核对改过:en 旧句「Write automation {v} starts…」读成祈使句,
+    // 改成动名词主语;fr 旧句「qu'après « Compris, démarrer »」缺了「点」这个动作,补上
+    // 「un clic sur」。两条 key × en/fr 各一格,钮名取自字典(钮改名这里跟着红,不各说各的)。
+    for (const key of [
+        TM.writeConfirmKey("manual"),
+        TM.writeConfirmKey("follow"),
+    ]) {
+        const okEn = T.en["master.writeConfirm.ok"];
+        const okFr = T.fr["master.writeConfirm.ok"];
+        check(
+            String(T.en[key]).startsWith(
+                `Writing automation {v} starts only when you press “${okEn}”`,
+            ),
+            `en ${key} 以动名词主语开头并引真钮名「${okEn}」(SL-572)`,
+        );
+        check(
+            String(T.fr[key]).startsWith(
+                `L'écriture d'automation {v} ne démarre qu'après un clic sur « ${okFr} »`,
+            ),
+            `fr ${key} 写明「点」这个动作并引真钮名「${okFr}」(SL-572)`,
+        );
+    }
 }
 
 // §2.1:pan_curve 折线(统筹增补③:有点集就画线,不再停在空态)
