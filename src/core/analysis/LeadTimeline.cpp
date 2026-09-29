@@ -166,6 +166,129 @@ std::vector<LeadRun> automatedLeadRuns(const std::vector<LeadRun>& runs)
     return out;
 }
 
+std::vector<LeadPiece> effectiveLeadPieces(const std::vector<LeadRun>& runs, std::int64_t lo, std::int64_t hi,
+                                           int fallback)
+{
+    std::vector<LeadPiece> out;
+    if (hi <= lo)
+    {
+        return out;
+    }
+    const auto append = [&out](std::int64_t a, std::int64_t b, int v) {
+        if (b <= a)
+        {
+            return;
+        }
+        if (!out.empty() && out.back().lead == v)
+        {
+            out.back().t1 = b; // 相邻同值合并(append 只按时间顺序被调,out.back().t1 == a)
+            return;
+        }
+        out.push_back(LeadPiece{a, b, v});
+    };
+    std::int64_t cur = lo;
+    for (const auto& r : runs)
+    {
+        if (r.t1 <= cur)
+        {
+            continue; // 窗口左边之外(或已被前一段越过)
+        }
+        if (r.t0 >= hi)
+        {
+            break;
+        }
+        const std::int64_t a = std::max(r.t0, cur);
+        const std::int64_t b = std::min(r.t1, hi);
+        append(cur, a, fallback); // 记录之间盖不到的空档 → 点分析那一刻的值
+        append(a, b, r.lead);
+        cur = b;
+    }
+    append(cur, hi, fallback);
+    return out;
+}
+
+void absorbShortLeadPieces(std::vector<LeadPiece>& pieces, std::int64_t minLen)
+{
+    std::vector<LeadPiece> out;
+    out.reserve(pieces.size());
+    for (const auto& p : pieces)
+    {
+        if (out.empty())
+        {
+            out.push_back(p);
+            continue;
+        }
+        LeadPiece& prev = out.back();
+        if (p.lead == prev.lead || p.t1 - p.t0 < minLen)
+        {
+            prev.t1 = p.t1; // 同值合并;或太短 → 并进前一段
+            continue;
+        }
+        if (out.size() == 1 && prev.t1 - prev.t0 < minLen)
+        {
+            prev = LeadPiece{prev.t0, p.t1, p.lead}; // 第一段太短 → 并进后一段(起点提前到窗口开头)
+            continue;
+        }
+        out.push_back(p);
+    }
+    pieces = std::move(out);
+}
+
+bool nearestWithin(const std::vector<std::int64_t>& sortedPoints, std::int64_t s, std::int64_t radius,
+                   std::int64_t& out)
+{
+    const auto it = std::lower_bound(sortedPoints.begin(), sortedPoints.end(), s); // 第一个 >= s
+    bool found = false;
+    std::int64_t best = 0;
+    std::int64_t bestDist = 0;
+    if (it != sortedPoints.begin())
+    {
+        const std::int64_t before = *std::prev(it);
+        if (s - before <= radius)
+        {
+            found = true;
+            best = before;
+            bestDist = s - before;
+        }
+    }
+    if (it != sortedPoints.end())
+    {
+        const std::int64_t after = *it;
+        // 严格小于:等距时保留较早的那个。
+        if (after - s <= radius && (!found || after - s < bestDist))
+        {
+            found = true;
+            best = after;
+        }
+    }
+    if (found)
+    {
+        out = best;
+    }
+    return found;
+}
+
+std::vector<LeadPiece> snapLeadSwitches(std::vector<LeadPiece> pieces, const std::vector<std::int64_t>& boundaries,
+                                        const LeadPauseLookup& pauses, const LeadSnapParams& p)
+{
+    absorbShortLeadPieces(pieces, p.minPieceSamples);
+    const std::int64_t hop = p.hopSamples > 0 ? p.hopSamples : 1;
+    for (std::size_t k = 1; k < pieces.size(); ++k)
+    {
+        const std::int64_t s = pieces[k].t0; // 原始切换点(本轮还没被改过)
+        std::int64_t at = 0;
+        if (!nearestWithin(boundaries, s, p.radiusSamples, at) &&
+            !(pauses && nearestWithin(pauses(s), s, p.radiusSamples, at)))
+        {
+            at = ((s + hop / 2) / hop) * hop; // 原位:取整到 hop 栅格(s >= 0)
+        }
+        pieces[k - 1].t1 = at;
+        pieces[k].t0 = at;
+    }
+    absorbShortLeadPieces(pieces, p.minPieceSamples);
+    return pieces;
+}
+
 void LeadRecorder::record(std::int64_t t0, std::int64_t t1, int lead, bool automated) noexcept
 {
     const std::uint32_t w = writePos_.load(std::memory_order_relaxed);

@@ -14684,8 +14684,9 @@ TEST_CASE("HOST J146:限频期覆盖层记哨兵 —— 别的轨延长了时间
 //
 // 用户裁定(J136):主唱居中由「播放期强制覆盖」改为进入分析引擎的槽位/平衡计算,其余声部据此排布。
 // `lead_select` 是宿主可自动化的参数,插件拿不到宿主的自动化曲线,只能在**播放经过时**看到它的值 ——
-// 所以 Output 在走带播放时逐块记下它(LeadRecorder → LeadTimeline),分析按区间取多数值,
-// 选中轨在该区间并入集合 C(与 lead_lock 同一条路径)。纯算法那半在 tests/core/test_lead_timeline.cpp;
+// 所以 Output 在走带播放时逐块记下它(LeadRecorder → LeadTimeline),分析在记录的值变化处切开区间
+// ([SL-570 / J167];此前是逐区间取多数值),选中轨在它被选中的那段并入集合 C(与 lead_lock 同一条路径)。
+// 纯算法那半在 tests/core/test_lead_timeline.cpp;
 // 这里钉**接线**:播放时真的记了、分析真的取了、记录真的随工程存取、队列真的有人排干。
 // ===========================================================================
 namespace
@@ -14797,7 +14798,7 @@ TEST_CASE("HOST SL-216:改主唱、播一遍、重新分析 → 新主唱每段�
     r.ph.timeSamples = s0;
     r.runBlocks(static_cast<int>((s1 - s0) / kBlock) + 2, 0.5f);
 
-    // 前提:记录覆盖了分析窗,多数值就是新主唱(播放路径真的记了)。
+    // 前提:记录覆盖了分析窗,多数值就是新主唱(播放路径真的记了;整窗只有这一个值,分析里没有切换点)。
     CHECK(scvb::analysis::majorityLead(r.out.leadTimelineSnapshot(), s0, s1) == leadCh);
 
     REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
@@ -14947,7 +14948,7 @@ TEST_CASE("HOST SL-216:走带停住时不记录(定位点上的值不代表那�
 // [SL-216 × SL-535] 主唱是一条没连上 Input 的轨:照样不进分析,主唱记录对其余轨零影响。
 //
 // 两张卡在 startAnalysis 里各管一面:SL-535 定「谁参与」(计算集与写回集都只认此刻已连接的轨),
-// SL-216 定「参与的轨里谁按主唱锁排」(区间多数值选中的轨并入集合 C)。合起来的口径是
+// SL-216 定「参与的轨里谁按主唱锁排」(记录选中的轨并入集合 C;[SL-570] 起按记录的值变化处切区间)。合起来的口径是
 // **参与面先定、主唱后挑**:选中的轨没连上时它不在区间的活跃轨里,主唱锁无处可落,其余轨的解
 // 与主唱记录为 0 时逐字段相同,它自己的段表一个字节不动。反过来(主唱记录把没连上的轨带回
 // 计算集或写回集)就是两条判据打架 —— 一条早已没有 Input 的轨仍在左右其余声部的排布。
@@ -15075,7 +15076,7 @@ TEST_CASE("HOST SL-216 × SL-535:主唱是没连上 Input 的轨 → 照样不�
 // [SL-545 / J143 + J143b] 点分析那一刻的 Lead Select 进分析;自动化证据按**写入来源**判。
 //
 // J143:没有记录的区间用点分析那一刻的 lead_select。J143b(统筹 2026-09-28,取代 J143a):只有**宿主写进来的**
-// 值记下的那几段(`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用当前值;有 ⇒ 宿主记录盖到的区间
+// 值记下的那几段(`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用当前值;有 ⇒ 宿主记录盖到的地方
 // 按记录,其余用当前值。插件界面改的、撤销重做写回的、载入工程恢复的值记下的那几段不看。
 // J143a(「记录里有 ≥ 2 个不同的值才算自动化」)被推翻的原因就是下面「试听一小段」那一格(#317 复审【重要】1):
 // 采集把整窗记成 0,用户在插件里改成主唱轨再试听一小段 ⇒ 窗里有 0 和主唱轨两个值 ⇒ 被当成自动化,只有试听
@@ -15302,8 +15303,11 @@ TEST_CASE("HOST SL-545:插件界面改的值不算自动化、宿主写的才按
         checkLeadCentredOthersAround();
     }
 
-    SECTION("宿主写的记录前 2/3 是主唱轨、界面随后换成另一轨不重播 → 按宿主记录,当前值说了不算")
+    SECTION("宿主写的记录前 2/3 是主唱轨、界面随后换成另一轨不重播 → 前 2/3 按宿主记录,没播到的后 1/3 按当前值")
     {
+        // [SL-570 / J167] 本格原先断言「整窗都是宿主记录那一轨」—— 那是 J143 逐区间取多数值的副产品:本机台整窗
+        // 一个全局区间,后 1/3 没有宿主记录,却被并进前 2/3 的多数值。J167 按时间取有效主唱:宿主记录盖到的地方按记录,
+        // 盖不到的地方取点分析那一刻的值(J143b 的本意),交界是一个切换点(±1 s 内吸附)。
         const std::int64_t cut = s0 + ((s1 - s0) * 2 / 3 / kBlock) * kBlock;
         setLeadSelect(r.out, leadCh); // 宿主那条路(自动化回放)
         r.ph.timeSamples = s0;
@@ -15313,12 +15317,31 @@ TEST_CASE("HOST SL-545:插件界面改的值不算自动化、宿主写的才按
         {
             const auto automated = scvb::analysis::automatedLeadRuns(r.out.leadTimelineSnapshot());
             REQUIRE_FALSE(automated.empty()); // 前提:有自动化证据
-            REQUIRE(scvb::analysis::majorityLead(automated, s0, s1, /*fallback=*/7) == leadCh);
+            REQUIRE(scvb::analysis::majorityLead(automated, s0, cut, /*fallback=*/7) == leadCh);
             REQUIRE(scvb::analysis::majorityLead(automated, cut, s1, /*fallback=*/7) == 7); // 后 1/3 盖不到
         }
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
-        INFO("leadCh=" << leadCh << " otherCh=" << otherCh);
-        checkLeadCentredOthersAround(); // 其中含「当前值那一轨离开正中」:它没把宿主记录盖掉
+        INFO("leadCh=" << leadCh << " otherCh=" << otherCh << " cut=" << cut);
+        const std::int64_t radius = static_cast<std::int64_t>(std::llround(scvb::analysis::kLeadSnapRadiusS * kSr));
+        const auto panAt = [&](int ch, std::int64_t at) {
+            for (const auto& s : segmentsOfTrack(r.out, ch))
+            {
+                if (s.t0 <= at && at < s.t1)
+                {
+                    return s.pan;
+                }
+            }
+            FAIL("ch " << ch << " 没有段盖住样本 " << at); // 别拿哨兵值糊过去:!= 0 的断言会被它蒙过
+            return 0.0f;
+        };
+        const std::int64_t before = cut - radius - kBlock; // 切换点吸附不超过 1 s ⇒ 这里一定还在前 2/3
+        const std::int64_t after = cut + radius + kBlock;
+        REQUIRE(before > s0);
+        REQUIRE(after < s1);
+        CHECK(panAt(leadCh, before) == 0.0f); // 宿主记录盖到的地方按记录
+        CHECK(panAt(otherCh, before) != 0.0f); // 当前值没把宿主记录盖掉
+        CHECK(panAt(otherCh, after) == 0.0f); // ★ 没播到的地方按当前值
+        CHECK(panAt(leadCh, after) != 0.0f);
     }
 
     SECTION("宿主写的记录恒为主唱轨、界面改回 0 → 仍按记录居中")
@@ -15353,4 +15376,107 @@ TEST_CASE("HOST SL-545:插件界面改的值不算自动化、宿主写的才按
         CHECK(r.flatOf(/*wantPan=*/true) == panBase);
         CHECK(r.flatOf(/*wantPan=*/false) == volBase);
     }
+}
+
+// ===========================================================================
+// [SL-570 / J167] 主唱切换立即生效 + 吸附 —— 接线。
+//
+// 用户 rc.1 实测 A27-3 之后提出(J167):J143 的口径是「每个全局区间取宿主记录的多数值、整段套用」,切换点落在
+// 区间后半段时,切换点之后那一截仍按旧主唱。本机台每轨只切出一段(六个爆发之间的静音短于换气容忍,见上面 SL-545
+// 那条的注释)⇒ 整窗一个全局区间 —— 正是最坏情形:0 → L → M 三段里 L 占一半,旧口径下整窗都按 L,M 一段都不居中。
+// J167:在有效主唱变值处把区间切开(1 s 内有段边界 / 停顿就对齐过去)。纯算法那半在
+// tests/core/test_lead_timeline.cpp 的 [sl570];这里钉接线:宿主写入 → 播放记录 → startAnalysis → 管线切开。
+// ===========================================================================
+TEST_CASE("HOST SL-570:宿主自动化 0 → L → M 播一遍再分析 —— 换成 M 之后那段 M 居中,不再按整窗多数值算成 L",
+          "[host][sl570][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 0.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const std::int64_t s0 = static_cast<std::int64_t>(std::llround(win.startS * kSr));
+    const std::int64_t s1 = static_cast<std::int64_t>(std::llround(win.endS * kSr));
+    const std::int64_t radius = static_cast<std::int64_t>(std::llround(scvb::analysis::kLeadSnapRadiusS * kSr));
+    const std::int64_t t1 = s0 + ((s1 - s0) / 4 / kBlock) * kBlock;
+    const std::int64_t t2 = s0 + ((s1 - s0) * 3 / 4 / kBlock) * kBlock;
+
+    // 基线(Lead Select = 0):离开正中的段最多的两条轨当 L、M —— 下面「它们居中」只能来自这次的记录。
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    std::vector<std::pair<int, int>> off; // (离开正中的段数, 通道号)
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const auto segs = segmentsOfTrack(r.out, ch);
+        off.emplace_back(countOffCenter(segs), ch);
+        // 前提:T1、T2 前后 1 s 内没有任何段边界 —— 否则切换点先吸边界,那是 core 那几格的事。
+        for (const auto& s : segs)
+        {
+            INFO("ch " << ch << " seg [" << s.t0 << ", " << s.t1 << ") T1 " << t1 << " T2 " << t2);
+            REQUIRE(std::llabs(s.t0 - t1) > radius);
+            REQUIRE(std::llabs(s.t1 - t1) > radius);
+            REQUIRE(std::llabs(s.t0 - t2) > radius);
+            REQUIRE(std::llabs(s.t1 - t2) > radius);
+        }
+    }
+    std::sort(off.begin(), off.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    REQUIRE(off[1].first > 0);
+    const int leadL = off[0].second;
+    const int leadM = off[1].second;
+
+    // 重播(采集关着,只为让 Output 记下宿主写进来的值):A27-3 的做法 —— 起播前在插件里先改成非 0,开头宿主写的 0
+    // 才是一次看得见的改值(记成自动化);T1 处换成 L,T2 处换成 M,一直播到窗尾。
+    r.out.setCaptureEnabled(false);
+    MonoMultiRig::pump(100);
+    setLeadSelectFromUi(r.out, leadM);
+    r.ph.timeSamples = s0;
+    setLeadSelect(r.out, 0);
+    r.runBlocks(static_cast<int>((t1 - s0) / kBlock), 0.5f);
+    setLeadSelect(r.out, leadL);
+    r.runBlocks(static_cast<int>((t2 - t1) / kBlock), 0.5f);
+    setLeadSelect(r.out, leadM);
+    r.runBlocks(static_cast<int>((s1 - t2) / kBlock) + 2, 0.5f);
+    {
+        const auto automated = scvb::analysis::automatedLeadRuns(r.out.leadTimelineSnapshot());
+        REQUIRE(scvb::analysis::majorityLead(automated, s0, t1, /*fallback=*/99) == 0);
+        REQUIRE(scvb::analysis::majorityLead(automated, t1, t2, /*fallback=*/99) == leadL);
+        REQUIRE(scvb::analysis::majorityLead(automated, t2, s1, /*fallback=*/99) == leadM);
+        // J143 的口径:整窗一个区间、多数值 = L ⇒ T2 之后也按 L。本卡要改掉的就是这一句。
+        REQUIRE(scvb::analysis::majorityLead(automated, s0, s1, /*fallback=*/99) == leadL);
+    }
+
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+    const auto segAt = [](const std::vector<scvb::state::Segment>& segs,
+                          std::int64_t at) -> const scvb::state::Segment* {
+        for (const auto& s : segs)
+        {
+            if (s.t0 <= at && at < s.t1)
+            {
+                return &s;
+            }
+        }
+        return nullptr;
+    };
+    const auto mSegs = segmentsOfTrack(r.out, leadM);
+    const auto lSegs = segmentsOfTrack(r.out, leadL);
+    INFO("L=" << leadL << " M=" << leadM << " T1=" << t1 << " T2=" << t2);
+    // ★ M:T2 之后 1 s 处所在的那段居中,且这段从 T2 前后 1 s 以内起(切点吸到了 T2 附近的停顿)。
+    const auto* m = segAt(mSegs, t2 + radius);
+    REQUIRE(m != nullptr);
+    CHECK(m->pan == 0.0f);
+    CHECK(m->t0 >= t2 - radius); // (m 盖住 T2 + 1 s,所以 t0 <= T2 + 1 s 自然成立)
+    for (const auto& s : mSegs)
+    {
+        if (s.t0 >= m->t0)
+        {
+            CHECK(s.pan == 0.0f); // 一直到窗尾
+        }
+    }
+    // L:T1–T2 中点所在的那段居中,两头都在 T1 / T2 前后 1 s 以内,且与 M 那段在同一处交接。
+    const auto* l = segAt(lSegs, (t1 + t2) / 2);
+    REQUIRE(l != nullptr);
+    CHECK(l->pan == 0.0f);
+    CHECK(std::llabs(l->t0 - t1) <= radius);
+    CHECK(std::llabs(l->t1 - t2) <= radius);
+    CHECK(l->t1 == m->t0);
 }

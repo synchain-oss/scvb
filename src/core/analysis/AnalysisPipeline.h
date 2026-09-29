@@ -60,21 +60,39 @@ struct PipelineConfig
     std::array<PipelineTrackConfig, kPipelineTracks> tracks{};
 
     // [SL-216 / J136] `lead_select` 在时间线上的记录(样本域,按 t0 升序、互不重叠;Output 在走带
-    // 播放时逐块记下)。逐区间取 `majorityLead`:结果 n ∈ 1..15 且轨 n 在该区间活跃 ⇒ 这一轨
-    // 在**这个区间**按主唱锁处理(并入集合 C:恒居中、不占槽,02 §5.2),其余声部据此排槽、
-    // 平衡也把它当作居中的那一轨来算。**只取 `automated` 的记录**(宿主写的),见下面 `leadFallback`。
+    // 播放时逐块记下)。**只取 `automated` 的记录**(宿主写的),见下面 `leadFallback`。
+    // [SL-570 / J167] 用法:求有效主唱 E(t)(`effectiveLeadPieces`),在 E 变值处(吸附后,`snapLeadSwitches`)
+    // 把全局区间切开;子区间的主唱 n ∈ 1..15 且轨 n 在其中活跃 ⇒ 这一轨在**这个子区间**按主唱锁处理(并入集合 C:
+    // 恒居中、不占槽,02 §5.2),其余声部据此排槽、平衡也把它当作居中的那一轨来算。
     std::vector<LeadRun> leadRuns;
 
     // [SL-545 / J143 + J143b] 点分析那一刻的 `lead_select`(0..15;0 = 无主唱)。自动化证据按**写入来源**判,
     // 不按记录里有几个不同的值判(J143b 取代 J143a):只有宿主写进来的值(`LeadRun::automated`)算自动化,
     // 插件界面上改的、撤销重做写回的、载入工程恢复的都不算 —— 用户在插件里拧旋钮再试听一段,试听那段
     // 记下的值不会让记录「看起来像自动化」。
-    //   · 计算窗里一条宿主记录都没有 ⇒ **整窗**每个区间都取它(记录不看);
-    //   · 有 ⇒ 逐区间按**宿主记录**的多数值,一个宿主记录样本都没有的区间才取它(宿主记录优先)。
-    // 两支是同一个表达式:`majorityLead(automatedLeadRuns(leadRuns), 区间, leadFallback)` —— 一条都没有时
-    // 每个区间都落到回落值。为 0 且没有宿主记录 ⇒ 与 SL-216 之前逐位相同。
+    //   · 计算窗里一条宿主记录都没有 ⇒ **整窗**取它(记录不看);
+    //   · 有 ⇒ 宿主记录盖到的地方按记录,盖不到的地方取它(宿主记录优先)。
+    // 两支是同一个表达式:`effectiveLeadPieces(automatedLeadRuns(leadRuns), 窗, leadFallback)` —— 一条都没有时
+    // 整窗落到回落值。[SL-570 / J167] E 全程一个值 ⇒ 没有切换点 ⇒ 不切区间,与 J167 之前逐位相同;
+    // 为 0 且没有宿主记录 ⇒ 与 SL-216 之前逐位相同。
     int leadFallback = 0;
 };
+
+// [SL-570 / J167] 按主唱切开后的一个子区间:全局区间 `interval`(下标)里的 [t0, t1),主唱为 `lead`。
+// 子区间只切时间,活跃轨集合沿用它所在的那个全局区间(每条活跃轨都盖满整个全局区间,切开后仍盖满)。
+struct LeadSubInterval
+{
+    std::size_t interval = 0;
+    std::int64_t t0 = 0;
+    std::int64_t t1 = 0;
+    int lead = 0;
+};
+
+// [SL-570 / J167] 用吸附后的有效主唱分段 `pieces`(首尾相接,盖满 [intervals.front().t0, intervals.back().t1))
+// 把每个全局区间切成子区间,按时间顺序返回。某个区间里没有切换点 ⇒ 它原样成为一个子区间(t0/t1 不变)。
+// 片段盖不到的那几截(调用方违约)按 `fallback`,到下一个片段起点为止。线性:区间与片段各扫一遍。
+std::vector<LeadSubInterval> splitIntervalsAtLeadSwitches(const std::vector<GlobalInterval>& intervals,
+                                                          const std::vector<LeadPiece>& pieces, int fallback);
 
 // K 加权均方(线性能量)→ LUFS(BS.1770 的 −0.691 偏置;静音回 −120 替身)。
 // §2.8 `loudnessLufs` 与 `AnalysisSegment.loudnessLufs` 的**唯一换算口径**:
@@ -106,7 +124,7 @@ struct PipelineTrackFeatures
 struct PipelineResult
 {
     std::array<std::vector<AnalysisSegment>, kPipelineTracks> segments{};
-    int intervals = 0; // 全局区间数(§3.4)
+    int intervals = 0; // 全局区间数(§3.4);[SL-570] 按主唱切开的子区间(`LeadSubInterval`)不计入
     int tracksTouched = 0; // 产出了段的轨数
     bool cancelled = false;
     std::vector<std::string> warnings; // VAD 守卫 / 宽度不足 / 平衡回退

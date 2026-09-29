@@ -38,7 +38,83 @@ void addWarningOnce(std::vector<std::string>& out, const std::string& w)
     }
 }
 
+// [SL-570 / J167] 主唱切换点的停顿候选(`snapLeadSwitches` 的第二档):全局区间 `gi` 里,它的活跃轨**合起来**的
+// 能量谷。ℓ 按谷切分的口径现算:逐 hop 把活跃轨的 kw 相加,再 `frameLoudnessDb`(ℓ 的唯一口径,见 EnergyVad.h);
+// 谷用 J145 边界拖拽吸附的那一份 `detectSnapValleys`(平滑、谷底判定与 S1 候选谷同一条 minDepth 门槛,
+// 带噪间隙也认得出来,见它的头注)。为什么是活跃轨合起来:切换点处每条活跃轨的 pan 都可能变,
+// 大家一起换气的地方换得最不显眼;单看某一轨,那一轨歇着而别人还在唱,那里并不是停顿。
+// 只留离区间两端都 >= minPiece 的谷:切在离边界更近的地方,切出来的那一小截比最短主唱片段还短。
+// 返回样本位置,升序(detectSnapValleys 按 hop 升序)。只在有切换点需要它时才算(见调用处的缓存)。
+std::vector<std::int64_t> leadPausesIn(const GlobalInterval& gi,
+                                       const std::array<PipelineTrackFeatures, kPipelineTracks>& features,
+                                       const SegmentationParams& seg, std::int64_t firstHop, std::int64_t hopSamples,
+                                       std::int64_t minPiece)
+{
+    std::vector<std::int64_t> out;
+    const std::int64_t b = gi.t0 / hopSamples - firstHop;
+    const std::int64_t e = gi.t1 / hopSamples - firstHop;
+    if (gi.tracks.empty() || b < 0 || e <= b)
+    {
+        return out;
+    }
+    std::vector<float> env(static_cast<std::size_t>(e - b));
+    for (std::int64_t h = b; h < e; ++h)
+    {
+        double sum = 0.0;
+        for (const int t : gi.tracks)
+        {
+            if (t < 0 || t >= kPipelineTracks)
+            {
+                continue;
+            }
+            const auto& kw = features[static_cast<std::size_t>(t)].kwMs;
+            if (static_cast<std::size_t>(h) < kw.size())
+            {
+                sum += static_cast<double>(kw[static_cast<std::size_t>(h)]);
+            }
+        }
+        env[static_cast<std::size_t>(h - b)] = frameLoudnessDb(sum);
+    }
+    for (const SnapValley& v : detectSnapValleys(env.data(), 0, e - b, seg))
+    {
+        const std::int64_t at = gi.t0 + v.hop * hopSamples;
+        if (at - gi.t0 >= minPiece && gi.t1 - at >= minPiece)
+        {
+            out.push_back(at);
+        }
+    }
+    return out;
+}
+
 } // namespace
+
+std::vector<LeadSubInterval> splitIntervalsAtLeadSwitches(const std::vector<GlobalInterval>& intervals,
+                                                          const std::vector<LeadPiece>& pieces, int fallback)
+{
+    std::vector<LeadSubInterval> out;
+    out.reserve(intervals.size() + pieces.size());
+    std::size_t pi = 0;
+    for (std::size_t i = 0; i < intervals.size(); ++i)
+    {
+        const GlobalInterval& gi = intervals[i];
+        std::int64_t cur = gi.t0;
+        while (cur < gi.t1)
+        {
+            while (pi < pieces.size() && pieces[pi].t1 <= cur)
+            {
+                ++pi;
+            }
+            // 片段没盖到的那一截(调用方违约 —— 管线给的片段首尾相接、盖满窗口,不会出现)按 fallback,
+            // 只到下一个片段的起点为止;后面被片段盖到的部分照常按片段切。
+            const bool covered = pi < pieces.size() && pieces[pi].t0 <= cur;
+            const std::int64_t end = covered ? std::min(gi.t1, pieces[pi].t1)
+                                             : (pi < pieces.size() ? std::min(gi.t1, pieces[pi].t0) : gi.t1);
+            out.push_back(LeadSubInterval{i, cur, end, covered ? pieces[pi].lead : fallback});
+            cur = end;
+        }
+    }
+    return out;
+}
 
 // K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
 // [SL-257] 从匿名命名空间移出:§2.8 `loudnessLufs` 的上桥值要在 emit 时按 FEAT 重算,
@@ -229,7 +305,7 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
     }
 
     // ---- S3/S4:逐区间指派 + 平衡,回写每轨段 ------------------------------------------
-    // 上一区间的解用于连续性项(w_cont):按轨记住 pan。
+    // 上一(子)区间的解用于连续性项(w_cont):按轨记住 pan。
     std::array<double, kPipelineTracks> prevPan{};
     std::array<bool, kPipelineTracks> hasPrev{};
     for (int t = 0; t < kPipelineTracks; ++t)
@@ -239,37 +315,77 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
     std::array<std::vector<AnalysisSegment>, kPipelineTracks> assigned;
 
-    // [SL-545 / J143b] 只有宿主写进来的 lead_select 记录算自动化(判据与理由见 AnalysisPipeline.h
-    // `leadFallback`)。区间都在计算窗里:窗里一条宿主记录都没有 ⇒ 每个区间都盖不到 ⇒ 都落到
-    // cfg.leadFallback = 整窗取点分析那一刻的值。所以不另设「窗里有没有自动化」的分支 —— 它与下面这一句
-    // 结果恒同,删了也不会有用例变红。
-    const std::vector<LeadRun> automatedRuns = automatedLeadRuns(cfg.leadRuns);
-
-    for (std::size_t i = 0; i < intervals.size(); ++i)
+    // [SL-570 / J167] 主唱切换点:有效主唱 E(t) → 切换点吸附 → 按切换点把全局区间切成子区间。
+    // E:宿主写进来的 lead_select 记录盖到的地方取记录值,盖不到的地方取点分析那一刻的值(cfg.leadFallback;
+    // [SL-545 / J143b] 判据与理由见 AnalysisPipeline.h `leadFallback`)。窗里一条宿主记录都没有 ⇒ E 整窗是回落值。
+    // E 全程一个值 ⇒ 一个片段、没有切换点 ⇒ 吸附什么都不做、每个全局区间原样成为一个子区间、主唱 = 那个值
+    // ⇒ 下面的循环与 J167 之前逐位相同(那时每个区间的多数值也恰是这个值)。所以不另设「有没有切换点」的分支 ——
+    // 它与这几句结果恒同,删了也不会有用例变红。
+    // 吸附(规则见 LeadTimeline.h `snapLeadSwitches`):±1 s 内有全局区间边界(某轨段边界)⇒ 吸到最近的那个;
+    // 没有 ⇒ ±1 s 内的停顿(`leadPausesIn`);还没有 ⇒ 原位(取整到 hop)。两个常数换成本次分析的样本、取整到 hop。
+    // 代价:片段数、区间数各线性一遍,每个切换点在边界表上二分一次;停顿只在有切换点落进某区间时才算那一个区间,
+    // 每个区间至多算一次。都在分析线程上(本函数的调用方就是后台作业),不碰音频线程。
+    const std::int64_t leadRadius = std::llround(kLeadSnapRadiusS / hopSec) * hopSamples;
+    const std::int64_t leadMinPiece = std::llround(kLeadMinPieceS / hopSec) * hopSamples;
+    std::vector<std::int64_t> intervalBounds;
+    intervalBounds.reserve(intervals.size() * 2);
+    for (const GlobalInterval& gi : intervals)
     {
-        report(onProgress, 0.55f + 0.4f * (static_cast<float>(i) / static_cast<float>(intervals.size())));
+        intervalBounds.push_back(gi.t0);
+        intervalBounds.push_back(gi.t1);
+    }
+    intervalBounds.erase(std::unique(intervalBounds.begin(), intervalBounds.end()), intervalBounds.end());
+    std::vector<std::vector<std::int64_t>> pauseCache(intervals.size());
+    std::vector<bool> pauseCached(intervals.size(), false);
+    const LeadPauseLookup pausesNear = [&](std::int64_t at) -> std::vector<std::int64_t> {
+        // `at` 所在的全局区间 = t0 <= at 的最后一个(区间按 t0 升序、首尾相接)。
+        const auto it = std::upper_bound(intervals.begin(), intervals.end(), at,
+                                         [](std::int64_t v, const GlobalInterval& g) { return v < g.t0; });
+        if (it == intervals.begin())
+        {
+            return {};
+        }
+        const auto idx = static_cast<std::size_t>(std::distance(intervals.begin(), it) - 1);
+        if (!pauseCached[idx])
+        {
+            pauseCache[idx] =
+                leadPausesIn(intervals[idx], features, cfg.segmentation, firstHop, hopSamples, leadMinPiece);
+            pauseCached[idx] = true;
+        }
+        return pauseCache[idx];
+    };
+    const std::vector<LeadPiece> leadPieces =
+        snapLeadSwitches(effectiveLeadPieces(automatedLeadRuns(cfg.leadRuns), intervals.front().t0, intervals.back().t1,
+                                             cfg.leadFallback),
+                         intervalBounds, pausesNear, LeadSnapParams{leadRadius, hopSamples, leadMinPiece});
+    const std::vector<LeadSubInterval> work = splitIntervalsAtLeadSwitches(intervals, leadPieces, cfg.leadFallback);
+
+    for (std::size_t wi = 0; wi < work.size(); ++wi)
+    {
+        report(onProgress, 0.55f + 0.4f * (static_cast<float>(wi) / static_cast<float>(work.size())));
         if (cancelled(shouldCancel))
         {
             result.cancelled = true;
             return result;
         }
 
-        const GlobalInterval& gi = intervals[i];
-        if (gi.tracks.empty() || gi.t1 <= gi.t0)
+        // [SL-570] 子区间:时间取子区间的,活跃轨集合取它所在的全局区间的。其余逻辑(连续性 prevPan、配对、
+        // 冻结 / 手动 / 锁定的优先级、中心槽策略、平衡)与普通区间是同一段代码,不另造分支。
+        const LeadSubInterval& sub = work[wi];
+        const GlobalInterval& gi = intervals[sub.interval];
+        if (gi.tracks.empty() || sub.t1 <= sub.t0)
         {
             continue;
         }
 
-        // [SL-216 / J136] 本区间的主唱(lead_select 记录里占比最大的值;0 = 无)。
-        // 选中的那一轨在本区间并入集合 C —— 与 lead_lock 同一条路径(AutoAssign 的 fixed 分支:
+        // [SL-216 / J136] 本子区间的主唱(0 = 无)。
+        // 选中的那一轨在本子区间并入集合 C —— 与 lead_lock 同一条路径(AutoAssign 的 fixed 分支:
         // 恒 P=0、不占槽;lead_exclusive 档据此剔除中心),其余声部按剩下的轨数排槽,平衡把它当
         // 居中那一轨算。不另造一条「主唱」分支:C 的语义(02 §5.2/§5.6)原样适用,包括
         // 「pair 成员被锁 → pair 忽略」「冻结 pan 也让位」这两条既有优先级。
-        // [SL-545 / J143 + J143b] 按宿主记录的多数值;本区间一个宿主记录样本都没有 → 点分析那一刻的
-        // lead_select(cfg.leadFallback)。插件自己写的记录(界面 / 撤销 / 载入)不参与。
-        const int intervalLead = majorityLead(automatedRuns, gi.t0, gi.t1, cfg.leadFallback);
+        const int intervalLead = sub.lead;
 
-        // 本区间的活跃轨 → TrackMeta(z 取该区间内的平均能量)。
+        // 本子区间的活跃轨 → TrackMeta(z 取该子区间内的平均能量)。
         std::vector<TrackMeta> metas;
         metas.reserve(gi.tracks.size());
         for (const int t : gi.tracks)
@@ -296,8 +412,8 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             m.hasPrev = hasPrev[static_cast<std::size_t>(t)];
             m.prevPan = prevPan[static_cast<std::size_t>(t)];
 
-            const std::int64_t b = gi.t0 / hopSamples - firstHop;
-            const std::int64_t e = gi.t1 / hopSamples - firstHop;
+            const std::int64_t b = sub.t0 / hopSamples - firstHop;
+            const std::int64_t e = sub.t1 / hopSamples - firstHop;
             // [SL-252 / J95②a] 归一化基准按 `analysis.loudness_mode` 选档(ADR-009 v2.2 澄清 ②)。
             // 默认档 `kw_integrated` 仍是同一个 `meanKw`,**逐位不变**;另两档同为线性能量量,
             // 故正文第三条「所有平衡计算在线性能量域做」继续完整适用。
@@ -331,7 +447,7 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         // 放在 warnings 之后、回写之前:与 `br` 的生命周期同段,后面 `br` 只被读不被改。
         result.maxFallbackLevel = std::max(result.maxFallbackLevel, br.fallbackLevel);
 
-        // 回写:区间 × 活跃轨 → 一段常值(pan 来自指派,volDb 来自平衡修正 u)。
+        // 回写:子区间 × 活跃轨 → 一段常值(pan 来自指派,volDb 来自平衡修正 u)。
         std::size_t k = 0;
         for (const int t : gi.tracks)
         {
@@ -344,8 +460,8 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             ++k;
 
             AnalysisSegment as;
-            as.t0Samples = gi.t0;
-            as.t1Samples = gi.t1;
+            as.t0Samples = sub.t0;
+            as.t1Samples = sub.t1;
             as.pan = pan;
             as.volDb = u;
             as.origin = Origin::Auto;

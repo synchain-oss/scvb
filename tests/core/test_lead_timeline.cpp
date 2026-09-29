@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_lead_timeline —— [SL-216 / J136] 主唱进分析:lead_select 时间线记录 + 管线逐区间并入集合 C。
 //
-// 三层各钉各的:
+// 四层各钉各的:
 //   · LeadTimeline / majorityLead / LeadRecorder / LEAD 编解码 —— 纯数据结构;
-//   · runAnalysisPipeline —— 记录里选中的那一轨在该区间居中、不占槽,其余声部按剩下的轨数排槽;
+//   · runAnalysisPipeline —— 记录里选中的那一轨在它被选中的那段居中、不占槽,其余声部按剩下的轨数排槽;
 //     与「把那一轨设成 lead_lock」逐位同解(同一条 C 路径,平衡也一样);没有记录且当前值为 0 ⇒ 与改动前同解。
 //   · [SL-545 / J143 + J143b] 点分析那一刻的 lead_select(cfg.leadFallback)怎么进来:只有**宿主写的**记录
-//     (`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用它;有 ⇒ 宿主记录盖到的区间按记录,
-//     其余区间用它。记录的来源怎么定(`LeadWriteOrigin`)、怎么存(LEAD minor 2)也在这里 —— 标签 [sl545]。
+//     (`LeadRun::automated`)算自动化 —— 窗里一条都没有 ⇒ 整窗用它;有 ⇒ 宿主记录盖到的地方按记录,
+//     其余地方用它。记录的来源怎么定(`LeadWriteOrigin`)、怎么存(LEAD minor 2)也在这里 —— 标签 [sl545]。
+//   · [SL-570 / J167] 主唱切换立即生效 + 吸附:有效主唱 E(t)、切换点吸附(边界 → 停顿 → 原位)、去抖、
+//     按切换点切子区间;E 全程不变时与 lead_lock 逐位同解 —— 标签 [sl570]。
 // 接线(Output 播放时记录 / 分析取记录 / 随工程存取 / 当前值取参数面)在 tests/host/test_host_harness.cpp 的
 // [sl216] 与 [sl545]。
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "analysis/AnalysisPipeline.h"
@@ -239,6 +245,249 @@ TEST_CASE("SL545 automatedLeadRuns:只留宿主写的记录,顺序与字段不�
     CHECK((a[1].t0 == 300 && a[1].t1 == 400 && a[1].lead == 0 && a[1].automated));
     CHECK(automatedLeadRuns({{0, 100, 5, false}}).empty());
     CHECK(automatedLeadRuns({}).empty());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-570 / J167] 有效主唱 E(t) 与切换点吸附 —— 纯函数
+//
+// 下面几条的单位约定:1 个样本当 1 ms 读(`kMs`),吸附半径 1000 = 1 s、hop 10 = 10 ms、最短片段 150 = 150 ms ——
+// 与分析里的真实换算(48 kHz 下 48000 / 480 / 7200 样本)同比例,数字好读。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+const LeadSnapParams kMs{/*radiusSamples=*/1000, /*hopSamples=*/10, /*minPieceSamples=*/150};
+
+std::string describePieces(const std::vector<LeadPiece>& ps)
+{
+    std::ostringstream o;
+    for (const auto& p : ps)
+    {
+        o << "[" << p.t0 << "," << p.t1 << ")=" << p.lead << " ";
+    }
+    return o.str();
+}
+
+void checkPieces(const std::vector<LeadPiece>& got, const std::vector<LeadPiece>& want)
+{
+    INFO("got:  " << describePieces(got));
+    INFO("want: " << describePieces(want));
+    REQUIRE(got.size() == want.size());
+    for (std::size_t i = 0; i < got.size(); ++i)
+    {
+        CHECK(got[i].t0 == want[i].t0);
+        CHECK(got[i].t1 == want[i].t1);
+        CHECK(got[i].lead == want[i].lead);
+    }
+}
+
+std::vector<LeadPiece> snapNoPauses(const std::vector<LeadPiece>& ps, const std::vector<std::int64_t>& bounds)
+{
+    return snapLeadSwitches(ps, bounds, LeadPauseLookup{}, kMs);
+}
+
+LeadPauseLookup fixedPauses(std::vector<std::int64_t> ps)
+{
+    return [ps](std::int64_t) { return ps; };
+}
+} // namespace
+
+TEST_CASE("SL570 有效主唱:宿主记录盖到处取记录值、盖不到处取回落值,相邻同值合并,盖满窗口", "[analysis][lead][sl570]")
+{
+    // 没有记录 ⇒ 整窗一个片段 = 回落值(点分析那一刻的值)。
+    checkPieces(effectiveLeadPieces({}, 0, 500, 2), {{0, 500, 2}});
+    // 记录之间的空档、两头 ⇒ 回落值。
+    checkPieces(effectiveLeadPieces({{100, 200, 3, true}, {300, 400, 5, true}}, 0, 500, 2),
+                {{0, 100, 2}, {100, 200, 3}, {200, 300, 2}, {300, 400, 5}, {400, 500, 2}});
+    // 记录值恰好等于回落值 ⇒ 与两侧空档合成一段(没有切换点)。
+    checkPieces(effectiveLeadPieces({{100, 200, 2, true}}, 0, 500, 2), {{0, 500, 2}});
+    // 记录了 0 ≠ 没有记录:0 是「无主唱」这个值,回落值 7 只补盖不到的地方。
+    checkPieces(effectiveLeadPieces({{0, 100, 0, true}}, 0, 300, 7), {{0, 100, 0}, {100, 300, 7}});
+    // 窗口外的部分裁掉;整条在窗口外的记录不看。
+    checkPieces(effectiveLeadPieces({{0, 150, 3, true}, {600, 900, 4, true}}, 100, 500, 2),
+                {{100, 150, 3}, {150, 500, 2}});
+    // 空窗口 ⇒ 空。
+    CHECK(effectiveLeadPieces({{0, 150, 3, true}}, 500, 500, 2).empty());
+}
+
+TEST_CASE("SL570 去抖:短于最短片段的并进前一段;第一段太短并进后一段", "[analysis][lead][sl570]")
+{
+    // 自动化斜线途经的中间值(各 20):旧主唱一直唱到新主唱真正开始。
+    std::vector<LeadPiece> ramp{{0, 1000, 2}, {1000, 1020, 3}, {1020, 1040, 4}, {1040, 2000, 7}};
+    absorbShortLeadPieces(ramp, 150);
+    checkPieces(ramp, {{0, 1040, 2}, {1040, 2000, 7}});
+    // 一闪而过又回来:前后同值,合回一段。
+    std::vector<LeadPiece> blip{{0, 1000, 2}, {1000, 1100, 5}, {1100, 2000, 2}};
+    absorbShortLeadPieces(blip, 150);
+    checkPieces(blip, {{0, 2000, 2}});
+    // 第一段太短:它前面没有东西,窗口一开头就换人 ⇒ 开头那一小截按换过去的值。
+    std::vector<LeadPiece> head{{0, 100, 2}, {100, 2000, 7}};
+    absorbShortLeadPieces(head, 150);
+    checkPieces(head, {{0, 2000, 7}});
+    // 最后一段太短:并进前一段。
+    std::vector<LeadPiece> tail{{0, 1900, 2}, {1900, 2000, 7}};
+    absorbShortLeadPieces(tail, 150);
+    checkPieces(tail, {{0, 2000, 2}});
+    // 零长(两个切换点吸到同一处):并掉 ⇒ 那一处之后直接是后一个值。
+    std::vector<LeadPiece> zero{{0, 1000, 2}, {1000, 1000, 5}, {1000, 2000, 7}};
+    absorbShortLeadPieces(zero, 150);
+    checkPieces(zero, {{0, 1000, 2}, {1000, 2000, 7}});
+    // 恰好等于最短片段不算短(判据是「短于」)。
+    std::vector<LeadPiece> exact{{0, 1000, 2}, {1000, 1150, 5}, {1150, 2000, 7}};
+    absorbShortLeadPieces(exact, 150);
+    checkPieces(exact, {{0, 1000, 2}, {1000, 1150, 5}, {1150, 2000, 7}});
+    // 全都短:合成一段,值取第一段的。
+    std::vector<LeadPiece> allShort{{0, 50, 2}, {50, 100, 5}};
+    absorbShortLeadPieces(allShort, 150);
+    checkPieces(allShort, {{0, 100, 2}});
+}
+
+TEST_CASE("SL570 最近点:半径含端点,等距取早,没有就不动", "[analysis][lead][sl570]")
+{
+    const std::vector<std::int64_t> pts{1000, 3000, 5000};
+    std::int64_t at = -1;
+    CHECK(nearestWithin(pts, 3000, 1000, at));
+    CHECK(at == 3000); // 恰在点上
+    CHECK(nearestWithin(pts, 3400, 1000, at));
+    CHECK(at == 3000);
+    CHECK(nearestWithin(pts, 4000, 1000, at));
+    CHECK(at == 3000); // 与 3000 / 5000 等距 ⇒ 取早
+    CHECK(nearestWithin(pts, 6000, 1000, at));
+    CHECK(at == 5000); // 恰在半径上:算
+    at = -1;
+    CHECK_FALSE(nearestWithin(pts, 6001, 1000, at));
+    CHECK(at == -1); // 没有 ⇒ 不动
+    CHECK_FALSE(nearestWithin({}, 10, 1000, at));
+}
+
+TEST_CASE("SL570 吸附:切换点恰在边界上 ⇒ 不动", "[analysis][lead][sl570]")
+{
+    checkPieces(snapNoPauses({{0, 3000, 2}, {3000, 6000, 7}}, {0, 3000, 6000}), {{0, 3000, 2}, {3000, 6000, 7}});
+}
+
+TEST_CASE("SL570 吸附:1 s 内有边界 ⇒ 吸到最近的那个(画晚 / 画早都行)", "[analysis][lead][sl570]")
+{
+    // 画晚 0.5 s:吸回句首 3000。
+    checkPieces(snapNoPauses({{0, 3500, 2}, {3500, 8000, 7}}, {0, 3000, 8000}), {{0, 3000, 2}, {3000, 8000, 7}});
+    // 画早 0.6 s:吸到 3000。
+    checkPieces(snapNoPauses({{0, 2400, 2}, {2400, 8000, 7}}, {0, 3000, 8000}), {{0, 3000, 2}, {3000, 8000, 7}});
+    // 两个边界都在 1 s 内:吸最近的(3900 比 3000 近)。
+    checkPieces(snapNoPauses({{0, 3500, 2}, {3500, 8000, 7}}, {0, 3000, 3900, 8000}), {{0, 3900, 2}, {3900, 8000, 7}});
+    // 半径含端点:离边界 0 恰好 1000 ⇒ 吸到 0,第一段变零长、并进后一段 ⇒ 整窗是新值。
+    checkPieces(snapNoPauses({{0, 1000, 2}, {1000, 5000, 7}}, {0, 5000}), {{0, 5000, 7}});
+}
+
+TEST_CASE("SL570 吸附:1 s 内没有边界 ⇒ 停顿;停顿也没有 ⇒ 原位取整到 hop", "[analysis][lead][sl570]")
+{
+    const std::vector<std::int64_t> bounds{0, 8000};
+    // 没有停顿:原位。3004 → 3000,3006 → 3010(hop = 10)。
+    checkPieces(snapNoPauses({{0, 3004, 2}, {3004, 8000, 7}}, bounds), {{0, 3000, 2}, {3000, 8000, 7}});
+    checkPieces(snapNoPauses({{0, 3006, 2}, {3006, 8000, 7}}, bounds), {{0, 3010, 2}, {3010, 8000, 7}});
+    // 离边界超出 1 s 一个 hop:不吸边界。
+    checkPieces(snapNoPauses({{0, 1010, 2}, {1010, 8000, 7}}, bounds), {{0, 1010, 2}, {1010, 8000, 7}});
+    // 1 s 内有停顿:吸过去。
+    checkPieces(snapLeadSwitches({{0, 3000, 2}, {3000, 8000, 7}}, bounds, fixedPauses({2500, 6000}), kMs),
+                {{0, 2500, 2}, {2500, 8000, 7}});
+    // 停顿在 1 s 外:原位。
+    checkPieces(snapLeadSwitches({{0, 3000, 2}, {3000, 8000, 7}}, bounds, fixedPauses({1900, 4100}), kMs),
+                {{0, 3000, 2}, {3000, 8000, 7}});
+    // 边界优先于停顿:1 s 内有边界就不看停顿,哪怕停顿更近。
+    checkPieces(snapLeadSwitches({{0, 3000, 2}, {3000, 8000, 7}}, {0, 3900, 8000}, fixedPauses({3100}), kMs),
+                {{0, 3900, 2}, {3900, 8000, 7}});
+}
+
+TEST_CASE("SL570 吸附:两个切换点离得很近 —— 吸到不同边界各自保留,吸到同一边界后写的赢", "[analysis][lead][sl570]")
+{
+    // 各自最近的边界不同(3000 / 3200),中间那段 200 >= 150,保留。
+    checkPieces(snapNoPauses({{0, 2950, 2}, {2950, 3250, 5}, {3250, 8000, 7}}, {0, 3000, 3200, 8000}),
+                {{0, 3000, 2}, {3000, 3200, 5}, {3200, 8000, 7}});
+    // 吸附冲突:两个都吸到 3000 ⇒ 中间那段零长、并掉 ⇒ 3000 之后直接是后一个值。
+    checkPieces(snapNoPauses({{0, 2900, 2}, {2900, 3300, 5}, {3300, 8000, 7}}, {0, 3000, 8000}),
+                {{0, 3000, 2}, {3000, 8000, 7}});
+}
+
+TEST_CASE("SL570 吸附:吸完被挤得太短的片段并进前一段", "[analysis][lead][sl570]")
+{
+    // 3700 → 停顿 4000,4400 → 停顿 4100:中间那段只剩 100 < 150 ⇒ 并进前一段,4100 之后是后一个值。
+    checkPieces(
+        snapLeadSwitches({{0, 3700, 2}, {3700, 4400, 5}, {4400, 10000, 7}}, {0, 10000}, fixedPauses({4000, 4100}), kMs),
+        {{0, 4100, 2}, {4100, 10000, 7}});
+}
+
+TEST_CASE("SL570 吸附:极短片段在吸附前就去掉 —— 否则它的两条边各吸各的,能被撑成一整秒", "[analysis][lead][sl570]")
+{
+    // 2 → 5(20 长)→ 7。前一条边 2990 离边界 2000 有 990、会被吸过去;后一条边 3010 离 2000 有 1010、不吸。
+    // 不先去抖:5 被撑成 [2000, 3010) 一整秒多。先去抖:5 当场并进 2,只剩一个切换点 3010,原位。
+    checkPieces(snapNoPauses({{0, 2990, 2}, {2990, 3010, 5}, {3010, 8000, 7}}, {0, 2000, 8000}),
+                {{0, 3010, 2}, {3010, 8000, 7}});
+}
+
+TEST_CASE("SL570 吸附:宿主记录与回落值的交界也是切换点,照样吸附", "[analysis][lead][sl570]")
+{
+    // 宿主记录 3 播到 3500 就停了,之后没播到 ⇒ 点分析那一刻的值 2;交界 3500 吸到句首 3000。
+    const auto pieces = effectiveLeadPieces({{0, 3500, 3, true}}, 0, 8000, 2);
+    checkPieces(pieces, {{0, 3500, 3}, {3500, 8000, 2}});
+    checkPieces(snapNoPauses(pieces, {0, 3000, 8000}), {{0, 3000, 3}, {3000, 8000, 2}});
+}
+
+TEST_CASE("SL570 吸附:随机输入 —— 首尾不动、首尾相接、不交叉、除独段外都不短于最短片段、切点都在边界/停顿/栅格上",
+          "[analysis][lead][sl570]")
+{
+    // 手写 LCG:std 的分布在各平台实现不同,种子相同也可能抽出不同的数。
+    std::uint64_t state = 0x5CB570u;
+    const auto next = [&state](std::int64_t mod) {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<std::int64_t>((state >> 33) % static_cast<std::uint64_t>(mod));
+    };
+    for (int iter = 0; iter < 400; ++iter)
+    {
+        const std::int64_t hi = 20000 + next(20000);
+        std::vector<std::int64_t> bounds{0};
+        while (bounds.back() < hi)
+        {
+            bounds.push_back(std::min(hi, bounds.back() + 150 + next(4000))); // 区间 >= 150,与 §3.4 同
+        }
+        std::vector<std::int64_t> pauses;
+        for (std::int64_t p = next(3000); p < hi; p += 100 + next(3000))
+        {
+            pauses.push_back(p);
+        }
+        std::vector<LeadPiece> pieces;
+        for (std::int64_t t = 0; t < hi;)
+        {
+            const std::int64_t len = 1 + next(next(2) == 0 ? 300 : 3000); // 一半是短抖动
+            const std::int64_t t1 = std::min(hi, t + len);
+            int v = static_cast<int>(next(4));
+            if (!pieces.empty() && v == pieces.back().lead)
+            {
+                v = (v + 1) % 4;
+            }
+            pieces.push_back(LeadPiece{t, t1, v});
+            t = t1;
+        }
+        const auto out = snapLeadSwitches(pieces, bounds, fixedPauses(pauses), kMs);
+        INFO("iter " << iter << " out: " << describePieces(out));
+        REQUIRE_FALSE(out.empty());
+        CHECK(out.front().t0 == 0);
+        CHECK(out.back().t1 == hi);
+        for (std::size_t k = 0; k < out.size(); ++k)
+        {
+            CHECK(out[k].t0 < out[k].t1);
+            if (out.size() > 1)
+            {
+                CHECK(out[k].t1 - out[k].t0 >= kMs.minPieceSamples);
+            }
+            if (k > 0)
+            {
+                CHECK(out[k].t0 == out[k - 1].t1);
+                CHECK(out[k].lead != out[k - 1].lead);
+                const std::int64_t c = out[k].t0;
+                const bool onBound = std::binary_search(bounds.begin(), bounds.end(), c);
+                const bool onPause = std::binary_search(pauses.begin(), pauses.end(), c);
+                CHECK((onBound || onPause || c % kMs.hopSamples == 0));
+            }
+        }
+    }
 }
 
 TEST_CASE("SL545 时间线:同值不同来源不合并;覆盖连来源一起换;runs / runsOverlapping / assign 带着来源",
@@ -597,7 +846,7 @@ TEST_CASE("SL216 管线:选中的轨在该区间不活跃 → 不影响其余轨
 //
 // J143b(统筹 2026-09-28,取代 J143a「记录里 ≥ 2 个不同的值才算自动化」):自动化证据按**写入来源**判 ——
 // 只有宿主写进来的值(`LeadRun::automated`)算。窗里一条宿主记录都没有 ⇒ 整窗用当前值;有 ⇒ 宿主记录
-// 盖到的区间按记录的多数值,盖不到的区间用当前值。插件自己写的记录(界面 / 撤销 / 载入 / 采集时从没改过)
+// 盖到的地方按记录,盖不到的地方用当前值。插件自己写的记录(界面 / 撤销 / 载入 / 采集时从没改过)
 // 一律不看。任务单点名的四格:① ② ③ ④ 标在标题里。
 // 本机台只有三条轨有素材(ThreeVoices),所以「当前值」一律取 1..3 里的某一轨 —— 选一条没有素材的轨
 // 当当前值,「它居中」在段表里看不出来,与「没有主唱」无法区分。
@@ -605,8 +854,9 @@ TEST_CASE("SL216 管线:选中的轨在该区间不活跃 → 不影响其余轨
 
 namespace
 {
-// 各段的分界都切在两轮之间的**静音缝**里,这样没有哪个段、哪个区间横跨分界 —— 横跨的区间里多数值
-// 怎么取是另一件事(见上面多数值那两条),这里只钉「整段是某个值 / 整段没有记录」的区间。
+// 各段的分界都切在两轮之间的**静音缝**里,这样没有哪个段、哪个区间横跨分界 —— 分界落在一句中间时怎么切
+// 是另一件事([SL-570] 那几条),这里只钉「整段是某个值 / 整段没有记录」的区间。[SL-570] 起分界本身是切换点、
+// 会吸附到 1 s 内最近的区间边界 —— 落在静音缝里的分界吸到的正是缝的两端之一,缝里没有活跃轨,结果不变。
 //   ThreeVoices = 4 轮 × (80 hop 发声 + 60 hop 静音):第 1、2 轮之间的缝约为 hop 240..268(段含前后 padding),
 //   第 2、3 轮之间约为 hop 380..408。前提由 noSegmentStraddles 当场核,不靠这段注释。
 constexpr std::int64_t kCutA = 254 * kHopSamples;
@@ -850,4 +1100,473 @@ TEST_CASE("SL545 管线:J143b ④ minor 1 的 LEAD 块(没有来源位)读成插
     const auto res = runAnalysisPipeline(v.features, v.cfg);
     CHECK(allPansAre(res.segments[1], 0.0)); // 当前值 2
     checkSameLayout(res, runAnalysisPipeline(none.features, none.cfg));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-570 / J167] 管线:按有效主唱的切换点把区间切开(吸附后),子区间各按各的主唱
+//
+// 素材一律手搭(`makeShaped`):一条轨在给定的 hop 范围里发声(kw 恒定),其余静音;`dips` 里的 hop 压低 20 dB ——
+// VAD 的开段门槛在活跃基准下 30 dB,压低 20 dB 不断段(用例里当场核「段数没变」),但合起来的包络上是一个
+// 过得了 minDepth(灵敏度 50 ⇒ 6 dB)的谷,即「大家一起换气」。
+// 所有「句首 / 边界」都从一次**没有主唱记录**的基线分析里读出来,不按 VAD 的 padding / hangover 手算。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr std::size_t kShapedHops = 800; // 8 s;单段最长约 7.6 s,不触发 §3.2 超长段谷切分(8 s)
+
+PipelineTrackFeatures makeShaped(const std::vector<std::pair<int, int>>& loud, float loudKw,
+                                 const std::vector<std::pair<int, int>>& dips = {})
+{
+    PipelineTrackFeatures f;
+    f.kwMs.assign(kShapedHops, 1e-9f);
+    f.peak.assign(kShapedHops, 1e-5f);
+    for (const auto& [a, b] : loud)
+    {
+        for (int h = a; h < b; ++h)
+        {
+            f.kwMs[static_cast<std::size_t>(h)] = loudKw;
+            f.peak[static_cast<std::size_t>(h)] = std::sqrt(loudKw);
+        }
+    }
+    for (const auto& [a, b] : dips)
+    {
+        for (int h = a; h < b; ++h)
+        {
+            f.kwMs[static_cast<std::size_t>(h)] *= 0.01f;
+            f.peak[static_cast<std::size_t>(h)] *= 0.1f;
+        }
+    }
+    f.covered.assign(kShapedHops, 1u);
+    f.anyCovered = true;
+    return f;
+}
+
+// 轨 t 上盖住样本 at 的那一段;没有 ⇒ nullptr。
+const AnalysisSegment* segAt(const PipelineResult& r, int t, std::int64_t at)
+{
+    for (const auto& s : r.segments[static_cast<std::size_t>(t)])
+    {
+        if (s.t0Samples <= at && at < s.t1Samples)
+        {
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+// 基线分析里所有轨的段边界(= 全局区间边界的超集:同活跃集合合并前的那些点也在里面)。
+std::vector<std::int64_t> allSegmentEdges(const PipelineResult& r)
+{
+    std::vector<std::int64_t> out;
+    for (const auto& segs : r.segments)
+    {
+        for (const auto& s : segs)
+        {
+            out.push_back(s.t0Samples);
+            out.push_back(s.t1Samples);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// 前提:`at` 前后 1 s 内没有任何段边界(否则吸附会先吸边界,这一格测的就不是它要测的那一档)。
+bool noEdgeWithinOneSecond(const PipelineResult& r, std::int64_t at)
+{
+    const std::int64_t radius = static_cast<std::int64_t>(std::llround(kLeadSnapRadiusS * kSr));
+    for (const std::int64_t e : allSegmentEdges(r))
+    {
+        if (std::llabs(e - at) <= radius)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sameSegments(const PipelineResult& a, const PipelineResult& b)
+{
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        const auto& sa = a.segments[static_cast<std::size_t>(t)];
+        const auto& sb = b.segments[static_cast<std::size_t>(t)];
+        if (sa.size() != sb.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < sa.size(); ++i)
+        {
+            if (sa[i].t0Samples != sb[i].t0Samples || sa[i].t1Samples != sb[i].t1Samples)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// 各轨段起点的并集有几个。没有切换点时每一段都始于某个全局区间的起点(相邻同值合并只会少不会多)⇒ 不超过全局区间数;
+// 在没有切换点的区间里多切一刀,这个数就会超出。与下面的逐位比互补:逐位比的对照组(lead_lock)走的也是同一段切子区间的
+// 代码,两边一起多切时逐位比照样相等 —— 这一条不经过那段代码。
+std::size_t distinctSegmentStarts(const PipelineResult& r)
+{
+    std::vector<std::int64_t> starts;
+    for (const auto& segs : r.segments)
+    {
+        for (const auto& s : segs)
+        {
+            starts.push_back(s.t0Samples);
+        }
+    }
+    std::sort(starts.begin(), starts.end());
+    return static_cast<std::size_t>(std::unique(starts.begin(), starts.end()) - starts.begin());
+}
+
+// 逐位比:每轨段数、每段 t0/t1/pan/volDb,以及区间数、平衡回退级、警告。
+void checkBitIdentical(const PipelineResult& a, const PipelineResult& b)
+{
+    CHECK(a.intervals == b.intervals);
+    CHECK(a.maxFallbackLevel == b.maxFallbackLevel);
+    CHECK(a.warnings == b.warnings);
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        const auto& sa = a.segments[static_cast<std::size_t>(t)];
+        const auto& sb = b.segments[static_cast<std::size_t>(t)];
+        INFO("track " << (t + 1));
+        REQUIRE(sa.size() == sb.size());
+        for (std::size_t i = 0; i < sa.size(); ++i)
+        {
+            INFO("seg " << i);
+            CHECK(sa[i].t0Samples == sb[i].t0Samples);
+            CHECK(sa[i].t1Samples == sb[i].t1Samples);
+            CHECK(sa[i].pan == sb[i].pan);
+            CHECK(sa[i].volDb == sb[i].volDb);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("SL570 切子区间:没有切换点的区间原样成为一个子区间;切换点落在区间中间才切;恰在边界上不多切",
+          "[analysis][lead][sl570]")
+{
+    const std::vector<GlobalInterval> iv{{0, 1000, {0, 1}}, {1000, 3000, {0}}, {3000, 4000, {1}}};
+    // 一个片段(E 全程不变):逐个原样,主唱 = 那个值。
+    auto w = splitIntervalsAtLeadSwitches(iv, {{0, 4000, 5}}, 0);
+    REQUIRE(w.size() == 3);
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        CHECK(w[i].interval == i);
+        CHECK(w[i].t0 == iv[i].t0);
+        CHECK(w[i].t1 == iv[i].t1);
+        CHECK(w[i].lead == 5);
+    }
+    // 切换点 2000 落在第 2 个区间中间 ⇒ 它切成两段;切换点 3000 恰在边界 ⇒ 不多切。
+    w = splitIntervalsAtLeadSwitches(iv, {{0, 2000, 1}, {2000, 3000, 2}, {3000, 4000, 3}}, 0);
+    REQUIRE(w.size() == 4);
+    CHECK((w[0].interval == 0 && w[0].t0 == 0 && w[0].t1 == 1000 && w[0].lead == 1));
+    CHECK((w[1].interval == 1 && w[1].t0 == 1000 && w[1].t1 == 2000 && w[1].lead == 1));
+    CHECK((w[2].interval == 1 && w[2].t0 == 2000 && w[2].t1 == 3000 && w[2].lead == 2));
+    CHECK((w[3].interval == 2 && w[3].t0 == 3000 && w[3].t1 == 4000 && w[3].lead == 3));
+    // 没给片段(调用方违约):每个区间原样,按回落值。
+    w = splitIntervalsAtLeadSwitches(iv, {}, 7);
+    REQUIRE(w.size() == 3);
+    CHECK((w[1].t0 == 1000 && w[1].t1 == 3000 && w[1].lead == 7));
+    // 片段中间有空档(调用方违约):空档那一截按回落值,只到下一个片段起点为止,之后照常按片段。
+    w = splitIntervalsAtLeadSwitches(iv, {{0, 500, 1}, {1500, 4000, 3}}, 7);
+    REQUIRE(w.size() == 5);
+    CHECK((w[0].interval == 0 && w[0].t0 == 0 && w[0].t1 == 500 && w[0].lead == 1));
+    CHECK((w[1].interval == 0 && w[1].t0 == 500 && w[1].t1 == 1000 && w[1].lead == 7));
+    CHECK((w[2].interval == 1 && w[2].t0 == 1000 && w[2].t1 == 1500 && w[2].lead == 7));
+    CHECK((w[3].interval == 1 && w[3].t0 == 1500 && w[3].t1 == 3000 && w[3].lead == 3)); // ★ 没被回落值吞掉
+    CHECK((w[4].interval == 2 && w[4].t0 == 3000 && w[4].t1 == 4000 && w[4].lead == 3));
+}
+
+TEST_CASE("SL570 管线:一个区间里两人交替 —— 轨 1、轨 2、轨 1 各自那段居中,在换人处原位切开",
+          "[analysis][lead][sl570][pipeline]")
+{
+    // 三轨一起唱满 7 s(一个全局区间,没有停顿)。自动化:轨 1 → 2.5 s 起轨 2 → 4.5 s 起回到轨 1。
+    // J143 的口径下整个区间取多数值 = 轨 1(占 5 s 多),轨 2 一段都不居中 —— 用户说的「两人交替只有一个人赢」。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    for (int t = 0; t < 3; ++t)
+    {
+        f[static_cast<std::size_t>(t)] = makeShaped({{50, 750}}, 0.05f);
+    }
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE(base.intervals == 1); // 前提:一个区间
+    const std::int64_t c1 = 250 * kHopSamples;
+    const std::int64_t c2 = 450 * kHopSamples;
+    REQUIRE(noEdgeWithinOneSecond(base, c1));
+    REQUIRE(noEdgeWithinOneSecond(base, c2));
+
+    cfg.leadRuns = {{0, c1, 1, true}, {c1, c2, 2, true}, {c2, cfg.rangeEndSample, 1, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* a1 = segAt(res, 0, c1 - 1);
+    const auto* a2 = segAt(res, 0, c1);
+    const auto* a3 = segAt(res, 0, c2);
+    const auto* b2 = segAt(res, 1, c1);
+    REQUIRE((a1 && a2 && a3 && b2));
+    // ★ 轨 2 在自己那段居中,段就切在换人处。
+    CHECK(b2->pan == 0.0);
+    CHECK(b2->t0Samples == c1);
+    CHECK(b2->t1Samples == c2);
+    // 轨 1 前后两段居中、中间那段让出中心。
+    CHECK(a1->pan == 0.0);
+    CHECK(a1->t1Samples == c1);
+    CHECK(a2->pan != 0.0);
+    CHECK(a3->pan == 0.0);
+    CHECK(a3->t0Samples == c2);
+    CHECK(res.intervals == base.intervals); // 子区间不计入全局区间数
+}
+
+TEST_CASE("SL570 管线:换人点画晚 0.5 s ⇒ 吸回句首,整句按新主唱", "[analysis][lead][sl570][pipeline]")
+{
+    // 轨 1 唱 0.5–2.5 s,轨 2 唱 4.5–7.5 s,轨 3 从头伴唱到尾。用户把「换成轨 2」画在轨 2 开口之后 0.5 s。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    f[0] = makeShaped({{50, 250}}, 0.05f);
+    f[1] = makeShaped({{450, 750}}, 0.05f);
+    f[2] = makeShaped({{50, 750}}, 0.05f);
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE_FALSE(base.segments[1].empty());
+    const std::int64_t sentence = base.segments[1].front().t0Samples; // 轨 2 的句首 = 一条全局区间边界
+    const std::int64_t late = sentence + 50 * kHopSamples; // 画晚 0.5 s
+    for (const std::int64_t e : allSegmentEdges(base))
+    {
+        INFO("edge " << e);
+        CHECK((e == sentence || std::llabs(e - late) > late - sentence)); // 前提:句首是离画点最近的边界
+    }
+    REQUIRE(noEdgeWithinOneSecond(base, late + 60 * kHopSamples)); // 前提:句中没有别的边界
+
+    cfg.leadRuns = {{0, late, 1, true}, {late, cfg.rangeEndSample, 2, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* s = segAt(res, 1, sentence);
+    REQUIRE(s != nullptr);
+    CHECK(s->pan == 0.0); // ★ 句首那 0.5 s 也是轨 2 居中
+    CHECK(s->t0Samples == sentence);
+    CHECK(s->t1Samples > late); // 句中画点处没有另切一刀
+}
+
+TEST_CASE("SL570 管线:换人点画在最后一句结束前 0.5 s ⇒ 吸到句尾,这一句整句仍按原主唱",
+          "[analysis][lead][sl570][pipeline]")
+{
+    // 窗里最后一个全局区间的终点也是段边界(最后一句的句尾),同样参与吸附。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    for (int t = 0; t < 3; ++t)
+    {
+        f[static_cast<std::size_t>(t)] = makeShaped({{50, 750}}, 0.05f);
+    }
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE(base.intervals == 1);
+    REQUIRE_FALSE(base.segments[0].empty());
+    const std::int64_t tail = base.segments[0].back().t1Samples; // 句尾
+    const std::int64_t early = tail - 50 * kHopSamples; // 画早 0.5 s
+    REQUIRE(noEdgeWithinOneSecond(base, early - 60 * kHopSamples)); // 前提:句中没有别的边界
+    cfg.leadRuns = {{0, early, 1, true}, {early, cfg.rangeEndSample, 3, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* s = segAt(res, 0, early);
+    REQUIRE(s != nullptr);
+    CHECK(s->pan == 0.0); // ★ 句尾那 0.5 s 仍是轨 1 居中
+    CHECK(s->t1Samples == tail);
+}
+
+TEST_CASE("SL570 管线:长区间中段换人、附近没有边界也没有停顿 ⇒ 在原位(取整到 hop)切开",
+          "[analysis][lead][sl570][pipeline]")
+{
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    for (int t = 0; t < 3; ++t)
+    {
+        f[static_cast<std::size_t>(t)] = makeShaped({{50, 750}}, 0.05f);
+    }
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    const std::int64_t cut = 400 * kHopSamples;
+    REQUIRE(noEdgeWithinOneSecond(base, cut));
+    // 换人时刻落在 hop 中间(宿主按块写,块边界不一定对齐 hop)。
+    cfg.leadRuns = {{0, cut + 123, 1, true}, {cut + 123, cfg.rangeEndSample, 3, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* before = segAt(res, 0, cut - 1);
+    const auto* after = segAt(res, 2, cut);
+    REQUIRE((before && after));
+    CHECK(before->pan == 0.0);
+    CHECK(before->t1Samples == cut); // ★ 取整到 hop 栅格
+    CHECK(after->pan == 0.0);
+    CHECK(after->t0Samples == cut);
+}
+
+TEST_CASE("SL570 管线:1 s 内没有边界但有大家一起换气的停顿 ⇒ 切在停顿处", "[analysis][lead][sl570][pipeline]")
+{
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    for (int t = 0; t < 3; ++t)
+    {
+        f[static_cast<std::size_t>(t)] = makeShaped({{50, 750}}, 0.05f, {{330, 340}});
+    }
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE(base.intervals == 1); // 前提:压低 20 dB 没有断段
+    const std::int64_t drawn = 400 * kHopSamples; // 画在停顿之后 0.6–0.7 s
+    REQUIRE(noEdgeWithinOneSecond(base, drawn));
+    cfg.leadRuns = {{0, drawn, 1, true}, {drawn, cfg.rangeEndSample, 3, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* after = segAt(res, 2, drawn);
+    REQUIRE(after != nullptr);
+    CHECK(after->pan == 0.0);
+    INFO("cut at hop " << after->t0Samples / kHopSamples);
+    CHECK(after->t0Samples >= 330 * kHopSamples); // ★ 切在停顿里,不在画点
+    CHECK(after->t0Samples < 340 * kHopSamples);
+}
+
+TEST_CASE("SL570 管线:只有一条轨歇着、别的轨还在唱 ⇒ 那里不算停顿,原位切", "[analysis][lead][sl570][pipeline]")
+{
+    // 与上一条同一个画点,但只有轨 1 在 330–340 压低:三轨合起来只低 1.7 dB,过不了 minDepth(6 dB)。
+    // 切换点处每条活跃轨的 pan 都可能变,只有大家一起歇的地方才换得不显眼。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    f[0] = makeShaped({{50, 750}}, 0.05f, {{330, 340}});
+    f[1] = makeShaped({{50, 750}}, 0.05f);
+    f[2] = makeShaped({{50, 750}}, 0.05f);
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE(base.intervals == 1);
+    const std::int64_t drawn = 400 * kHopSamples;
+    REQUIRE(noEdgeWithinOneSecond(base, drawn));
+    cfg.leadRuns = {{0, drawn, 1, true}, {drawn, cfg.rangeEndSample, 3, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* after = segAt(res, 2, drawn);
+    REQUIRE(after != nullptr);
+    CHECK(after->pan == 0.0);
+    CHECK(after->t0Samples == drawn); // ★ 原位
+}
+
+TEST_CASE("SL570 管线:子区间的平衡按子区间自己的能量算", "[analysis][lead][sl570][pipeline]")
+{
+    // 宿主把 Lead Select 从 0 拨到 9(一条没有素材的轨):两段都是「活跃轨里没有主唱」,指派结构一模一样,
+    // 唯一的差别是能量 —— 轨 3 前半轻、后半重。子区间的 z 取子区间自己的 ⇒ 轨 3 前后两段的音量修正不同;
+    // 若 z 仍取整个全局区间,两段的输入完全相同,解也相同,相邻同值合并后轨 3 只剩一段。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    f[0] = makeShaped({{50, 750}}, 0.05f);
+    f[1] = makeShaped({{50, 750}}, 0.05f);
+    f[2] = makeShaped({{50, 400}}, 0.01f);
+    for (int h = 400; h < 750; ++h)
+    {
+        f[2].kwMs[static_cast<std::size_t>(h)] = 0.2f;
+        f[2].peak[static_cast<std::size_t>(h)] = std::sqrt(0.2f);
+    }
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    cfg.tracks[0].priority = 0.0; // 优先级最低的轨 1 拿中心,轨 2、3 分坐两侧 —— 左右平衡要靠音量修正拉平
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE(base.intervals == 1);
+    const std::int64_t cut = 400 * kHopSamples;
+    REQUIRE(noEdgeWithinOneSecond(base, cut));
+    cfg.leadRuns = {{0, cut, 0, true}, {cut, cfg.rangeEndSample, 9, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* first = segAt(res, 2, cut - 1);
+    const auto* second = segAt(res, 2, cut);
+    REQUIRE((first && second));
+    INFO("vol " << first->volDb << " → " << second->volDb);
+    CHECK(first != second); // ★ 在切换点分成两段
+    CHECK(second->volDb < first->volDb); // 后半更响 ⇒ 修正更往下
+}
+
+TEST_CASE("SL570 管线:紧贴区间起点(< 150 ms)的停顿不拿来吸 —— 切出来的那一小截比最短主唱片段还短",
+          "[analysis][lead][sl570][pipeline]")
+{
+    // 轨 1、2 唱满;轨 3 在 3 s 处加入(它的段起点 = 一条全局区间边界 edge)。轨 1、2 在 edge 之后 30–90 ms
+    // 一起压低(停顿谷约在 edge + 60 ms)。换人画在 edge + 1.03 s:离 edge 超过 1 s(不吸边界),离那个停顿不到 1 s。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    f[0] = makeShaped({{50, 750}}, 0.05f);
+    f[1] = makeShaped({{50, 750}}, 0.05f);
+    f[2] = makeShaped({{300, 750}}, 0.05f);
+    PipelineConfig cfg = makeConfig(kShapedHops, 3);
+    const auto base = runAnalysisPipeline(f, cfg);
+    REQUIRE_FALSE(base.segments[2].empty());
+    const std::int64_t edge = base.segments[2].front().t0Samples;
+    const int edgeHop = static_cast<int>(edge / kHopSamples);
+    REQUIRE(edgeHop + 9 < 300); // 前提:停顿落在轨 3 开口之前(否则轨 3 自己把谷填平了)
+    f[0] = makeShaped({{50, 750}}, 0.05f, {{edgeHop + 3, edgeHop + 9}});
+    f[1] = makeShaped({{50, 750}}, 0.05f, {{edgeHop + 3, edgeHop + 9}});
+    const auto dipped = runAnalysisPipeline(f, cfg);
+    REQUIRE(sameSegments(dipped, base)); // 前提:停顿没有改变任何段
+    const std::int64_t drawn = edge + 103 * kHopSamples;
+    REQUIRE(noEdgeWithinOneSecond(base, drawn)); // 前提:不吸 edge(103 hop > 1 s),另一侧也没有边界
+
+    cfg.leadRuns = {{0, drawn, 1, true}, {drawn, cfg.rangeEndSample, 3, true}};
+    const auto res = runAnalysisPipeline(f, cfg);
+    const auto* after = segAt(res, 2, drawn);
+    REQUIRE(after != nullptr);
+    CHECK(after->pan == 0.0);
+    INFO("cut at hop " << after->t0Samples / kHopSamples << ", edge hop " << edgeHop);
+    CHECK(after->t0Samples == drawn); // ★ 原位;没有吸到 edge + 60 ms 那个停顿
+}
+
+TEST_CASE("SL570 管线:有效主唱全程不变 ⇒ 与「那一轨设 lead_lock」逐位同解(宿主记录 + 回落值拼成同一个值也一样)",
+          "[analysis][lead][sl570][pipeline]")
+{
+    // 三个全局区间、活跃集合各不同,且轨 3 的响度一路爬升 —— 切开任何一个区间,两半的 z 不同、平衡给的 u 也不同,
+    // 段表就会多出切点:所以「没有切换点就不切」在这里是看得见的。轨 4 从头唱到尾,让每个区间除主唱外至少还有
+    // 一条自由轨、多数区间有两条(只有一条自由轨时平衡不出 u)。
+    std::array<PipelineTrackFeatures, kPipelineTracks> f;
+    f[0] = makeShaped({{50, 250}}, 0.02f);
+    f[1] = makeShaped({{450, 750}}, 0.05f);
+    f[2] = makeShaped({{50, 750}}, 0.02f);
+    f[3] = makeShaped({{50, 750}}, 0.035f);
+    for (int h = 50; h < 750; ++h)
+    {
+        const float kw = 0.02f + 0.07f * static_cast<float>(h - 50) / 700.0f;
+        f[2].kwMs[static_cast<std::size_t>(h)] = kw;
+        f[2].peak[static_cast<std::size_t>(h)] = std::sqrt(kw);
+    }
+    PipelineConfig lock = makeConfig(kShapedHops, 4);
+    lock.tracks[2].leadLock = true;
+    const auto oracle = runAnalysisPipeline(f, lock);
+    REQUIRE(oracle.intervals >= 3); // 前提:多个区间
+    bool anyU = false;
+    for (const auto& segs : oracle.segments)
+    {
+        for (const auto& s : segs)
+        {
+            anyU = anyU || std::abs(s.volDb) > 1e-6;
+        }
+    }
+    REQUIRE(anyU); // 前提:平衡真的出了 u,volDb 的逐位相等不是「两边都是 0」
+
+    const std::int64_t end = lock.rangeEndSample;
+    const std::int64_t q = 200 * kHopSamples + 77; // 记录的分界不对齐 hop、也不对齐任何段边界
+    SECTION("没有记录,当前值 = 3")
+    {
+        PipelineConfig cfg = makeConfig(kShapedHops, 4);
+        cfg.leadFallback = 3;
+        const auto res = runAnalysisPipeline(f, cfg);
+        checkBitIdentical(res, oracle);
+        CHECK(distinctSegmentStarts(res) <= static_cast<std::size_t>(res.intervals)); // ★ 没有多切
+    }
+    SECTION("宿主记录前半是 3、后半没播到,当前值 = 3")
+    {
+        PipelineConfig cfg = makeConfig(kShapedHops, 4);
+        cfg.leadRuns = {{0, q, 3, true}};
+        cfg.leadFallback = 3;
+        const auto res = runAnalysisPipeline(f, cfg);
+        checkBitIdentical(res, oracle);
+        CHECK(distinctSegmentStarts(res) <= static_cast<std::size_t>(res.intervals)); // ★ 记录与回落值的交界不是切换点
+    }
+    SECTION("宿主记录 3、中间夹一段插件写的 1(不算自动化),当前值 = 3")
+    {
+        PipelineConfig cfg = makeConfig(kShapedHops, 4);
+        cfg.leadRuns = {{0, q, 3, true}, {q, 2 * q, 1, false}, {2 * q, end, 3, true}};
+        cfg.leadFallback = 3;
+        const auto res = runAnalysisPipeline(f, cfg);
+        checkBitIdentical(res, oracle);
+        CHECK(distinctSegmentStarts(res) <= static_cast<std::size_t>(res.intervals));
+    }
+    SECTION("宿主记录全程 3,当前值 = 0")
+    {
+        PipelineConfig cfg = makeConfig(kShapedHops, 4);
+        cfg.leadRuns = {{0, end, 3, true}};
+        cfg.leadFallback = 0;
+        const auto res = runAnalysisPipeline(f, cfg);
+        checkBitIdentical(res, oracle);
+        CHECK(distinctSegmentStarts(res) <= static_cast<std::size_t>(res.intervals));
+    }
 }
