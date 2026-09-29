@@ -866,8 +866,13 @@ function renderChannels() {
         card.setAttribute("aria-pressed", String(ch === cur));
         const label = card.querySelector(".ipt-chcard__label");
         if (label) {
-            label.textContent =
-                ch >= 1 && ch <= labels.length ? labels[ch - 1] : "";
+            const name = ch >= 1 && ch <= labels.length ? labels[ch - 1] : "";
+            label.textContent = name;
+            // [SL-562] 格宽固定、长轨名按省略号截断(index.html .ipt-channels__grid 头注),
+            // 被截掉的那半只剩悬停这一条通路。title 挂在轨名这一行上而不是整张卡上:
+            // 卡自己的 title 留给下面的「已被占用」说明,两者互不覆盖。
+            if (name) label.setAttribute("title", name);
+            else label.removeAttribute("title");
         }
         // 占用 = 本组该 slot 被心跳新鲜实例占(含自己),UI 以 channel_id 区分自身
         const occupiedByOther =
