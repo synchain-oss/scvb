@@ -94,6 +94,8 @@ Once capture covers the whole song, press **Analyse**. Analysis runs voice detec
 
 ### Output
 
+On a newly inserted SCVB Output the output switch starts off (Follow Host: the bus follows the host parameters and no automation is written); turn it on when you need it. When you open an existing project, the switch comes back the way it was saved (if it was saved on, the load-guard banner appears first; see "Writing the result into your DAW").
+
 Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next; **until you press "Got it, start" on that bar, you only monitor — no host automation is written** (and the footer does not show "WRITE AUTOMATION …"), while "Undo (back to Follow Host)" switches it back off. If you switch output off without pressing "Got it, start" (with the switch itself, or by turning on 01 capture, which switches output off) and then on again, the bar comes back and still has to be confirmed before anything is written. Once you have confirmed in this plug-in window (pressed "Got it, start", or "Continue write automation" on the banner shown when a project is reopened), switching output off and on again in the same window does not bring the bar back, and output writes as soon as it is on. This starts over each time you open the plug-in window. If you close and reopen the plug-in window while the bar is showing, the bar is still there and still needs "Got it, start".
 
 ### Write automation

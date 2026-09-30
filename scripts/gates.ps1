@@ -1277,7 +1277,8 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预�
 # 拿不到全仓文件清单就无从对拍)。所以本地绿不等于这几档验过,它们以 CI(ubuntu)为准。
 # [SL-295] check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
 # 预写条目却还留着」的条目。它是这一圈里**唯一要读 git 历史**的一条 —— 已上线集合取自
-# base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改)。取不到那个
+# base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改;PR 号另认提交
+# 正文末段的 `Landed-PRs` 尾注,[SL-576] 里程碑 squash 用,见脚本头注 §边界)。取不到那个
 # ref、或仓库是浅克隆时它**判负而不是跳过**:近乎空的已上线集合会让门禁永远绿,正是本仓
 # 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
@@ -1389,7 +1390,8 @@ else {
       # [SL-295] check-changelog-drafts 有两行**只在成功路径上**、却必须显形的输出,
       # 这一圈默认只回显 [WARN],会把它们整段吞掉:
       #   · `[ALLOW] #<号> 放行 —— <理由>` —— 豁免不显形就等于没有豁免纪律(脚本头注口径);
-      #   · `[BASE] <base>@<sha> (<date>) —— N 条提交标题(落地位 K 个,最大 #M);块里 T 个待合并的号`
+      #   · `[BASE] <base>@<sha> (<date>) —— N 条提交标题、A 条 Landed-PRs 尾注(只在 HEAD 上的另有
+      #     B 条;落地位 K 个,最大 #M);块里 T 个待合并的号`,[SL-576] 起每条尾注另有一行同标记的明细
       #     (⚠ 这行格式是**手抄摘录** —— SL-319 改输出格式时它与
       #     `check-changelog-drafts.mjs` 头注那处一起漏了一轮,SL-326 才回扫补上,机器一次都没醒;
       #     但它**已有执行者**:[SL-327] 起由 check-gates-visibility 的 §⑤ 与真拼装逐片段对拍,

@@ -232,7 +232,10 @@ struct OutputState
 {
     std::uint32_t groupId = kOutputDefaultGroupId; // 1..8
     std::uint32_t captureEnabled = 0; // 采集开关(默认 off)
-    std::uint32_t outputEnabled = 1; // 输出开关(默认 on = 引擎权威)
+    // 输出开关(1 = 引擎权威)。这里的 1 只是值对象的缺省:解码时本字段恒从字节读(头部定长必备字段,
+    // 读不到即整块拒载),不拿它补缺席;新插实例的初值也不在这里 —— 见 `OutputProcessor.h` 的
+    // `outputEnabled_`([J169] 起为关)。
+    std::uint32_t outputEnabled = 1;
     std::uint32_t versionActive = 1; // 活动版本(1..2)
     std::uint32_t uiScale = 100; // percent
     std::string uiLanguage = "en";
