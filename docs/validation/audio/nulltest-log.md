@@ -1,7 +1,7 @@
 # null test 日志
 
 > 状态:演进中(只追加,不改旧记录)
-> 最后更新:2026-09-29(§1.2 的补偿口径按 J178① 定下;尚无记录)
+> 最后更新:2026-09-30(rc.1 第三包的 D2 / D1 两条记录,SL-581)
 > 来源:masterPlan 10 §4.1–§4.3;发版清单 D1 / D2 / D5
 
 每次 null test 的结果与素材指纹。`scripts/nulltest.ps1` 每跑一次,会把工具原始输出**追加到本文件末尾**(§3 之后);跑完再在 §2 汇总表补一行。
@@ -50,7 +50,61 @@
 
 | 日期 | 版本 / tag 提交 | DAW / 版本 | 模式 | 素材 | 宿主 pan law | 补偿(dB) | 样本偏移 | 残差峰值 L / R(dBFS) | 残差 RMS L / R(dBFS) | 判据 | 结论 | 原始记录 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-30 | `518ab466`(rc.1 第三个测试包,CI run 36653086798;不是 tag 提交) | Cubase 15 | B(engine vs follow,D2) | 用户自有多轨人声(不入库);24-bit PCM、48 kHz 立体声、1,401,962 帧(约 29.2 s);engine_C `b1a61736…` / follow_D `23a52437…` | 工程原设置(未回报;两份相同,模式 B 不补偿) | 0 | 0 | −72.5 / −75.6 | −99.0 / −102.7 | 逐声道 RMS < −40 dBFS | **过**(余量约 59 dB);前提见下 | 2026-09-30 00:57:04 -04:00 |
+| 2026-09-30 | 同上 | Cubase 15 | A(透明性,D1) | 同一组人声;32-bit float、48 kHz 立体声、1,401,962 帧;ref_A(完整、不装 SCVB)`4beea6d7…` / test_B(第三轮)`583af831…` | Equal Power | 0(`-PanLawDb 0`,J178①) | 0 | −168.6 / −168.6 | −192.1 / −192.1 | 偏移 0、峰值 < −120 dBFS | **过**(浮点舍入量级,非逐位相同);口径见下 | 2026-09-30 00:57:29 -04:00 |
+
+**2026-09-30 两条记录(rc.1 第三包)的说明**。两条由统筹用 `scripts/nulltest.ps1`(带 `-Align`)比对,wav 按角色名传入,完整 sha256 在 §3 的原始记录里。区间起止、buffer 与 Realtime Export 没有回报;两份文件帧数相同、样本偏移 0。
+
+- **D2**:
+  - 第二份文件用户命名为 `D2-engine_D`(清单要的名字是 `D2-follow_D`)。按清单第 5–6 步的角色记为 follow_D,即 03 输出关回「跟随宿主」后导出的那一份。清单要的两张截图没有附。旁证:两份不是逐位相同,而两份若都在写入自动化档下离线导出,预期逐位相同。
+  - 两份是 24-bit PCM,不是 §1.1 第 4 条要的 32-bit float。24-bit 的量化步长约 −138 dBFS,比判据低约 100 dB,不影响判定。
+- **D1**:
+  - **口径**:这次的中性状态是「输出开(写入自动化档)、无自动化」。§1.2 与清单 U-3 写的「输出开关 OFF(跟随宿主)」没有单独导出,本条不覆盖那一种状态。test 与不装 SCVB 的 ref 在浮点舍入量级一致,说明导出时没有任何分析结果或自动化在起作用。
+  - 宿主 Stereo Pan Law 为 Equal Power,按 J178① 填 `-PanLawDb 0`,不补偿。残差能到 −168.6 dBFS,也印证了宿主的居中增益与成品 Output 对 mono 轨的 1/√2 一致。
+  - 装 SCVB 的只有 13 条 mono 轨(各插 SCVB Input,VOX BUS 第一格插 SCVB Output)。两条立体声轨没插 SCVB Input,在这段里内容也很少:完整 ref 与不含立体声轨的纯 mono ref 只差 RMS −81.5 dBFS。所以本条不验立体声轨经 SCVB Input 的透明性,U-3 第 9 步「完整 · 装 SCVB」那一份没有导出。
+  - 只在 Cubase 上跑,Cubase 代替 10 §6.1 要求的 REAPER(J178②)。
+  - 同一天前两轮 D1 不成立,不记入本表。那两轮用的是同一份 test(第一轮导出,24-bit),它是在做过 D2 的工程里导出的,带着 D2 写入的逐段音量,残差峰值 −38.5 dBFS、RMS −54.5 dBFS,从第 0 帧起就超。用户删掉全部自动化后重导,就是上表这一条。
 
 ## 3. 原始记录
 
 以下由 `scripts/nulltest.ps1` 追加,每次一节(标题是时间戳),不要手改。
+
+## 2026-09-30 00:57:04 -04:00
+
+- ref: D2-engine_C.wav (sha256 b1a617368e66a82944ef42ee18ba0a124006f16247a8c11a97794b428af124e3)
+- test: D2-follow_D.wav (sha256 23a52437af6951bcf0792e68f7526496d8655d8ef2ebbc2cf92aeb77f37259ef)
+- 宿主 pan law: 0 dB(补偿 --gain-db 0;对齐: True)
+
+结果:
+    ref:              D2-engine_C.wav
+    test:             D2-follow_D.wav
+    channels:         2
+    sample_rate:      48000
+    frames:           1401962 (ref) / 1401962 (test)
+    frames_compared:  1401962
+    sample_offset:    0 (aligned)
+    gain_db:          0.000
+    residual_peak_db: merged -72.523, per-channel [-72.523, -75.626]
+    residual_rms_db:  merged -100.435, per-channel [-98.958, -102.690]
+    first_over_threshold (>= -120.000 dBFS): frame 570459 channel 0
+    bit_exact:        false
+
+## 2026-09-30 00:57:29 -04:00
+
+- ref: D1-full-ref_A.wav (sha256 4beea6d79f27445044b66aa17db936569bde8226ddb84c54351015f9ae59718b)
+- test: D1-test_B-r3.wav (sha256 583af831ac221a00995c58ae24ed6d8e0bb78db32c0184f03e1695b0f1ff2e00)
+- 宿主 pan law: 0 dB(补偿 --gain-db 0;对齐: True)
+
+结果:
+    ref:              D1-full-ref_A.wav
+    test:             D1-test_B-r3.wav
+    channels:         2
+    sample_rate:      48000
+    frames:           1401962 (ref) / 1401962 (test)
+    frames_compared:  1401962
+    sample_offset:    0 (aligned)
+    gain_db:          0.000
+    residual_peak_db: merged -168.577, per-channel [-168.577, -168.577]
+    residual_rms_db:  merged -192.073, per-channel [-192.073, -192.073]
+    first_over_threshold (>= -120.000 dBFS): 无
+    bit_exact:        false
