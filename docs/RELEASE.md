@@ -71,7 +71,7 @@ semver 语义(音频插件特化):
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。新的对比链接指向第 6 步才推的 tag,推之前 GitHub 回 404,CI 的死链检查会红 —— 同一个 PR 在 `.markdown-link-check.json` 里给这两个确切地址加一条临时放行,tag 推上去之后删掉。
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
-4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
+4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。v1 这一次按 J142(2026-09-28):维护者本机长期可用内存不够跑整套 `gates.ps1`,本地全量门禁由 PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿代替;CI 的 pluginval 带 `--skip-gui-tests`,GUI pluginval 那一半由出包前在本机的自测补(见发版验证清单 B6)。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
 6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
@@ -181,8 +181,8 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
 
-- **插件里的文档链接一律指向 `prod` 分支上的固定路径**(用户裁定 J149:`prod` 是稳定正式版分支,`dev` 是研发分支)。设置页「说明文档」按钮打开 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md`(中文界面)或 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md`(英文、法文界面);九条使用规则里 DAW 兼容表的地址是 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。这些地址**不随插件版本号变,也不 pin 到 tag** —— 此前「按插件版本号 pin 到同号 tag」的做法(SL-220 / #298)已由 J149 取代,不要改回去。代价照实写:旧版插件打开的是最新正式版的手册,不是它自己那一版的。
-- **rc 期间这些链接打开是 404,已接受(J163)。** `prod` 只跟正式版,首个正式版发布之前 `prod` 上没有这三个文件,所以 `v0.9.0-rc.N` 这批 rc 构建里的「说明文档」按钮与九条规则里的 DAW 兼容表地址都打不开。首个正式版发布、`prod` 前移之后,**同一批 rc 构建里的链接也随之恢复**(地址没变,变的是 `prod` 上的内容),插件不用更新。首个正式版之后再发的 rc,这些链接打开的是上一个正式版的手册。**首个正式版之前的每个 rc,发布说明都必须写明这一点**(模板「升级须知」里有对应一句),并在 [KNOWN_ISSUES](KNOWN_ISSUES.md) KI-7 登记。
+- **插件里的文档链接一律指向 `prod` 分支上的固定路径**(用户裁定 J149:`prod` 是稳定正式版分支,`dev` 是研发分支)。设置页「使用说明」一栏的「文档」按钮打开 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md`(中文界面)或 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md`(英文、法文界面);九条使用规则里 DAW 兼容表的地址是 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。这些地址**不随插件版本号变,也不 pin 到 tag** —— 此前「按插件版本号 pin 到同号 tag」的做法(SL-220 / #298)已由 J149 取代,不要改回去。代价照实写:旧版插件打开的是最新正式版的手册,不是它自己那一版的。
+- **rc 期间这些链接打开是 404,已接受(J163)。** `prod` 只跟正式版,首个正式版发布之前 `prod` 上没有这三个文件,所以 `v0.9.0-rc.N` 这批 rc 构建里设置页的「文档」按钮与九条规则里的 DAW 兼容表地址都打不开。首个正式版发布、`prod` 前移之后,**同一批 rc 构建里的链接也随之恢复**(地址没变,变的是 `prod` 上的内容),插件不用更新。首个正式版之后再发的 rc,这些链接打开的是上一个正式版的手册。**首个正式版之前的每个 rc,发布说明都必须写明这一点**(模板「升级须知」里有对应一句),并在 [KNOWN_ISSUES](KNOWN_ISSUES.md) KI-7 登记。
 - 地址写在 `web/output/tab-settings.js` 的 `docsUrl()` 与红字真源 `docs/USER_GUIDE.zh-CN.md#硬约束` 里(后者经 `scripts/gen-hard-rules.mjs` 生成到插件词条);`web-preview/tests/smoke-tab4-settings.mjs` 扫 `web/` 下的仓库 `blob/` 链接,指向 `prod` 以外的分支或 tag 即红。
 - **插件一旦发出去,里面的地址就改不了了。** 所以 `docs/USER_GUIDE.md`、`docs/USER_GUIDE.zh-CN.md`、`docs/DAW_COMPATIBILITY.md` 在 `prod` 上不要改名、不要挪位置 —— 改了,已经发出去的每一版插件里的这几个链接都会一起失效。
 - **发布说明(GitHub Release 正文)里的链接仍固定在本次的 tag 上**(见下方模板与模板后的说明):那是这一版自己的记录,不跟着 `prod` 走。
@@ -225,8 +225,14 @@ U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认
   <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,J114 批准,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
-- 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「说明文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是最新正式版的手册。
+- 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是最新正式版的手册。
 - **本版是预发布(rc):插件里的这些文档链接在 rc 期间打开是 404,正式版发布后恢复**,插件不用更新(`prod` 分支只跟正式版,首个正式版之前上面还没有这些文件)。在那之前请用本说明里的链接,或 zip 里 `INSTALL.txt` 的手册链接(同样固定在 `v{X.Y.Z}` 上)。
+
+## 如遇问题如何回退
+<!-- 每次都留。首个公开版本之前没有公开版本可回:第 2 步改成「装回你之前在用的版本(例如内部测试包)」,或只留第 1、3 步 -->
+1. 关掉 DAW,删除 `C:\Program Files\Common Files\VST3\` 下的 `SCVB Input.vst3`、`SCVB Output.vst3` 与 `SCVB Monitor.vst3` 三个文件夹;
+2. 到 [Releases 页](https://github.com/synchain-oss/scvb/releases) 下载上一版的 zip,核对 SHA-256 后照同样的步骤装回三个插件(三个一起换,不要混装);
+3. **工程兼容性**:用本版保存过的工程,拿到 state abi 更低的旧版本里打开会被拒载(见上「升级须知」)。回退前先确认手上有一份用旧版保存的工程副本;建议不要在旧版本里打开并保存用本版保存过的工程。
 
 ## 本次更新
 ### ⚠️ 契约变更
@@ -247,6 +253,8 @@ SHA-256(直接从 `package-summary.md` 复制,不要手抄):
     <zip 的哈希>
 
 系统要求:Windows 10 1809+ / WebView2 Evergreen Runtime(通常已随 Windows 预装)
+
+源码(GPL-3.0-or-later):本版对应的完整源码在 https://github.com/synchain-oss/scvb/tree/v{X.Y.Z}(Release 页下方 GitHub 自动附带的「Source code」压缩包是同一份),构建方法见 [README「从源码构建」](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/README.zh-CN.md#从源码构建)。
 
 <!-- 未签名时必填 -->
 > 本项目未做代码签名(U13),浏览器或 Windows 可能提示「未知发布者」。先核对 SHA-256;**解压前**右键 zip → 属性 → 常规 → 勾选「解除锁定」→ 确定(或 PowerShell `Unblock-File .\SCVB-v{X.Y.Z}-win64.zip`);SmartScreen 拦下时点「更多信息 → 仍要运行」(浏览器里选「保留」)。zip 里的 `INSTALL.txt` 有同样的中英文步骤,分步说明也见[用户手册 · 安装](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#安装)。你也可以自行从源码构建校验(见 [CONTRIBUTOR_ONBOARDING.md](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/CONTRIBUTOR_ONBOARDING.md))。

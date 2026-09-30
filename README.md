@@ -98,6 +98,19 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 See [CLAUDE.md](CLAUDE.md) §6 for the full toolchain list, and run `pwsh scripts/gates.ps1` for the local quality gates.
 
+## Known limitations
+
+These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md) describe what you will see, why, and how to work around it.
+
+- **Do not render a vocal track with SCVB Input on it by itself**: rendering one vocal track in place (Render in Place), freezing it (Freeze) or exporting it alone gives you a silent file, and choosing "replace the original audio" swaps your source recording for that silence. Export the vocal bus as a whole (KI-4).
+- **The DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
+- **One project using SCVB open at a time on the same computer**; if you really need two open, give them different groups (KI-5).
+- **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then come back with their raw, unbalanced image (KI-6).
+- **Balance estimates are off in unison / doubled passages**: when several tracks sing the same line with very similar sound, they usually add up louder than the analysis expects (KI-9).
+- **SCVB Output reports no latency to the DAW**; alignment is done by timeline addressing, so do not try to "fix" it with latency compensation (PDC) (hard rule 8).
+- **Input only adjusts its own track's level, never its pan**; panning is handled entirely by the Output.
+- **Every track takes part in automatic pan by default, stereo tracks included**; to keep a stereo track's own image, switch off "participate in auto pan" for that track on the Output's Tracks page (hard rule 7).
+
 ## Documentation
 
 - [User Guide](docs/USER_GUIDE.md) — installation, workflow, troubleshooting, FAQ

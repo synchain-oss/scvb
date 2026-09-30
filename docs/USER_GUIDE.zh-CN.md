@@ -263,6 +263,7 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 | **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某条人声轨没声音** | 该轨 Input 连上了健康 Output,但 Output 侧没拿到它的数据(channel 没选 / 组选错 / channel 冲突) | 检查该 Input 的 channel 与组;看 Output 轨道页该轨是否在线 |
 | **装了 Input 就整轨没声音** | 不应该发生 | 检测不到健康 Output 时 Input 自动直通(硬约束 3)。若该轨确实没有声音,收集设置页"复制诊断信息"的输出并提 issue |
+| **在 DAW 里静音、独奏人声轨或拉它的推子,SCVB 输出里这条人声不变** | 设计如此:Input 在插件链最后一格(推子之前)就把这条轨的声音交给了 Output,DAW 的静音、独奏与推子作用在那之后 | 在 SCVB 里操作:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关;要改音量,在 SCVB 里改。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-8 |
 | **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel(打开工程时通道已被占用也会提示) | 改其中一个的 channel id,或把它换到别的组。占用的那个释放通道(删轨或改号)后,等着的那个约一秒内会自己接上 |
 | **"组 X 已有主 Output,本实例只读观察"** | 同组已经有一个生效的 Output | 一个组只能有一个生效 Output(硬约束 6)。删掉多余的那个,或把它换到别的组 |
 | **点通道卡 / 切组后弹出"未能连接:插件间通信用的内存段打不开"** | Input 没能打开或建立它与 Output 通信用的共享内存段(例如同名的段是别的 SCVB 版本建的) | 再点一次;仍不行就重启宿主,并确认同一台机器上没有开着装了其他版本 SCVB 的 DAW。换通道时出现的话,本轨仍留在原来的通道上照常工作 |
@@ -300,4 +301,6 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 - Output 不报告额外延迟(设计如此,不是限制);
 - run 切换时旧 run 尾部 ≤40ms 可能漏采,补播即复原;
 - Input 侧只做就地 gain,不做就地 pan(否则会和 Output 的 dual-pan 双重处理);
+- **DAW 的静音(Mute)、独奏(Solo)与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关。详见 `docs/KNOWN_ISSUES.md` 的 KI-8;
+- **波形页上建选区、选段与改分段(拖动、分割或删除段边界)暂时只能用鼠标或触控板**,计划在 v1.0.0 之前补上键盘做法。详见 `docs/KNOWN_ISSUES.md` 的 KI-10;
 - v2 方向:精确模式 VAD(Silero)、更多平台。
