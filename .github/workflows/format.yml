@@ -2,7 +2,10 @@ name: Format
 
 on:
   pull_request:
-    branches: [dev]
+    # [SL-277/J96,2026-09-02] CI 三档里的**轻档**:子 PR 不跑 build-vst3,但 format 的三个 job
+    # (clang-format / web-smoke / docs-truth)全部保留 —— 它们都是 ubuntu 上的分钟级检查,
+    # 省下的那 20 分钟是 Windows 编译,不是这里。三档定义见 build-vst3.yml 头注与 CLAUDE.md §4。
+    branches: [dev, "feature/**"]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [dev, "feature/**"]
@@ -16,7 +19,7 @@ jobs:
     name: clang-format # required check context
     runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned clang-format
         # 用 pip 版而非 apt 版:apt 的版本随 runner 镜像漂移,同一份代码在本地/CI 会格式化出不同结果。
         # 版本号必须与 scripts/gates.ps1 和 .clang-format 头注释里写的一致。
@@ -27,5 +30,446 @@ jobs:
           test -n "$files" || { echo "::error::no C++ sources found"; exit 1; }
           clang-format --dry-run --Werror --style=file $files
       - name: Check web assets formatting (prettier)
-        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore
-        run: npx --yes prettier@3 --check .
+        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore。
+        # 版本必须钉死到补丁号,且与 gates.ps1 Gate 3、scripts/format.ps1(配对写入器)
+        # **三处同步改**:`@3` 是浮动 major,本地 gates 与 CI 会在不同
+        # 时间各自解析出不同的 prettier,于是同一份代码「本地绿、CI 红」而没有任何东西变过。
+        run: npx --yes prettier@3.9.6 --check .
+
+  web-smoke:
+    name: web-smoke # required check context
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
+    # 与 clang-format **平行**而非塞进同一 job:纯 web 的 PR 不该被 C++ 门禁的
+    # 排队时间挡住;反过来 C++ 的 PR 也该照跑这套 —— web/ 是被 C++ 侧 WebView
+    # 加载的真源。与 scripts/gates.ps1 的 Gate 3e 同口径。
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # 测试用到 node 内建 fetch 与全局 WebSocket;与 web-preview/README
+          # 的「node ≥ 22」口径一致。
+          node-version: "22"
+      - name: Run web smokes
+        # web-preview/tests/*.mjs 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到
+        # 端 + 源码级纪律断言),T31–T36 六张卡的回归保护全压在上面。接入前没有
+        # 任何 workflow 跑它们 —— 纯 web 的 PR 即使把八套全跑红,CI 也是全绿的。
+        # 零 npm 依赖:不装包,直接 node 跑。不用 `|| exit 1` 提前退出,好让一次 CI
+        # 就看全所有红项。
+        #
+        # 退出码约定(T46 起,[SL-297] 增第三档;与 scripts/gates.ps1 的 Gate 3e 同口径):
+        #   0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖(本机没有浏览器)**;
+        #   **3 = 浏览器在,但这一次没起来 / 没连上**(CDP 端口没开出来 / spawn 失败)。
+        #   2 与 3 都不判红(见下),区别只在**摘要里怎么显形** —— 压成同一个码时,
+        #   一台装着浏览器的机器上一次瞬时超时会让整套判据无声消失而摘要照写全绿。
+        #   (会回 2 的是那一族**页面级**冒烟 —— 文件名带 `-page` 的那几套,都要一个无头
+        #   Chrome/Edge。**这里不列名单也不写套数**:执行面按 glob 自动收,加一套不必改这行,
+        #   而抄在注释里的名单/计数没有任何东西会让它变红([SL-370] 加第七套时它已经漏了。
+        #   要当下的名单就 `ls web-preview/tests/smoke-*-page.mjs`)。
+        # 2 **与 3** 都记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
+        # 预装 Chrome,判红会把仓库里**每一个** PR 卡住,而它本来只是少跑一套。
+        # 也绝不静默 —— warning 进 checks 摘要,长期没跑看得见。
+        run: |
+          shopt -s nullglob
+          files=(web-preview/tests/smoke-*.mjs)
+          test ${#files[@]} -gt 0 || { echo "::error::no web smokes found"; exit 1; }
+          fail=0
+          skipped=0
+          flaky=0
+          for f in "${files[@]}"; do
+            echo "--- $f"
+            node "$f"; rc=$?
+            if [ $rc -eq 2 ]; then
+              skipped=$((skipped+1))
+              echo "::warning file=$f::skipped — 缺可选外部依赖(无头浏览器),本套未跑"
+            elif [ $rc -eq 3 ]; then
+              # [SL-297] 浏览器在、这一次没跑成。**同样不判红**(理由同下:required check
+              # 判红会卡住每一个 PR),但措辞必须与 rc=2 分开 —— runner 上装着 Chrome 时
+              # 报「缺可选外部依赖」是假话,而且会让人以为不用管。
+              flaky=$((flaky+1))
+              echo "::warning file=$f::FLAKY — 浏览器在但这一次没起来/没连上,本套**没跑成**(不是缺依赖);重跑通常即可"
+            elif [ $rc -ne 0 ]; then
+              echo "::error file=$f::web smoke failed"; fail=1
+            fi
+          done
+          # [SL-297] **降级要进摘要,不能只有逐文件 annotation**:与 gates 3e 的汇总标签
+          # 对齐。逐文件 annotation 散在日志里,而看 checks 的人看的是这一屏 ——
+          # 「少跑了几套」和「全跑过了」不能长得一样(这正是本卡要治的形态)。
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "web-smoke:${#files[@]} 套,跳过(缺浏览器)$skipped,**没跑成(浏览器在但没连上)$flaky**" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          exit $fail
+
+      - name: Linux 侧残留 Chrome 计数(只打印,不判负)
+        # [SL-311] `scripts/gates.ps1` 的残留判据只在 Windows 上跑,而 SL-305 实测:
+        # **Windows 上 node 一退就把它 spawn 的 Chrome 收走**,连把某套的 `chrome.kill()`
+        # 全注释掉都留不下东西 —— 那条判据在本机**做不出**「teardown 漏收」的形态。
+        # POSIX 不给这个保证(父进程退出不会带走子进程),而这个 job 正好跑在 ubuntu。
+        #
+        # 所以这一步是**观测,不是门禁**:每次 CI 免费拿一次 Linux 侧真实数据。
+        # 哪天不是 0 再立卡加固 —— 在拿到数据之前加超时兜底代码,就是给一个复现不出的
+        # 形态写没被验证过的收尾逻辑。
+        #
+        # **套集合与 `Test-ScvbPageSuite` 同构**(复审【重要】:上一版只用 `*-page.mjs`
+        # 一条 glob,而那个函数的头注明写着「只认单一写法会被静默绕过 —— 那正是危险的
+        # 那一侧」,这一步恰好只认了那单一写法)。四条并集逐条照搬:
+        #   文件名 `-page.mjs` / `function cdpConnect` / `--headless` / `.on|.once` 挂 error。
+        # ⚠ error 那条的引号**两种都要认**:gates 侧是 `["']error`,本仓这 6 套现在**全是
+        # 双引号**(`chrome.on("error"`)。上一版这里只写了单引号,于是第四条判据一次也
+        # 没命中过 —— 它今天「碰巧正确」只是因为那 6 套的文件名都是 `-page.mjs`,
+        # 第一条 glob 兜住了。这正是 `Test-ScvbPageSuite` 头注点名的那个形态:
+        # 「只认单一写法会被 prettier 换引号静默绕过」。
+        # 前缀同样不写死,从各套自己的 `mkdtempSync(join(tmpdir(), "scvb-…-"))` 字面量读;
+        # 并且**照抄 gates 那边的自检**:判出来的套里有解析不出前缀的,出声。
+        if: always() # 冒烟红了才更该看有没有残留,别让 `exit $fail` 把这一步跳过去
+        run: |
+          set -u
+          shopt -s nullglob
+          page=()
+          for f in web-preview/tests/smoke-*.mjs; do
+            case "$f" in
+              *-page.mjs) page+=("$f"); continue ;;
+            esac
+            if grep -qE 'function cdpConnect|--headless|[.](on|once)[(][[:space:]]*["'"'"']error' "$f"; then
+              page+=("$f")
+            fi
+          done
+          if [ ${#page[@]} -eq 0 ]; then
+            echo "::warning::按四条并集判据没判出任何页面级套 —— 本步无从归属(应与 gates 的 Test-ScvbPageSuite 同构)"
+            exit 0
+          fi
+          echo "页面级套(四条并集判据):${#page[@]} 套"
+          prefixes=""
+          missing=""
+          for f in "${page[@]}"; do
+            pf=$(grep -ho '"scvb-[A-Za-z0-9_-]*-"' "$f" | tr -d '"' | sort -u)
+            if [ -z "$pf" ]; then
+              missing="$missing $f"
+            else
+              prefixes="$prefixes $pf"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::这几套解析不出 scvb- 前缀,归属层对它们失效:$missing"
+          fi
+          prefixes=$(echo $prefixes | tr ' ' '\n' | sort -u)
+          if [ -z "$prefixes" ]; then
+            echo "::warning::一个前缀都没解析出来,本步无从归属"
+            exit 0
+          fi
+          pat=$(printf '%s|' $prefixes | sed 's/|$//')
+          # 先把进程快照取下来再 grep:直接 `ps | grep` 会把 grep 自己也扫进去,
+          # 那是「扫描器扫到自己」的经典假阳性。
+          snap=$(ps -eo pid=,args= || true)
+          hits=$(echo "$snap" | grep -E -- "--user-data-dir=[^ ]*(${pat})" || true)
+          n=$(echo "$hits" | grep -c . || true)
+          echo "Linux 侧:归属到本仓页面级冒烟的残留 chrome 进程数 = $n"
+          if [ "$n" -gt 0 ]; then
+            echo "$hits" | head -20
+            echo "::warning::ubuntu runner 上 web-smoke 跑完仍有 $n 个归属到本仓冒烟的 chrome 进程 —— 只观测不判负,数字持续非 0 请立卡"
+          fi
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "web-smoke 残留(Linux 侧,只观测):$n 个 chrome 进程,页面级套 ${#page[@]}" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  docs-truth:
+    name: docs-truth # required check context
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
+    # 九条硬约束红字有唯一真源,手抄必漂,而既有的那几道机检只查得出数量与标题、查不出条目
+    # **文本**漂移 —— 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地
+    # gates。[SL-338] 真源是哪个文件、落地面有几处、既有机检是哪几道,详见
+    # `scripts/gen-hard-rules.mjs` 的头注(离机制最近:被描述的那几道机检有一部分就实现在
+    # 它自己文件里);这里不抄第二份 —— 上一版这段与本地 gates 里那段、以及那个脚本的头注三处
+    # 近乎逐字。**不写「只写在那里」**:`CLAUDE.md` 的法条里也写着同一份事实,而排他性断言
+    # 是最强的一类复述,任何第四份出现它就变假(#228 复审)。
+    # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径,
+    # 其后 IPC 对拍 = Gate 3g、字体覆盖 = Gate 3h,各与本地同一条命令;
+    # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这个号上线没有」。
+          # 默认的 fetch-depth: 1 只给一条提交 ⇒ 已上线集合近乎为空 ⇒ 那道门禁永远绿。
+          # 脚本自己在浅克隆上 fail-closed 退 1(不静默放行),所以这里必须给全历史。
+          # 本仓历史只有两百来条提交,全拉的代价在这个 job 里可以忽略。
+          #
+          # ⚠ 这一行还有**第二个**作用,而且不写出来没人猜得到:它决定 `origin/<base_ref>`
+          # 这个 remote-tracking ref **存不存在**。actions/checkout 只有在 depth=0 时才用
+          # `+refs/heads/*:refs/remotes/origin/*`;给任何正数(含 50)时,PR 事件只拉
+          # `refs/remotes/pull/<n>/merge`,仓里**根本不会有** `refs/remotes/origin/feature/v1`,
+          # 下面那步的 SCVB_CHANGELOG_BASE 会直接解析不出来。也就是说这一行不是「拉深一点」,
+          # 是「**拉到别的分支**」。嫌慢的人最可能改成 `fetch-depth: 50` —— 那会先撞浅克隆那道
+          # 判据(红);要是有人把浅克隆判据也一起放宽,就会掉进这第二个坑(#197 复审【建议】)。
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        # 只为最后那步字体覆盖对拍。不用 runner 自带的 python3(compliance.yml 那种用法):
+        # 自带版本随镜像漂,而本 job 是 required check —— 镜像换代时「同一份代码昨天绿今天红」
+        # 的排查成本远高于多这一步。版本钉到次版本号,与 pip 锁版本一起构成可复现输入。
+        with:
+          python-version: "3.13"
+      - name: Hard rules generator (--check)
+        run: node scripts/gen-hard-rules.mjs --check
+      - name: i18n dictionary (zh/en/fr key parity + guide.rule1..9)
+        # guide.rule1..9 已由 gen-hard-rules 落地,过渡开关 --skip-guide-rules 到此为止(12 §3.4)。
+        run: node scripts/check-i18n.mjs
+      - name: Bilingual doc structure parity
+        shell: pwsh
+        run: ./scripts/check-readme-parity.ps1
+      - name: IPC contract doc parity (doc <-> golden <-> headers)
+        # 与 scripts/gates.ps1 的 Gate 3g **同一条命令**。docs/IPC_CONTRACT.md 是冻结契约,
+        # 而它写的 offset / size / align / 常量 / 段名 / 落点算术此前只有人眼在看 —— #75
+        # 那轮就是靠人审来回三次才收口,而「16..76」错成「16..80」评审 100% 看不出来。
+        # 与 gen-hard-rules 同档放进 docs-truth:两者都是「文档 ↔ 真源」的逐字节对拍,
+        # 只挂在本地 gates 上等于没有执行者。零依赖(仓内脚本 + 本 job 已有的 node),
+        # 无 secrets ⇒ fork PR 也跑得动。
+        # 不加 --strict:文档「未标注」按 WARN 走(判级理由见脚本头注),等契约 §5
+        # 补齐标注后再把它收紧成红线。
+        run: node scripts/check-ipc-doc-parity.mjs
+      - name: Bridge parity (contract manifest <-> mock <-> C++ 常量表 <-> 已注册 handler)
+        # [SL-258] **此前这个脚本没有任何执行者** —— 既不在 CI、也不在 gates、也不在
+        # package.json。于是 [SL-256] 给它加的「已注册 handler ↔ manifest」断言,以及本卡
+        # 扩到 input/monitor 三侧的版本,都只有人手动 `node` 才会红。
+        # 同一族的洞因此栽了两次(`exportSuggestions` 与 `setGuideSeen`:契约齐全、常量在、
+        # web 真调用,唯独没注册 handler),**即便门禁当时已经写好也照样栽**。
+        # 判级理由与上面 IPC 契约对拍那条逐字同款:「只挂在本地 gates 上等于没有执行者」——
+        # 而这一条连本地 gates 都没挂上。零依赖(仓内脚本 + 本 job 已有的 node),无 secrets。
+        run: node scripts/check-bridge-parity.mjs
+      - name: Curve parity (C++ LUT <-> JS 参考实现)
+        # 同族幽灵门禁,一并接上执行者(本地实跑 exit=0,最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
+        run: node scripts/check-curve-parity.mjs
+      - name: Design box parity (三侧窗口尺寸与缩放档位)
+        # 同上(本地实跑 exit=0:output 1180x780 / input 460x560 / monitor 960x720)。
+        run: node scripts/check-design-box.mjs
+      - name: Smoke hygiene (页面级冒烟的 CDP 超时与收尾纪律)
+        # [SL-287] 这一族有两个只在出事时才显形、而且不会让任何现有用例变红的形态:
+        # CDP 调用没有截止时间(SL-274 实测挂过 75 分钟零输出;那次赶上 [SL-277] 拆锁前的
+        # 形态所以还堵住了整批 —— [SL-301] 之后本地 gates 里只有 3e 的页面级那一趟持锁,
+        # 何况这里是 CI,压根没有那把锁),
+        # 以及收尾只写在 happy path(本机已攒下近千个 scvb-* 残留目录)。
+        # 两条都最容易在「照着旧模板复制一套新冒烟」时被漏掉,所以钉成机检而不是靠人记得。
+        # 与 scripts/gates.ps1 Gate 3i 跑**逐字同一条命令**。零依赖、不联网、无 secrets。
+        run: node scripts/check-smoke-hygiene.mjs
+      - name: Native path filter teeth (build-vst3.yml 的 NATIVE_RE)
+        # [SL-283] `detect-native` 的 NATIVE_RE 决定「子 PR 碰没碰 native 路径 ⇒ 要不要在
+        # CI 上编一遍」。它被改坏的失效形态是**静默的**:动了 C++ 的子 PR 不再编译,而 CI
+        # 照样全绿 —— 正是 [SL-283] 要补的那个洞原样复发,没有别的门禁会看见。
+        # 所以判据本身也要有判据:正反例 + **删除式验证**(逐个删掉正则里的一个分支,都必须
+        # 有正例变红 —— 防的是「写错到永不匹配的分支」也能让正反例全绿)。
+        # 与本 job 里其它「生成物 ↔ 真源」对拍同档:正则从 build-vst3.yml 里读出来,不手抄,
+        # 手抄两边会各自漂移,而漂移方向恰好是「测试还绿着,CI 已经不编了」。
+        # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
+        run: node scripts/check-native-paths.mjs
+      - name: Actions pinned to 40-hex commit SHA (CLAUDE.md §0 安全铁律第 3 条)
+        # [SL-538] 铁律第 3 条此前没有机检:compliance.yml 与 release.yml 的 `actions/checkout@v4`
+        # 就这样一直留着,直到有人人工翻到。这里逐个取 workflow 与 `.github/actions/` 下复合 action
+        # 里 `uses:` 后面的值,分两类判:
+        # 本地引用只放行 `./.github/actions/` 与 `./.github/workflows/` 下的(被指向的文件都在
+        # 本步扫描集里;路径含 `..` 不放行),其余必须是 `<ref>@<40 位小写十六进制>`。
+        # 指向别处的 `./…` 判红:那份 action.yml 不在扫描集里,放行就等于不查。
+        # 不查 `# vX.Y.Z` 注释(它是给人和 dependabot 看的,钉住执行内容的是 SHA)。
+        # 形态上宁红勿漏:加引号、值写在下一行、`docker://` 这类判据没见过的写法一律判红,
+        # 真要用再来改这里;`run:` 块里不以 `#` 开头的行出现这个键名,同样按引用判。
+        # 零 `uses:` 也判红 —— 那说明 glob 或匹配本身坏了,不是「全都合规」。
+        # 零依赖(bash + awk),不联网、无 secrets。
+        run: |
+          shopt -s nullglob globstar
+          files=(.github/workflows/*.yml .github/workflows/*.yaml)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow files under .github/workflows"; exit 1; }
+          # 放行 `./.github/actions/…` 的前提是那里的复合 action 自己也被查;目录不存在时 nullglob 给空
+          files+=(.github/actions/**/action.yml .github/actions/**/action.yaml)
+          # 键名拼出来而不写字面量:本文件也在被扫的集合里,这段脚本自己若含那个字面量就会扫到自己
+          awk -v key="use""s:" '
+            /^[[:space:]]*#/ { next }
+            $0 ~ (key "[[:space:]]*$") { print FILENAME ":" FNR ": value not on the same line as the key"; n++; bad++; next }
+            {
+              s = $0
+              while (match(s, key "[[:space:]]*[^[:space:]]+")) {
+                adv = RSTART + RLENGTH
+                v = substr(s, RSTART + length(key), RLENGTH - length(key)); sub(/^[[:space:]]*/, "", v); n++
+                if (v ~ /^\./) {
+                  # 本地引用先单独判:它没有 SHA 可钉,不能落进下面的 SHA 判据(`./x@<40 hex>` 会被放行)
+                  if (v !~ /^\.\/\.github\/(actions|workflows)\// || v ~ /\.\./) { print FILENAME ":" FNR ": local ref outside ./.github/actions or ./.github/workflows: " v; bad++ }
+                } else {
+                  at = index(v, "@"); sha = substr(v, at + 1)
+                  if (at == 0 || length(sha) != 40 || sha ~ /[^0-9a-f]/) { print FILENAME ":" FNR ": not pinned to a 40-hex SHA: " v; bad++ }
+                }
+                s = substr(s, adv)
+              }
+            }
+            END {
+              print "checked " (n + 0) " action refs, " (bad + 0) " rejected"
+              if (n == 0) { print "::error::no action refs found - the guard itself is broken"; exit 1 }
+              if (bad > 0) { print "::error::remote action refs must be pinned to a 40-hex commit SHA (CLAUDE.md section 0, rule 3); local refs must live under ./.github/actions or ./.github/workflows"; exit 1 }
+            }
+          ' "${files[@]}"
+      - name: Strip-comments gate self-test (剥注释的扫描器 = 共用判据面)
+        # [SL-330b] `lib/strip-comments.mjs` 是下面几条判据**共用的判据面**:剥多了
+        # (把串里的东西当注释删掉)判据无声缩水,剥少了(注释冒充代码)判据变哑弹 ——
+        # 两个方向在实跑里都长得像「全绿」。它是库不是门禁,只有 --self-test 一个入口。
+        run: node scripts/lib/strip-comments.mjs --self-test
+      - name: Check gates degradation visibility
+        # [SL-297] 断言 gates.ps1 的 Gate 3e 里 rc=3(浏览器在但没连上)有独立计数
+        # **且计数接进了汇总标签**。与本地 gate 3i 跑同一条命令 —— 本仓的纪律是
+        # 「只挂本地等于没有执行者」,反过来同样成立。
+        run: node scripts/check-gates-visibility.mjs
+      - name: Preview messages gate self-test (失败文案 ⇄ 排障表)
+        # [SL-335] 先自测再实跑,口径同本 job 里其它几条:实跑绿有两种可能 ——「文案真的
+        # 都在表里」和「判据被改坏了」。自测全部用拼装夹具,把后一种单独照出来。
+        run: node scripts/check-preview-messages.mjs --self-test
+      - name: Preview messages (shot.mjs 失败文案必须能在 PREVIEW-GUIDE §5 查到)
+        # [SL-335] `shot.mjs` 没有机器调用方,#194 因此立过「文档是这条约定唯一的出口」——
+        # 而人的用法是**拿报错原文去 §5 排障表里查**。这一族(改了实现没改出口)在 #220
+        # 一张卡里复发三次(新增形态 / 改判据前提 / 改报错字符串),三次都靠人眼发现,
+        # 所以把它堵在机器上。与本地 gate 3i 跑同一条命令。
+        run: node scripts/check-preview-messages.mjs
+      - name: Source encoding gate self-test (printf 族字面量必须 ASCII)
+        # [SL-325] 先自测再实跑,口径同下面的 changelog drafts:实跑绿有两种可能 ——
+        # 「真没有中文运行期文案」和「判据被改坏了」。自测拿 #204 / #206 两次事故的**真实形态**
+        # (跨行相邻窄字面量拼接的 `fprintf`)做删除式,把后一种单独照出来。
+        run: node scripts/check-source-encoding.mjs --self-test
+      - name: Source encoding (printf 族字面量必须 ASCII)
+        # [SL-325] 这一条治的缺陷**在 CI 上是隐形的**:中文窄字面量触发的 MSVC `C4819`
+        # 只在中文 Windows(CP936)上报,runner 零命中。所以这一步不是「顺手也在 CI 跑一遍」,
+        # 而是**唯一**能在合并前拦住它的地方 —— 本地 gates gate 5 确实会红,但那要等有人在
+        # 中文机器上跑;PR 作者未必是那个人(#204 就是这么合进去的,红的是别人的 gate 5)。
+        run: node scripts/check-source-encoding.mjs
+      - name: Gates guards gate self-test (外部命令调用点必须有存在性守卫)
+        # [SL-331] 先自测再实扫,口径与上面两条一致:实扫绿有两种可能 ——「gates.ps1 里真的
+        # 每处都有守卫」和「判据被改坏了」。自测的夹具全部拼装、喂给生产路径同一个函数,
+        # 把后一种单独照出来。**不在这里写格数** —— 脚本每次运行自己会打(手抄的数漂过三次,
+        # 而抄进 yml 之后连本地 gates 都照不出来)。
+        # 这一步跑在 **ubuntu** 上:被检文件路径用 `/`(带反斜杠在 Linux 上是字面文件名),
+        # 而「谁是外部命令」由 `Get-Command` 现算 —— 解析类型随平台变(Linux 上 pwsh 不定义
+        # `ls`/`cat` 这些别名),但两个方向都是 fail-closed,判据面只会变宽不会变窄。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-guards.ps1 -SelfTest
+      - name: Gates guards (外部命令调用点必须有存在性守卫)
+        # [SL-331] **必须挂在这里,只挂本地 gates 3i 等于没有执行者。** 子 PR(base=`feature/**`)
+        # 在 CI 上只有 format(含本 job)/ compliance / review bot —— 只挂 gate 3i 的话,
+        # 「谁把 gates.ps1 的某个守卫删了」这件事在 PR 上**没有任何机器看得见**,还得指望
+        # 有人跑本地 gates,而本判据的立论正是「靠人不可靠」。那样它自己就成了本仓
+        # 「只挂本地等于没有执行者」的下一个例子(gate 3g / 3i 那一族都为这条栽过)。
+        # 显式传 `-Path`:与不传等价(脚本按 Resolve-Path 后的全路径判是不是默认目标),
+        # 写出来是为了让读的人一眼看见被检对象是谁。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-guards.ps1 -Path scripts/gates.ps1
+      - name: Gates visibility PS-side gate self-test (计数必须接进汇总标签)
+        # [SL-330c] 与上面那对同款(先自测再实扫、各自独立一步)。这一族此前在
+        # `check-gates-visibility.mjs` 里用文本级正则判,四层补丁都在逼近同一个**语法**问题;
+        # 现在交给 PowerShell 自己的语法分析器。**不在这里写格数** —— 脚本每次运行自己会打。
+        # 自测的夹具全部拼装、喂给生产路径同一个函数,把「判据被改坏了」单独照出来。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-visibility.ps1 -SelfTest
+      - name: Gates visibility PS-side (计数必须接进汇总标签)
+        # [SL-330c] 同一条纪律:只挂本地 gate 3i 等于没有执行者。这一步与本 job 里
+        # `check-gates-visibility.mjs` 那一步**合起来**才守住整条链 —— 分支与计数器的存在性
+        # 在那个 `.mjs`,「计数拼进标签」「口径一处定义 + 实跑正反例」「匹配一律大小写敏感」
+        # 三族在这个 `.ps1`。少跑一个就等于少守一半。
+        # 显式传 `-Path`,理由同上面那条:让读的人一眼看见被检对象是谁。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-visibility.ps1 -Path scripts/gates.ps1
+      - name: Changelog drafts gate self-test
+        # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
+        # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
+        # (压缩写法 `SL-204/205/207`:朴素模式必须漏掉 205/207,展开式必须抓到),
+        # 把后一种可能单独照出来。
+        # ⚠ 这一步**也要**透传 base:自测最后一组用的是**真 CHANGELOG + 真提交标题**
+        # (「从未合并的 #83 必须恒绿」那条),同样会走「解析不出 base ref ⇒ 判负」。
+        # 不给的话它会退回脚本里写死的 `origin/feature/v1` —— 于是同一个 job 里两步量的是
+        # 两个 base,而且等 v1 收口、该分支被删,这一步会对每个 PR 硬红在 required check 上
+        # (#197 复审第 3 轮【重要】:第 1 轮那条建议原先只落实到了两步中的一步)。
+        env:
+          SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
+        run: node scripts/check-changelog-drafts.mjs --self-test
+      - name: Changelog drafts not stranded (合了就得把预写条目搬进正文)
+        # [SL-295] `CHANGELOG.md` 末尾注释块里的「合并时把自己那条搬上去」此前**没有执行者**,
+        # 于是攒下 24 条早已上线却还留在注释里的条目。注释块渲染不出来,发版清单第 1 步
+        # 「每条带 PR 号」查的是正文 —— 没有任何既有门禁看得见这一族。
+        # 本步要**全历史**(见本 job checkout 的 fetch-depth: 0):它按 base 分支的提交标题
+        # 判「这张卡上线没有」,浅克隆会让已上线集合近乎为空 ⇒ 假绿;脚本自己 fail-closed。
+        # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
+        # 与 scripts/gates.ps1 的 Gate 3i 跑**同一条命令**(自测那步同理),纪律同该 gate 头注:
+        # 只挂 CI 不挂本地,改判据的人本地全绿、推上去才红;反过来也一样。
+        # base 从事件里取,不写死分支名:本 job 也挂 `pull_request → dev` 与
+        # `push → dev / feature/**`,而把 `origin/feature/v1` 写进判据的话,等 v1 收口、
+        # 该分支被删,所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
+        # `base_ref` 只在 pull_request 事件上有值,push 事件回落 `ref_name`(即被推的分支)。
+        env:
+          SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
+          # [SL-316] 本 PR 自己的号也透传:正文侧要求每条 (#N) 都在主线落过地,而搬运规矩③
+          # 要求作者在合并**前**就把条目写成 (#<本 PR 号>) —— 那一刻它当然还没落地。
+          # [SL-319] 这段原先写的是「不透传的话,每个按规矩搬条目的 PR 都会被 required check
+          # 硬红」——**那是第一版的行为,现在不成立**:#203 第 3 轮之后,脚本对**大于当前最大
+          # 落地号**的号一律只打 [WARN] 不判红,而本 PR 号必然大于任何已落地号。
+          # 所以透传买到的**不是「红变绿」,是精度**:
+          #   · 有它   ⇒ 逐字精确放过本 PR 号,别的未落地号照旧 WARN;
+          #   · 没有它 ⇒ 回落到「> 最大落地号」这个粗判据,本 PR 号与同批交叉引用一起 WARN。
+          # 两种都不判红,差的只是输出噪声与判据精度。push 事件上没有 pull_request 对象、
+          # 取到空串,走的就是后一种 —— 与本地跑 gates 时同形,两边同判。
+          SCVB_CHANGELOG_SELF_PR: ${{ github.event.pull_request.number }}
+        run: node scripts/check-changelog-drafts.mjs
+      - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
+        # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
+        # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:
+        # 子集自 #32 后没重跑,242 个所需字符没有字形(含「卡箍」这种正经词条用字)一路合进
+        # feature/v1,八道门禁一道都没看见,因为当时根本没有一道门禁在看字体。
+        # 与 gen-hard-rules / IPC 对拍同档放进 docs-truth:三者都是「生成物 ↔ 真源」的逐字对拍,
+        # 只挂在本地 gates 上等于没有执行者(#75 与本卡各证明了一次)。
+        # 不联网(只读仓内 woff2 与 web/ 源码)、无 secrets ⇒ fork PR 也跑得动。
+        # pip 锁到补丁号:fontTools 的子集/cmap 行为随版本变,浮动版本会让「同一份字体
+        # 昨天绿今天红」而中间什么都没改 —— 与 prettier@3.9.6 钉死是同一条纪律。
+        run: |
+          python -m pip install --disable-pip-version-check fonttools==4.60.1 Brotli==1.2.0
+          python scripts/check-font-coverage.py
+      - name: Dead link check (markdown-link-check)
+        # .markdown-link-check.json 此前是一份**没有执行者**的配置:全仓没有 workflow
+        # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
+        # 排除项:docs/constitution 与 docs/design 是字节级只读归档(改一个字节就破坏
+        # sha256 同步/设计稿比对),third_party 是 vendored 上游。
+        #
+        # [SL-441] ⚠ 逐文件调用,不把整份文件列表一次性传给 CLI —— `markdown-link-check`
+        # 的 CLI 一次性收到多个文件参数时,遇到**第一个**含死链的文件就整体退出,
+        # **不会继续检查后面的文件**;不报错、退出码非零,读起来跟"认真查完只有这
+        # 一条"一模一样,与本仓「SKIP 会吞掉判据」是同一族陷阱。SL-73 把两条私有期
+        # 豁免删掉后,这条 CI 的全部意义就是"让全仓的死链暴露"——传全量参数会让它
+        # 只暴露排在最前面的那一条,后面 89 个文件的检查静默消失,整改的收益被这一
+        # 步截掉一大截。本地复现时踩过一次,发现即改。
+        #
+        # [复审【建议】] 「失败要有 file= 标注」采纳:末尾那句 `::error::` 原来写着
+        # "see per-file output above",而 `-q` 会不会一起压掉每个文件的边界取决于
+        # `markdown-link-check` 的版本行为 —— 那句话本身可能是假的。改成每个文件
+        # 显式包一层 `::group::`/`::endgroup::`(日志按文件折叠)、命中死链就单独打一条
+        # 带 `file=` 的 `::error::`,并把失败文件名收进 `failed_files`、结尾一次性列全,
+        # 不再依赖 CLI 输出格式的隐含假设。
+        # 【不采纳】另一条"预装一次 markdown-link-check 省 89 次 npx 解析"的建议:
+        # 纯性能,不触及行为错/判据失效/文档误导三条判据,而预装全局包会新引入一个
+        # 失败面(npm 全局安装本身可能失败),不划算,详见 PR thread。
+        run: |
+          set -o pipefail
+          files=$(git ls-files '*.md' \
+            | grep -v '^docs/constitution/' \
+            | grep -v '^docs/design/' \
+            | grep -v '^third_party/')
+          test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
+          fail=0
+          failed_files=""
+          while IFS= read -r f; do
+            echo "::group::$f"
+            # [复审【建议】] </dev/null:循环的 stdin 就是这份文件清单本身,循环体里
+            # 跑的进程默认继承它——`markdown-link-check` 不给文件参数时会转去读
+            # stdin,一旦某次调用意外解析成"无文件参数"形态,就会把 stdin(=剩余
+            # 待检查的文件名)当输入吞掉,后面的文件从清单里静默消失,退化成这个
+            # PR 正要根除的那种"静默少检"。隔断 stdin,零成本。
+            if ! npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q "$f" </dev/null; then
+              fail=1
+              failed_files="$failed_files $f"
+              echo "::error file=$f::dead link(s) found in $f"
+            fi
+            echo "::endgroup::"
+          done <<< "$files"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::dead link(s) found in:$failed_files"
+            exit 1
+          fi

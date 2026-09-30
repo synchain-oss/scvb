@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_extra/juce_gui_extra.h>
+
+#include <array>
+#include <cstdint>
+#include <map>
+#include <vector>
+
+#include "OutputBridgeApi.h"
+#include "OutputProcessor.h"
+#include "WebViewHost.h"
+
+namespace scvb::output
+{
+
+// OutputEditor —— Output 插件桥(T29,契约 docs/SCVB_CONTRACT.md §1/§2)。
+// 继承 WebViewHost(T26 装配层):requestInitialState/setLang/setUiScale/commitUiScale 四个通用函数与
+// mBridgeReady 门控 / 25Hz Timer 由基类承载;本类经 augmentOptions 追加其余 30 个 native function,
+// 并在 emitTick 里做 10 个事件的 diff-then-emit(每类独立节流 + 首帧必发;[J146] 的 scvb.vadPreview
+// 另在拖动调用里当场发,emitTick 只补收尾帧)。
+class OutputEditor final : public scvb::webview::WebViewHost
+{
+public:
+    explicit OutputEditor(ScvbOutputAudioProcessor& processor);
+    // [J157] 关窗时撤掉拖动预览:拖到一半关掉编辑器就不会再有松手那一下,不撤的话那份预览
+    // 会一直留在音频里(而界面、存盘都是已提交的曲线)。
+    ~OutputEditor() override;
+
+protected:
+    // 首帧全量快照(契约 §1.1)。
+    juce::var buildSnapshot() override;
+
+    // 25Hz diff-then-emit(仅 mBridgeReady 后由基类调用)。
+    void emitTick() override;
+
+    // setLang:归一化后同时落 Output state(uiLanguage,params-v0 §二;§1.30)。
+    // 基类只写 editor 局部 lang_,而 §2.1 的 ui.language 取自 processor —— 不落 processor
+    // 就会在下一次 state emit 把旧语言回推给 UI(T37 真机 bug A-1)。
+    void handleSetLang(const juce::Array<juce::var>& args,
+                       juce::WebBrowserComponent::NativeFunctionCompletion complete) override;
+    // commitUiScale 防呆确认后落 Output state + 系统级全局默认(§1.29)。
+    void persistUiScaleAsDefault() override;
+
+private:
+    using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
+    using ArgList = juce::Array<juce::var>;
+
+    // ---- 事件发射 ----
+    void emitState(bool forceFull);
+    bool emitParams(bool forceFull); // 返回:C++ 侧观察到这一帧已下发(SL-199 闩锁清位判据)
+    void emitConn();
+    void emitGroups();
+    void emitMeters();
+    void emitPlayhead();
+    // forceFull = [J152] 例外帧(mBridgeReady 后首帧 / clearCoverage 受理后):不看走带、15 轨全带。
+    void emitCaptureProgress(bool forceFull);
+    // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
+    bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
+    void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+    // [J146] §2.10 scvb.vadPreview:按 processor 的预览 seq diff-then-emit(不可见时不推进基线)。
+    // 拖动调用里当场发一次(契约 §1.18「[M] 预览同步」),emitTick 里再补「调用之外结束」的收尾帧。
+    void emitVadPreview();
+    // [SL-412] §2.9 的 `newerState` 一档(CLAUDE.md §7.3「拒载**并提示升级**」里那半句提示)。
+    // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
+    // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
+    void emitNewerStateError();
+    // [SL-478] §2.9 的 `noTimeline` 一档(横幅⑥)。判定走 `BridgeArgs.h` 的 `planConditionErrorEmit`,
+    // 条件取 processor 的去抖值 `hostTimelineMissing()`。
+    void emitNoTimelineError();
+    // [rc-misc a] §2.9 的 `srMismatch` 一档(红横幅③)。判定走 `BridgeArgs.h` 的 `planSrMismatchEmit`,
+    // 条件取 `connSnapshot()` 的每轨 `srMismatch`(与 `scvb.conn` 同源、同 ~4Hz 节拍)。
+    void emitSrMismatchError();
+    // [SL-218] §2.9 的 `stateNotFullyRestored` 一档(横幅⑪)。判定走 `BridgeArgs.h` 的
+    // `planStateNotRestoredEmit`,条件取 processor 的 `stateNotRestoredMask()`。
+    void emitStateNotRestoredError();
+
+    // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
+    struct AnalyzeScope
+    {
+        std::uint16_t tracksMask = 0; // 0 = 不限轨
+        double startS = 0.0;
+        double endS = 0.0;
+        // [SL-279] 桥面 scope 字面是不是 `"all"`。**「全量」只此一处真源** ——
+        // 下游 markApplied 要它,而它在 finishAnalysis 里推不出来:那里只拿得到采样范围,
+        // 「范围恰好覆盖整条时间线」与「用户点了『分析(全部)』」不是一回事
+        // (follow 档下前者随已采集长度漂)。在 finishAnalysis 里现算等于把 scope 语义
+        // 抄成第二份,而它已经在 AnalyzeScopeMath.h 里了。
+        bool fullScope = false;
+    };
+    AnalyzeScope parseAnalyzeScope(const ArgList& a) const;
+
+    // 宿主循环区(秒)。返回 false = 宿主未提供循环区,或提供了但没给 tempo 换算不出秒
+    // (JUCE 的 loopPoints 只有 ppq)。true 时 startS/endS 有效且 endS > startS。
+    bool hostLoopSeconds(double& startS, double& endS) const;
+    // mode=daw_loop 时把 runtime 的 range 跟到宿主循环区上;返回 true = 本拍值有变化。
+    bool syncDawLoopRange();
+
+    // 契约 §2.1 的 state 子树(快照与 scvb.state 共用,防两处漂移)。
+    juce::var buildStateSubtree(bool full) const;
+    // 契约 §2.3 scvb.conn 载荷。
+    juce::var buildConnPayload() const;
+    // 契约 §2.8 scvb.segments 载荷(reason ∈ 十值;只输出 tracksMask 掩码内轨)。
+    juce::var buildSegmentsPayload(const juce::String& reason, std::uint16_t tracksMask) const;
+
+    // ---- native function 注册 ----
+    void registerNativeFunctions(juce::WebBrowserComponent::Options& options);
+
+    // ---- 30 个插件专属 handler(消息线程;全部立即 resolve)----
+    void handleSetCaptureEnabled(const ArgList& a, Completion c);
+    void handleSetOutputEnabled(const ArgList& a, Completion c);
+    void handleSetGroupId(const ArgList& a, Completion c);
+    void handlePreviewAnalyze(const ArgList& a, Completion c);
+    void handleAnalyze(const ArgList& a, Completion c);
+    void handleCancelAnalyze(const ArgList& a, Completion c);
+    void handleSetRange(const ArgList& a, Completion c);
+    void handleSetVersionActive(const ArgList& a, Completion c);
+    void handleSetVersionName(const ArgList& a, Completion c);
+    void handleCopyVersion(const ArgList& a, Completion c);
+    void handleBeginParamGesture(const ArgList& a, Completion c);
+    void handleSetParam(const ArgList& a, Completion c);
+    void handleEndParamGesture(const ArgList& a, Completion c);
+    void handleSetChannelConfig(const ArgList& a, Completion c);
+    void handleSetTrackManual(const ArgList& a, Completion c);
+    void handleSetPanCurve(const ArgList& a, Completion c);
+    void handlePreviewPanCurve(const ArgList& a, Completion c); // [J157] §1.37
+    void handleSetVadParams(const ArgList& a, Completion c);
+    void handleSetSegmentation(const ArgList& a, Completion c);
+    void handleSetTransitionRamp(const ArgList& a, Completion c);
+    void handleSetAnalysisConfig(const ArgList& a, Completion c);
+    void handleEditSegment(const ArgList& a, Completion c);
+    void handleRecaptureArm(const ArgList& a, Completion c);
+    void handleClearCoverage(const ArgList& a, Completion c);
+    void handleUndo(const ArgList& a, Completion c);
+    void handleRedo(const ArgList& a, Completion c);
+    void handleRequestWaveform(const ArgList& a, Completion c);
+    void handleSetActiveTab(const ArgList& a, Completion c);
+    void handleSetMasterChartMode(const ArgList& a, Completion c);
+    void handleSetGuideSeen(const ArgList& a, Completion c);
+    void handleSetTourSeen(const ArgList& a, Completion c);
+    void handleConfirmPrintGuard(const ArgList& a, Completion c);
+    // [SL-256] §1.36 建议表 CSV 导出。契约/manifest/web/mock/C++ 常量表**早就都有它**,
+    // 唯独 registerNativeFunctions 从没挂过 handler —— 于是真宿主上桥面根本不出现这个名字,
+    // web 只能显示「本版本尚未接通导出」。parity 门禁比的是**名字集合**(常量表里有),
+    // 所以它一直是绿的,证明不了「名字被挂成了 handler」(本卡同批补上那道断言)。
+    void handleExportSuggestions(const ArgList& a, Completion c);
+
+    // 只读观察态判定(OutputSession kObserver)。
+    bool isReadOnly() const;
+
+    ScvbOutputAudioProcessor& processor_;
+
+    // diff-then-emit 的统一出口:**不可见时不推进缓存**。裸写法(先 lastJson=json 再
+    // emitEventIfBrowserIsVisible)会把隐藏期的那一份变化吞掉 —— 载荷被丢,基线却已前移,
+    // 恢复可见后 json==lastJson 于是永不重发。停走带时 scvb.playhead 载荷逐字节不变,
+    // 这一吞就是永久的:playhead.js 内部 ev 恒 null,竖线维持 HTML 初始 hidden,泳道上
+    // **既没有播放头也没有帧驱动**(v5 实测 P0-4 的后半)。Input(advanceEmitCache,PR#54 R4)
+    // 与 Monitor(emitIfChanged)早已这样做,只有 Output 四处漏了。
+    bool emitIfChanged(const char* eventName, const juce::var& payload, juce::String& lastJson);
+
+    // ---- diff-then-emit 状态(消息线程独占)----
+    bool firstFrame_ = true; // mBridgeReady 后首帧必发各事件(§0.4)
+    // [SL-199] 上一拍 webview 是否可见:false→true 的边沿上补发 **scvb.params 全量 +
+    // scvb.segments 全量快照** —— 两者的第二层基线(lastParamsValues_ / lastSegments* 三件)
+    // 都在「发之前」就推进了,隐藏期被 emitEventIfBrowserIsVisible 丢掉的那一帧因此永不重发。
+    // 初值 false:首帧本来就走全量,边沿不会多发一帧。
+    // ⚠ 这两位与下面 `newerStateShown_` 吃**同一条前提**(「`bridgeReady_` 是单向的」)——
+    // 前提、可达性链条与「破了之后要连带复位谁」写在那一处,不在这里抄第二份。
+    bool wasVisible_ = false;
+    bool wasSegVisible_ = false; // 同上,segments 一路独立记账(两条路的 settle 时机不同)
+    bool pendingParamsFull_ = false; // 闩锁:置位后每拍强制全量,直到确认发出去才清
+    bool pendingSegmentsFull_ = false; // 同上(scvb.segments 的 reason:"snapshot" 全量)
+    // analyzed 闩锁位:takeAnalysisDone() 取走即清,隐藏期分析完成的话这一位会被消费掉,
+    // 恢复可见只补 snapshot —— Tab4 陈旧基线同步与 Tab3 diff 摘要条只认 reason="analyze",
+    // 会静默失效。发出去了才清(#119 复审顺带记账)。
+    // [SL-255] 闩住「哪一种完成」而不只是「完成了没」——理由见 emitTick 里的注释。
+    ScvbOutputAudioProcessor::AnalysisDoneReason pendingAnalyzedReason_ =
+        ScvbOutputAudioProcessor::AnalysisDoneReason::None;
+    // reason 枚举 → §2.8 的 reason 串(None 落 "snapshot")。
+    static const char* segmentsReasonOf(ScvbOutputAudioProcessor::AnalysisDoneReason r);
+    // [SL-412] `scvb.error{newerState}` 的闩锁(消息线程独占)。
+    // 不逐拍比 json:**这一条是持续态** —— 拒载态会一直挂在 processor 上到下一次成功载入,
+    // 逐拍比会把同一件事发 25 次/秒。故记「屏上有没有这一条 + 那一条写的是哪个工程 abi」,
+    // 换工程(abi 变了)要重发,条件解除要发 active:false 撤横幅。
+    // ⚠ 与 `emitIfChanged` 同一条纪律:webview 不可见时**不推进**这两个位(载荷会被丢)。
+    //
+    // ⚠⚠ **没写下来的前提:「`bridgeReady_` 是单向的」**([#264 第 1 轮统筹裁定 6],不开卡)。
+    // 这两个位只在「发出去过」之后才推进,而「发出去」的判据是 `webView().isVisible()`;
+    // 一旦 `bridgeReady_` 在**就绪之后**翻回 false(页面被换掉 / 重载),基线就陈旧 ——
+    // 新页面再也收不到这一帧,而记账说「已经发过了」。**今天到不了**,链条三条,缺一不可:
+    //   ① `emitTick` 只由基类 `WebViewHost::timerCallback` 在 `bridgeReady_` 为真时调用
+    //      (`WebViewHost.cpp:1080-1083`);
+    //   ② `bridgeReady_` 全类**只有一处**写 false —— `WebViewHost::beginLoadAttempt()`
+    //      (`WebViewHost.cpp:465`);
+    //   ③ 而 `beginLoadAttempt()` 只有两个调用者:构造期那次(`:457`)与 `retryWebView()`
+    //      (`:839`);`retryWebView()` 只能从**兜底面板**的 Retry 点出来(`:817-822`),
+    //      兜底面板又只在「尚未就绪 + 预算耗尽」(`:1074-1078`)或「尚未就绪时的 boot 失败」
+    //      (`:925-927`)两条路上出现 ⇒ **就绪过之后,没有任何一条路回到未就绪**。
+    //      (另:导航错误 `handleNavigationError`(`:890`)**刻意**不重置 `bridgeReady_`、
+    //       也不切兜底面板 —— 那份注释里的「重试自锁」与本条前提互为因果,别只改一边。)
+    // 条件一旦破了(将来给重载 / 重连加一条**不经兜底面板**的通路),这两位必须跟着
+    // `bridgeReady_` 的下降沿一起复位 —— 否则症状与 [SL-199] 那条洞逐字同形:条件成立、
+    // 屏上什么都没有,而记账说「已经发过了」。**同形态也压在上面 `wasVisible_` /
+    // `wasSegVisible_` 两位上**(`firstFrame_` 与各路 `last*Json_` 基线同理)。
+    bool newerStateShown_ = false;
+    std::uint32_t newerStateShownAbi_ = 0;
+    // [SL-478] `scvb.error{noTimeline}` 的闩锁(消息线程独占)。与上面 `newerStateShown_` 吃同一条
+    // 前提(`bridgeReady_` 单向),复位纪律一并适用。
+    bool noTimelineShown_ = false;
+    // [rc-misc a] `scvb.error{srMismatch}` 的闩锁:屏上挂着的是哪一轨(ch 0 = 没挂)与当时的两个 SR。
+    // 同吃 `bridgeReady_` 单向这条前提,复位纪律同上。
+    // 三个数与 `BridgeArgs.h` 的 `SrMismatchTarget` 逐字段对应(头文件不引 BridgeArgs.h,在 .cpp 里组装)。
+    int srMismatchShownCh_ = 0;
+    std::uint32_t srMismatchShownInSr_ = 0;
+    std::uint32_t srMismatchShownOutSr_ = 0;
+    // [SL-218] `scvb.error{stateNotFullyRestored}` 的闩锁(消息线程独占):屏上那一条对应的位图,
+    // 0 = 屏上没有。与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向),复位纪律一并适用。
+    std::uint8_t stateNotRestoredShown_ = 0;
+    int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
+    double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
+    std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)
+    // 15 轨 stale 位图(bit{N-1});翻位即重发段表 —— fingerprint watchdog(04 §4.5)的判定不跟
+    // 任何段编辑同步发生,不在这里检测的话「数据可能过期」要等到下一次段编辑/切版本才出得来。
+    std::uint16_t lastStaleMask_ = 0;
+    juce::String lastStateJson_;
+    juce::String lastParamsJson_;
+    juce::String lastConnJson_;
+    juce::String lastPlayheadJson_;
+    std::uint8_t lastGroupsOnline_ = 0;
+    bool groupsEverSent_ = false; // scvb.groups 首帧必发(§0.4;独立于位图值)
+    std::map<juce::String, float> lastParamsValues_; // scvb.params 稀疏 diff 缓存
+    // [SL-400] 上一次**真的下发出去**的那一帧里 `hostEcho` 是什么。diff 门原来只盯 `values`
+    // (见 emitParams 里那句 `if (!any && !forceFull) return true;`),于是「宿主在写、但写进去
+    // 的值与当前相同」这一档一个帧都发不出去 —— 页面侧按帧武装的播放期闩锁永远点不亮,
+    // 用户看到的就是「正常播放时小图标不出现,停止那一下才亮」。把这一位并进 diff 判据即可:
+    // 载荷里本来就有 `hostEcho`(§2.2),它翻转 = 载荷变了 = 依 §0.4「值未变不发」该发。
+    // 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次),所以一次播放最多
+    // 多两帧,不会在 25Hz 上刷屏。
+    bool lastHostEchoSent_ = false;
+    std::array<float, 15> lastMeterDb_{}; // meters 0.3dB 阈值(§0.4)
+    std::array<float, 15> lastMeterPeak_{};
+    float lastBusL_ = -1000.0f;
+    float lastBusR_ = -1000.0f;
+    float lastBusLPeak_ = -1000.0f;
+    float lastBusRPeak_ = -1000.0f;
+    bool metersEverSent_ = false;
+    // §2.7 captureProgress 的增量基线:上一帧已报过的覆盖区间与覆盖率(index = ch-1)。
+    // 初值 pct 全 0(不是 reset() 的 −1 哨兵):周期帧开播时不报「一直是 0%」的轨。
+    ScvbOutputAudioProcessor::CaptureProgressBaseline coverageBaseline_{};
+    // [J152] 例外帧闩锁:mBridgeReady 后首帧 / clearCoverage 受理后置位;emitCaptureProgress
+    // 在 webview 可见、真的出过帧之后才清(不可见时载荷会被丢,闩锁留着下一拍再补)。
+    // 与上面 `newerStateShown_` 吃同一条前提(`bridgeReady_` 单向,首帧只有一次),复位纪律一并适用。
+    bool pendingCoverageFull_ = false;
+    // [J146] §2.10 的基线:最后一次**真的发出去**的预览 seq;`vadPreviewForce_` = 首帧时正处于
+    // 预览中、要补发一次(条件类事件:空闲时首帧不发空帧)。与 `newerStateShown_` 吃同一条前提
+    // (`bridgeReady_` 单向),复位纪律一并适用。
+    std::uint32_t vadPreviewSentSeq_ = 0;
+    bool vadPreviewForce_ = false;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputEditor)
+};
+
+} // namespace scvb::output

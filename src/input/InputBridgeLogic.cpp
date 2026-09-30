@@ -1,0 +1,353 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "InputBridgeLogic.h"
+
+#include <limits>
+
+#include "ipc/SegmentLayout.h" // kMaxChannels(§4.3 channelLabels 15 张卡)
+
+namespace scvb::input::bridge
+{
+
+juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch)
+{
+    switch (state)
+    {
+    case InputClaimState::kUnassigned:
+        return "unassigned";
+    case InputClaimState::kConflict:
+        return "conflict";
+    case InputClaimState::kAbiMismatch:
+        return "abiMismatch";
+    case InputClaimState::kUnavailable:
+        return "idle"; // I0 段不可用、一个 slot 也没持住(§5.2 idle 第 ② 支,不是「等待读取」那支)
+    case InputClaimState::kActive:
+        return srMismatch ? "srMismatch" : (maskBit ? "active" : "idle");
+    }
+    return "idle"; // 防御性:未知枚举值不崩溃、不静默(绝无 half-compat,J40)
+}
+
+bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate)
+{
+    return state == InputClaimState::kActive && outputSampleRate != 0 && outputSampleRate != localSampleRate;
+}
+
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId)
+{
+    // [轮 9 复审【重要】订正] 上一版只把 kConflict 摘出来走 channelId,漏了"不持有任何
+    // slot"这一半——InputSession::openAndClaim()(src/core/input/InputSession.cpp)
+    // 在"首次/换 channel"这条路上失败时,除了 kConflict(通道被占)还会落到
+    // kAbiMismatch(registry.changeGroup()/open() 返回 abi 不符)与 kUnavailable(段打不开/
+    // 映射失败/claimInput 非 kConflict 的失败/createSegments 失败)——**这三个失败态走的是
+    // 同一条代码路径**,previousChannel==0(没有旧 channel 可回滚)时 channelId_(配置)同样
+    // 停在被拒的请求号、claimedChannel_(实际持有)同样是 0,与 kConflict 结构完全相同,只是
+    // 失败原因不同。原判据只摘 kConflict,会把 kAbiMismatch/kUnavailable 这两个同样"请求被
+    // 拒、什么都没绑定"的态误判成"用哪个都一样",实际后果是把被拒的通道显示成"已选中 +
+    // 已连接"——可达路径,不是理论场景。
+    // 改成按"是不是活跃/未配置"分流,而不是"是不是 kConflict"分流:kActive(两值本就相等)
+    // 与 kUnassigned(releaseResources() 之后 channelId=0 但 configuredChannelId 原样留着,
+    // 必须用 configuredChannelId,这正是本函数存在的理由)这两态走 configuredChannelId;
+    // 其余三态(kConflict/kAbiMismatch/kUnavailable,统一含义:配置了但没有任何一个 slot
+    // 被实际持有)走 channelId(=boundChannel(),此时必为 0)。这三态下 claimedChannel_
+    // 恒为 0 是 openAndClaim() 的结构性保证(每条失败分支要么从未 store 过、要么显式
+    // store(0)),不是巧合,别再按"只挑 kConflict"的思路加回去。
+    return (claimState == InputClaimState::kActive || claimState == InputClaimState::kUnassigned) ? configuredChannelId
+                                                                                                  : channelId;
+}
+
+PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active)
+{
+    if (channelId == 0)
+    {
+        return PriorityReject::kUnassigned;
+    }
+    if (!outputOnline)
+    {
+        return PriorityReject::kOutputOffline;
+    }
+    if (!active)
+    {
+        return PriorityReject::kNotActive;
+    }
+    if (ringFull)
+    {
+        return PriorityReject::kRingFull;
+    }
+    return PriorityReject::kNone;
+}
+
+juce::String priorityRejectReason(PriorityReject r)
+{
+    switch (r)
+    {
+    case PriorityReject::kUnassigned:
+    case PriorityReject::kNotActive:
+        return "unassigned";
+    case PriorityReject::kOutputOffline:
+        return "outputOffline";
+    case PriorityReject::kRingFull:
+        return "ringFull";
+    case PriorityReject::kNone:
+        break;
+    }
+    return {};
+}
+
+bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool visible)
+{
+    if (json == lastJson)
+    {
+        return false;
+    }
+    if (!visible)
+    {
+        return false; // 缓存不推进:恢复可见后 json != lastJson 仍成立,下一 tick 自然重发
+    }
+    lastJson = json;
+    return true;
+}
+
+bool claimEdgeConsumed(bool needsError, bool visible)
+{
+    return !needsError || visible;
+}
+
+bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId, int inputSr, int outputSr,
+                           const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
+                           int lastOutputSr)
+{
+    return claim != lastClaim || channelId != lastChannelId || groupId != lastGroupId || inputSr != lastInputSr ||
+           outputSr != lastOutputSr;
+}
+
+juce::String initialClaimErrorBaseline(const juce::String& claim)
+{
+    return claim == "conflict" ? juce::String() : claim;
+}
+
+bool loadConflictStillHolds(int requestedChannel, int noticeGroupId, int currentGroupId, int boundChannel,
+                            std::uint16_t occupiedMask)
+{
+    if (requestedChannel < 1 || requestedChannel > static_cast<int>(kMaxChannels) || noticeGroupId != currentGroupId ||
+        boundChannel == requestedChannel)
+    {
+        return false;
+    }
+    return (occupiedMask & (1u << (requestedChannel - 1))) != 0;
+}
+
+bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq)
+{
+    if (!emitted)
+    {
+        return false; // 隐藏/未发出:基线保持,恢复可见后 seq 仍 != 基线 → 下一 tick 重发
+    }
+    lastConfigSeq = configSeq;
+    return true;
+}
+
+juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
+{
+    if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
+    {
+        // PR#54 R2:double 越界(如 1e300)直接 static_cast<int> 是 UB,且处理器 clamp 在 cast 之后
+        // 永远跑不到 —— 越界/NaN 必须在解析层挡下(§0.8.2「夹取或拒绝」,拒绝路径)。int 全域可被
+        // double 精确表示,边界判定无舍入歧义。
+        const double d = static_cast<double>(args[0]);
+        if (!(d >= static_cast<double>(std::numeric_limits<int>::min()) &&
+              d <= static_cast<double>(std::numeric_limits<int>::max())))
+        {
+            return {};
+        }
+        return static_cast<int>(d);
+    }
+    return {};
+}
+
+juce::var buildStatePayload(int channelId, int groupId, const juce::String& claim, u32 abi,
+                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang,
+                            bool guideSeen)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("channel_id", channelId);
+    o->setProperty("group_id", groupId);
+    o->setProperty("claim", claim);
+    o->setProperty("abi", static_cast<int>(abi));
+    if (abiRemote.hasValue())
+    {
+        o->setProperty("abi_remote", static_cast<int>(*abiRemote));
+    }
+    auto* ui = new juce::DynamicObject();
+    ui->setProperty("scale", uiScale);
+    ui->setProperty("language", lang);
+    ui->setProperty("guide_seen", guideSeen); // §4.1 载荷行:ui 三字段与 §3.1 快照同拼写(A-30)
+    o->setProperty("ui", juce::var(ui));
+    return juce::var(o);
+}
+
+juce::var buildConnPayload(const InputConnSnapshot& s)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("outputOnline", s.outputOnline);
+    o->setProperty("maskBit", s.maskBit);
+    o->setProperty("capturing", s.capturing);
+    o->setProperty("passthrough", s.passthrough);
+    o->setProperty("passthroughPending", s.passthroughPending);
+    o->setProperty("occupiedMask", static_cast<int>(s.occupiedMask));
+    return juce::var(o);
+}
+
+juce::var buildConfigPayload(const ConfigSnapshot& s)
+{
+    auto* o = new juce::DynamicObject();
+
+    // 本轨配置取自 ctrl 广播区(§4.3 全部只读,真源在 Output/ADR-004)。读不到广播区、或本实例
+    // 尚未分配 channel 时退回默认值 —— 那是**降级**而非常态:UI 侧靠 outputOnline 决定是否显示
+    // 远程只读摘要行,不会把默认值当实况展示。
+    // 判据用 **config_seq != 0** 而不是 broadcastValid:Input 自己就是 ctrl 段的创建者
+    // (ensureCtrlOpen 里 ctrl_.open()),本组没有 Output 时段照样存在、广播区全零、seq=0 是偶数,
+    // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 participate_in_auto_pan 报成
+    // false([J83] 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
+    const bool haveBroadcast = s.broadcastValid && s.broadcast.config_seq != 0;
+    // [SL-446 第 2 轮] s.channelId 是**实际持有**(session_.boundChannel(),见 InputEditor.cpp
+    // emitTick() 的分组表)——本 PR 之前配置值恒 ≥1(未分配才是 0),现在硬冲突时它可以合法是 0。
+    // ⚠ 下面 `s.channelId - 1` 直接当数组下标用:这条 `>= 1` 判断是唯一挡住越界的地方,别为了
+    // "统一"把这里换成配置/请求值那个字段——换了会在硬冲突时拿配置号索引广播数组,读到"别的
+    // 实例 channel 5 的配置"冒充成"本实例的配置",而本实例根本没绑定任何 channel。
+    const bool haveOwn = haveBroadcast && s.channelId >= 1 && s.channelId <= static_cast<int>(kMaxChannels);
+
+    if (haveOwn)
+    {
+        const std::size_t idx = static_cast<std::size_t>(s.channelId - 1);
+        const auto& c = s.broadcast.channels[idx];
+        o->setProperty("label", juce::String::fromUTF8(s.broadcast.labels[idx]));
+        o->setProperty("priority", static_cast<int>(c.priority));
+        o->setProperty("lead_lock", (c.flags & kCfgFlagLeadLock) != 0);
+        o->setProperty("pair_id", static_cast<int>(c.pair_id));
+        o->setProperty("freeze", static_cast<int>(c.freeze));
+        o->setProperty("participate_in_auto_pan", (c.flags & kCfgFlagParticipateAutoPan) != 0);
+    }
+    else
+    {
+        // participate 默认值 = **未显式设置一律 true**([J83] 取代 [J60] 的按源声道推导;
+        // 与 Output 侧 `OutputRuntimeState::Channel::participatesInAutoPan()` 同口径,
+        // 变更文档 docs/contract-changes/20260826-j83-participate-default.md)。
+        // 不能再写 `s.sourceChannels == 1`:该值来自 `getMainBusNumInputChannels()`,是**轨道
+        // 总线布局**而不是素材声道数 —— 单声道人声放在立体声轨上就报 2,于是这条降级路径会把
+        // 绝大多数人声轨的远程只读摘要行显示成「不参与自动声像」,与 Output 的实况相反。
+        o->setProperty("label", juce::String());
+        o->setProperty("priority", 0);
+        o->setProperty("lead_lock", false);
+        o->setProperty("pair_id", 0);
+        o->setProperty("freeze", 0);
+        o->setProperty("participate_in_auto_pan", true);
+    }
+
+    // source_channels 恒本机实测([J57]):它是 Input 报上去的检测值,不吃广播区回镜像。
+    o->setProperty("source_channels", s.sourceChannels);
+    o->setProperty("config_seq", static_cast<int>(s.configSeq));
+
+    // channelLabels(A-32):全组 15 轨 label 只读镜像,供 channel 轮带上其余卡显示。
+    juce::Array<juce::var> labels;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        labels.add(juce::var(haveBroadcast ? juce::String::fromUTF8(s.broadcast.labels[i]) : juce::String()));
+    }
+    o->setProperty("channelLabels", labels);
+    return juce::var(o);
+}
+
+juce::var buildGroupsPayload(int groupsOnline)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("groups_online", groupsOnline);
+    return juce::var(o);
+}
+
+juce::var buildErrorPayload(const juce::String& code, int ch, const juce::var& detail, bool active)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("code", code);
+    if (ch > 0)
+    {
+        o->setProperty("ch", ch);
+    }
+    o->setProperty("detail", detail);
+    o->setProperty("active", active);
+    return juce::var(o);
+}
+
+juce::var buildPriorityResponse(bool queued, const juce::String& reason)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("queued", queued);
+    if (!queued)
+    {
+        o->setProperty("reason", reason);
+    }
+    return juce::var(o);
+}
+
+juce::var conflictResponse()
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("conflict", true);
+    return juce::var(o);
+}
+
+namespace
+{
+juce::var claimFailedResponse(const char* reason)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("ok", false);
+    o->setProperty("reason", juce::String(reason));
+    return juce::var(o);
+}
+} // namespace
+
+juce::var claimRequestResponse(InputClaimState requestResult)
+{
+    switch (requestResult)
+    {
+    case InputClaimState::kActive:
+    case InputClaimState::kUnassigned: {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("ok", true);
+        return juce::var(o);
+    }
+    case InputClaimState::kConflict:
+        return conflictResponse();
+    case InputClaimState::kAbiMismatch:
+        return claimFailedResponse("abiMismatch");
+    case InputClaimState::kUnavailable:
+        return claimFailedResponse("unavailable");
+    }
+    return claimFailedResponse("unavailable"); // 防御性:未知结果不报成功(见头文件声明处)
+}
+
+juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot& conn, const ConfigSnapshot& config,
+                             float uiScale, const juce::String& lang, bool guideSeen, bool guideSeenGlobal,
+                             const juce::String& pluginVersion, u32 abi)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("channel_id", channelId);
+    o->setProperty("group_id", groupId);
+    o->setProperty("role", "input");
+    o->setProperty("conn", buildConnPayload(conn));
+    o->setProperty("config", buildConfigPayload(config));
+    auto* ui = new juce::DynamicObject();
+    ui->setProperty("scale", uiScale);
+    ui->setProperty("language", lang);
+    ui->setProperty("guide_seen", guideSeen); // §3.1:会话内的已读位,不随工程保存([J177])
+    o->setProperty("ui", juce::var(ui));
+    // §3.1 语义行:全局判定位**只读、不属工程 state**,故挂顶层而不进 ui 子树。
+    // 首启判据两侧同构:工程 ui.guide_seen === false 且 guide_seen_global === false 才弹。
+    o->setProperty("guide_seen_global", guideSeenGlobal);
+    auto* version = new juce::DynamicObject();
+    version->setProperty("plugin", pluginVersion);
+    version->setProperty("abi", static_cast<int>(abi));
+    o->setProperty("version", juce::var(version));
+    return juce::var(o);
+}
+
+} // namespace scvb::input::bridge

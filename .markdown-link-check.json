@@ -1,0 +1,30 @@
+{
+  "ignorePatterns": [
+    {
+      "comment": "shields.io badge 端点:响应取决于网络与限流,不构成文档正确性判据。",
+      "pattern": "^https://img\\.shields\\.io/"
+    },
+    {
+      "comment": "官网域名尚未对本仓开放路由(O05 官网衔接卡未落地)。",
+      "pattern": "^https://synchain\\.(ca|cn)"
+    },
+    {
+      "comment": "mailto: 无法用 HTTP 探活(检查器实际会拿到 400)。而且 markdown 里形如 `67.65ms@2.25MB` 的性能数字会被自动链接器误判成邮箱地址 —— docs/spikes/S4-state.md 就有一处,那不是链接。",
+      "pattern": "^mailto:"
+    },
+    {
+      "comment": "本地开发服务器地址(web-preview/README.md 与 docs/CONTRIBUTOR_ONBOARDING.md 的 127.0.0.1:8823),按设计在 CI 上不可达。",
+      "pattern": "^https?://(localhost|127\\.0\\.0\\.1)"
+    },
+    {
+      "comment": "【临时】CHANGELOG.md 文末两条指向 v0.9.0-rc.1 的对比链接。发版清单先切 CHANGELOG(第 2 步)后推 tag(第 6 步),tag 推上去之前 GitHub 对这两个地址回 404。只放行这两个确切地址;v0.9.0-rc.1 推上去之后删掉本条(docs/RELEASE.md 发版清单第 2 步有同一句)。",
+      "pattern": "^https://github\\.com/synchain-oss/scvb/compare/(v0\\.9\\.0-rc\\.1\\.\\.\\.HEAD|ae61f5f\\.\\.\\.v0\\.9\\.0-rc\\.1)$"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "10s",
+  "_aliveStatusCodes_note": "默认只认 200。一旦显式给白名单,就必须把重定向与 HEAD-403 一并算作活链:301/302/308 是外链改版后的常态,而不少站点对 HEAD 请求返回 403(GitHub、部分 CDN)。只写 [200, 206] 会在文档本身没问题时假红。",
+  "aliveStatusCodes": [200, 206, 301, 302, 308, 403]
+}

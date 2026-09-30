@@ -1,0 +1,976 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "InputProcessor.h"
+
+#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
+#include "InputBridgeLogic.h"
+#include "UiDefaultsStore.h" // 系统级 UI 全局默认(语言;归 plugin-common,两插件共用)
+
+#include <algorithm>
+#include <cmath>
+
+namespace
+{
+constexpr int kChannelIdMax = 15; // [J01+J59] 0..15,0=未分配
+constexpr int kGroupIdMax = 8; // [J66] 1..8
+
+// interleaved 缓冲前 count 个 float 的绝对值峰值(电平 meter_ 用)。
+float peakAbs(const float* v, int count) noexcept
+{
+    float peak = 0.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        peak = std::max(peak, std::abs(v[static_cast<std::size_t>(i)]));
+    }
+    return peak;
+}
+} // namespace
+
+ScvbInputAudioProcessor::ScvbInputAudioProcessor()
+    : juce::AudioProcessor(BusesProperties()
+                               .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                               .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      ctrl_(backend_, scvb::input::kInputDefaultGroup)
+{
+    setLatencySamples(0); // ADR-002:Input 报告 latency=0
+
+    // 语言的系统级全局默认(与 Output 共用一个键)。工程 state 优先:带 CFGS 的工程会在
+    // setStateInformation 里覆盖回去。没有这一行,新加载的 Input 恒从出厂的 "en" 起步 ——
+    // 用户在别处选过中文也没用(v5 实测 P1-6)。
+    if (const juce::String defaultLang = scvb::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+    {
+        uiLanguage_ = defaultLang;
+    }
+}
+
+ScvbInputAudioProcessor::~ScvbInputAudioProcessor()
+{
+    stopTimer();
+    const juce::ScopedLock lock(lifecycleMutex_);
+    session_.release(scvb::steadyNowMs());
+}
+
+void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    preparedMaxBlock_ = samplesPerBlock > 0 ? samplesPerBlock : 512;
+    // [J57] 声道检测:每次 prepareToPlay 依轨道布局判定 channels ∈ {1,2}(写进 AudioRingHeader;
+    // 布局变了会原地改写段头几何,见 InputSession::prepare)。
+    srcChannels_ = (getMainBusNumInputChannels() == 1) ? 1 : 2;
+    capInterleaved_.assign(static_cast<std::size_t>(2) * static_cast<std::size_t>(preparedMaxBlock_), 0.0f);
+
+    const auto now = scvb::steadyNowMs();
+    const int requestedBeforePrepare = static_cast<int>(session_.channelId());
+    const auto prepareResult =
+        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), now);
+    // [SL-462] 载入后的第一次 prepareToPlay() 也可能撞车后回滚成功(SL-455 那个窗口:首次
+    // prepareToPlay() 之前已交互式绑过通道、又载入了另一份工程)。这条路没有 RPC 返回值可挂,
+    // 回滚成功后 claim 又是 active,边沿检测看不到 ⇒ 记一次性冲突信号,见 noteLoadConflict()。
+    noteLoadConflict(prepareResult, requestedBeforePrepare);
+    // [SL-446 第 2 轮] channelId_ 是**配置**镜像,不是**实际持有**镜像——两者在「配置了一个
+    // channel 但这次 claim 没拿到」时会分叉(工程存 5、加载时 5 被别人占着:配置仍是 5,
+    // 实际持有是 0)。`session_.boundChannel()` 是"现在真的绑定了哪个",广播
+    // (bridgeTickSnapshot)单独直接读它,不经这个镜像,见该函数注释。
+    // ⚠ [SL-446 第 2 轮补充] `session_.channelId()` **不是**在所有场景下都收敛成同一件事——
+    // 补偿式回滚**成功**那条支上它会变成旧 channel(见 InputSession.h prepare() 头注),这对
+    // "这次 prepareToPlay() 该不该继续用旧 channel 工作"是对的语义(会话确实还在旧 channel 上
+    // 活着),但**不能**当成"用户配置的那个号"的通用定义去套别处——setStateInformation() 加载
+    // 工程那条路就不能这样读,理由与做法见该函数里对应赋值点的头注,那里不是"漏改的同一处",
+    // 是刻意不同的处理。
+    // ⚠ 这一处没有**源码级顺序判据**(不像 setChannelId() 那处有 tests/core/test_input_bridge_ipc.cpp
+    // 钉着赋值顺序)。[SL-446 第 6 轮订正] 上面这句自述在第 5 轮之后已经过期——第 5 轮把
+    // getStateInformation() 的存档取值源换成了 savedChannelId_,这一行不再影响存档,"改回读
+    // boundChannel() 会让存档断言变红" 这句(第 4 轮时是真的)现在是假的。这一行真正承重的
+    // 是 ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」判断与 scvb.error 的 ch 字段
+    // (经 configuredChannelId),已改用行为级判据直接钉这两个消费者(见"加载期冲突"用例
+    // 补的 CHECK(bridgeTickSnapshot().configuredChannelId == 5)),不再依赖存档这条间接路径。
+    channelId_ = static_cast<int>(session_.channelId());
+    rampSwitcher_.prepare(sampleRate_);
+
+    // claim 未就绪(I6 未分配 / I2 冲突 / I0 / I1)→ 输出走直通档(人声不消失)。
+    if (session_.state() != scvb::input::InputClaimState::kActive)
+    {
+        stageMachine_.forcePassthrough();
+    }
+
+    lastT0_ = std::numeric_limits<int64_t>::lowest();
+    expectedNext_ = std::numeric_limits<int64_t>::lowest();
+    prepared_ = true;
+    startTimerHz(25); // [M] 25Hz:健康判定 + 心跳(4Hz 折半在 timerCallback 内)
+}
+
+void ScvbInputAudioProcessor::releaseResources()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    session_.release(scvb::steadyNowMs());
+    stageMachine_.forcePassthrough();
+    prepared_ = false;
+}
+
+bool ScvbInputAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+{
+    // 直通:输入输出声道数必须一致,支持 mono 与 stereo([J57] 立体声源)。
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono() &&
+        layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+    {
+        return false;
+    }
+    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
+    {
+        return false;
+    }
+    return true;
+}
+
+void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, int offset, float* dst, int n)
+{
+    // interleaved LR 打包;mono 单通道。[J57] 不下混、不互换。取 src 的 [offset, offset + n)。
+    for (int c = 0; c < srcCh; ++c)
+    {
+        const float* s = src[c] + offset;
+        for (int i = 0; i < n; ++i)
+        {
+            dst[static_cast<std::size_t>(i) * static_cast<std::size_t>(srcCh) + static_cast<std::size_t>(c)] = s[i];
+        }
+    }
+}
+
+void ScvbInputAudioProcessor::writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n,
+                                                int64_t t0)
+{
+    // 跨零点段(t0<=0 且 t0+n>0;[SL-523] 起传进来的是一段:n = 段长,t0 = 段首,t0 == 0 时
+    // skip = 0 整段都写):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
+    const int skip = static_cast<int>(-t0);
+    if (skip >= n)
+    {
+        return;
+    }
+    const int tail = n - skip;
+    if (0 != expectedNext_)
+    {
+        // epoch 检测以 0 为新起点(R3)。
+        scvb::AudioRing::bumpEpoch(b);
+        session_.featRing().startRun(0);
+    }
+    lastT0_ = 0;
+    expectedNext_ = tail;
+    scvb::AudioRing::write(b, 0, interleaved + static_cast<std::size_t>(skip) * static_cast<std::size_t>(srcChannels_),
+                           tail);
+}
+
+void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
+{
+    const juce::ScopedNoDenormals noDenormals;
+
+    // 块长规划(PR#51 重要#2):输出级渲染按 renderSamples = 全块 —— 消除静音档大块尾段残留旧音频的泄漏。
+    // [SL-523] 采集/写环按 captureSamples **分段**把整块写完(与 Output 的 renderSpan 分段同口径,
+    // SL-487)。captureSamples = min(numSamples, preparedMaxBlock_) = 捕获缓冲 capInterleaved_ 的定长,
+    // 越界夹取(research/01 §2.3,Bridge #169 教训)仍在:每段不超过它。此前只写每块前 captureSamples
+    // 个样本 —— 宿主块长超过 prepare 预算(离线 bounce 放大块长 / 播放中超发)时,环里尾段是洞,
+    // Output 尾段读环失败按「不含该轨」混音 ⇒ 导出周期性断音。正常块长下只有一段,与分段前逐位相同。
+    const int numIn = buffer.getNumSamples();
+    if (numIn <= 0)
+    {
+        return;
+    }
+    const scvb::input::InputBlockPlan plan = scvb::input::planBlock(numIn, preparedMaxBlock_);
+    const int seg = plan.captureSamples; // 每段长度上限
+    const int nRender = plan.renderSamples;
+    if (seg <= 0)
+    {
+        // 分段循环按 seg 步进,seg <= 0 会死循环;与 Output 的 `preparedMaxBlock_ <= 0` 早退同口径。
+        // 不可达(prepareToPlay 把 preparedMaxBlock_ 兜底成 > 0、numIn > 0 已在上面判过)。修前这条
+        // 退化路径仍往下走完(换代/时间线记账、特征、渲染);这里整块跳过,尤其是在下面
+        // rampSwitcher_.render 之前返回 ⇒ 宿主缓冲原样透出(静音档下也不静音)。守卫没挪到渲染之后:
+        // 不可达 ⇒ 没有夹具能造出它,挪了也钉不住,只是在实时路径上多一处无测试的改动。
+        return;
+    }
+
+    const int srcCh = srcChannels_;
+    const float* const* src = buffer.getArrayOfReadPointers();
+    if (src == nullptr)
+    {
+        return;
+    }
+
+    // 音频线程块视图(PR#51 红旗#2,T16 Snapshot 同款):每 block acquire-load 一次不可变绑定快照
+    // + 取 registry/audio/feat 三段 SegmentHandle 租约(持有期内 [M] 不解映射),整 block 复用;
+    // 音频线程绝不触碰 session_ 的可变成员(claimedChannel_ 经块视图快照)。
+    const scvb::input::InputSessionBlockView block = session_.acquireBlock();
+
+    // 1) 捕获(ADR-003 v2.0 [J57]):mono 直取,stereo interleaved LR 打包,零分配。[SL-523] 捕获随
+    //    写环一起按段做(下面两处分段循环里),capInterleaved_ 每次只装一段。
+
+    // 2) 时间线定位(负 timeInSamples = 倒计时/pre-roll,[J51] 有效时间线但 Input 不整块写环/写特征)。
+    bool playing = false;
+    bool haveT0 = false;
+    int64_t t0 = 0;
+    if (juce::AudioPlayHead* ph = getPlayHead())
+    {
+        const juce::Optional<juce::AudioPlayHead::PositionInfo> pos = ph->getPosition();
+        if (pos.hasValue())
+        {
+            playing = pos->getIsPlaying();
+            const juce::Optional<int64_t> ts = pos->getTimeInSamples();
+            if (ts.hasValue())
+            {
+                t0 = *ts;
+                haveT0 = true;
+            }
+        }
+    }
+
+    if (!haveT0 || t0 < 0)
+    {
+        // [SL-523] 按段走:跨零点那一段(段首 <= 0 < 段尾)经 writeTailFromZero 写 [0, 段尾)并换代;
+        // 段首恰好 == 0 的那一段也走它(skip = 0),否则这一段既不换代、Output 的有效代起点还停在
+        // 跳变前,整段读不出来。它之后的段(只有跨零点的超长块才有)只补写环,**不推 expectedNext_**,
+        // 下一块的换代判定因此与修前相同(修前这种块同样只推到跨零点那一段的段尾,下一块判成跳变 ⇒
+        // 换代 + 特征 startRun(下一块 t0))。本分支不喂特征;若把 expectedNext_ 推到整块尾,下一块
+        // 不再 startRun,特征 hop 记账会比时间线少掉这几段的长度。
+        float peak = 0.0f;
+        for (int off = 0; off < numIn; off += seg)
+        {
+            const int m = std::min(seg, numIn - off);
+            captureFrames(src, srcCh, off, capInterleaved_.data(), m);
+            peak = std::max(peak, peakAbs(capInterleaved_.data(), m * srcCh));
+            if (!haveT0)
+            {
+                continue; // 无时间线:只量电平,不写环
+            }
+            const int64_t ts = t0 + off;
+            if (ts <= 0 && ts + m > 0)
+            {
+                writeTailFromZero(block.audio, capInterleaved_.data(), m, ts);
+            }
+            else if (ts > 0)
+            {
+                scvb::AudioRing::write(block.audio, ts, capInterleaved_.data(), m);
+            }
+        }
+        // 无/负时间线:输出走当前档(步骤 6)。
+        meter_.store(peak, std::memory_order_relaxed);
+        const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+        rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
+                             mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
+                                 ? scvb::input::OutputStageMode::kSilence
+                                 : scvb::input::OutputStageMode::kPassthrough);
+        return;
+    }
+
+    // 3) epoch 跳变检测(契约 §2;停走带静止重写不算跳变)。
+    bool startedRun = false;
+    if (t0 != expectedNext_)
+    {
+        if (playing || t0 != lastT0_)
+        {
+            scvb::AudioRing::bumpEpoch(block.audio);
+            session_.featRing().startRun(t0); // run 切换:biquad 预热(T08/04 §3.2)
+            startedRun = true;
+        }
+    }
+    // 特征段的**绑定边沿**同样要起一个 run:startRun 在未绑定时早退(FeatRing.cpp),而这里
+    // 只在 t0 跳变时调它、不重试 —— 走带已经在跑、用户此时才插上 Output(或改组后重建段),
+    // 段一绑好 nextHop/fpHop 还停在 0,后续的帧与指纹全部按错位的 hop 号记账。表现在本卡上
+    // 就是「基线整体错位 ⇒ 关采集重播同一段素材整轨失配 ⇒ 整轨误报」。
+    const bool featBound = session_.featRing().bound();
+    if (featBound && !featBoundPrev_ && !startedRun)
+    {
+        session_.featRing().startRun(t0);
+    }
+    featBoundPrev_ = featBound;
+    lastT0_ = t0;
+    expectedNext_ = t0 + nRender;
+
+    // 4) 写音频环:时间线寻址,frame index = pos & (ring_frames-1);stereo interleaved LR。
+    //    [SL-523] 按段写整块:第 k 段写 [t0 + off, t0 + off + m)。每段 write 都把 write_head 发布到
+    //    段尾(单调推进,整块写完 = t0 + numIn,与上面 expectedNext_ 同一个数);段间连续,不换代。
+    float peak = 0.0f;
+    for (int off = 0; off < numIn; off += seg)
+    {
+        const int m = std::min(seg, numIn - off);
+        captureFrames(src, srcCh, off, capInterleaved_.data(), m);
+        scvb::AudioRing::write(block.audio, t0 + off, capInterleaved_.data(), m);
+        peak = std::max(peak, peakAbs(capInterleaved_.data(), m * srcCh));
+    }
+
+    // 5) 特征提取(ADR-007:采集开才写特征段;K 加权与 hop 累加在播放中恒跑)。
+    if (playing)
+    {
+        const bool armed = captureArmed_.load(std::memory_order_relaxed) != 0;
+        session_.featRing().setCapturing(armed);
+        session_.setCapturing(
+            block.registrySlot,
+            armed); // 经块视图 slot 快照(第3轮红旗) // 经块视图 channel + registry 租约(红旗#2/重要#3)
+        planarPtrs_[0] = src[0];
+        planarPtrs_[1] = (srcCh >= 2) ? src[1] : nullptr;
+        // [SL-523] 喂整块:hop 记账按喂进去的样本数推进,而时间线按整块推进(expectedNext_ = t0 + numIn)。
+        // 只喂前 captureSamples 个的话,超长块之后每块少记 (numIn - captureSamples) 个样本,帧被记到
+        // 越来越早的 hop 号上。FeatRing::processBlock 内部已按 prepare 的 maxBlockSamples 分段喂提取器。
+        session_.featRing().processBlock(planarPtrs_.data(), numIn);
+    }
+    else
+    {
+        session_.setCapturing(block.registrySlot, false);
+    }
+
+    meter_.store(peak, std::memory_order_relaxed);
+
+    // 6) 输出级仲裁(ADR-002 v1/J12+J32):读 C18 模式字经 RampSwitcher 渲染。
+    scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+
+    // [SL-254 / J95①] **非实时(离线渲染)走同块交接** —— 不等 [M],不走 ramp。
+    //
+    // 病:J32 那套「Output 置 mask → Input 下一拍 [M] 静音 → Output 等 muted 确认位或 200ms 再注入」
+    // 全是**墙钟**量,而离线渲染的音频时间线跑在墙钟前面 N 倍。于是「Input 已静音、Output 未注入」
+    // 那个窗口按倍速放大:实测 5x→0.128s、48x→2.13s、122x→4.69s(折合墙钟恒为一拍 [M] ≈40ms),
+    // 用户 v5.6.3 离线导出前约 10 秒全静音就是它(≈250x)。1.7x 近实时那档静音为 0 —— 所以
+    // 实时反相能完美抵消、离线不能。
+    //
+    // 修法(J95① 裁定):非实时下 Input **逐块**读 `connected_mask` 决定档位,与 Output 在
+    // 同一次 evaluateChannels 里置的 injectMask 对齐 ⇒ 同块交接。
+    // ⛔ **不能只把 Output 那个 200ms 闸改成样本计**:Input 的静音时刻同样由 [M] 驱动、同样随
+    // 倍速变晚(实测 48x 下第 264 块才静音),单改一侧会让注入远早于静音 ⇒ 几百块**双路叠加**,
+    // 对 null test 与静音同样致命且更隐蔽(它是响的)。宪法 ADR.md [J32→ADR-002] 已把这条禁令入册。
+    //
+    // RT 纪律:只做 mapped 内存上的 atomic load,零分配、零锁、零系统调用;OutputSlot 走与
+    // registrySlot 同一条 registry 租约 + 冻结偏移(Registry::outputSlotAtBase)。
+    // ⚠ **健康前提不被豁免**(宪法 J95① 段末;SL-254 复审红旗):J95① 豁免的只是时间窗与 ramp。
+    // `connected_mask` 一位**不足以**证明 Output 在场 —— `Registry::releaseOutput()` 把 state 置回
+    // kSlotFree 时**不清 mask**(清 mask 只在 claimOutput 的两条路径),于是 Output 被旁通/删除/
+    // 宿主对它调 releaseResources() 后 mask 位残留,只读 mask 会把「无 Output」渲染成**整条导出
+    // 全零** —— 正是 [J12] 立条要消除的事故面,也与本卡要修的症状同类。
+    // 故非实时静音条件 = mask 位 ∧ state 活(**逐块**读,零延迟)∧ ¬outputStale_([M] 发布)。
+    // 三者的分工不可对调:
+    //  · mask 与 state 必须**逐块**读 —— 用 [M] 的滞后位替代会让 Input 晚静音而 Output 已注入 =
+    //    本卡明令要防的**双路叠加**;state 逐块读还让「优雅退场」零延迟地回直通。
+    //  · 心跳新鲜度需要时钟、音频线程取不到,只能由 [M] 发布,且**极性必须是「已确认死」**:
+    //    换成「在场位」(尚未确认活 ⇒ 不静音)会在上升沿晚一拍,实测即刻红(注入@304 早于静音@320)。
+    if (isNonRealtime() && block.outputSlot != nullptr && block.channel >= 1 && block.channel <= scvb::kMaxChannels)
+    {
+        const scvb::u32 mask = block.outputSlot->connected_mask.load(std::memory_order_acquire);
+        const bool maskBit = (mask & (1u << (block.channel - 1))) != 0;
+        const bool slotActive = block.outputSlot->state.load(std::memory_order_acquire) == scvb::kSlotActive;
+        const bool confirmedDead = outputStale_.load(std::memory_order_acquire) != 0;
+        const auto target = (maskBit && slotActive && !confirmedDead) ? scvb::input::OutputStageMode::kSilence
+                                                                      : scvb::input::OutputStageMode::kPassthrough;
+        mode = static_cast<scvb::u32>(target);
+        rampSwitcher_.snapTo(target); // 同块硬切:ramp 也是墙钟量,离线会被放大成超长淡入
+    }
+
+    rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
+                         mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
+                             ? scvb::input::OutputStageMode::kSilence
+                             : scvb::input::OutputStageMode::kPassthrough);
+}
+
+void ScvbInputAudioProcessor::timerCallback()
+{
+    const auto now = scvb::steadyNowMs();
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 4Hz 心跳(250ms 折半在 25Hz 定时器内)。
+    if (now - lastHeartbeatMs_ >= scvb::kHeartbeatIntervalMs)
+    {
+        lastHeartbeatMs_ = now;
+        session_.heartbeat(now);
+        session_.reap(now);
+        ctrl_.reapPendingReleases(now); // T30:命令环段延迟释放回收([M] 4Hz,与 session_.reap 同点)
+        retryConflictClaim(now);
+    }
+
+    // 健康判定 → C18 模式字([M] 25Hz 写)。
+    const bool healthy = session_.isHealthy(now);
+    const scvb::input::OutputStageMode target = stageMachine_.evaluate(healthy, now);
+    c18Stage_.store(static_cast<scvb::u32>(target), std::memory_order_release);
+
+    // [SL-254 / J95①] Output「已确认死」否决位:非实时逐块路径的健康前提里**需要时钟**的那一半。
+    // 与 c18Stage_ 分开发布,因为它**不经 StageSwitchStateMachine 的 5s 滞回** —— 非实时下滞回同样
+    // 是墙钟量(宪法:无滞回)。极性见头文件:必须是「已确认死」,不能是「在场」。
+    outputStale_.store(session_.outputClaimedButStale(now) ? 1u : 0u, std::memory_order_release);
+
+    // muted 确认位(C19,J32):健康(静音)置位、切直通前清位。
+    // 精确的「ramp 完成」时点由 [A] 经 RampSwitcher 判定;此处 [M] 以目标档近似,
+    // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
+    // ⚠ 非实时下该位不再代表 [A] 的实际档位:[A] 走逐块 mask/健康位硬切,[M] 这里取的是 stageMachine
+    // 的目标档,两者可差一拍。当前 Output 在非实时下忽略该确认位(直接同块注入),故无害;
+    // 若日后非实时要重新消费 C19,必须先把它改成由 [A] 发布,否则语义对不上。
+    session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
+
+    // 采集布防(ADR-007 / 契约 §1 setCaptureEnabled:ON = 对 **{enabled 轨} × {global.range}** 布防)。
+    // 真源是 Output 的采集开关,经 ctrl 段 OutputGlobalInfo.capture_enabled 广播下来;
+    // captureArmed_ 此前**只有读点没有写点** —— processBlock 每块读它决定要不要写特征段,而没有
+    // 任何地方赋过值,于是恒 0:Input 从来没写过一帧特征(T37 三轮 A 族 L-6 链上的第二处断点)。
+    //
+    // 轨维在这里收:用户在 Output 里关掉的轨不该继续写特征段(白占带宽与 8MB 内嵌预算)。
+    // 时间维(global.range)在 Output 侧收 —— 见 OutputSession::setFeatureGate。
+    ensureCtrlOpen();
+    bool armed = ctrl_.readGlobalInfo().capture_enabled != 0;
+    // ⚠ [SL-446 第 2 轮] 这里没有 session_.state()==kActive 守卫——channelId_ 现在是**配置**
+    // 镜像,配置了但没实际绑定时(比如启动期撞车),下面会拿**别的实例可能正在用**的那个
+    // channel 号去索引 bc.channels,算出来的 armed 可能是错的。今天没有可观测的坏后果,
+    // 是靠下游巧合兜住的,不是这里设计对:armed 最终经 session_.setCapturing(block.
+    // registrySlot, armed) 落地,而 block.registrySlot 来自 acquireBlock() 按**实际持有**
+    // 的 channel 取快照——没有实际绑定时这个指针是 null,setCapturing 对 null slot 直接
+    // 空操作。**这是巧合兜住,不是这处本身正确**,已记 **SL-453**,不在这一轮修。
+    if (armed && channelId_ >= 1 && channelId_ <= kChannelIdMax)
+    {
+        scvb::CtrlBroadcastSnapshot bc;
+        // 读不到广播区(本组还没有 Output 在广播)时不拿默认值当「已禁用」:保持布防,
+        // 由 Output 的采集开关单独决定 —— 否则 Output 刚上线的那几拍会白白丢掉特征。
+        if (ctrl_.readBroadcast(bc) && bc.config_seq != 0)
+        {
+            armed = (bc.channels[static_cast<std::size_t>(channelId_ - 1)].flags & scvb::kCfgFlagEnabled) != 0;
+        }
+    }
+    captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
+
+    drainFpReports();
+    publishTrackName(); // [J150] 轨道名 → ctrl 段轨道名区(Output 据此自动填 label)
+}
+
+void ScvbInputAudioProcessor::publishTrackName()
+{
+    // 寻址用**实际持有**的 channel(boundChannel),不用 channelId_ 那个配置镜像:两者在「配置了但没
+    // 绑定」时会分叉([SL-446]),拿配置号写会写进别的实例正占着的那一条(双写方)。没持有任何 slot 时
+    // boundChannel() 为 0(claim 失败态的结构性保证,见 InputSession::openAndClaim),writeTrackName 对 0
+    // 什么都不写 —— 「只有持有者才写」由这一条保证,不另设门。ctrl_ 未打开时同样静默不写。
+    // 归属判据取本 slot 此刻的心跳:Output 只采信「条目记的心跳 == slot 此刻的心跳」的条目,所以即便
+    // ctrl_ 与 session_ 一时不在同一组(换组失败回退的窄窗),写进去的条目也不会被那一组的 Output 采信。
+    // 每拍都写(不做「没变就不写」):条目 128 字节、每轨一条,25Hz 的开销可以忽略;换来的是段被
+    // 覆盖式重初始化清零、换通道、换组之后都不需要任何「补写」逻辑 —— 下一拍自然写对。
+    ctrl_.writeTrackName(session_.boundChannel(), session_.ownSlotHeartbeatMs(), trackNameUtf8_);
+}
+
+void ScvbInputAudioProcessor::updateTrackProperties(const TrackProperties& properties)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    if (properties.name.has_value())
+    {
+        trackNameUtf8_ = properties.name->toStdString();
+    }
+}
+
+void ScvbInputAudioProcessor::drainFpReports()
+{
+    // 04 §4.5:fp hash 在 [A] 只写本实例进程内 SPSC,由 **[M] 25Hz 排水**后写入本 slot 专属的
+    // ctrl 命令环([A] 绝不直接写跨进程环)。稳态 1 条/秒/轨,25Hz 排水下每拍最多 1 条。
+    //
+    // 只有本 channel 的持有者(I4 ACTIVE)才可以投递:非活跃实例向共享环 enqueue 会造成双生产者
+    // 竞写 write_pos —— 与 bridgeRemoteSetPriority 的 SPSC 纪律同一条(PR#54 R3)。
+    const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    if (ch < 1 || ch > scvb::kMaxChannels || session_.state() != scvb::input::InputClaimState::kActive)
+    {
+        // 未持有 slot:把队列排空丢弃,免得攒到满环后一次性倒进去一串陈旧 tile。
+        scvb::u64 discard[kFpDrainMax];
+        session_.featRing().drainFpReports(discard, kFpDrainMax);
+        return;
+    }
+
+    scvb::u64 values[kFpDrainMax];
+    const auto n = session_.featRing().drainFpReports(values, kFpDrainMax);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        // 满环由 CtrlPlane 自己丢最旧 + 计数(§4.4-c);fp 是提示类信号,丢了不影响任何数据面,
+        // 故不做 isRingFull 预检、不回报 UI。
+        ctrl_.enqueue(ch, scvb::CtrlOp::kFpReport, values[i]);
+    }
+}
+
+void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}
+
+const juce::String ScvbInputAudioProcessor::getProgramName(int /*index*/)
+{
+    return {};
+}
+
+void ScvbInputAudioProcessor::changeProgramName(int /*index*/, const juce::String& /*newName*/) {}
+
+void ScvbInputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 【PR#51 重要#2】曾拒载更高 abi 的 state:保存时原样回写宿主传入的原字节(preservedOriginal
+    // 语义,T19 同款),绝不把高版本 blob 覆盖成当前版数据。
+    if (stateAbiMismatch_ && !preservedStateBlob_.empty())
+    {
+        destData.append(preservedStateBlob_.data(), preservedStateBlob_.size());
+        return;
+    }
+
+    scvb::state::InputState s;
+    // [SL-446 第 5 轮] 存档记的是 savedChannelId_(工程原值/用户主动配置值),不是 channelId_
+    // (配置/请求值镜像)——这不是契约变更:CFGS 的字节布局与 abi 都没动,只是内存里换了一个
+    // 成员去填同一个字段。两者绝大多数时候相等,只在"加载工程时这次触发的重新认领撞了车"
+    // 这一个场景下会分叉,分叉时该记的是工程文件原本写的号,不是这次认领折腾出来的中间结果。
+    s.channelId = static_cast<scvb::u32>(savedChannelId_);
+    // [SL-458] 同理:存档记 savedGroupId_(工程原值/用户主动改组值),不记 groupId_(寻址组,
+    // 载入时目标组 ctrl 段打不开会回退到上一组)。字节布局与 abi 不变。
+    s.groupId = static_cast<scvb::u32>(savedGroupId_);
+    s.uiScale = static_cast<scvb::u32>(uiScale_);
+    s.uiLanguage = uiLanguage_.toStdString();
+
+    std::vector<std::uint8_t> payload;
+    if (!scvb::state::encodeInputState(s, payload))
+    {
+        return;
+    }
+    scvb::state::StateChunks chunks;
+    chunks.abi = scvb::state::kCurrentAbi;
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+    std::vector<std::uint8_t> blob;
+    if (!scvb::state::encodeContainer(chunks, blob))
+    {
+        return;
+    }
+    destData.append(blob.data(), blob.size());
+}
+
+void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    if (data == nullptr || sizeInBytes <= 0)
+    {
+        return;
+    }
+    scvb::state::StateChunks chunks;
+    if (scvb::state::decodeContainer(static_cast<const std::uint8_t*>(data), static_cast<std::size_t>(sizeInBytes),
+                                     chunks) != scvb::state::DecodeStatus::Ok)
+    {
+        return; // 不可信字节:解码失败 → 拒载(不崩溃、不半填充)
+    }
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 【PR#51 红旗#1】冻结契约(CLAUDE.md §7.3 / STATE_SCHEMA):读到高版本 abi → 拒载并提示升级,
+    // 绝不静默丢数据;同时保留原字节供 getStateInformation 原样回写(PR#51 重要#2,preservedOriginal)。
+    if (scvb::state::decideInputStateAbi(chunks.abi) == scvb::state::InputStateAbiDecision::RejectNewer)
+    {
+        stateAbiMismatch_ = true;
+        stateAbiSeen_ = chunks.abi;
+        preservedStateBlob_.assign(static_cast<const std::uint8_t*>(data),
+                                   static_cast<const std::uint8_t*>(data) + sizeInBytes);
+        DBG("SCVB Input: state abi " << chunks.abi << " > current " << scvb::state::kCurrentAbi
+                                     << "; refusing load (upgrade required)");
+        return;
+    }
+    stateAbiMismatch_ = false;
+    preservedStateBlob_.clear();
+
+    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+    if (cfg == nullptr)
+    {
+        return;
+    }
+    scvb::state::InputState s;
+    if (!scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), s))
+    {
+        return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
+    }
+
+    const int oldGroupId = groupId_;
+    // [SL-462] 新的一次载入:上一份工程留下、还没被界面取走的一次性冲突信号作废。
+    loadConflictChannelId_ = 0;
+    channelId_ = static_cast<int>(s.channelId);
+    // [SL-446 第 5 轮] 同一时刻两个都写、值相同,但落点不同:channelId_ 供寻址/scvb.error/
+    // ensureCtrlOpen 等"配置"用途(下面 prepared_ 分支里 prepare() 之后还会被重新同步,可能
+    // 变成别的值,见那边的头注);savedChannelId_ 专记"工程文件这次写的号",本函数往后不再
+    // 碰它,直到用户下一次主动 setChannelId() 才会更新。
+    savedChannelId_ = static_cast<int>(s.channelId);
+    groupId_ = static_cast<int>(s.groupId);
+    // [SL-458] 工程里的组号单独落一份;下面换组失败会把 groupId_ 回退到旧组,但不碰这一份。
+    savedGroupId_ = static_cast<int>(s.groupId);
+    // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
+    // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
+    // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
+    // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
+    uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);
+    uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    // [SL-258 复审【重要】] `ui.guide_seen` 是会话内运行时态,**不随工程保存**([J177] 撤回了
+    // STATE_SCHEMA 原先登记的尾部落点,codec 不编码它),所以换载另一份工程 state 时必须**显式清零**
+    // —— 否则上一个工程的已读位会原样带进新载入的这一份(宿主切 preset / 复制轨道后 load state
+    // 都走这条路)。契约写明「每成功载入一份工程 state 就清零」(§3.1 语义行 / STATE_SCHEMA §二),
+    // 这一行就是它的实现。失败方向也安全:至多多弹一次引导,而不是该弹不弹。
+    uiGuideSeen_ = false;
+    session_.setChannelId(s.channelId);
+    session_.setGroupId(s.groupId);
+    // T30 PR#54 复审【重要】1 + R9:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
+    // remoteSetPriority 把记录投进旧组命令环、srMismatch 推导读旧组 SR。channel_id=0 释放段;
+    // 否则换组失败回退旧组、保持 session/ctrl 一致(避免「session 新组 + ctrl 未开/旧组」错位)。
+    if (s.channelId == 0)
+    {
+        ctrl_.release();
+    }
+    else if (ctrl_.group() != s.groupId)
+    {
+        if (ctrl_.changeGroup(s.groupId) != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(static_cast<scvb::u32>(oldGroupId)); // 尽力回退旧组段
+            // 只回退寻址组;savedGroupId_ 保持工程原值,保存时不把工程组号改写成旧组(SL-458)。
+            groupId_ = oldGroupId;
+            session_.setGroupId(static_cast<scvb::u32>(oldGroupId));
+        }
+    }
+    // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
+    // 若已 prepare,立即 re-claim;否则由下一次 prepareToPlay 走 claim。
+    if (prepared_)
+    {
+        const auto loadResult =
+            session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                             static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+        // [SL-462] 已绑定实例载入另一份工程、撞车后回滚成功:这里是唯一知道「这次载入的通道
+        // 被占了」的地方(本函数返回 void,回滚后 state() 又是 kActive),不记下来就一个信号都
+        // 不剩。见 noteLoadConflict()。
+        noteLoadConflict(loadResult, static_cast<int>(s.channelId));
+        // ⚠ [SL-446 第 3/4/5 轮] 这一行**必须留着**,别再删第二次——第 3 轮删过一次,删的理由
+        // 是"加载工程不该被回滚改写存的号",但删掉之后打破了一条更要紧的不变式:
+        // `session_.state() == kActive ⟹ channelId_ == session_.boundChannel()`。
+        // `drainFpReports()`/`bridgeRemoteSetPriority()`/`timerCallback()` 采集布防三处都按
+        // channelId_ 去寻址跨进程共享资源(命令环、广播数组),隐含假设"活跃就是真持有这个号"。
+        // 删掉这行后,已绑定实例载入不同工程、补偿式回滚成功的场景下,channelId_(配置=5)会与
+        // boundChannel()(实际=3)分叉、而 state() 仍是 kActive——上面三处会把 ch5(别的实例
+        // 正占着的号)当成自己的号去用,构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集布防
+        // 跟错开关。第 4 轮把删除回退回来,但当时误判"存档号被改写"是主线既有的轻缺陷、把它
+        // 转卡搁置了——复核 base 后证实那其实是本卡(第 2 轮加的重新同步)自己引入的回归,
+        // 不能搁置。第 5 轮的正确修法不是"删掉这一行",是"把这一行要同步的东西(配置/寻址
+        // 用途)与存档要记的东西(工程原值)拆成两个成员"——channelId_ 继续无条件跟着
+        // session_.channelId() 走,不再兼任存档职责;存档改记 savedChannelId_(见
+        // getStateInformation()/上面解码处的头注),这一行本身**永远不能因为存档问题被删**,
+        // 它保的是实时路那条不变式,不是存档语义。
+        // ⚠ [复审 4058116263,main 既有,不阻断] 上面那条不变式要收窄成条件命题——它只在
+        // "这一行已经跑过"(即 prepared_==true、prepare() 已被这个函数调用过)之后才成立。
+        // prepared_==false 时,setStateInformation() 只在 :509 调 session_.setChannelId(纯
+        // setter,不释放已持有的 slot、不重新 CAS),不会走到这一行;若用户在首次 prepareToPlay()
+        // 之前已经交互式 setChannelId()/setGroupId() 过(会话因此已是 kActive),这时载入一份
+        // 不同 channel 的工程,会短暂出现 channelId_(配置)与 boundChannel()(实际)分叉、
+        // 而 state() 仍是 kActive 的窗口——bridgeRemoteSetPriority() 在这个窗口里可能把优先级
+        // 投给别人正占着的命令环。这条窗口在 main 上就成立,不是本卡引入的回归,触发面比第 3
+        // 轮那次窄得多(drainFpReports()/timerCallback() 此时都还没启动,窗口在下一次
+        // prepareToPlay() 的重新同步处自行关闭),不在本卡修——已记 **SL-455**,不阻断本卡合并。
+        channelId_ = static_cast<int>(session_.channelId());
+        if (session_.state() != scvb::input::InputClaimState::kActive)
+        {
+            stageMachine_.forcePassthrough();
+        }
+    }
+}
+
+scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId)
+{
+    channelId = juce::jlimit(0, kChannelIdMax, channelId);
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // ⚠ [SL-19 复发/UI 未回滚,第 1 轮] 这里**曾经**在 CAS 结果出来之前就把 channelId_ 写成
+    // 请求值——CAS 是否成功由下面的 session_.prepare() 决定。第 1 轮的修法(等 prepare() 跑完
+    // 再回填 session_.boundChannel())在广播上是对的,但**存档也读同一个镜像字段**,把
+    // "实际持有"和"用户配置"这两件事混成了一件——[SL-446 第 2 轮] bot 抓到:工程存 5、
+    // 加载期撞车这种"配置了但没绑定"的场景,回填成 boundChannel()=0 会把用户存的 5**永久
+    // 擦掉**(下次保存工程就真的丢了),这与本卡要修的"存档写入抢失败的号"同族反向。
+    // 现在这个镜像字段固定读 session_.channelId()(配置,见 prepareToPlay() 头注的完整对照
+    // 表),取代 boundChannel()——ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」
+    // 判断都靠它。**广播单独直接读 session_.boundChannel()**,不经这个镜像,见
+    // bridgeTickSnapshot() 那行注释。[SL-446 第 5 轮] 存档不再直接读这个镜像——用户主动调
+    // 这个函数,是"用户主动改配置"的场景,下面在镜像同步之后会把 savedChannelId_ 也一起
+    // 更新(两个源头都是这次同步后的 channelId_,值相同,但落点分开是为了不让"加载工程"
+    // 那条路(setStateInformation())的重新认领意外污染存档,见那边的头注)。
+    session_.setChannelId(static_cast<scvb::u32>(channelId));
+    loadConflictChannelId_ = 0; // [SL-462] 用户已主动选通道:载入时那次冲突的一次性提示作废
+    if (channelId == 0)
+    {
+        ctrl_.release(); // channel_id=0 不 claim 任何段(T23 口径):命令环段随释放(PR#54 R9)
+    }
+    // 这次请求本身成不成功,由 prepare() 的返回值决定——不能事后再问 session_.state():
+    // 补偿式回滚成功时 state() 会是 kActive(会话确实还活跃,只是回到了旧 channel),
+    // 但**这次请求**依然是被拒绝的,UI 的冲突提示(抖动 + 红 toast)要认这个返回值,不认 state()。
+    const auto requestResult =
+        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+    channelId_ = static_cast<int>(session_.channelId());
+    savedChannelId_ = channelId_; // 用户主动改配置:存档跟着这次同步后的值走
+    if (session_.state() != scvb::input::InputClaimState::kActive)
+    {
+        stageMachine_.forcePassthrough();
+    }
+    // 桥面回执按这次请求本身的结果映射(§3.2,[J156]):kConflict / kAbiMismatch / kUnavailable 各回
+    // 失败形状,见 InputBridgeLogic.h claimRequestResponse()。
+    return requestResult;
+}
+
+scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
+{
+    groupId = juce::jlimit(1, kGroupIdMax, groupId);
+    const juce::ScopedLock lock(lifecycleMutex_);
+    loadConflictChannelId_ = 0; // [SL-462] 用户已主动改组:载入时那次冲突的一次性提示作废
+    if (groupId == groupId_)
+    {
+        // [SL-458] 寻址上是 no-op,但调用方明确要这一组:载入回退后 savedGroupId_ 可能还是工程
+        // 原值,以这次调用为准。⚠ Input 页面的组胶囊对当前组直接早退、不调桥(web/input/app.js
+        // 组胶囊 click 处理),所以今天用户在界面上走不到这里;回退后要让存档跟上,得改到别的组。
+        savedGroupId_ = groupId;
+        return session_.state(); // 同组 no-op:回会话当下的 claim 态(活跃/未分配 ⇒ {ok:true})
+    }
+    const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
+    const scvb::u32 oldGroup = static_cast<scvb::u32>(groupId_);
+    // T30:命令环 ctrl 段随组走(per-组各一份,ipc v1.5 [J66];与 Registry::changeGroup 同构)。
+    // PR#54 R9 + R10:有通道时先换 ctrl 段,失败回退旧组、不切 session —— 避免「session 新组 +
+    // ctrl 未开/旧组」错位;channel_id=0(未分配)不建/不换 ctrl 段(保持「channel_id=0 不建段」
+    // 口径),ctrl 段留到首次 setChannelId 的 ensureCtrlOpen 懒开(懒开按当前组对齐)。
+    if (channelId_ != 0)
+    {
+        const auto ctrlResult = ctrl_.changeGroup(newGroup);
+        if (ctrlResult != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
+            // 不切 session group,保持旧组一致态。[SL-463 / J156] 这次改组**没有生效**,回执必须报
+            // 失败 —— 此前这里回 session_.state(),会话在旧组上多半仍是 kActive ⇒ 桥面回 {ok:true},
+            // 组号原样不动、界面上也没有任何提示。按 ctrl 段打不开的原因映射成 §3.3 的失败形状。
+            return ctrlResult == scvb::InitResult::kAbiMismatch ? scvb::input::InputClaimState::kAbiMismatch
+                                                                : scvb::input::InputClaimState::kUnavailable;
+        }
+    }
+    groupId_ = groupId;
+    savedGroupId_ = groupId; // [SL-458] 用户主动改组成功:存档跟着走(换段失败的早退分支不碰它)
+    // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
+    stageMachine_.forcePassthrough();
+    session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+    // 新组里的 claim 结果(§3.3,[J156]):conflict / abiMismatch / unavailable 各回失败形状。
+    // 与上面 ctrl 段那一支不同,走到这里组号**已经**换成新组(claim 失败也不退回旧组)。
+    return session_.state();
+}
+
+// createEditor() 与 createPluginFilter() 见 InputPluginEntry.cpp:抽出去之后本 TU 不再引用
+// InputEditor,免 DAW 的宿主 harness 才能只编 Processor 而不链接 WebView2。
+
+// ---------------------------------------------------------------------------
+// T30 Input 桥接入面([M] 编辑器线程;除注明外持 lifecycleMutex_)
+// ---------------------------------------------------------------------------
+void ScvbInputAudioProcessor::ensureCtrlOpen()
+{
+    // 调用方已持 lifecycleMutex_。channel_id=0(未分配)不建/不开命令环段(T23「channel_id=0 无痕迹/
+    // 不建段」口径);释放回到 0 时由 setChannelId/setStateInformation 调 ctrl_.release() 释放(PR#54 R9)。
+    if (channelId_ == 0)
+    {
+        return;
+    }
+    // PR#54 R10:release 只清 base_ 不改 group_;channel_id=0 + 非默认组加载后再分配通道时 group_
+    // 可能残留旧组 —— 懒开前先按当前 groupId_ 换组对齐,否则 remoteSetPriority/srMismatch 落到错组。
+    if (ctrl_.group() != static_cast<scvb::u32>(groupId_))
+    {
+        ctrl_.changeGroup(static_cast<scvb::u32>(groupId_));
+    }
+    // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
+    // 退避:open() 的 owner-attach 分支在残段(magic==0)场景下最坏会 sleep 50ms × 10,而本函数
+    // 自 T37 起进了 25Hz Timer 的常驻路径(采集布防要读 ctrl)。失败就每拍重试的话,[M] 会被
+    // 反复卡住 500ms,连带把 4Hz 心跳推迟到 ~750ms。音频线程不受影响(processBlock 不持
+    // lifecycleMutex_),但没有理由把带 sleep 的初始化放进周期回调里空转。
+    if (!ctrl_.isOpen())
+    {
+        const auto now = scvb::steadyNowMs();
+        if (ctrlOpenRetryAtMs_ == 0 || now >= ctrlOpenRetryAtMs_)
+        {
+            if (ctrl_.open() != scvb::InitResult::kOk)
+            {
+                ctrlOpenRetryAtMs_ = now + kCtrlOpenRetryMs;
+            }
+            else
+            {
+                ctrlOpenRetryAtMs_ = 0;
+            }
+        }
+    }
+}
+
+ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickSnapshot()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    const auto now = scvb::steadyNowMs();
+    BridgeTickSnapshot s;
+    // [SL-446 第 2 轮] 广播给 UI 的必须是**实际持有**的 channel,不是 channelId_ 那个"配置"
+    // 镜像(两者在"配置了但没绑定"时会分叉,见 setChannelId() 头注的完整对照表)——否则又
+    // 回到"UI 说转移成功了,其实没有"那个原始 bug。这里刻意绕开镜像字段,直接读 session_。
+    s.channelId = static_cast<int>(session_.boundChannel());
+    // [SL-446 第 2 轮补充] 另开一路给 scvb.error 用(payload 的 ch + 边沿键,两处必须同源,
+    // 语义与限制见 BridgeTickSnapshot::configuredChannelId 的头注)——不能复用上面那个
+    // channelId 字段,否则"同一冲突状态、换了个请求号"这种组合会被边沿键的五元组判成
+    // "没变化"而漏发(连续两次请求不同冲突通道,第二次的提示会消失)。
+    s.configuredChannelId = channelId_;
+    s.groupId = groupId_;
+    s.claimState = session_.state();
+    s.conn = session_.connSnapshot(now);
+    s.healthy = session_.isHealthy(now);
+    s.passthrough = stageMachine_.target() == scvb::input::OutputStageMode::kPassthrough;
+    s.sampleRate = sampleRate_;
+    s.sourceChannels = srcChannels_;
+    ensureCtrlOpen();
+    s.globalInfo = ctrl_.readGlobalInfo();
+
+    // 广播区(§4.3)。seqlock 撕裂时**沿用上帧**而不是回落默认值:回落会让 UI 闪一帧
+    // 「优先级 0 / 无 lead / label 全空」,比陈旧一帧难看得多。段从未打开(本组无 Output)
+    // 时 lastBroadcastValid_ 恒 false,载荷才真正走默认值分支。
+    // 换组/释放后旧组缓存立即作废:沿用上帧的前提是「还在同一组」。
+    if (groupId_ != lastBroadcastGroup_)
+    {
+        lastBroadcastGroup_ = groupId_;
+        lastBroadcastValid_ = false;
+        lastBroadcast_ = scvb::CtrlBroadcastSnapshot{};
+    }
+    if (ctrl_.readBroadcast(lastBroadcast_))
+    {
+        lastBroadcastValid_ = true;
+    }
+    s.broadcast = lastBroadcast_;
+    s.broadcastValid = lastBroadcastValid_;
+    // 广播区的 config_seq 从 1 起算(见 OutputProcessor::publishConfigBroadcast),0 保留给
+    // 「本组还没有 Output 在广播」——否则 Output 首次上线时 seq 恰为 0,与「无广播」撞值,
+    // scvb.config 的变化门会把首帧真配置吞掉。
+    s.configSeq = s.broadcastValid ? s.broadcast.config_seq : 0u;
+    s.localAbi = session_.localAbi();
+    s.remoteAbi = session_.remoteAbi();
+    s.loadConflictChannelId = loadConflictChannelId_;
+    s.loadConflictGroupId = loadConflictGroupId_;
+    s.loadConflictSerial = loadConflictSerial_;
+    return s;
+}
+
+void ScvbInputAudioProcessor::bridgeAckLoadConflict(scvb::u32 serial)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 只清「界面刚发出去的那一次」:发出之后、确认之前若又来了一次新的载入冲突(serial 已变),
+    // 不能把新的那次也一并吞掉。
+    if (serial == loadConflictSerial_)
+    {
+        loadConflictChannelId_ = 0;
+    }
+}
+
+void ScvbInputAudioProcessor::noteLoadConflict(scvb::input::InputClaimState result, int requestedChannel)
+{
+    // 调用方已持 lifecycleMutex_。只收「请求被占、但会话回滚到旧通道仍然活着」这一种组合:
+    // 请求没被占(result != kConflict)就没有冲突可报;会话没回滚成功(state() != kActive)时
+    // claim 会停在 "conflict" 上,边沿检测(以及界面打开时的首帧)自己就会报,不需要这条旁路。
+    if (result != scvb::input::InputClaimState::kConflict ||
+        session_.state() != scvb::input::InputClaimState::kActive || requestedChannel < 1 ||
+        requestedChannel > kChannelIdMax)
+    {
+        return;
+    }
+    loadConflictChannelId_ = requestedChannel;
+    loadConflictGroupId_ = groupId_;
+    ++loadConflictSerial_;
+}
+
+void ScvbInputAudioProcessor::retryConflictClaim(scvb::u64 now)
+{
+    // [SL-495] 调用方已持 lifecycleMutex_(timerCallback 的 4Hz 分支)。规格 01 §4.1:冲突态
+    // 1Hz 静默重试,与用户手动重选并列。此前 Input 侧没有任何周期重试(Output 侧 O3 有),
+    // 占用方删掉/改号之后,输掉的那个要用户手动重选一次才会接管。
+    // 只在 kConflict 上重试:未分配(没有要抢的号)、abi 不符(重试也不会变)、段不可用
+    // (打开段的路径最坏带 500ms sleep,不放进周期回调)都不碰。
+    // 配置号取 session_.channelId() —— prepare() 本来就按它抢,重试不会改写用户刚选的号,
+    // 也不碰 savedChannelId_(存档)。
+    if (!prepared_ || session_.state() != scvb::input::InputClaimState::kConflict || channelId_ < 1 ||
+        channelId_ > kChannelIdMax)
+    {
+        return;
+    }
+    if (lastClaimRetryMs_ != 0 && now - lastClaimRetryMs_ < kClaimRetryIntervalMs)
+    {
+        return;
+    }
+    lastClaimRetryMs_ = now;
+    session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                     static_cast<scvb::u32>(srcChannels_), now);
+    // 冲突态下 claimedChannel_==0,上面走的是「首次 claim」那条路(没有旧通道可回滚),
+    // 配置号不会被改;照 setChannelId() 的纪律仍重新同步一次镜像,保住
+    // `state()==kActive ⟹ channelId_==boundChannel()`。
+    channelId_ = static_cast<int>(session_.channelId());
+}
+
+std::uint8_t ScvbInputAudioProcessor::bridgeGroupsOnline()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return session_.groupsOnline(scvb::steadyNowMs());
+}
+
+ScvbInputAudioProcessor::PriorityResult ScvbInputAudioProcessor::bridgeRemoteSetPriority(int n)
+{
+    n = juce::jlimit(0, 10, n);
+    const juce::ScopedLock lock(lifecycleMutex_);
+    ensureCtrlOpen();
+    const auto now = scvb::steadyNowMs();
+    PriorityResult r;
+
+    const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    const bool outputOnline = session_.connSnapshot(now).outputOnline;
+    const bool active = session_.state() == scvb::input::InputClaimState::kActive;
+    const bool ringFull = ctrl_.isRingFull(ch);
+    // §3.4/§5.6 拒绝判定(真源 = bridge::priorityRejection 纯函数)。判定顺序:unassigned >
+    // outputOffline > 非活跃 > ringFull。非活跃实例(conflict/abiMismatch/unavailable)不是
+    // channel 持有者,SPSC 纪律禁止其向共享命令环 enqueue —— 否则两个实例成双生产者竞写
+    // write_pos/覆盖最旧,损坏环或向不拥有的 channel 注入控制命令(PR#54 R3)。reason 取
+    // §5.6 闭集内最近似的 "unassigned"(未持有 slot;channelConflict 是 §5.1 errorCode 而非
+    // reason,闭集内无对应项,故不新造 reason,保持 §3.4 remoteSetPriority 返回形状冻结)。
+    const auto reject = scvb::input::bridge::priorityRejection(channelId_, outputOnline, ringFull, active);
+
+    // 满环仍投递(写方覆盖最旧 + 溢出计数,§6/10 IPC-13);其余拒绝态一律不投递。
+    if (reject == scvb::input::bridge::PriorityReject::kRingFull ||
+        reject == scvb::input::bridge::PriorityReject::kNone)
+    {
+        // PR#54 R10:enqueue 返回 false = 命令未写入(ctrl 段未打开/打开失败,如 abi 不符的残留损坏
+        // 段)。不得再回 queued:true,否则 UI 误以为成功。reason 取 §5.6 八值闭集内最近似的 busy
+        // (临时可重试;其余七值语义均不匹配:badArg/noTimeline/noLoop/notAdjacent 属其它函数、
+        // ringFull/outputOffline/unassigned 已有专属判定),不新造 reason。
+        if (!ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n)))
+        {
+            r.reason = "busy";
+            return r;
+        }
+    }
+
+    if (reject != scvb::input::bridge::PriorityReject::kNone)
+    {
+        r.reason = scvb::input::bridge::priorityRejectReason(reject);
+        return r;
+    }
+    r.queued = true;
+    return r;
+}
+
+void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
+}
+
+void ScvbInputAudioProcessor::bridgeSetGuideSeen(bool seen)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiGuideSeen_ = seen;
+}
+
+bool ScvbInputAudioProcessor::bridgeUiGuideSeen() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiGuideSeen_;
+}
+
+void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
+    // [SL-234] 百分比换算收拢进 clampUiScalePercent,与加载期共用同一份边界。
+    uiScale_ = scvb::bridge::clampUiScalePercent(percent);
+}
+
+int ScvbInputAudioProcessor::bridgeUiScalePercent() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiScale_;
+}
+
+juce::String ScvbInputAudioProcessor::bridgeUiLanguage() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiLanguage_;
+}

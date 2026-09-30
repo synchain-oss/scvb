@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// UiDefaultsStore —— 系统级 UI 全局默认(**跨工程**,不随工程 state 走)。
+//
+// 承载五项(契约 §1.29/§1.30/§1.32/§1.33/§3.8):
+//   • guide_seen_global —— 首启引导勾了「不再显示」(**Output / Input 各存一份**,见下);
+//   • tour_seen_global  —— 交互式导览已完成或已婉拒(Output 专属:Input 没有交互式导览);
+//   • lang_chosen       —— 用户**显式选过**语言(跨工程,§1.30 [J81] 副作用);
+//   • lang_global       —— 选中的语言值本身(只记「选过」不记「选的是哪个」会得到
+//                          「不再问 + 回英文」,比不修更糟,v5 实测 P1-6);
+//   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置;按角色分键:
+//                          Output 一份、Monitor 一份 [rc-misc c])。
+//
+// 为什么存在:此前 §1.1 快照里的 guide_seen_global / tour_seen_global 是**硬编码 false**、
+// WebViewHost::persistUiScaleAsDefault 是**空实现** —— 「不再显示」的跨工程承诺从未兑现
+// (T37 真机 bug A-3)。工程内的位与本存储互补:Output 的 guide_seen / tour_seen 随工程存在 PRMS
+// (src/output/OutputUiState.h);Input 的 guide_seen 不随工程保存、只在本次会话内有效([J177])。
+//
+// 落盘位置:`%APPDATA%\Synchain\SCVB\ui-defaults.settings`(app data 根逐字照
+// STATE_SCHEMA §4.3,与 sidecar 同根;不另起第二棵目录树)。
+//
+// 实现纪律:不驻留任何进程内状态 —— 每次读写现开一份 juce::PropertiesFile,读完/写完即析构。
+// 同一宿主里两个 Output 实例(或 Output 与将来的其它角色)因此永远看到磁盘上的同一份真值,
+// 无需跨实例广播;调用点稀疏(编辑器开窗一次 / 用户点「不再显示」「保持」各一次),开销可忽略。
+// 只在消息线程调用(桥 native function 与 buildSnapshot 均在消息线程)。
+
+#include <juce_core/juce_core.h>
+
+namespace scvb::uidefaults
+{
+
+// **Output 侧**的首启红字九条页「不再显示」(§1.32)。
+bool guideSeenGlobal();
+void setGuideSeenGlobal(bool seen);
+
+// **Input 侧**的首启轻量引导「不再显示」(§3.8,[J81]/J80/T48)。与 Output 的**各存一份**:
+// 契约 §3.1 语义行逐字要求分键 —— 两侧引导讲的是两个界面、两套内容,共用一个位会让先装
+// Output 的用户永远看不到 Input 的引导,而那正是 J80 立 T48 的全部理由。
+bool guideSeenGlobalInput();
+void setGuideSeenGlobalInput(bool seen);
+
+bool tourSeenGlobal();
+
+// 「用户显式选过语言」的系统级全局默认(跨工程):新工程不再重复问语言(v4 实测 P1-6)。
+bool langChosenGlobal();
+void setLangChosenGlobal(bool chosen);
+// 选中的**语言值本身**(跨工程)。只记「选过」不记「选的是哪个」时,移除插件再加载会得到
+// 「不再问 + 回英文」—— 比不修更糟:语言起始卡被全局位挡住,用户连改回来的入口都没了
+// (v5 实测 P1-6)。空串 = 未设置过,调用方沿用自己的默认。取值口径同 §1.30 setLang。
+juce::String langGlobal();
+void setLangGlobal(const juce::String& lang);
+void setTourSeenGlobal(bool seen);
+
+// 0 = 未设置过(调用方沿用自己的默认 100)。
+int uiScalePercent();
+void setUiScalePercent(int percent);
+
+// [rc-misc c] **Monitor 侧**的缩放全局默认(契约 §10.1 commitUiScale「形制同 §1.29」)。
+// 与 Output 分键,理由同 kKeyUiScale 头注:三个插件的档位表不同,共用一个键会互相污染。
+// 语言不分键:langGlobal 本来就是三个插件共用的那一份(用户选过的语言跨插件生效)。
+int uiScalePercentMonitor();
+void setUiScalePercentMonitor(int percent);
+
+// **仅供测试**:把落盘目录改到临时目录,避免单测写真实用户设置(崩溃即残留、并行
+// worktree 互相串扰)。传空 File 恢复默认位置。生产代码不得调用。
+void setStorageDirForTesting(const juce::File& dir);
+
+} // namespace scvb::uidefaults

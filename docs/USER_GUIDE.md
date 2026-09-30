@@ -1,0 +1,310 @@
+**English** | [简体中文](USER_GUIDE.zh-CN.md)
+
+> Status: evolving
+> Last updated: 2026-09-29
+> Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
+
+# SCVB User Guide
+
+SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it under the terms of the [GPL-3.0-or-later](../LICENSE). If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
+
+SCVB (Synchain Vocal Balancer) is a **pair** of VST3 plugins that automatically balances pan and level across a multi-singer, multi-part vocal arrangement:
+
+- **SCVB Input** sits on every vocal track and captures it;
+- **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and writes the result back as DAW automation.
+
+Both plugins must be **installed together and used as a pair**. Installing only one will not leave you with a track that has no sound (see hard rule 3), but it will not give you any balancing either.
+
+A third plugin, **SCVB Monitor**, ships in the same zip and is **optional**: a read-only window for watching a whole group's pan and level movement. It passes audio through untouched, has no automation parameters, and never changes what Input and Output do.
+
+> **How to change the nine hard rules**: the `## 硬约束` section of `docs/USER_GUIDE.zh-CN.md` is the **single source of truth** for all nine. They also appear in this file, in both READMEs' Quick start, and in the plugin UI's three language dictionaries — 7 places in total. **None of them may be transcribed by hand.** To change the wording, edit that section only (translations live in `docs/hard-rules.i18n.json`), then run `node scripts/gen-hard-rules.mjs`; the other 6 places follow the generator. `node scripts/gen-hard-rules.mjs --check` is the gate.
+
+## Hard rules
+
+Breaking any one of these does not give you a slightly worse result — it gives you silence, wrong panning, or failed analysis. The plugin shows all nine on first launch, and you can reopen them any time from the Output **Settings** tab.
+
+<!-- BEGIN GENERATED hard-rules:en -->
+> ⚠️ **Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.**
+>
+> 1. **Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output.** Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)
+> 2. **SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus.** Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)
+> 3. **Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug.** That mute path is what preserves the "vocal tracks first, bus second" ordering in the DAW's dependency graph, and it still holds under offline rendering and REAPER's anticipative multithreading. **When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically**, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the "mute → passthrough" direction; "passthrough → mute" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)
+> 4. **Host pan must stay centred on both the vocal tracks and the bus.** SCVB pans internally with an equal-power law, independently of the host's pan law; an off-centre host pan stacks on top of it and produces a wrong stereo image. (ADR-010)
+> 5. **Each channel id is unique within one group, and a given vocal track may belong to only one group.** When two Inputs in the same group claim the same channel, the late arrival shows a "channel conflict" warning and stays inactive; the same channel number in a different group is a separate, unrelated path. (ADR-002 / J66)
+> 6. **Only one Output instance can be active in a group at any one time.** A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)
+> 7. **Every track takes part in automatic pan by default; if a stereo track should keep its existing stereo width and position, switch off "participate in auto pan" for that track on the Tracks page.** Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread), and once participation is switched off the stereo width you already have is preserved rather than overwritten by automatic assignment. (ADR-003 / J57 + J83)
+> 8. **SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)
+> 9. **Do not carry on exporting while a "timeline gap / overlap" warning is showing.** Work through the common-pitfalls list in `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.
+<!-- END GENERATED hard-rules:en -->
+
+## Install
+
+Everything comes in one zip, `SCVB-v<version>-win64.zip`, containing three plugins:
+
+| Plugin | Where it goes | Needed? |
+|---|---|---|
+| **SCVB Input** | The last slot of every vocal track | Yes |
+| **SCVB Output** | The first slot of the vocal bus | Yes |
+| **SCVB Monitor** | Any track (it passes audio through untouched) | Optional — a read-only window for watching a whole group |
+
+### Download and verify
+
+1. Download `SCVB-v<version>-win64.zip` and the matching `.sha256` from the [Releases page](https://github.com/synchain-oss/scvb/releases).
+2. Check the zip. In PowerShell, in the folder you downloaded to: `Get-FileHash .\SCVB-v<version>-win64.zip -Algorithm SHA256`. The result must match the SHA-256 in the Release notes (that value is produced by CI and is the authoritative one). **If it does not match, do not install it, and tell us.**
+
+### Unblock the zip (the plugins are not code-signed)
+
+SCVB is not code-signed, so Windows and your browser treat it as coming from an unknown publisher:
+
+- **The browser may warn about the download** ("not commonly downloaded" / "unknown publisher"). If the SHA-256 matched, choose to keep the file — in Microsoft Edge: **…** → **Keep** → **Show more** → **Keep anyway**.
+- **Clear the downloaded-from-the-internet mark before unzipping.** Windows copies that mark onto every file extracted from a marked zip. Right-click the zip → **Properties** → on the **General** tab tick **Unblock** → **OK**. If there is no Unblock checkbox, the file is not marked and there is nothing to do. The PowerShell equivalent is `Unblock-File .\SCVB-v<version>-win64.zip`.
+
+### Copy the plugins
+
+1. Unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and (if you want it) `SCVB Monitor.vst3` — **the whole bundle folder** in each case — into `C:\Program Files\Common Files\VST3\` (Windows asks for administrator permission).
+2. Rescan plugins in your DAW.
+
+**Upgrade every SCVB plugin together.** Input and Output share one version number. If the two sides speak different versions of the shared-memory protocol they refuse to connect, on purpose; even when they do connect, an old Input next to a new Output (or the other way round) is not supported (with a new Output and an old Input, an offline render can sum the vocals twice).
+
+## Five-minute start
+
+### Create a vocal bus
+
+Create a stereo bus in your DAW (group / bus / submix, the name varies by host) and route every vocal track you want balanced into it. **Once that is done, leave the vocal tracks' routing alone** (hard rule 1).
+
+### Install both plugins
+
+Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain, and one SCVB Output in the **first slot** of the bus (hard rule 2). Host-by-host instructions are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
+
+### Assign channels and groups
+
+Open each Input and give it a channel id. Channel ids may not repeat within one group (hard rule 5). The group selector is eight capsules, A–H, defaulting to A; a single song project will not normally need a second group — groups exist for "one DAW project containing several unrelated vocal buses". On the Output side, pick the same group in Tab 1.
+
+**Track names fill in automatically**: once an Input has a channel and is connected to the Output, that track's name on the Output Tracks tab is taken from the DAW track name of the vocal track it sits on (anything past 24 characters is cut off); rename the track in your DAW and the name here follows. A track whose name you have **edited yourself** on the Tracks tab stops following DAW renames; **clear** the name to go back to automatic (while the Input is connected, the current track name is filled back in right away). When the Input disconnects (set to unassigned, its track deleted, and so on — the same test the UI uses for "not connected") the last track name is kept. If the host does not provide track names, nothing is filled in and the field keeps whatever it had (the placeholder if it was never filled).
+
+### Capture
+
+Turn on **Capture** in the Output, then play back as usual. Capture writes only while the switch is ON **and** the transport is rolling; whatever you play is what gets captured, and replaying a section overwrites the old data for it. SCVB **stores no audio** — only one feature frame every 10 ms (see "Sessions and files").
+
+### Analyse
+
+Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing**, because what capture stores is features rather than audio or decisions.
+
+**Only channels whose Input is connected right now take part in analysis** (the same check the UI uses for "not connected"). After you move a track to another channel, or remove / disable its Input, the data captured on the old channel is kept but no longer counted (the automatic re-segmentation after you release a VAD / segmentation slider does not update its segments either); once the Input is back, the next analysis picks it up again. The check matches the UI: an Input whose heartbeat has not updated for more than 2 seconds (for example while the host is stalled) also counts as not connected. If none of the channels with data in the selected range is connected, the analysis does not run (it never falls back to stale data): the impact preview line under **Analyse** on the Overview page shows the reason instead, and the re-analyse buttons on the Waveform and Settings pages show a message too.
+
+### Output
+
+On a newly inserted SCVB Output the output switch starts off (Follow Host: the bus follows the host parameters and no automation is written); turn it on when you need it. When you open an existing project, the switch comes back the way it was saved (if it was saved on, the load-guard banner appears first; see "Writing the result into your DAW").
+
+Turn on the **Output** switch. What you now hear on the bus is the balanced result: each track takes its gain/pan from the curves, and the sum replaces the bus input. The first time you flip this switch you get a one-off confirmation bar explaining what happens next; **until you press "Got it, start" on that bar, you only monitor — no host automation is written** (and the footer does not show "WRITE AUTOMATION …"), while "Undo (back to Follow Host)" switches it back off. If you switch output off without pressing "Got it, start" (with the switch itself, or by turning on 01 capture, which switches output off) and then on again, the bar comes back and still has to be confirmed before anything is written. Once you have confirmed in this plug-in window (pressed "Got it, start", or "Continue write automation" on the banner shown when a project is reopened), switching output off and on again in the same window does not bring the bar back, and output writes as soon as it is on. This starts over each time you open the plug-in window. If you close and reopen the plug-in window while the bar is showing, the bar is still there and still needs "Got it, start".
+
+### Write automation
+
+Set the DAW's automation mode to **Write** or **Latch** and play through once more. SCVB Output prints the current version's curves as host automation at the playback position (15 tracks x pan/vol, 30 lanes in total). When it is done, switch automation back to Read and the plugin follows your DAW automation faithfully. From then on you can fine-tune the automation by hand in the DAW, and nothing will be overwritten by the plugin unless you write again. The plugin reproduces what is on the automation lanes, faithfully.
+
+**Before exporting audio, read [Exporting and rendering](#exporting-and-rendering)**: rendering a vocal track that has SCVB Input on it by itself gives you a silent file.
+
+## Interface tour
+
+### The four Output tabs
+
+| Tab | What it is for |
+|---|---|
+| **Overview** | The capture / analyse / output switches, engine Range, group selection, version chip, global Width and MS Balance, Lead Select, pan and level distribution charts |
+| **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, volume participation, auto-pan participation, freeze, ST marker |
+| **Waveform** | Timeline lanes: VAD colouring, segments, the segment inspector (edit pan/vol on a selected segment), selections and partial recapture / re-analysis |
+| **Settings** | Usage notes (including the nine hard rules), loudness basis, centre-slot policy, UI scale, language, version number, diagnostics |
+
+### The Input single page
+
+Input is a single page: channel selection, group selection, connection status, level, passthrough/mute status, in-place gain switch. **The configuration's source of truth lives in the Output** — the values Input shows and edits are read from and written to the Output's state over the control-plane IPC.
+
+### First-run guide and tour
+
+The first time you open an Output you get, in order: the language card, then the **nine hard rules page**, then "Would you like a one-minute look at the interface?", then the interactive tour.
+
+- The **"Don't show again"** checkbox at the bottom of the rules page applies across projects: tick it and new projects will not show it again.
+- The tour is a spotlight-style walkthrough. **Left-click anywhere to advance**, it is purely visual and textual with no audio, and it runs on demo data — **nothing is written into your project**.
+- In the Settings tab, **"Show guide again"** replays the tour at any time, **"Show all nine"** reopens the rules page, and **"View workflow"** opens the workflow overview card.
+
+## Engine range (Range)
+
+The RANGE card on the Overview tab decides which stretch of the timeline capture and the output engine work on. Three modes: **Follow** (default — capture follows wherever you play), **Loop** (follows the DAW loop region) and **Manual** (you set the start and end).
+
+The mode you pick and the Manual start and end are **not saved with the project**: save in Loop or Manual mode, and when you reopen the project the range is back on **Follow** (the whole timeline); pick the mode again when you need it.
+
+In Manual mode:
+
+- The start and end boxes take `minutes:seconds.milliseconds`; the line below also shows the **bar and beat** the range falls on (for example "Bars 33.1 → 49.1"), and **−4 / +4** move the end by **4 bars**.
+- Bars are converted from the **tempo, time signature and current beat position** the host reports. The plugin can only read the host's tempo **at the current moment** — it cannot read the whole tempo map — so:
+  - **Constant tempo, one time signature**: the bars are exact and no note is shown;
+  - **Tempo changes**: places you have not played are estimated from the most recent tempo, with the note "Bar numbers are estimates; they calibrate after playing this area". Play (or park the playhead) around the start and the end once and they calibrate to the positions the host reports; the note goes away;
+  - **Time signature changes**: bar numbers depend on the whole meter history, which the plugin cannot read. The note says "Time signature changed — bar numbers are estimates"; playing does not calibrate them — go by the DAW ruler;
+  - **The host reports no tempo** (or the plugin window has only just opened and nothing has arrived yet): the range is shown in seconds only, with a note, and −4 / +4 move by 4 seconds.
+- The plugin only knows about a tempo change once it has **seen** it: the playhead passing the change, or being parked somewhere after it, both count. Until then it converts the whole range as if the tempo were constant, without a note.
+- After you **edit the tempo** in the DAW, as soon as the point under the playhead (or a previously played spot the playhead then passes or is parked on) no longer matches, the plugin discards everything it had recorded and starts observing again; an edit that falls where you have not played yet in this session only affects values that were already extrapolated from the most recent tempo.
+- While the transport is stopped the last tempo read is kept. This tempo information lives in memory only while the plugin window is open and is not saved with the project; close and reopen the window and it starts observing again.
+
+## Capture
+
+- **When it writes**: capture switch ON **and** transport rolling. Stop the transport and writing stops.
+- **Replay semantics**: data is merged by timeline address, so replaying a range overwrites it with the new data. To redo a section, just play that section again.
+- **Features, not audio**: one frame every 10 ms holding K-weighted mean-square + peak + the continuous VAD posterior. Project size stays manageable and thresholds can be adjusted offline as freely as you like.
+- **Coverage**: ranges that were never captured show as uncaptured on the waveform page — they are never faked as silence. If you need to, just record that section again.
+
+## Analysis
+
+- **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview: while you drag, the green band at the top of each lane and the green dotted lines show **where each track counts as voiced and where long phrases get cut under the current settings** (a preview only — the segment table is not touched; while capture is running during playback the green band does not follow the drag, though the dotted lines still do, using capture data up to one second old). The preview stays up for as long as you hold the slider — even if you stop moving — and nothing is re-segmented early; the real re-segmentation runs 300 ms after you release (or switch to another window while holding), and the final segment table is additionally cut at **other tracks'** boundaries, so it can contain more segments than the preview shows. **These five settings and the transition time on Tab 1 are saved with the project** — reopen the project and they still show the values you saved (since v5.6.15; [SL-416]).
+- **Segmentation**: energy-valley detection plus a minimum segment length (the wave page's **MIN SEG** slider, **50–2000 ms**, default 120 ms) and a breath tolerance. Automatic segments shorter than it are dropped, or merged into a **touching** neighbouring segment; manually edited segments are unaffected. **After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour**; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a selection or range re-analysis, and the leftover of a neighbour dropped wholesale because it clashed with a manual segment). **These settings are saved with the project** (mode / sensitivity / minimum segment length have been persisted since v5.6.14 — see `docs/contract-changes/20260914-sl411-segmentation-persist.md`): reopen the project and the sliders still show the values you saved, and **the minimum segment length and sensitivity are what the analysis runs with**; the segmentation **mode** is a **reserved slot in v1** — there is no control for it anywhere in the UI (**there never was** one; this release did not hide it), and the engine does not consume it (it always runs energy-valley detection), so it is only carried through the project file so the value is not lost (the `vad_only` setting is kept for the card that wires it up — see `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`).
+- **Segment loudness basis**: Settings offers **K-weighted segment integration (default) / RMS / peak dBFS**; changing it requires a re-analysis.
+- **Centre-slot policy**: the fallback rule for when several tracks compete for the centre position — **priority queue (default) / lead exclusive / evenly nudged apart**, also a "re-analyse after changing" setting.
+- **Lead Select feeds the analysis**: the track picked in Lead Select on the Overview tab is treated as the lead when you re-analyse — it sits in the centre without taking another voice's position, the other voices are spread left and right around it, and level balancing counts it as the centred track. **Pick the track in the plugin and re-analyse — no replay needed**: a Lead Select change made in the plugin's own UI does not count as automation (nor does a value written back by undo / redo or restored when a project opens), so re-analysis applies the value Lead Select has **at the moment you click analyse** to the whole timeline — auditioning a passage before you analyse makes no difference. Lead Select can also be automated in your DAW (even switching lead line by line): Output records the values the DAW writes **as playback passes over each moment**; re-analysis follows those recordings where they exist and uses the value at the moment you click analyse wherever the automation has not been played yet — so after writing or changing the automation, **play the automated passages once and then re-analyse**. Re-analysis switches lead at the moment the automation does — two singers alternating within one passage each get the centre for their own lines. The switch point does not have to be drawn exactly: if a line starts or ends (any track starts or stops sounding) within about 1 second of it, the switch is aligned to the nearest such point; otherwise to a nearby pause where the voices breathe together; otherwise it happens right where you drew it. A value that lasts less than 0.15 s (a brief blip in the automation) does not count as a switch. Changing Lead Select from the DAW's own parameter panel or a controller also counts as automation (the plugin cannot tell those apart from automation playback). One edge case: Output can only see who changed Lead Select at the moment its value **changes** — where the automation plays back the value Lead Select already has, there is no change, so that stretch does not count as automation and is laid out with the value at the moment you click analyse. Typically the opening stretch of the automation holds the same value Lead Select had before playback (for example both 0) while the transport ends up parked where the automation reads a different value: the opening stretch then follows the parked value. Before re-analysing, park the transport where the automation holds the opening value (usually the start of the song), or pick that value in the plugin. Until you re-analyse, the selected track is still pulled to the centre in real time as before; only the other voices keep their old layout.
+- **Dragging thresholds never touches segments you edited**: 300 ms after you release, only segments that are `origin=auto` and unlocked get rewritten; hand-edited or locked segments stay byte-for-byte identical, and the first line of the diff tells you how many were preserved.
+
+## Manual touch-ups
+
+Select a segment on the waveform page and edit its pan / vol in the segment inspector:
+
+- hand-edited segments are marked `origin=user_edited`, newly created ones `origin=user_created`;
+- you can additionally mark a segment `locked`;
+- **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected;
+- **a locked segment survives even "re-detect (including manual segments)"** — the lock is a second gate, and only you can lift it, segment by segment.
+
+**Dragging a segment boundary snaps it to energy valleys** (hold Alt while dragging to turn snapping off): when the handle comes within 6 pixels of a valley it lands on the valley and the handle lights up amber. An "energy valley" here is a low point in the loudness envelope (smoothed over 50 ms) that the envelope **climbs back more than 6 dB from on both sides** — that is the threshold at the default segmentation sensitivity; higher sensitivity lowers it (3–12 dB). Typical valleys are the pauses between phrases and deeper breaths; stretches that were never captured do not count as valleys. So if a spot does not snap, the envelope most likely does not climb back that far on both sides. When zoomed so far out that more than about an hour of this track's captured material is on screen, there is no snapping.
+
+**Freezing** a dimension on the Tracks page declares "I am taking this dimension over by hand": on write, that dimension is printed into automation as a flat line, and whatever you draw in the DAW afterwards will never be overridden by the engine. The priority chain is: **host automation > frozen manual value > manual touch-up > engine analysis curve**.
+
+Freezing is a **reversible, temporary takeover**: values you adjust while frozen live on the parameter plane only, and the analysis curve is left untouched -- **unfreeze and the dimension immediately returns to the engine's analysis curve**, which re-analysis keeps updating as usual. Adjustments made while frozen **do enter the plug-in's undo stack** (so do the other per-track settings on the Tracks page -- enable, name, priority, lead lock, volume exempt, auto-pan participation, pairing, freeze and width -- and the Overview page's global Width, MS Balance and Lead Select): Ctrl+Z rolls back the knob you just moved. The first time you drag a track's volume collar while it is not frozen (handing that track over to manual), one Ctrl+Z also puts the freeze switch back, so the knob and the sound both return to where they were before the drag. Undo writes the old value back through the same host path as moving the knob by hand, so host automation still wins: if that parameter has automation and your host is in Read mode, playback or locating re-applies the automated value; in Write / Touch / Latch mode while the transport runs, the undo is recorded as automation, exactly like a manual move; with no automation, the plug-in's undo is how you roll it back. Pressing Ctrl+Z while still holding a knob or slider first cancels that drag (back to where you grabbed it), then undoes.
+
+## Partial recapture / re-analysis
+
+The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:
+
+- **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "auto-stop outside the range" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
+  Once the range is disarmed (by you, or by the auto-stop at the right edge), a notice pops up at the bottom right: "Re-captured X.X s; re-analyzing this range is recommended". X.X is **how long the playhead actually travelled inside the selection** while armed (stretches with capture off do not count, and looping the same stretch several times counts it once). "Re-analyze now" jumps to the waveform page and re-runs analysis over **the span from the earliest to the latest re-captured moment x the armed tracks** (if you moved the selection or skipped around while armed, the gaps in between are re-analysed too — their features did not change, and re-analysis only recomputes automatic segments, manual ones stay as they are); the ✕ just closes the notice. Disarming without playing anything shows nothing. The seconds are estimated by the UI from the playhead, so time spent with the editor window closed is not counted.
+- **Re-analysis**: re-runs analysis over the selection only; segments and curves elsewhere are preserved exactly.
+
+## Versions
+
+There are **2 version slots**, each holding a complete set of curves plus configuration:
+
+- the version chip lives in the header and is visible from all four tabs; double-click to rename it in place (16 characters or fewer; clearing it falls back to `V{n}`);
+- **Copy to...** copies the whole current version into the other slot; this happens inside state, with **zero automation pollution**;
+- switching versions is **not** an automation parameter (otherwise a write pass would record the switch into automation itself);
+- each version owns its own full set of pan/vol/width automation parameters, and a write pass prints the set belonging to the **current** version.
+
+## Writing the result into your DAW
+
+1. Confirm the output switch is ON, and first press "Got it, start" on the confirmation bar (when reopening a project, "Continue write automation" on the banner) — until then you only monitor and nothing is written;
+2. set the DAW's automation mode to **Write** or **Latch**;
+3. play the range you want written (Range decides the engine's scope: follow / DAW loop / manual range);
+4. switch back to Read when it is done.
+
+Things worth knowing:
+
+- The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself; the engine neither prints them nor overwrites them — **those three always follow the value in your DAW**.
+- With the output switch **ON**, the DSP for those 30 takes engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
+- Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
+- Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "Continue write automation", the plugin is loaded but silent on the automation side — **not a single gesture goes out**. Switching output OFF also clears the guard: if you then switch it back ON by hand, it behaves like any other manual ON — if you have not confirmed yet in this window (neither "Got it, start" on the confirmation bar described under "Output" nor "Continue write automation" on this banner), the confirmation bar appears and writing starts only after "Got it, start", once playback enters the analyzed range; if you have, output writes as soon as it is on. When the host reloads a plugin state that has output ON (for example a DAW undo that includes plugin state, an A/B comparison, or loading a preset), that counts as reopening the project: the banner comes back and needs confirming again.
+- Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
+
+## Exporting and rendering
+
+> ⚠️ **Do not render a vocal track that has SCVB Input on it by itself, and above all do not let the render replace the original audio — the original would be replaced with silence.**
+>
+> Once a healthy SCVB Output is connected, Input sends silence downstream from its track (hard rule 3), and that track's sound comes out of the Output, summed on the bus, instead. So Render in Place, Freeze or a single-track stem export of **one** vocal track — each of these renders takes only that track's own output — gives you a **silent file**. If the host is set to **replace** the original audio with the render (a "replace original audio"-style option), the original is replaced with that silence.
+
+What to do instead:
+
+- **Export the vocal bus as a whole** (Cubase Export → Audio Mixdown, REAPER File → Render and so on);
+- if you really need a single-track file, **bypass or remove** the SCVB Input on that track before rendering, and do **not** pick a "replace original audio"-style option;
+- if in doubt, back up the project and its audio first.
+
+The Input's first-run guide covers this too (it appears the first time you open an Input; click the "?" at the bottom right of the Input window to see it again at any time). The full entry is KI-4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
+## Pan curve editor
+
+The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
+
+As with an EQ, you hear the change while you drag: moving a point, the Q slider, or the mouse wheel applies the curve live (at most 20 updates per second, each crossfaded over 30 ms). Dragging is only a preview until you let go (for the Q slider and the wheel: until you pause for a moment) — that is what gets saved to the project and what becomes **one** undo step. The preview does not affect printed automation, the Monitor display or the analysis balance.
+
+## Target width
+
+Width is a **geometric angle scaling**: the assigned angle is multiplied by a coefficient, and the readout is shown as an angle (`+/-{θ}°`, where `θ = round(width% x 0.6)`, so 0 / 100 / 150% map to 0° / 60° / 90°).
+
+**Why not M/S widening**: above a width of 1, M/S widening flips the polarity of amplitude-panned sources and mono compatibility collapses outright. Geometric angle scaling does not have that problem.
+
+For stereo sources, width is the **spread** in the dual-pan model (pan being the centre of the arc); width=0 collapses the source to mono.
+
+## Sessions and files
+
+- **Segments, ranges, and 2 versions of curves plus configuration** (a few hundred KB) live in the Output's state and travel with the project.
+- The **feature stream** is compressed and **embedded in state**. This version **does not offer external storage**: features are never written to a directory outside the project, and Settings no longer shows a "Storage status" row (the shipped behaviour is always embedded, regardless of the 8 MB mark).
+- Saving the project elsewhere or copying it to another machine carries the features along. A project written by an earlier version that kept its features in an external directory still opens and reads back as before (that read path is retained — opening one still writes an `owner.lock` ownership marker there), and **saving it once pulls the features back into the project and reclaims the external directory** — that step is **irreversible** and the project file grows accordingly; if that external file is gone, the features cannot be recovered (segments and curves are unaffected) — just capture again.
+- The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
+
+## Privacy and files on disk
+
+**SCVB does not use the network.** None of the three plugins sends or downloads anything: there is no update check, no usage statistics, no account and no licence server. The interface is loaded from files built into the plugin, fonts included. Input, Output and Monitor talk to each other only through shared memory on this computer. Two links open a web page, and only when you click them: the documentation link, and the "install WebView2" link that appears when the WebView2 Runtime is missing. Both open in your default browser, not inside the plugin. (The Microsoft Edge WebView2 Runtime that draws the interface is a Windows component kept up to date by Microsoft; SCVB does not change how it behaves.)
+
+**What SCVB writes to disk:**
+
+- **Your project.** Settings, segments, curves and the captured features are saved by your DAW inside the project file, like any other plugin's state.
+- **`%APPDATA%\Synchain\SCVB\ui-defaults.settings`** — a few preferences that apply across projects: the interface language you picked, the interface scale of the Output window, and whether you have already seen the first-run guide and tour.
+- **`%LOCALAPPDATA%\Synchain\SCVB\WebView2\`** — the working folder of the embedded browser that draws the interface (its cache and settings), one subfolder per plugin.
+- **`%APPDATA%\Synchain\SCVB\sessions\`** — only for projects saved by an early version that kept its features outside the project (see "Sessions and files" above). This version does not create new folders there.
+- **An exported suggestions `.csv`** — only when you export one, in the folder you choose.
+
+SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+
+To remove the preferences and the browser cache, close your DAW and delete the two `Synchain\SCVB` folders above. Keep `sessions` if you still have projects from an early version that use it.
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| **Red pill at the top plus a red "version mismatch" banner** | Only one of the two plugins was updated | SCVB refuses half-compatible connections. Bring Input and Output up to the same version together |
+| **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough and recovers in about 5.5 s. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
+| **One vocal track is silent** | That track's Input is connected to a healthy Output, but the Output never received its data (no channel selected / wrong group / channel conflict) | Check that Input's channel and group; check whether the track shows as online on the Output's Tracks page |
+| **Installing Input left the whole track with no sound** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If that track really has no sound, collect the output of "Copy diagnostics" in Settings and open an issue |
+| **Muting or soloing a vocal track in the DAW, or moving its fader, does not change that voice in SCVB's output** | By design: Input sits in the last slot of the track's plugin chain (before the fader) and hands the track's audio to the Output there; the DAW's mute, solo and fader act after that point | Do it in SCVB: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page; to change its level, change it in SCVB. Details in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) (KI-8) |
+| **"Channel conflict" warning** | Two Inputs in the same group claim the same channel (also shown when a project opens and its channel is already taken) | Change the channel id on one of them, or move it to another group. Once the other Input releases the channel (track deleted or renumbered), the waiting one takes it over by itself within about a second |
+| **"Group X already has a primary Output; this instance is read-only"** | The group already has an active Output | A group may only have one active Output (hard rule 6). Remove the extra one, or move it to another group |
+| **"Could not connect: the shared memory the plug-ins communicate through could not be opened" after clicking a channel card or switching group** | The Input could not open or set up the shared-memory segment it uses to talk to the Output (for example, a segment with the same name was created by a different SCVB version) | Try again; if it keeps failing, restart the host and make sure no other DAW with a different SCVB version is running on the same machine. If it happens while switching channels, the track stays on its previous channel and keeps working |
+| **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
+| **The whole image is skewed to one side** | Host pan on a vocal track or on the bus is not centred | Return every host pan to centre (hard rule 4) |
+| **Rendering or freezing one vocal track on its own gives a silent file** | By design: once connected to the Output, the track itself sends silence downstream and its sound comes out of the Output on the bus | Export the vocal bus as a whole; for a single-track file, bypass or remove that track's SCVB Input before rendering, and do not pick "replace original audio". See [Exporting and rendering](#exporting-and-rendering) |
+| **The exported audio differs from what you heard live** | A routing or ordering problem under offline rendering | Timeline addressing holds under offline rendering too; if it still differs, note your DAW and version and open an issue |
+| **The write pass recorded nothing** | Wrong automation mode / a known pitfall in that DAW | Confirm Write or Latch; in REAPER, do not close the plugin GUI; see [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
+| **A track is disabled with a sample-rate mismatch notice** | That track's sample rate differs from the Output's | Use one sample rate throughout the project |
+
+## FAQ
+
+**Can I install only the Output?** No. Without Inputs there is no track data at all.
+
+**What happens if I install only an Input?** That track stays in passthrough and will not lose its sound (hard rule 3), but you get no balancing either.
+
+**Why can't more parameters be added?** The automation parameter surface is frozen at **123** (124 as the host sees it). Ableton Live's ceiling of 128 leaves only 4 spare, and Logic identifies parameters by index — adding or removing one would scramble the automation in every existing project. New requirements go into state instead.
+
+**Can I go beyond 15 tracks?** Not in v1; 15 tracks per group. If you genuinely need more, use a second group (an independent bus domain), but the two groups are not balanced jointly.
+
+**Is macOS supported?** v1 is Windows x64 / VST3 only. A macOS build is something we will look at later on.
+
+**Can I edit the analysis result if I don't like it?** Yes, see "Manual touch-ups"; automatic re-analysis will not overwrite what you edited.
+
+**Do I have to recapture after changing the VAD threshold?** No. What is stored is continuous features, so thresholds can be changed at any time with live preview.
+
+## Known limits and the v2 roadmap
+
+The full list is in `docs/KNOWN_ISSUES.md`. The main points:
+
+- 15 tracks per group, 2 version slots;
+- one active Output per group at a time;
+- **one project using SCVB open at a time on the same computer.** The plugins find each other by group (A–H) only, not by project, so two projects open at once (in two DAWs, or two projects in the same DAW) that use the same group land on the same bus and fight over channels. If you really need both open, give them different groups. Details in `docs/KNOWN_ISSUES.md` (KI-5);
+- **rendering a vocal track that has SCVB Input on it by itself gives a silent file**, and a render that replaces the original audio replaces it with silence; what to do is under "Exporting and rendering" above, details in KI-4 of `docs/KNOWN_ISSUES.md`;
+- the Output reports no additional latency (by design, not a limitation);
+- up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
+- Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
+- **the DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
+- **on the waveform page, making a selection, selecting a segment and editing segments (dragging, splitting or removing a boundary) need a mouse or touchpad for now**; a keyboard way to do them is planned before v1.0.0. Details in `docs/KNOWN_ISSUES.md` (KI-10);
+- v2 directions: a precise-mode VAD (Silero), and more platforms.

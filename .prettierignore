@@ -9,5 +9,23 @@ node_modules/
 *.min.js
 # 宪法只读副本,sha256 与 masterPlan 同步,prettier 不得改写
 docs/constitution/
+# 设计稿只读归档(T31):与 masterPlan/assets/design-v2 **字节级一致**(sha256 9D79B0E0…),
+# 是 T31-T36 的视觉真源;prettier 一改写就毁掉字节比对。同 docs/constitution/ 口径。
+docs/design/
 # clang-format 配置(非 prettier 目标)
 .clang-format
+# PowerShell 脚本:prettier 没有 PS parser。gate 3 的 `--check .` 本来就只挑得动的文件,
+# 碰不到 .ps1;但 T28 卡的附加 gate 是显式通配 `--check "web-preview/**"`,显式匹配到
+# web-preview/serve.ps1 时 prettier 会以 "No parser could be inferred" 直接报错退出 2。
+# 列进忽略表让两种调用口径都成立(scripts/*.ps1 同理)。
+*.ps1
+# workflow/文档非 web 资产,prettier 的 yml/md 默认格式与项目手写风格不一致(B07 bridge 同款口径)
+*.yml
+*.yaml
+*.md
+*.png
+
+# T34 对拍 golden:由 tests/tools/pan_curve_vectors.cpp 打印的 C++ 侧真源(2049 点 LUT
+# + 采样浮点),%.9g 精确往返 float32;prettier 重排会把 8×2049 数组展开成巨文件,
+# 且与生成器字节比对失去意义。同 docs/design/、docs/constitution/ 的「生成物不改写」口径。
+scripts/curve-parity-golden.json

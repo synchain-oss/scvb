@@ -1,21 +1,248 @@
 # STATE_SCHEMA —— SCVB state schema 与 abi 兼容规则(冻结契约)
 
-> 状态:从 masterPlan 蒸馏中,当前版本 = constitution v2.1 系——ADR v2.0 含 J57-J61 / ipc v1.5 / params v2.2(以宪法文件实际为准)。
+> 状态: 冻结
+> 最后更新: 2026-09-29(同日两处:① [J177] / [SL-238] **纯文档撤回,零行为 / 零布局 / 零 abi**:§二 Input `ui.guide_seen` 原先登记的编码落点(在 `InputStateCodec` 的 payload 尾部追加一个 u32)实现从没做过,撤回 —— 这一位**不随工程保存**,只在本次会话内有效,跨工程的「看过了」由系统级全局位承担;§三「Input 插件 state 同用此容器」一句同步改成实现的实际内容;§二 Input `ui.guide_seen` 表的「语义」一行不再写导览步数([J177a]:[J176] 给 Input 导览加一步,步数以 `web/input/tour-in.js` 为准),变更文档 `docs/contract-changes/20260929-j177-withdraw-input-uiguideseen.md`;② [J167] / [SL-570] §一 `lead_timeline[]` 与 §三 `LEAD` 的说明:分析由「按区间取记录的多数值」改为「在值变化处切开区间,±1 s 内对齐到段边界 / 停顿」—— **载荷、minor、容器 abi 均不变**,只改说明文字,详见 `docs/contract-changes/20260929-j167-lead-switch-immediate.md`);上一次更新 2026-09-28(同日六处:① [J150] **加法**(**容器 abi 不变**(仍为 6)、`CFGS` 布局零变化、不加迁移函数):§一 `channels[15]` 加 `auto_label`(最近一次自动填进 label 的 DAW 轨道名;label 为空或等于它 ⇔ 跟随轨道名,否则为用户命名)、§三 `PRMS` 加根节点属性 `channels_auto_label`(15 个字符串的 JSON 数组),缺席即「非空 label 视为用户命名」,变更文档 `docs/contract-changes/20260928-j150-track-name-auto-label.md`;② [J136] / [SL-216] **新增独立 fourcc 块 `LEAD`**:`lead_select` 在时间线上的播放记录,分析据此把主唱并入槽位/平衡计算;§一 加 `lead_timeline[]`、§三 表加一行并补一条载荷/兼容说明。**容器 abi 不变**(仍为 6)—— 新块走「未知 fourcc 原样保留回写」,旧工程无此块即「没有记录」;详见 `docs/contract-changes/20260928-sl216-lead-into-analysis.md`;③ [SL-218] / [SL-219]([J134] / [J135]),**零布局 / 零 abi / 零迁移**:§三「CRVS minor 更高」一条的接线实况改实 —— 原样回写与琥珀横幅⑪ 已接,详见 `docs/contract-changes/20260928-sl218-219-state-not-restored.md`;④ **纯订正,零行为 / 零布局 / 零 abi 变更**:头注与 §4.1 FEAT 那句「升级提示 UI 通路尚未接线」与 §三 正文自相矛盾,改成与实现一致的口径 —— Output 侧容器级 abi 已接线、Input 侧本版不做、FEAT 节 codecVer 这一级没有 UI 提示;变更文档 `docs/contract-changes/20260928-rc-misc-contract-corrections.md`;⑤ [J143b] / [SL-545] `LEAD` 块 **minor 1 → 2**:每条记录加 `u32 flags`(bit0 = 这段值是宿主写进来的;分析只把这种记录当自动化),minor 1 照读(一律读成「不是宿主写的」);§一 `lead_timeline[]` 加 `automated`、§三 表与 `LEAD` 说明同步改。**容器 abi 不变**(仍为 6),新块形态仍走「更高 minor 原样回写」。取值口径由同日的 J143a「记录 ≥ 2 个不同的值才算自动化」改为按写入来源(J143b);详见 ② 那份变更文档「追加:J143 / J143a / J143b」;⑥ [J162] / [SL-548] §一 `segments[]` 加 `manual_pan` / `manual_vol`、§三 补一条:两位落在 CRVS 段 flags 的空闲位 bit3/bit4,**零布局 / 零 abi / 零迁移**,详见 `docs/contract-changes/20260928-sl548-manual-dim-marker.md`。上一次实质变更 = 2026-09-27 [SL-472],§一 `channels[15]` 七项随工程落盘,变更文档 `docs/contract-changes/20260927-sl472-channel-config-persist.md`)
+> 真源: 本文件(由 `docs/constitution/params-v0.md` **v2.3** + 计划 04 §5 蒸馏转正;J81 修宪转正:`ui.lang_chosen` / Input `ui.guide_seen`)
 
-本文件是 state 冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。
-正式内容由 T39a 从 `docs/constitution/params-v0.md` §二/§三(仓内只读副本)蒸馏填充;在此之前以只读副本为唯一可比对基准。
+> ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
 
-state chunk 带 `abi` 字段:读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(不得静默丢数据)。
-`setStateInformation` 处理的是用户工程文件里的不可信字节,长度/范围字段必须先校验再用于分配或索引。
+仲裁规则:`docs/constitution/` 只读副本是**修订源**(改动须走修宪流程);本文件是**实现/审查基准**(06 §3.4 review bot 比对对象)。两者分歧时,以已冻结实现代码与 `tests/golden/` 快照为准。
 
-## 一、Output state(占位)
+本文件是 state 冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。state chunk 带 `abi` 字段:读到高版本 → **整块拒载 + `preservedOriginal` 原样回写**(升级提示:**Output 侧**自 v5.6.15 起经 `scvb.error{newerState}` 显示红横幅④;**Input 侧本版不做**,仍只落一行 `DBG` —— 实况与裁定见 §三「迁移函数框架」,[SL-412]);读到低版本 → 迁移函数升格(不得静默丢数据)。`setStateInformation` 处理的是用户工程文件里的不可信字节,长度/范围字段必须先校验再用于分配或索引。
 
-<!-- T39a 填充:abi/session_guid/group_id/global/analysis/channels/versions/features/ui -->
+## 一、Output state
 
-## 二、Input state(占位)
+分组与字段(YAML 视图,实际为版本化二进制/JSON chunk,编码见 §三):
 
-<!-- T39a 填充:abi/group_id/channel_id/ui -->
+```yaml
+abi: 6                          # 当前 abi(kCurrentAbi=6);migrate_1_to_2 / migrate_2_to_3 / migrate_3_to_4 / migrate_4_to_5 / migrate_5_to_6(均 no-op)承接 abi=1/2/3/4/5
+session_guid: <自生成>
+group_id: 1..8               # [J66] 本 Output 所属组(默认 1,UI 显示 A-H);组=独立总线域
+global:
+  capture_enabled: bool        # 采集开关(默认 off)
+  output_enabled: bool         # 输出开关:on=引擎驱动参数(write),off=follow host
+  version_active: 1..2         # 当前版本(非自动化,防 write 自录;J59 4→2)
+  # range{mode, start_s, end_s} 不在本树:[J102] 运行期状态,不随工程走(见 §三「global.range」一条)
+analysis:
+  vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # [SL-416] 五项**自本版起随工程落盘**(此前只在内存里,重开全回默认 —— A24 实测);值域/默认真源 = 02 §0.3(−60..−10/默认 −38、3..12/6、100..600/250、20..400/120、50..400/200);默认宁多勿少(J23 拆分,默认 120/200)
+  segmentation: {mode: valley|vad_only, sensitivity: 0..100, min_segment_ms: 50..2000}   # [SL-411] 三项**自本版起随工程落盘**(此前只在内存里,重开回默认 valley/50/120);[SL-413] `mode` 为 **v1 保留位**:UI 不露出、引擎不消费、恒写 0=valley,`vad_only` 留待接线时启用(布局与 abi 一律不动,口径见 §三)
+  transition_ramp_ms: 80           # [SL-416] **自本版起随工程落盘**(§1.20:20..300,默认 80)
+  loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"            # [J69/U24①] 第二响度指标口径,默认 "kw_integrated"
+  center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"   # [J69/U24④] 中心槽策略,默认 "priority_queue"
+  applied:                     # [SL-279] 上次**全量分析**所用的那一档;§0.1 规则 3 的加法,contractVersion 不升主版本
+    loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"
+    center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"
+    # analysis_settings_stale(03 §6.3)= 当前 ≠ applied.*,**逐项判**:
+    # 两枚「需重新分析」徽标分别挂在两个控件旁,合成一个布尔会让它们同亮同灭。
+channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10→15;[SL-472] 除 source_channels 外七项**自本版起随工程落盘**(此前只在内存里,重开全回默认 —— J113 实测)
+  enabled: bool
+  label: string                # UI 显示名;落盘上限 24 码点 / 96 字节 UTF-8(与桥面 setChannelConfig 的 `substring(0, 24)` 同口径:JUCE String 按码点计数)
+  auto_label: string           # [J150] 最近一次**自动**填进 label 的 DAW 轨道名(Input 经 ctrl 段轨道名区带来,IPC_CONTRACT §4)。label 为空或等于它 ⇒ 跟随轨道名(改名跟着改);否则 ⇒ 用户命名,不再被覆盖。**不在 CFGS**:落 PRMS 根节点属性 `channels_auto_label`(见 §三)
+  source_channels: 1|2         # [J57] 自动检测:mono/stereo 源;**不落盘**(运行期每拍从音频环段头重测,存了也会被下一拍覆盖)
+  participate_in_auto_pan: bool # [J83] 未显式设置一律 true(取代 J60 的按源声道推导);落盘保三态(false / true / 未显式设置)
+  priority: 0..10              # 宽度优先级,高→角度大
+  lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58;[J136] lead_select 的播放记录在分析里与它走同一条路径)
+  lead_vol_exempt: bool        # 音量豁免——独立选项(J58 用户澄清)
+  pair_id: 0|1..7              # 成对关联(0=无;15 轨最多 7 对)
+lead_timeline[]:               # [J136/SL-216] lead_select 的播放记录 {t0_samples, t1_samples, lead: 0..15, automated: bool},按 t0 升序、互不重叠;走带播放时逐块记下(后放覆盖先放),分析在值变化处切开区间([J167] ±1 s 内对齐到段边界 / 停顿);[J143b/SL-545] automated = 这段值是宿主写进来的(自动化回放 / 宿主参数面),分析只取这种记录;编码落点 = 独立块 `LEAD`(§三)
+versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");复制语义不变
+  curves_per_track[15]:        # 分析产物:分段时间线曲线(真身,ADR-005)
+    segments[]: {t0_samples, t1_samples, pan, vol_db, origin: auto|user_edited|user_created, locked: bool, manual_pan: bool, manual_vol: bool}   # J34;manual_* = [J162] 手动接管固定了哪一维(落 CRVS 段 flags 的 bit3/bit4,见 §三)
+  pan_curve:                   # pan 角度域增益曲线(EQ 式)
+    points[]: {angle: -100..100, gain_db, shape: bell|shelf|cut, q, side: out|left|right}   # J07
+features:                      # 采集特征(ADR-007);编码见 §四
+  embedded: bool               # 超 8MB 转 sidecar(v1 默认关,恒内嵌;见 §4.2)
+  per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
+ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang_chosen}   # J50/J62/J75/J81
+```
 
-## 三、编码与兼容(占位)
+### `ui.master_chart_mode`([J75] T43;变更文档 20260825-master-chart-mode)
 
-<!-- T39a 填充 -->
+> 与 T39a(#75)转正回填的 §一 YAML 视图握手:字段已并入上方 `ui` 子树,此处字段定义与
+> 迁移语义以变更文档 `docs/contract-changes/20260825-master-chart-mode.md` 为唯一口径。
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.master_chart_mode` |
+| 类型 | 字符串枚举 `"distribution" \| "trajectory"` |
+| 默认值 | `"distribution"`(05 J75 A 逐字:「默认 `distribution`」) |
+| 语义 | `distribution` = 既有的声像/音量分布图;`trajectory` = 新增的 pan 轨迹图(x = 工程时间线,y = pan 角度域) |
+| 自动化 | 否。不占参数面,不可被 DAW 录制 |
+| 持久化 | 是,随工程走(与 `ui.active_tab` 同族:重开面板恢复上次视图) |
+| 运行时态 | 否(不同于 `print_guard` / `recapture` / `analysis_run` 三件) |
+
+**迁移语义**(abi 不递增):
+- 读到没有 `UICF` 块的旧工程 → 默认 `"distribution"`,不报错、不提示。
+- 读到未知取值(块内 u32 ≥2)→ 回落 `"distribution"`。
+- 长度非法(≠4 字节)→ 按 §7.3 拒载该块并回落默认(不可信字节路径先校验后使用)。
+- 不需要写迁移函数:字段是纯增量、有确定性默认值,不改变任何既有字段的编码或含义。
+- 编码落点:**独立 fourcc 块 `UICF`**(`kFourccUiConfig`,定长 4 字节 u32:`0`=distribution / `1`=trajectory)。
+
+**双向兼容**:
+- 新版写 → 旧版读:旧版不认识的 `UICF` 块按容器「未知 fourcc 原样保留、save 原样回写」机制**零丢失**保真,只是不显示该偏好(视图停在分布档)。
+- 旧版写(无 `UICF`)→ 新版读:无该块 → 默认 `distribution`。
+
+## 二、Input state
+
+```yaml
+abi: 6                          # 当前 abi(kCurrentAbi=6);Input 与 Output 共用容器 abi(#263/[SL-416] 把它由 4 升到 5,[SL-472] 再升到 6,与 §三 那条一致;Input 自己的 CFGS 两次都没变)
+group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
+channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
+ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;[J177] guide_seen **不落盘**(只在本次会话内有效,见下);scale / language 随工程落盘
+```
+
+其余一切配置从 Output 经控制面 IPC 读写(Input UI 只是远程视图)。
+
+### `ui.guide_seen`(Input;[J80] T48;变更文档 20260825-input-guide-seen)
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.guide_seen`(**Input** state) |
+| 类型 | bool |
+| 默认值 | **`false`**(首装 = 没看过) |
+| 语义 | Input 首启轻量引导([J80]:独立语言卡 + mini tour,步数以 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准)的**已读位**。置位后首启链不再自动弹;header「?」重看入口**不看本位**,已置位也能再开 |
+| 自动化 | 否。不占参数面 |
+| 持久化 | **否**:只在本次会话内有效,不随工程保存([J177]);跨工程的「看过了」由下面的全局默认位承担 |
+
+- **编码落点:无**([J177] 撤回)。本条原先登记的落点是「`InputStateCodec` 的 payload 尾部追加一个 u32」,实现从没做过 —— `InputStateCodec` 的 payload 就是 `channelId` / `groupId` / `uiScale` / `uiLanguage` 四项(4 个 u32 + 语言字节),解码严格等长,长度对不上就整份不载入,没有给尾部追加字段留余地。用户裁定按实现撤回这条落点、不补做。实现里这一位只是 Input 实例内存里的一个值:§3.8 `setGuideSeen` 写它,§3.1 快照与 §4.1 `scvb.state` 读它;**每成功载入一份工程 state 就把它清零**,不把上一个工程(或同一实例上一次载入)的值带进来。经过见 `docs/contract-changes/20260929-j177-withdraw-input-uiguideseen.md`。
+- **全局默认位** `guide_seen_global`(§3.1 快照顶层,只读、不属工程 state):**Input 与 Output 各存一份**:同一个落盘文件(`UiDefaultsStore` 的 `ui-defaults.settings`)里的两个键 —— Output `guide_seen_global`、Input `guide_seen_global_input`([J132] 以实现为准改写,变更文档 `docs/contract-changes/20260928-j132-guide-seen-global-keys.md`)。两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导。
+- **迁移 / 兼容**:不涉及。这一位不在 state chunk 里,新旧版本写出的 Input state 字节里都没有它,`CFGS` 布局与 `abi` 都不因它变化。重开工程时它回到 `false`,首启链弹不弹由全局默认位决定:首启链里走完或跳过 mini tour 时,`setGuideSeen(true, true)` 会连全局位一起写,之后新开的工程都不再自动弹。
+
+### `ui.lang_chosen`(Output;[J81];变更文档 20260825-t37-r3-misalign-semantics 追加节)
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.lang_chosen` |
+| 类型 | bool(**可选**) |
+| 默认值 | **`false`**(缺失即 false) |
+| 语义 | 首启**语言选择卡**的抑制位。与 `guide_seen` / `guide_seen_global` 完全同构:前者随工程走,后者是系统级全局默认 |
+| 自动化 | 否 |
+| 持久化 | 是,随工程走 |
+
+- **`ui.language` 为什么不能兼任**:它默认 `"en"`,「从没选过」与「用户就是选了英文」不可区分。
+- **编码落点 = `PRMS` 的 ValueTree**(与 `guide_seen`/`tour_seen`/`active_tab` 同处)。**不落 CFGS** —— CFGS 是定长解码,追加字段会让旧构建整块拒载;ValueTree 增删字段零成本、老工程读不到即 false。
+- **不新增桥函数**:置位点在既有 §1.30 `setLang` 桥入口 —— web 启动时的语言回填走 `setLang(..., {push:false})` **不经桥**,所以「桥的 `setLang` 被调用过」正好等价于「用户显式选过语言」。
+- **全局镜像位** `lang_chosen_global`(§1.1 快照顶层,只读、不属工程 state,落 `UiDefaultsStore`)。
+- **兼容**:按 §0.1 规则 3 这是**加法**(既有 payload 新增可选字段),非破坏性,`contractVersion` 不升主版本;旧 web 不读该字段 → 行为不变;旧工程无该属性 → 读回 false → 走一次首启,选完即持久。`abi` **不递增**。
+
+## 三、编码与兼容(state chunk 容器)
+
+`getStateInformation` 输出(容器 = 定长头 + TLV 块,混合自定义二进制与 ValueTree):
+
+```text
+偏移  字段
+0     u32 magic = 'SCVB' (0x42564353,小端内存序;写盘后前 4 字节字面拼出 "SCVB")
+4     u32 abi   = 6                       # 与 IPC abi 独立计数(abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy;abi 2→3:再尾扩 applied.*;abi 3→4:[SL-411] 再尾扩 analysis.segmentation.*;abi 4→5:[SL-416] 再尾扩 analysis.vad 五字段 + transition_ramp_ms;abi 5→6:[SL-472] 再尾扩 channels[15] 七项)
+8     u32 flags = 0
+12    u32 chunkCount
+16..  TLV 块 × N: { u32 fourcc; u32 sizeBytes; u8 payload[size]   # 4 字节对齐 }
+```
+
+| fourcc | 内容 | 编码 |
+|---|---|---|
+| `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])}+ **`session_guid`**([SL-215];见 §4.3)+ **`channels_auto_label`**([J150];§一 `channels[15].auto_label` 的 15 元 JSON 字符串数组,没自动填过的轨为空串;见下) | ValueTree 二进制 |
+| `CFGS` | **当前已落盘**: group_id / capture_enabled(**恒写 `0`,采集态不随工程走**:采集是一次录制动作、不是工程设置,重开工程一律为**关**;见下 [J91] 一条。字段保留在布局里,**不删不挪**)/ output_enabled / version_active / ui{scale, language} / analysis{loudness_mode, center_slot_policy, applied{loudness_mode, center_slot_policy}, **segmentation{mode, sensitivity, min_segment_ms}([SL-411] 自本版起落盘;[SL-413] 其中 `mode` 是 v1 保留位 —— UI 不露出、引擎不消费、生产路径恒写 `0`=valley)**, **vad{threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms} 与 transition_ramp_ms([SL-416] 自本版起落盘)**} / **channels[15]{enabled, label, participate_in_auto_pan, priority, lead_lock, lead_vol_exempt, pair_id}([SL-472] 自本版起落盘)**。<br>**不落盘(运行期)**: channels[15].source_channels(每拍从音频环段头重测)。<br>**挂账未落盘**(后续任务扩展): print 设置 | 紧凑二进制(6×u32 头 + uiLanguage 变长 + loudness_mode/center_slot_policy 两 u32 枚举序号 + [SL-279] applied.* 再两 u32 + [SL-411] segmentation 再 u32+f32+u32 + [SL-416] vad/ramp 再 f32+f32+u32×4 + [SL-472] channels 再 15 条定长记录 {u32 enabled, u32 participate(0/1/2=未显式设置), u32 priority, u32 lead_lock, u32 lead_vol_exempt, u32 pair_id, u32 labelBytes, u8 label[96]};已知字段后未知尾部原样回写) |
+| `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags};flags:bit0-1 origin / bit2 locked / bit3 manual_pan / bit4 manual_vol([J162])/ bit5-31 保留) |
+| `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
+| `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
+| `LEAD` | lead_timeline[]([J136] / [SL-216];`lead_select` 的播放记录,分析输入) | 自定义紧凑二进制(u16 minor=2 + u16 保留 + u32 条数 + 条数 × {i64 t0, i64 t1, u32 lead, u32 flags};[J143b] minor 1 的记录没有 flags) |
+
+- **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
+- **CRVS 段 flags 的手动位 bit3 / bit4**([J162] / [SL-548],用户 2026-09-28「18批」;§一 `manual_pan` / `manual_vol`):记录「手动接管(桥契约 §1.16 ②)固定了这一段的哪一维」。**零布局 / 零 abi / 零迁移**:CRVS 编解码本来就把 `flags` 这个 u32 原样读写,段记录仍是 28 字节,CRVS minor 与容器 abi 都不动;旧构建只取 bit0-2,读到新工程时这两位不参与任何判定,但旧构建对段做的编辑(五个段编辑 op,含 `set_locked`;以及手动接管)都会整字重写被编辑段的 flags、丢掉这两位 —— 按下面的判据,该维随之不再算手动常值(整表都没了位时按兼容规则判)。维护规则:手动接管只给被拖的那一维逐段置位(非空表保留另一维已有的位,空表只置被拖那一维);`set_locked` 保留;`set_values` / `split` / `move_boundary` / `merge` 清掉被编辑段的;重分析与 `clearManual` 新产出的段不带;撤销 / 重做 / 复制版本整段拷贝。「某一维是手动常值」= 段表非空且每段都带该维的位;**兼容**:整表无位、只有一段且 `origin=user_edited` ⇒ 两维都算(旧构建在空表上接管写出的就是这个形状)。bit5-31 保留:产品内的写入口一律写 0,CRVS 层原样读写。变更文档 `docs/contract-changes/20260928-sl548-manual-dim-marker.md`。
+- **`LEAD` 块**([J136] / [SL-216],用户 2026-09-28「216 改成进分析计算」):`lead_select` 是宿主自动化参数,插件拿不到宿主的自动化曲线,只能在**播放经过时**看到它的值,所以 Output 在走带播放(时间线有效、t0 ≥ 0)时逐块记下它,分析在记录的值变化处切开区间([J167]:±1 s 内有段边界 / 停顿就对齐过去),选中轨在它被选中的那段按主唱锁处理(§一 `lead_lock` 同一条路径);[J143b] 每段记录带**写入来源**:只有宿主写进来的值(自动化回放 / 宿主参数面)记下的段算自动化,分析只取这种记录 —— 被它们盖到的地方按记录值,其余地方取点分析那一刻的值,一段都没有时整窗取后者;插件界面、撤销 / 重做、载入工程写的值记下的段不看。载荷(小端):`u16 minor`(=2)| `u16` 保留(写 0)| `u32 条数`(≤ 65536)| 条数 × `{i64 t0, i64 t1, u32 lead, u32 flags}`(24 字节;t0 ≥ 0、t0 < t1、按 t0 升序互不重叠、lead ∈ 0..15;`flags` bit0 = 宿主写的,其余位必须为 0)。**minor 1**([SL-216] 的格式,从未随正式版发出)照读:记录 20 字节、没有 `flags`,一律读成「不是宿主写的」(不算自动化)。**写侧**:没有记录就不写这一块。**读侧**:只在载入带 `CFGS` 的完整工程时处理(只带 `PRMS` 的预设不动内存里的记录);无此块 → 记录清空(旧工程 / 从没播过);长度、顺序、值域或 `flags` 任一不合法 → 整块不用、记录清空(派生数据,重放一遍即可补回,不为它整份拒载工程);`minor` 高于本构建 → 按「没有记录」分析,**保存时原样回写那份字节**(自留一份,不依赖 `loadedChunks_`)。**abi 不升**:新版写 → 旧版读,旧版不认识的 `LEAD` 按上一条原样保留回写(旧版分析不读它,但也不丢);旧版写 → 新版读,无此块即「没有记录」,[J143b] 重新分析时整窗取点分析那一刻的 `lead_select`,它为 0 时与改动前逐位相同;只认 minor 1 的构建读到 minor 2 → 按上面「`minor` 高于本构建」处理(原样回写)。
+- **`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在尾字段整档齐全时**才生效([SL-416] 起是 loudness/center 两个 + applied 两个 + segmentation 三个 + vad/ramp 六个 = 52 字节;[SL-472] 起再 + channels 15×124 = **1912 字节**)),已知字段的失败态还分三种 —— 头部**五个**(`group_id`/`capture_enabled`/`output_enabled`/`version_active`/`langBytes`)越界即**整块拒载**,尾部枚举/值域字段越界**回落默认并计数**,`ui.scale` 在本节解码器里**不作范围校验**(原样透出,由上层处理);`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。
+- **`channels[15].auto_label` 落在 `PRMS` 根节点属性面**([J150],变更文档 `docs/contract-changes/20260928-j150-track-name-auto-label.md`):不进 `CFGS` 的理由与上一条 `session_guid` 相同(`CFGS` 定长,加字段要么升 Input / Output / Monitor 三个插件**共用**的容器 abi、要么走 `unknownTail`)。**存名字而不存「是不是用户起的」一位标志**,是为了让被旧构建另存过的工程也判得对:旧构建不认识这个属性,却会经 APVTS `replaceState` / `copyState` 把它**原样**带回来 —— 若存的是标志,用户在旧构建里改过的名字回到新构建时仍被标成「自动」、随即被轨道名覆盖;存名字时 label 已不等于它,仍判成用户命名。**迁移语义**:属性缺席(本功能之前的工程)或不是 JSON 数组 ⇒ 15 条全空 ⇒ 非空 label 一律视为用户命名(保守:错判只会让「改名跟随」失效,不会覆盖用户的名字);数组短于 15 的缺位记空串、长出的部分忽略;元素只拿来与 label 比「等不等」、从不写进 label。**不需要迁移函数,abi 不递增**。落地与 label 同在 `CFGS` 那段:只带 `PRMS` 的参数预设不动通道配置(连同本属性)。
+- **`CFGS.analysis.segmentation.mode` 是 v1 保留位**([SL-413],用户 2026-09-14 裁 ②;真源 02 §0.3):
+  §一 那一档的 `mode` 在 v1 里**不露头** —— UI 全仓没有对应控件(**不是「藏起来了」,是
+  从来没有过**:`web/output/index.html` 里 `valley` / `vad_only` / `分段方式` 三个字面全 **0 命中**;
+  `valley` 在 `web/output/tab-wave.js` 只以两种形态存在 —— 注释,以及 `DEFAULT_SEGMENTATION`
+  整包缓存的初值 `mode: "valley"`(契约 §1.19 要求三个字段**整包**下发,少一个整个
+  `setSegmentation` 直接 badArg);`vad_only` 另见于 `web/shared/mock-data.js` 的枚举表与
+  `tab-wave.js` 的白名单注释。**三处都不是控件**,`git grep` 全仓找不到渲染它的 DOM;
+  同族判例 #251 对「分段灵敏度滑杆」也报过同一句),
+  引擎侧 `SegmentationParams` 里也没有 `mode`(恒按 `valley` 走 S1)。所以
+  **生产路径没有任何一处把这一档写成 `vad_only`,落盘值恒为 `0`=valley**;`vad_only` 的语义
+  留待接线那张卡启用。**布局与 abi 一律不动**(`CFGS` 尾部那一档里 `segmentationMode` 那一个 u32
+  照旧是它 —— 它的载荷偏移是 `40 + languageBytes`,随 `uiLanguage` 长度浮动,**别写死字节号**;
+  **本条不升 abi**:同窗口的 [SL-416] 已把容器 abi 升到 5,那是另一条、与本条互不相交)——
+  [SL-411] 刚落盘、立刻再升一次 abi 只会让更多旧工程进拒载态。
+  ⚠ **这句「恒写 0」是生产路径的实况,不是编解码的不变量**:`segModeOrdinal` / `segModeString`
+  仍按**原样往返**(一份手写成 `1` 的 blob 读进来仍是 `vad_only`、再存回去仍是 `1`)。
+  契约 §7.3「不得静默丢数据」压过「统一成 0」—— 把读侧改成强写 0 等于替用户改数据,
+  而那正是这一节存在的理由。判据:`tests/core/test_output_session.cpp` 的 `[SL-411]` 四格
+  仍逐字断言这条往返,**本卡一条都没有改**。
+- **`CFGS.capture_enabled` 恒写 `0` —— 采集态不随工程走**([J91] 2026-08-30 用户批准;**推翻** [SL-225] 的「存用户自选值」口径):采集是一次**录制动作**,不是工程设置。
+  [SL-225] 那一版(PR `#146`)当时只堵了一种来源(布防替用户开的那一下不许落盘),但让「重开后采集莫名开着」的路不止那一条 —— 用户自己开着采集保存、或打开一份 v5.6 期间已被污染的旧工程,重开后照样是 ON。而采集 ON 期间 Input 一条 `fp_report` 都不发,于是 04 §4.5 的上游改动 ⚠ **对用户而言根本不存在,且查不出原因**(SL-239 用户实测两轮)。
+  **加载侧口径**:`setStateInformation` 对本字段的取值**一律忽略**,恒恢复为**关**;要采集就再点一次(`docs/SCVB_CONTRACT.md` §1.2)。读侧这一道不是冗余 —— 写侧恒 0 只管得住新存的工程,**已被污染的旧工程磁盘上那一位仍是 1**,只有读侧也忽略,那批工程才真的自愈。
+  字段本身**保留在 `CFGS` 布局里、不删不挪**(**那次改动不升 abi** —— 写「仍为 2」会随后来的升格变成假话,[SL-279] 已把它升到 3):老工程照常解码;新工程在老构建里读到 0,与「用户存前主动关掉采集」不可区分,两个方向都无异常。
+  **副作用记账 `recaptureAutoEnabledCapture` 仍然保留** —— 它现在只服务于 §1.23 裁定③ 的「撤防恢复布防前原值」,与持久化无关。
+  变更文档:`docs/contract-changes/20260830-j91-capture-not-persisted.md`。
+- **`global.range`(`mode` / `start_s` / `end_s`)是运行期状态,不随工程走**([J102],用户 2026-09-22 裁定「契约撤回」):它**不在**上面任何一个 fourcc 里 —— 既不在 `CFGS` 的「当前已落盘」,也不在「挂账未落盘」,**不是待落盘项**。载入一份带 `CFGS` 的工程 state 时,范围档一律复位到 `docs/SCVB_CONTRACT.md` §1.8 的默认档(`follow` / 0 / 0);只带 `PRMS` 的参数预设不经过这一步、不动当前范围。理由见 `src/output/OutputProcessor.cpp` 中 `ScvbOutputAudioProcessor::setStateInformation` 里 `[J87]` 那段注释的「range 三字段」一条:不复位的话,上一个工程的 `manual` 区间会继续给新工程当采集门,而 UI 读到的是默认 `follow` —— 屏幕与引擎两张皮。用户可感知的后果:在 `manual` / `daw_loop` 档下存盘,重开后范围回到 `follow`(整条时间线),要再框一次。桥面照常镜像它(`docs/SCVB_CONTRACT.md` §1.8 写、§2.1 `scvb.state.global.range` 回推),那是运行期镜像,与落盘无关。
+- **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + `preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据。**[SL-412] 升级提示的 UI 通路:Output 侧已接线,Input 侧已裁「本版不做」** —— 此前 `hasStateAbiMismatch()` / `stateAbiSeen()` 零调用方、`scvb.error` 的 `newerState` 码**没有生产者**(消费端 `web/output/app.js` 的横幅④ 与 mock 夹具早已就绪),旧构建读高 abi 工程只落一行 `DBG`,而 `DBG` 在 Release 里是空语句,用户看到的是一份没有任何解释的空工程。自 v5.6.15 起 **Output 侧**由 `OutputEditor::emitNewerStateError()` 在 `emitTick` 里按 §2.9 发 `scvb.error{code:"newerState", detail:{localAbi, projectAbi}, active}`(判定与记账的真身 = `BridgeArgs.h` 的纯函数 `planNewerStateEmit`:条件成立发 `active:true`、条件解除发 `active:false` 撤横幅,**不可见时不发也不记账**);**Input 的 state 容器 abi 与 Output 共用**,`decideInputStateAbi(...) == RejectNewer` 那一支**仍是只落一行 `DBG`** —— 统筹 2026-09-16 裁:**Input 半边本版不做,另立卡封存**(与 Output 半边是两笔账));③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
+- **当前迁移链**:`kMigrators = [migrate_1_to_2, migrate_2_to_3, migrate_3_to_4, migrate_4_to_5, migrate_5_to_6]`(abi 1→2、2→3、3→4、4→5、5→6),**五个都是 no-op** —— 五级都靠 `OutputStateCodec::decodeOutputState` 的「长度回退」,无需重写 payload:
+  - `migrate_1_to_2`:abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段 → **回落默认**(kw_integrated / priority_queue);
+  - `migrate_2_to_3`([SL-279]):abi=2 的 CFGS 无 applied.\* 两个尾字段 → **applied := 当前值,不是回落默认**。语义是「这份旧工程视为已经按它存着的那档分析过」;取默认会让一个存了非默认档的旧工程一打开就误报「需重新分析」,那正是 SL-279 要修的误报。
+  - `migrate_3_to_4`([SL-411]):abi=3 的 CFGS 无 analysis.segmentation 那一整档 → **回落规格默认**(valley / 50 / 120)且**不计回落**。与上一级取舍不同是有意的:applied 的语义是「上次分析所用的那一档」,缺席时取当前值才不误报;segmentation 的语义就是「当前设置」本身,旧工程确实没存过,取规格默认(也正是旧构建 `runtime_` 的初值)才是真话。
+  - `migrate_4_to_5`([SL-416]):abi=4 的 CFGS 无 analysis.vad 五字段与 transition_ramp_ms 那一整档 → **回落规格默认**(−38 / 6 / 250 / 120 / 200 / 80,真源 02 §0.3)且**不计回落**,与上一级同一条取舍(它们就是「当前设置」本身,A24 实测的「存盘重开全回默认」正是这条缺席的后果)。
+    ⚠ 这一级同时把**引擎初值**从 T29 遗留的 −45/3/200 收到规格默认(引擎初值 / web 滑杆 def / decode 回落三处此前互不相同)—— 见 `docs/contract-changes/20260914-sl416-vad-persist.md` 的「兼容性影响」。
+  - `migrate_5_to_6`([SL-472]):abi=5 的 CFGS 无 channels[15] 那一整档 → 七项 × 15 轨取**构造默认**(启用 / 空名 / 参与「未显式设置」/ 优先级 5 / 主唱锁定关 / 音量豁免关 / 无配对,即旧构建重开后 `runtime_.channels` 的值)且**不计回落**,与上两级同一条取舍。**在席但非法**的单项(`enabled`/`lead_lock`/`lead_vol_exempt` ∉ {0,1}、`participate` ∉ {0,1,2}、`priority` > 10、`pair_id` > 7、label 超 96 字节 / 非严格 UTF-8 / 含 NUL / 超 24 码点)回落**同一组默认**并按字段计数,不拒载整块、不牵连同轨其余项。
+  - 旧版读新 blob(abi 更高)一律走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。
+  - **尾部长度是分档校验的**(准确措辞见 `OutputStateCodec.h` 头注,SL-411 R8 收敛过):remaining 只接受 0(abi=1)/ 8(abi=2)/ 16(abi=3)/ 28(abi=4)/ 52(abi=5)/ 1912 及 1912+;**档内少一个字节**(落在 (0,8)、(8,16)、(16,28)、(28,52)、(52,1912))一律整块拒载 —— 一整档是同一个构建写下去的,半截不可能是任何真实产物;而 **≥1912 之后多出来的尾巴任意长度都收**,由 `unknownTail` 原样保留回写。别把它读成「追加必须整档」:尾部加字段不必升 abi,只有**在已知档之间**插字段才必须走迁移链。「不必」是**允许不升、不是禁止升** —— 尾部追加升不升 abi 由报批裁定([SL-411]/[SL-416]/[SL-472] 三档都是尾部追加、都升了 abi;[SL-472] 那次依据 J114)。
+  详见 `docs/contract-changes/20260825-cfgs-persistence.md`(abi 1→2)、`docs/contract-changes/20260905-sl279-applied-analysis-settings.md`(abi 2→3)、`docs/contract-changes/20260914-sl411-segmentation-persist.md`(abi 3→4)、`docs/contract-changes/20260914-sl416-vad-persist.md`(abi 4→5)与 `docs/contract-changes/20260927-sl472-channel-config-persist.md`(abi 5→6)。
+- **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 升级提示」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。**接线实况([SL-524] / [SL-218] / [SL-219],2026-09-28)**:① 原样回写 —— 被拒的 CRVS 字节(不分「坏」还是「更高 minor」)保存时**逐字节写回**,直到用户在这个实例里改动段表 / 版本;改动之后按 [J122] 写新表(那一刻起新版曲线真身被本构建的段表取代 —— 这是 J122 裁定的取舍:不写新表就会丢掉用户之后的编辑)。② 提示 —— 编辑器发 `scvb.error{stateNotFullyRestored, detail:{rejected:["CRVS"]}}`,琥珀横幅⑪「段表没能恢复,原数据会原样保留」(`SCVB_CONTRACT.md` §5.1)。横幅**不分**「更高 minor」与「载荷损坏」,不专说「请升级」—— 两者在 `decodeCrvs` 里是同一个 `false`。⚠ 这一条与上面 ② 仍不是同一个触发面:容器 abi 那一支是 `stateAbiMismatch_` + 红横幅④ `newerState`,CRVS 这一支是 `stateNotRestoredMask_` + 琥珀横幅⑪。
+- **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=6),只含一块 `CFGS`:payload 是 `InputStateCodec` 的紧凑二进制(channel_id + group_id + ui.scale + ui.language),**没有 `PRMS`**(Input 无参数)。`ui.guide_seen` 不在其中 —— 它不随工程保存([J177],见 §二)。
+
+## 四、FEAT 节编码与 sidecar 契约(转正项)
+
+### 4.1 FEAT 节布局(little-endian)
+
+```text
+FeatSection(压缩前布局):
+  u32 tag = 'FEAT'
+  u16 codecVer = 1                  # 节内独立版本,硬失效判据之一
+  u16 flags                         # bit0: embedded(1=特征体随节内嵌,0=引用 sidecar;v1 写出恒 1,读入仍可能为 0——老工程);bit1: vadPresent([J06] 可选缓存)
+  u32 sampleRate                    # 采集时采样率
+  u32 hopMs = 10
+  u8  channelCount
+  -- embedded=1 时,每 channel 依次:
+     u8  channelId; u32 rangeCount
+     rangeCount × { u64 beginHop; u64 endHop }          # 即 coverage_ranges
+     数据体(只存覆盖 hop,按 range 顺序串联,SoA 列式):
+       i16 kw_dBq[总覆盖 hop 数]
+       i16 peak_dBq[...]
+       u8  vadPosterior[...]        # [J06] 可选缓存:flags bit1=0 时省略;可由 kw 按 ADR-008 重算
+  -- embedded=0 时,代之以:
+     char sessionGuid[36]; u8 sha256[32]; u64 sidecarBytes
+整节经 zlib(RFC 1950,miniz,window_bits=15)压缩后放入容器或 sidecar 文件。
+```
+
+- 列式(SoA)+ 0.01dB 量化是压缩友好排列;压缩算法选 **miniz,zlib 格式 RFC 1950**(`window_bits=15`;**不是** gzip RFC 1952、**不是** JUCE 内置;零新依赖,ADR-011 栈内)。
+- 加载:codecVer 高于当前 → 该节按空处理 + 原始字节原样保留(**这一级没有 UI 提示**:只落一行 `DBG`,特征区显示为空;[SL-412] 接上的是**容器级** abi 的升级提示,见 §三,不覆盖 FEAT 节自己的 codecVer);低版本 → 迁移函数。
+
+### 4.2 8MB↔sidecar 切换与回滞
+
+> **v1 出厂态:自动切换关闭**(单点开关 `kSidecarAutoSwitch` = `false`)—— 压缩后的特征流**一律内嵌**
+> (`embedded=1`),不产生 sidecar 目录,下面第 ③ 步恒走内嵌那一支;本节余下的切换与回滞逻辑
+> **在开关打开时逐字有效**(开关是双向的,不是只能前进的迁移)。变更文档:
+> `docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`。
+>
+> ⚠ **打开一份带 sidecar 的老工程、再保存一次 ⇒ 特征收回内嵌、`sessions/<GUID>/` 整目录被回收**
+> (下面第 ③ 步那句「若存在旧 sidecar → 删除」就是它)。**这一步不可逆**,工程体积随之变大;
+> 判据 = **`HOST SL395`**(`tests/host/test_host_harness.cpp`,走真 `setStateInformation` /
+> `getStateInformation`;core 的 `FEAT-SIDECAR-11` 是**同形复刻**,定位快但不钉生产那一次
+> `store.remove`)。
+
+- 阈值判定用**压缩后字节数**;加**回滞**防止在 8MB 附近反复横跳:**一旦转为 sidecar,压缩后 <6MB 才收回内嵌**。
+- `getStateInformation()`:① 容器序列化配置/曲线各节 → ② `FeaturesCodec::encode()` → zlib 压缩 → gz → ③ gz ≤ 8MB:embedded=1 内嵌(若存在旧 sidecar → 删除,数据已随工程,防双源分叉);gz > 8MB:走 §4.3 sidecar 流程,节内只写 GUID+sha256+size。
+- `setStateInformation()`:embedded=1 → 解码入 FrameStore(重建 CoverageMap);embedded=0 → 按 §4.3 定位 sidecar → sha256 校验 → 通过则解码,失败/缺失 → FrameStore 置空。**该分支的 UI 横幅⑤「采集数据缺失/过期,请重新采集」在 v1 无出口**:`sidecarMissing` 这条 code 在 `src/` 里没有生产者(只有一条待接线注释),且用户 2026-09-14 裁定「sidecar 不上了」后横幅已收起 —— 接线那天必须同时恢复横幅⑤(见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。**分段/曲线/配置正常加载不受影响**(sidecar 是缓存不是真相)。
+
+### 4.3 sidecar 目录契约
+
+- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,见下 copy-on-write 条,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期**是既有行为,保留不动**(它当初的理由是「让设置页在首次存盘前就显示真值,否则『存储状态』行在用户第一次保存工程之前恒是废话」—— 用户 2026-09-14 裁定 sidecar 不上之后**那一行已收起,该理由因此失去指涉**;提前构造本身与本次 UI 收起无关,不随之改动。见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。**PRMS 值不一定是加载期终值**:工程内 FEAT 走 sidecar 引用节时,引用节的 GUID **经校验通过后**再压过 PRMS 值(`readFeaturesChunk` 排在 PRMS 之后;两者因 CoW 换过 GUID 而不一致时以引用节为准,否则删不掉旧 sidecar 目录、留下孤儿)。落盘面见 §三 `PRMS`。
+- **路径**:`File::getSpecialLocation(userApplicationDataDirectory)` → Windows `%APPDATA%\Synchain\SCVB\sessions\<GUID>\`(macOS 后续 `~/Library/Application Support/...` 同构)。
+- **目录内容**:`manifest.json`、`features.bin.gz`(扩展名沿用 .gz,内容为 zlib RFC 1950)、`owner.lock`。
+  - `manifest.json`:{schemaVersion, codecVer, createdAt, savedAt, sha256, bytes, channelCount, hostName}
+  - 原子写:`features.bin.gz.tmp` 写完 → rename 为 `features.bin.gz`(单文件含全部 channel,布局同 §4.1 embedded 体)
+  - `owner.lock`:{pid, processStartTime, heartbeatIso8601},sidecar 模式下 Output 每 10s 由消息线程刷新;判活 = pid 存在 ∧ 心跳 < 30s
+- **copy-on-write**:工程复制且两份同时打开 → 后开者检测到 owner.lock 活且 pid 非己 → 生成 newGUID、复制 sidecar 目录、本实例改用 newGUID;先后打开 → 共享同一 sidecar,任一方重采集保存后另一方 sha256 不匹配 → 按「缺失」处理(**曲线无损**;那一句「提示重采集」在 v1 **无出口** —— `sidecarMissing` 在 `src/` 里没有生产者且横幅⑤ 已随用户 2026-09-14 裁定收起,接线那天一并恢复,见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。
+- **孤儿会话清理**(设置页「清理 30 天未访问会话」)推 v1.1;v1 在文档写明手动路径。

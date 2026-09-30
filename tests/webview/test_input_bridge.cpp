@@ -1,0 +1,581 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// test_input_bridge —— T30 Input 桥 L0 单测:claim 六值映射([R3 收口])/srMismatch 推导/
+// remoteSetPriority 拒绝语义/五个事件与首帧快照的载荷形状(键名逐字对契约 §3/§4/§5)。
+// 只测 InputBridgeLogic 纯函数与 InputBridgeApi 常量表;InputEditor 依赖真 WebView2,留待
+// gate 8 真机 GUI pluginval —— 例外是 [SL-463] 那一格**源码级**判据:读 InputEditor.cpp 的文本,
+// 钉 setChannelId/setGroupId 两个 handler 确实把请求结果交给 claimRequestResponse()。
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <string>
+
+#include <juce_core/juce_core.h>
+
+#include "InputBridgeApi.h"
+#include "InputBridgeLogic.h"
+
+namespace
+{
+using scvb::input::InputClaimState;
+using scvb::input::InputConnSnapshot;
+using scvb::input::bridge::advanceConfigSeq;
+using scvb::input::bridge::advanceEmitCache;
+using scvb::input::bridge::buildConfigPayload;
+using scvb::input::bridge::buildConnPayload;
+using scvb::input::bridge::buildErrorPayload;
+using scvb::input::bridge::buildGroupsPayload;
+using scvb::input::bridge::buildInputSnapshot;
+using scvb::input::bridge::buildPriorityResponse;
+using scvb::input::bridge::buildStatePayload;
+using scvb::input::bridge::claimEdgeConsumed;
+using scvb::input::bridge::claimErrorEdgeChanged;
+using scvb::input::bridge::claimRequestResponse;
+using scvb::input::bridge::claimValue;
+using scvb::input::bridge::ConfigSnapshot;
+using scvb::input::bridge::conflictResponse;
+using scvb::input::bridge::displayChannelId;
+using scvb::input::bridge::parseIntArg;
+using scvb::input::bridge::PriorityReject;
+using scvb::input::bridge::priorityRejection;
+using scvb::input::bridge::priorityRejectReason;
+using scvb::input::bridge::srMismatch;
+
+juce::DynamicObject::Ptr obj(const juce::var& v)
+{
+    auto* o = v.getDynamicObject();
+    REQUIRE(o != nullptr);
+    return o;
+}
+
+InputConnSnapshot connSnapshot(bool outputOnline = false, bool maskBit = false, bool capturing = false,
+                               bool passthrough = true, bool passthroughPending = false, int occupiedMask = 0)
+{
+    InputConnSnapshot s;
+    s.outputOnline = outputOnline;
+    s.maskBit = maskBit;
+    s.capturing = capturing;
+    s.passthrough = passthrough;
+    s.passthroughPending = passthroughPending;
+    s.occupiedMask = static_cast<std::uint16_t>(occupiedMask);
+    return s;
+}
+} // namespace
+
+TEST_CASE("T30 InputBridgeApi 名表与契约 §7 逐项一致(7 函数 / 5 事件)")
+{
+    using namespace scvb::input::bridge;
+    CHECK(juce::String(kFnRequestInitialState) == "requestInitialState");
+    CHECK(juce::String(kFnSetChannelId) == "setChannelId");
+    CHECK(juce::String(kFnSetGroupId) == "setGroupId");
+    CHECK(juce::String(kFnRemoteSetPriority) == "remoteSetPriority");
+    CHECK(juce::String(kFnSetUiScale) == "setUiScale");
+    CHECK(juce::String(kFnCommitUiScale) == "commitUiScale");
+    CHECK(juce::String(kFnSetLang) == "setLang");
+    CHECK(juce::String(kEvState) == "scvb.state");
+    CHECK(juce::String(kEvConn) == "scvb.conn");
+    CHECK(juce::String(kEvConfig) == "scvb.config");
+    CHECK(juce::String(kEvGroups) == "scvb.groups");
+    CHECK(juce::String(kEvError) == "scvb.error");
+}
+
+TEST_CASE("T30 claim 六值映射列全([R3 收口] unassigned|idle|active|conflict|abiMismatch|srMismatch)")
+{
+    CHECK(claimValue(InputClaimState::kUnassigned, true, true) == "unassigned");
+    CHECK(claimValue(InputClaimState::kConflict, true, true) == "conflict");
+    CHECK(claimValue(InputClaimState::kAbiMismatch, true, true) == "abiMismatch");
+    CHECK(claimValue(InputClaimState::kUnavailable, true, true) == "idle"); // I0(未持有 slot)→ idle
+    CHECK(claimValue(InputClaimState::kActive, true, false) == "active");
+    CHECK(claimValue(InputClaimState::kActive, false, false) == "idle"); // 已 claim 但 Output 未健康读取
+    // srMismatch 只作用于 kActive 且优先于 active/idle(§5.2)。
+    CHECK(claimValue(InputClaimState::kActive, true, true) == "srMismatch");
+    CHECK(claimValue(InputClaimState::kActive, false, true) == "srMismatch");
+    // 非 kActive 下 sr 推导不生效。
+    CHECK(claimValue(InputClaimState::kConflict, false, true) == "conflict");
+}
+
+TEST_CASE("T30 srMismatch 推导:仅 claim active ∧ Output SR 非零 ∧ ≠ 本机 SR(§4.1)")
+{
+    CHECK(srMismatch(InputClaimState::kActive, 44100, 48000));
+    CHECK_FALSE(srMismatch(InputClaimState::kActive, 48000, 48000)); // 同 SR
+    CHECK_FALSE(srMismatch(InputClaimState::kActive, 0, 48000)); // Output 未报 SR(离线/未接线)
+    CHECK_FALSE(srMismatch(InputClaimState::kUnassigned, 44100, 48000));
+    CHECK_FALSE(srMismatch(InputClaimState::kConflict, 44100, 48000));
+    CHECK_FALSE(srMismatch(InputClaimState::kAbiMismatch, 44100, 48000));
+}
+
+TEST_CASE("SL-446(合并前独立复核 + 轮 9 复审订正):displayChannelId —— kActive/kUnassigned 走"
+          "配置/请求值,kConflict/kAbiMismatch/kUnavailable 三态统一走实际持有(=0,如实未分配)")
+{
+    // 场景 1(表格 #1):releaseResources() 之后 —— session_ 落 kUnassigned(不是 kConflict),
+    // boundChannel() 清 0,但配置(configuredChannelId)原样留着。顶层 channel_id 该显示配置号,
+    // 不是 0——这是这一轮独立复核抓到的用户可见回归本体。
+    CHECK(displayChannelId(InputClaimState::kUnassigned, /*channelId=*/0, /*configuredChannelId=*/5) == 5);
+
+    // 场景 2(表格 #2,本轮**新增覆盖**,此前没有任何判据钉着):硬冲突——从未绑定过、点了一个
+    // 被占用的通道,没有旧 channel 可回滚,session_ 落在 kConflict,channelId(bound)如实是 0,
+    // configuredChannelId 停在被拒的请求号。这里必须显示 0(如实未分配),不能显示被拒的号——
+    // 显示被拒的号就是重新打开 SL-19/SL-446 本身要堵的洞(CHANGELOG.md 里"抢回也失败的极罕见
+    // 情况下才会如实显示未分配"就是在描述这一态)。
+    CHECK(displayChannelId(InputClaimState::kConflict, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+
+    // 场景 3(表格 #3):回滚成功——session_ 落回 kActive,两个源头本就相等(不变式:kActive ⟹
+    // configuredChannelId==channelId,见 InputSession.h prepare() 头注),这一格**钉不住**
+    // "该走哪个字段"这件事本身——不管 displayChannelId() 内部选哪个,结果都一样,这里只是
+    // 确认这条不变式成立时函数确实回传那个共同值,不是"删掉分支也会绿"的那种钉不住。
+    CHECK(displayChannelId(InputClaimState::kActive, /*channelId=*/3, /*configuredChannelId=*/3) == 3);
+
+    // [轮 9 复审【重要】订正] kAbiMismatch/kUnavailable 此前被当成"与 kUnassigned 同类"走配置
+    // 值——这是假的。InputSession::openAndClaim() 失败时,previousChannel==0(没有旧 channel
+    // 可回滚)这条路径上 kConflict/kAbiMismatch/kUnavailable 三个失败码走的是同一段代码,
+    // channelId(bound)同样如实是 0、configuredChannelId 同样停在被拒的请求号——与 kConflict
+    // 结构完全相同,只是失败原因不同(注册表 abi 不符 / 段打不开,不是通道被占)。这两态必须
+    // 和 kConflict 一样显示 0,不能显示被拒的号——可达路径,不是理论场景。
+    CHECK(displayChannelId(InputClaimState::kAbiMismatch, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+    CHECK(displayChannelId(InputClaimState::kUnavailable, /*channelId=*/0, /*configuredChannelId=*/5) == 0);
+}
+
+TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > notActive > ringFull(§3.4/§5.6)")
+{
+    CHECK(priorityRejection(0, true, false, true) == PriorityReject::kUnassigned);
+    CHECK(priorityRejection(0, false, true, false) == PriorityReject::kUnassigned); // channel=0 最优先
+    CHECK(priorityRejection(3, false, true, false) == PriorityReject::kOutputOffline); // 离线优先于满环/非活跃
+    CHECK(priorityRejection(3, false, false, false) == PriorityReject::kOutputOffline);
+    CHECK(priorityRejection(3, true, false, false) ==
+          PriorityReject::kNotActive); // conflict/abiMismatch/unavailable 非持有者
+    CHECK(priorityRejection(3, true, true, false) == PriorityReject::kNotActive); // 非活跃优先于满环(不写环)
+    CHECK(priorityRejection(3, true, true, true) == PriorityReject::kRingFull);
+    CHECK(priorityRejection(3, true, false, true) == PriorityReject::kNone);
+
+    CHECK(priorityRejectReason(PriorityReject::kUnassigned) == "unassigned");
+    CHECK(priorityRejectReason(PriorityReject::kNotActive) == "unassigned"); // §5.6 闭集内最近似:未持有 slot
+    CHECK(priorityRejectReason(PriorityReject::kOutputOffline) == "outputOffline");
+    CHECK(priorityRejectReason(PriorityReject::kRingFull) == "ringFull");
+    CHECK(priorityRejectReason(PriorityReject::kNone).isEmpty());
+}
+
+TEST_CASE("T30 advanceEmitCache:不可见不推进缓存,恢复可见重发(PR#54 R4)")
+{
+    juce::String last;
+
+    // 不可见:json 变了也不推进缓存、返回不 emit(隐藏期事件不被吞)。
+    CHECK_FALSE(advanceEmitCache("a", last, false));
+    CHECK(last.isEmpty());
+
+    // 恢复可见:缓存仍是旧值 → 同一 json 推进缓存并返回 emit(事件重发)。
+    CHECK(advanceEmitCache("a", last, true));
+    CHECK(last == "a");
+
+    // 已发过(缓存 == json):不再重发,且不受可见性影响。
+    CHECK_FALSE(advanceEmitCache("a", last, true));
+    CHECK_FALSE(advanceEmitCache("a", last, false));
+
+    // 新值不可见 → 不推进;恢复可见 → 重发新值(缓存最终对齐已发出值)。
+    CHECK_FALSE(advanceEmitCache("b", last, false));
+    CHECK(last == "a");
+    CHECK(advanceEmitCache("b", last, true));
+    CHECK(last == "b");
+}
+
+TEST_CASE("T30 claimEdgeConsumed:隐藏 + error 边沿不消费,恢复可见消费(PR#54 R5)")
+{
+    // 无 error 边沿(非 conflict/srMismatch 边沿)恒消费,不受可见性影响。
+    CHECK(claimEdgeConsumed(false, false));
+    CHECK(claimEdgeConsumed(false, true));
+
+    // 有 error 边沿(needsError=true):隐藏 → 不消费(基线不推进);恢复可见 → 消费(error 重发)。
+    CHECK_FALSE(claimEdgeConsumed(true, false));
+    CHECK(claimEdgeConsumed(true, true));
+}
+
+TEST_CASE("T30 claimErrorEdgeChanged:五分量边沿键任一变化即重发(PR#54 R6)")
+{
+    // 同 claim/channel 换组 → 有边沿(重发,groupId 新值)。
+    CHECK(claimErrorEdgeChanged("conflict", 3, 2, 48000, 48000, "conflict", 3, 1, 48000, 48000));
+
+    // 同 srMismatch 改 outputSr → 有边沿(重发,outputSr 新值)。
+    CHECK(claimErrorEdgeChanged("srMismatch", 3, 1, 48000, 48000, "srMismatch", 3, 1, 48000, 44100));
+
+    // 同 srMismatch 改 inputSr → 有边沿。
+    CHECK(claimErrorEdgeChanged("srMismatch", 3, 1, 44100, 48000, "srMismatch", 3, 1, 48000, 48000));
+
+    // 五分量全同 → 无边沿(不重发)。
+    CHECK_FALSE(claimErrorEdgeChanged("conflict", 3, 1, 48000, 48000, "conflict", 3, 1, 48000, 48000));
+}
+
+TEST_CASE("SL-446(第 2 轮补充):连续两次请求不同冲突通道,claim 态不变也要重发,ch 各自正确"
+          "(PR#273 复审)")
+{
+    // ⚠ 这条钉的是"channelId 分量必须是**请求值**,不是实际持有值"这件事本身的必要性——
+    // 若这一位喂的是实际持有(硬冲突场景下恒为 0),连续两次请求不同通道时键的五元组会一模
+    // 一样(claim 都是 "conflict"、channelId 都是 0),第二次会被判成"没变化"而漏发。
+    // 这一格只钉算法(纯函数输入输出关系);InputEditor.cpp 是否真的喂了请求值而不是实际持有值,
+    // 由 tests/core/test_input_bridge_ipc.cpp 里的源码级判据钉(那一格能读到真实调用点的实参)。
+    CHECK(claimErrorEdgeChanged("conflict", 5, 1, 48000, 48000, "", -1, -1, -1, -1)); // 首次冲突,请求 5
+
+    // 第二次请求 7,claim 仍是 "conflict"(实际持有全程是 0,没体现在这个键里)——
+    // 请求值从 5 变成 7,边沿必须成立。
+    CHECK(claimErrorEdgeChanged("conflict", 7, 1, 48000, 48000, "conflict", 5, 1, 48000, 48000));
+
+    // 对照组:若这一位真的喂了实际持有值(两次都是 0),同一个 claim 下五元组不变 → 无边沿,
+    // 第二次请求会被吞掉——这正是复审指出的回归形态,写在这里当反面参照,不是要通过的用例。
+    CHECK_FALSE(claimErrorEdgeChanged("conflict", 0, 1, 48000, 48000, "conflict", 0, 1, 48000, 48000));
+}
+
+TEST_CASE("T30 advanceConfigSeq:隐藏不推进基线,恢复可见重发(PR#54 R7)")
+{
+    scvb::u32 last = 0;
+
+    // 隐藏(未发出)→ 基线不推进(seq 仍 != 基线,恢复可见后下一 tick 重发)。
+    CHECK_FALSE(advanceConfigSeq(7, false, last));
+    CHECK(last == 0);
+
+    // 恢复可见(已发出)→ 推进基线(seq 新值)。
+    CHECK(advanceConfigSeq(7, true, last));
+    CHECK(last == 7);
+}
+
+TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")
+{
+    CHECK_FALSE(parseIntArg({}).hasValue()); // 缺参
+    CHECK_FALSE(parseIntArg({juce::var("oops")}).hasValue()); // 字符串
+    CHECK_FALSE(parseIntArg({juce::var()}).hasValue()); // void/null
+    CHECK_FALSE(parseIntArg({juce::var(juce::String("3"))}).hasValue()); // 数字串也是类型不符
+
+    // double 越界/NaN:cast 前挡下(直接 static_cast<int> 是 UB;处理器 clamp 在 cast 后跑不到)。
+    CHECK_FALSE(parseIntArg({juce::var(1e300)}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(-1e300)}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(std::numeric_limits<double>::quiet_NaN())}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(2147483648.0)}).hasValue()); // INT_MAX+1
+
+    CHECK(*parseIntArg({juce::var(0)}) == 0); // 0 是合法业务值(setChannelId 释放/优先级 0),不夹取为拒绝
+    CHECK(*parseIntArg({juce::var(7)}) == 7);
+    CHECK(*parseIntArg({juce::var(3.9)}) == 3); // JS number 走 double,截断
+    CHECK(*parseIntArg({juce::var(-1)}) == -1); // int 域内越界归处理器 clamp(§0.8.2 夹取路径)
+    CHECK(*parseIntArg({juce::var(2147483647.0)}) == 2147483647); // INT_MAX 边界值本身合法
+    CHECK(*parseIntArg({juce::var(99), juce::var(1)}) == 99); // 多余参数忽略(取 args[0])
+}
+
+TEST_CASE("T30 buildStatePayload:键名 + abi_remote 条件存在(§4.1)")
+{
+    const auto withRemote =
+        obj(buildStatePayload(3, 2, "abiMismatch", 1, juce::Optional<scvb::u32>(7), 1.25f, "fr", true));
+    CHECK(static_cast<int>(withRemote->getProperty("channel_id")) == 3);
+    CHECK(static_cast<int>(withRemote->getProperty("group_id")) == 2);
+    CHECK(withRemote->getProperty("claim").toString() == "abiMismatch");
+    CHECK(static_cast<int>(withRemote->getProperty("abi")) == 1);
+    CHECK(static_cast<int>(withRemote->getProperty("abi_remote")) == 7); // 探测到 → 存在
+    const auto ui = obj(withRemote->getProperty("ui"));
+    CHECK(static_cast<float>(ui->getProperty("scale")) == 1.25f);
+    CHECK(ui->getProperty("language").toString() == "fr");
+    // [SL-258] §4.1 载荷行的 ui 第三字段:setGuideSeen 写入后的回推路径。
+    CHECK(static_cast<bool>(ui->getProperty("guide_seen")) == true);
+
+    // 探测不到 → abi_remote 字段不存在(§4.1 字段纪律)。
+    const auto noRemote = obj(buildStatePayload(3, 2, "active", 1, juce::Optional<scvb::u32>(), 1.0f, "zh", false));
+    CHECK_FALSE(noRemote->hasProperty("abi_remote"));
+    CHECK(noRemote->getProperty("claim").toString() == "active");
+    CHECK(static_cast<bool>(obj(noRemote->getProperty("ui"))->getProperty("guide_seen")) == false);
+    // 全局位**不进** scvb.state:§3.1 语义行明写它只读、不属工程 state,只在首帧快照顶层。
+    CHECK_FALSE(noRemote->hasProperty("guide_seen_global"));
+}
+
+TEST_CASE("T30 buildConnPayload 六字段(§4.2)")
+{
+    const auto c = obj(buildConnPayload(connSnapshot(true, true, true, false, true, 0b101001)));
+    CHECK(static_cast<bool>(c->getProperty("outputOnline")) == true);
+    CHECK(static_cast<bool>(c->getProperty("maskBit")) == true);
+    CHECK(static_cast<bool>(c->getProperty("capturing")) == true);
+    CHECK(static_cast<bool>(c->getProperty("passthrough")) == false);
+    CHECK(static_cast<bool>(c->getProperty("passthroughPending")) == true);
+    CHECK(static_cast<int>(c->getProperty("occupiedMask")) == 0b101001);
+}
+
+TEST_CASE("T37-C buildConfigPayload:读到广播区时逐字段取 Output 实况(§4.3)", "[input][config][t37]")
+{
+    // T37 三轮 C 族回归:Input 侧 label/priority/lead_lock/pair_id/freeze 曾是硬编码常量
+    // (priority 恒 0,而 Output 侧默认 5),Output 改什么 Input 都看不见。
+    ConfigSnapshot s;
+    s.sourceChannels = 1;
+    s.configSeq = 7;
+    s.broadcastValid = true;
+    s.channelId = 3; // 本实例是 ch3 → 取 channels[2]
+    s.broadcast.config_seq = 7;
+    s.broadcast.channels[2].priority = 6; // 真机场景:Output 把优先级从 5 改成 6
+    s.broadcast.channels[2].pair_id = 2;
+    s.broadcast.channels[2].freeze = 3; // pan + vol 双冻
+    s.broadcast.channels[2].flags = scvb::kCfgFlagEnabled | scvb::kCfgFlagLeadLock | scvb::kCfgFlagParticipateAutoPan;
+    std::snprintf(s.broadcast.labels[2], scvb::kCtrlLabelBytes, "%s", "Lead Vox");
+    std::snprintf(s.broadcast.labels[0], scvb::kCtrlLabelBytes, "%s", "Ch1");
+
+    const auto c = obj(buildConfigPayload(s));
+    CHECK(c->getProperty("label").toString() == "Lead Vox");
+    CHECK(static_cast<int>(c->getProperty("priority")) == 6); // ← 修复前恒 0
+    CHECK(static_cast<bool>(c->getProperty("lead_lock")) == true);
+    // §4.3 的载荷是逐字冻结的九键,**不含** lead_vol_exempt —— 它属于 Output 侧的
+    // scvb.state.channels[](§2.1/§4.1),Input 页没有消费面。这里反向钉住:别再漏进来。
+    CHECK_FALSE(c->hasProperty("lead_vol_exempt"));
+    CHECK(static_cast<int>(c->getProperty("pair_id")) == 2);
+    CHECK(static_cast<int>(c->getProperty("freeze")) == 3);
+    CHECK(static_cast<bool>(c->getProperty("participate_in_auto_pan")) == true);
+    CHECK(static_cast<int>(c->getProperty("config_seq")) == 7);
+    // source_channels 恒本机实测,不吃广播区回镜像。
+    CHECK(static_cast<int>(c->getProperty("source_channels")) == 1);
+    // A-32:15 张卡 label 镜像全组。
+    const auto labels = c->getProperty("channelLabels").getArray();
+    REQUIRE(labels != nullptr);
+    REQUIRE(labels->size() == 15);
+    CHECK(labels->getReference(0).toString() == "Ch1");
+    CHECK(labels->getReference(2).toString() == "Lead Vox");
+
+    // channel 未分配(channel_id=0)→ 没有「本轨」配置可取,回退默认值但 label 表仍镜像全组。
+    ConfigSnapshot unassigned = s;
+    unassigned.channelId = 0;
+    const auto u = obj(buildConfigPayload(unassigned));
+    CHECK(static_cast<int>(u->getProperty("priority")) == 0);
+    CHECK(u->getProperty("label").toString().isEmpty());
+    CHECK(u->getProperty("channelLabels").getArray()->getReference(2).toString() == "Lead Vox");
+}
+
+TEST_CASE("T30 buildConfigPayload:广播区读不到时回退默认值 + 本机实测 source_channels(§4.3)")
+{
+    ConfigSnapshot mono;
+    mono.sourceChannels = 1;
+    mono.configSeq = 42;
+    const auto m = obj(buildConfigPayload(mono));
+    CHECK(m->getProperty("label").toString().isEmpty());
+    CHECK(static_cast<int>(m->getProperty("priority")) == 0);
+    CHECK(static_cast<bool>(m->getProperty("lead_lock")) == false);
+    CHECK(static_cast<int>(m->getProperty("pair_id")) == 0);
+    CHECK(static_cast<int>(m->getProperty("freeze")) == 0);
+    CHECK(static_cast<int>(m->getProperty("source_channels")) == 1);
+    CHECK(static_cast<bool>(m->getProperty("participate_in_auto_pan")) == true); // [J83] 默认参与
+    CHECK(static_cast<int>(m->getProperty("config_seq")) == 42);
+    const auto labels = m->getProperty("channelLabels").getArray();
+    REQUIRE(labels != nullptr);
+    CHECK(labels->size() == 15); // A-32:15 张卡 label 镜像
+    for (int i = 0; i < labels->size(); ++i)
+    {
+        CHECK(labels->getReference(i).toString().isEmpty());
+    }
+
+    // [J83]:**三种检测态一律默认参与**。source_channels 来自轨道总线布局而非素材声道数
+    // (单声道人声放在立体声轨上就报 2),按它推导会让降级路径把绝大多数人声轨报成「不参与」,
+    // 与 Output 侧 participatesInAutoPan() 的实况相反。改回 `s.sourceChannels == 1` 时
+    // stereo/未检测两档即红。
+    for (const int detected : {0, 1, 2})
+    {
+        ConfigSnapshot cs;
+        cs.sourceChannels = detected;
+        const auto p = obj(buildConfigPayload(cs));
+        INFO("source_channels = " << detected);
+        CHECK(static_cast<bool>(p->getProperty("participate_in_auto_pan")) == true);
+        // 检测值本身照旧原样上报(它继续服务 ST 角标 / 张开线 / viz stereoMask)。
+        CHECK(static_cast<int>(p->getProperty("source_channels")) == detected);
+    }
+}
+
+TEST_CASE("T30 buildGroupsPayload(§4.4)")
+{
+    const auto g = obj(buildGroupsPayload(0x83));
+    CHECK(static_cast<int>(g->getProperty("groups_online")) == 0x83);
+}
+
+TEST_CASE("T30 buildErrorPayload:ch 条件存在 + detail/active(§4.5)")
+{
+    const auto withCh = obj(buildErrorPayload("channelConflict", 3, juce::var(1), true));
+    CHECK(withCh->getProperty("code").toString() == "channelConflict");
+    CHECK(static_cast<int>(withCh->getProperty("ch")) == 3);
+    CHECK(static_cast<bool>(withCh->getProperty("active")) == true);
+
+    const auto noCh = obj(buildErrorPayload("secondOutput", 0, juce::var(2), false));
+    CHECK_FALSE(noCh->hasProperty("ch"));
+    CHECK(static_cast<bool>(noCh->getProperty("active")) == false);
+}
+
+TEST_CASE("T30 buildPriorityResponse 形状(§3.4)")
+{
+    const auto ok = obj(buildPriorityResponse(true, ""));
+    CHECK(static_cast<bool>(ok->getProperty("queued")) == true);
+    CHECK_FALSE(ok->hasProperty("reason")); // queued:true 不带 reason
+
+    const auto rej = obj(buildPriorityResponse(false, "ringFull"));
+    CHECK(static_cast<bool>(rej->getProperty("queued")) == false);
+    CHECK(rej->getProperty("reason").toString() == "ringFull");
+}
+
+TEST_CASE("T30 conflictResponse(§5.6)")
+{
+    const auto c = obj(conflictResponse());
+    CHECK(static_cast<bool>(c->getProperty("conflict")) == true);
+}
+
+TEST_CASE("SL-463 / J156 claimRequestResponse:非冲突失败不再回成功(§3.2/§3.3 返回并集)", "[input][bridge][sl463]")
+{
+    // 五个请求结果逐个钉形状。全部用 CHECK:每一支是一个独立落点,删除式要能看到「只改一支、其余仍绿」。
+    // 成功两态 ⇒ {ok:true},不带 reason / conflict。kUnassigned = setChannelId(0) 释放、或未选通道时改组。
+    for (const auto st : {InputClaimState::kActive, InputClaimState::kUnassigned})
+    {
+        const auto ok = obj(claimRequestResponse(st));
+        CHECK(static_cast<bool>(ok->getProperty("ok")) == true);
+        CHECK_FALSE(ok->hasProperty("reason"));
+        CHECK_FALSE(ok->hasProperty("conflict"));
+    }
+
+    // 冲突 ⇒ §5.6 的 {conflict:true},形状与改动前逐字相同(不带 ok,UI 只认 conflict === true)。
+    const auto conflict = obj(claimRequestResponse(InputClaimState::kConflict));
+    CHECK(static_cast<bool>(conflict->getProperty("conflict")) == true);
+    CHECK_FALSE(conflict->hasProperty("ok"));
+
+    // 本卡的两支:此前都回 {ok:true}。
+    const auto abi = obj(claimRequestResponse(InputClaimState::kAbiMismatch));
+    CHECK(abi->hasProperty("ok"));
+    CHECK(static_cast<bool>(abi->getProperty("ok")) == false);
+    CHECK(abi->getProperty("reason").toString() == "abiMismatch");
+    CHECK_FALSE(abi->hasProperty("conflict"));
+
+    const auto unavailable = obj(claimRequestResponse(InputClaimState::kUnavailable));
+    CHECK(unavailable->hasProperty("ok"));
+    CHECK(static_cast<bool>(unavailable->getProperty("ok")) == false);
+    CHECK(unavailable->getProperty("reason").toString() == "unavailable");
+    CHECK_FALSE(unavailable->hasProperty("conflict"));
+
+    // 枚举外的值(防御性兜底):不许回成功。
+    const auto unknown = obj(claimRequestResponse(static_cast<InputClaimState>(99)));
+    CHECK(unknown->hasProperty("ok"));
+    CHECK(static_cast<bool>(unknown->getProperty("ok")) == false);
+    CHECK(unknown->getProperty("reason").toString() == "unavailable");
+}
+
+namespace
+{
+// 读源文件 → 剥 // 与 /* */ 注释 → 删掉全部空白(不钉排版:折行、缩进、空格都不影响匹配)。
+// 与 tests/core/test_input_bridge_ipc.cpp 里 [SL-446] 那两格源码级判据同一手法。
+std::string readStrippedSource(const char* relPath)
+{
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/" + relPath;
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::string out;
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            if (raw[i] != ' ' && raw[i] != '\t' && raw[i] != '\n' && raw[i] != '\r')
+            {
+                out.push_back(raw[i]);
+            }
+            ++i;
+        }
+    }
+    return out;
+}
+
+// 取一个 InputEditor 成员函数的函数体:从签名起,到下一个 "InputEditor::" 为止(与成员函数的排列顺序无关)。
+std::string editorMethodBody(const std::string& src, const std::string& signature)
+{
+    const auto begin = src.find(signature);
+    REQUIRE(begin != std::string::npos); // fail-closed:改名/挪走判负,不是跳过
+    const auto end = src.find("InputEditor::", begin + signature.size());
+    return src.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+} // namespace
+
+TEST_CASE("SL-463 / J156 源码级判据:InputEditor 的 setChannelId/setGroupId 回执走 claimRequestResponse()",
+          "[input][bridge][sl463]")
+{
+    // 上一格证明映射表本身对,证明不了 InputEditor.cpp 真的在用它 —— 缺陷原样就是「handler 里自己写了
+    // 一个只认 kConflict 的三元式」,把那一行改回去,映射表的用例照样全绿。InputEditor 依赖真 WebView2,
+    // 不能在这里实例化,所以读源码文本:两个 handler 各自隔离取函数体,各钉一正一反。
+    const std::string src = readStrippedSource("src/input/InputEditor.cpp");
+    const std::string chBody = editorMethodBody(src, "voidInputEditor::handleSetChannelId(");
+    const std::string grBody = editorMethodBody(src, "voidInputEditor::handleSetGroupId(");
+
+    // 正:回执交给映射表。
+    CHECK(chBody.find("complete(bridge::claimRequestResponse(st));") != std::string::npos);
+    CHECK(grBody.find("complete(bridge::claimRequestResponse(st));") != std::string::npos);
+    // 反:这两个 handler 里不再自己拼「成功」形状(旧写法 `st==kConflict?conflictResponse():okResponse()`
+    // 的 okResponse 就是把失败报成成功的那一半;badArg 那一支用的是 badArgResponse,不受影响)。
+    CHECK(chBody.find("okResponse()") == std::string::npos);
+    CHECK(grBody.find("okResponse()") == std::string::npos);
+}
+
+TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")
+{
+    ConfigSnapshot cfg;
+    cfg.sourceChannels = 2;
+    cfg.configSeq = 7;
+    const auto s = obj(buildInputSnapshot(4, 1, connSnapshot(true, true, false, false, false, 8), cfg, 1.0f, "zh",
+                                          false, true, "0.1.0", 1));
+    CHECK(static_cast<int>(s->getProperty("channel_id")) == 4);
+    CHECK(static_cast<int>(s->getProperty("group_id")) == 1);
+    CHECK(s->getProperty("role").toString() == "input");
+    CHECK_FALSE(s->hasProperty("claim")); // claim 不经快照回推(唯一通道 = scvb.state)
+    CHECK(static_cast<bool>(obj(s->getProperty("conn"))->getProperty("outputOnline")) == true);
+    CHECK(static_cast<int>(obj(s->getProperty("config"))->getProperty("config_seq")) == 7);
+    const auto ui = obj(s->getProperty("ui"));
+    CHECK(static_cast<float>(ui->getProperty("scale")) == 1.0f);
+    CHECK(ui->getProperty("language").toString() == "zh");
+    // [SL-258] §3.1:工程位进 ui 子树、全局判定位挂**顶层**(语义行:只读、不属工程 state)。
+    // 两者**必须能各自取值** —— 首启判据是「工程 false 且 全局 false 才弹」,合成一个位就废了。
+    CHECK(static_cast<bool>(ui->getProperty("guide_seen")) == false);
+    CHECK(static_cast<bool>(s->getProperty("guide_seen_global")) == true);
+    CHECK_FALSE(ui->hasProperty("guide_seen_global")); // 不重复挂进 ui(同一语义两个落点,§0.1 第 4 条)
+    const auto version = obj(s->getProperty("version"));
+    CHECK(version->getProperty("plugin").toString() == "0.1.0");
+    CHECK(static_cast<int>(version->getProperty("abi")) == 1);
+}
+
+TEST_CASE("SL-462 initialClaimErrorBaseline:首帧基线只把 conflict 置空")
+{
+    using scvb::input::bridge::initialClaimErrorBaseline;
+    // conflict:基线置空 ⇒ 下一拍 claimErrorEdgeChanged 判「有变化」,补发一次 channelConflict。
+    // 编辑器晚于冲突打开(工程载入时通道被占)时,这是被拒的号唯一的上屏出口(scvb.state 里是 0)。
+    CHECK(initialClaimErrorBaseline("conflict").isEmpty());
+    CHECK(scvb::input::bridge::claimErrorEdgeChanged("conflict", 5, 1, 48000, 48000,
+                                                     initialClaimErrorBaseline("conflict"), 5, 1, 48000, 48000));
+    // 其余态照旧:已经处在的状态由 scvb.state.claim 承载,首帧不补发 error。
+    for (const char* c : {"unassigned", "idle", "active", "abiMismatch", "srMismatch"})
+    {
+        CHECK(initialClaimErrorBaseline(c) == juce::String(c));
+    }
+}
+
+TEST_CASE("SL-462 loadConflictStillHolds:载入冲突提示发出前再核一次")
+{
+    using scvb::input::bridge::loadConflictStillHolds;
+    const std::uint16_t bit5 = static_cast<std::uint16_t>(1u << 4);
+    const std::uint16_t bit3 = static_cast<std::uint16_t>(1u << 2);
+    // 成立:同组、本实例在 3 上、5 被别人新鲜占着。
+    CHECK(loadConflictStillHolds(5, 7, 7, 3, static_cast<std::uint16_t>(bit5 | bit3)));
+    // 占用方已释放(5 不再被占)⇒ 丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 7, 3, bit3));
+    // 用户改了组 ⇒ 丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 2, 3, static_cast<std::uint16_t>(bit5 | bit3)));
+    // 本实例自己已经持有 5(比如重试接管成功)⇒ occupiedMask 里那一位是自己的,丢弃。
+    CHECK_FALSE(loadConflictStillHolds(5, 7, 7, 5, bit5));
+    // 越界号 ⇒ 丢弃,不移位越界。
+    CHECK_FALSE(loadConflictStillHolds(0, 7, 7, 3, 0xFFFF));
+    CHECK_FALSE(loadConflictStillHolds(16, 7, 7, 3, 0xFFFF));
+}

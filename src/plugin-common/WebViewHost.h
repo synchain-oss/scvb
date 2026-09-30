@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_extra/juce_gui_extra.h>
+
+#include <atomic>
+#include <functional>
+#include <memory>
+
+#include "FallbackPanel.h"
+#include "PlatformWebView.h"
+#include "ResourceProvider.h"
+#include "WebViewRevealGate.h"
+
+namespace scvb::webview
+{
+// WebViewHost —— 两插件共用的 WebView2 编辑器装配基类(01 §6.1 机制 3/5/6/7/8/9 的中枢)。
+// T29/T30 的 InputEditor / OutputEditor 继承本类,经 Config::augmentOptions 追加各自的
+// 原生函数 / 首帧 seed,并覆写 buildSnapshot() / emitTick() 补充 diff-then-emit。
+class WebViewHost : public juce::AudioProcessorEditor, private juce::Timer
+{
+public:
+    struct Config
+    {
+        juce::String role; // Init::Role:"input" | "output" | "monitor"([J75])
+        juce::String userDataFolderName; // WebView2 user-data 目录名(Input/Output 各一)
+        // 首帧 version seed。三个编辑器(Input / Output / Monitor)都显式传 JucePlugin_VersionString。
+        // [SL-558] 默认值留空,不写版本字面量(此前是 "0.1.0",漏传时会报一个像真的旧版本号);
+        // 也不能引用 JucePlugin_VersionString:本头文件还被非插件 target(scvb_plugin_common_tests)
+        // 包含,那里没有这个宏。
+        juce::String version;
+        juce::String lang = "zh";
+        float uiScale = 1.0f;
+        int channelLimit = 15; // [J59]
+        ResourceProvider::Source resourceSource; // 插件自己的 BinaryData::*;暂无可嵌资源则传空 Source
+        // T29/T30 在此追加插件专属的原生函数/首帧 seed(在通用装配之后调用)。空 = 只用通用装配。
+        std::function<void(juce::WebBrowserComponent::Options&)> augmentOptions;
+    };
+
+    WebViewHost(juce::AudioProcessor& processor, Config config);
+    ~WebViewHost() override;
+
+    void resized() override;
+    // 铺满占位渐变([SL-402] 起 = 与成品外壳渐变同组色标的 shellBackdropGradient;
+    // SL-253→SL-377 期间是单色 shellBackdrop)。[SL-271] 更正 SL-253 时的说法:本函数
+    // **挡不住**开窗白闪。
+    // webView_ 落在本组件里时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的
+    // 裁剪区里剔掉,本 paint 净效果为 0(那一段由 HostWebView::paint 管,见 .cpp)。
+    // 它会真的画出来的有两条路:兜底面板路径(webView_ 被 setVisible(false)),以及
+    // [SL-370] 遮挡期(webView_ 被挪到可视区之外)—— 后者正是用户在内容出来之前看到的
+    // 那块占位底色,机理见 WebViewRevealGate.h。
+    void paint(juce::Graphics& g) override;
+
+    // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
+    float uiScale() const { return uiScale_; }
+    const juce::String& lang() const { return lang_; } // T30:scvb.state ui.language / 落 state 用
+    void setUiScale(float scale); // clamp + setSize(DESIGN×scale) 预览
+    void commitUiScale(); // 落盘(子类覆写 persistUiScaleAsDefault)
+
+    // 定义在 .cpp:HostWebView 在本头文件里只前置声明,派生→基类转换需要完整类型。
+    juce::WebBrowserComponent& webView();
+
+    // -------------------------------------------------------------------------
+    // 看门狗预算(01 §6.1 机制 3)。原实现从 goToURL 那一刻起算固定 5s,把「WebView2 环境
+    // 冷启动」和「页面加载」压在同一个预算里 —— 这正是冷启动被误判成加载失败的根源。
+    // 现改为两段:导航事件到达前用冷/热启动预算,导航一开始就从那一刻重新起算(见
+    // extendDeadlineAfterNav)。三个常量都对外可见,便于单测与文档引用。
+    // -------------------------------------------------------------------------
+
+    // 冷启动预算:进程内第一个 WebView2 实例要先拉起 msedgewebview2.exe 进程组(浏览器 +
+    // 渲染 + GPU 三类进程)、建 user-data 目录、编译首屏 JS。机械盘 / 杀软实时扫描 / 首次
+    // 建目录的测试机上这一段常态就超过 5s,原预算把「慢」判成「坏」。
+    static constexpr int kColdLoadBudgetMs = 15000;
+    // 复用预算:本进程已成功起过一次桥 ⇒ WebView2 浏览器进程常驻,再开编辑器只是新建一个
+    // WebView,不再有进程组冷启动成本。继续用 15s 只会让真失败晚 10s 才给兜底面板。
+    static constexpr int kWarmLoadBudgetMs = 5000;
+    // 导航开始后的预算:首个导航事件到达即证明 WebView2 环境已就绪,剩下只是资源加载 +
+    // 前端 boot。从该时刻重新起算,避免环境启动慢吃掉页面加载的额度。
+    static constexpr int kAfterNavBudgetMs = 5000;
+
+    // [SL-378] 这条不等式的**两个半边**各守什么、以及它靠什么成立,写在这里一处:
+    //   · 半边一(常量关系):遮挡闸首帧信号缺席时的 timeout 兜底(RevealGate 的
+    //     kRevealFallbackMs,3s)必须**早于**看门狗切兜底面板。否则按住占位那 3s 会被
+    //     面板顶掉 —— 形态不是「多按一会儿占位」,而是**直接进兜底**,那一档的真机表现
+    //     与处置见 WebViewRevealGate.h 头注。这一半由下面那句 static_assert 在**每一次
+    //     编译**上守(含 CI 的 build-vst3,不需要任何测试目标)。
+    //   · 半边二(前提):上面那个「早于」比较的是**同一时刻起算的两个预算**。看门狗这边
+    //     的起算点是 `beginLoadAttempt()`(.cpp),而导航事件到达时那次顺延
+    //     (extendDeadlineAfterNav)只在**本次加载尝试的首次**导航事件上生效 —— 靠的是
+    //     `beginLoadAttempt()` 把 `navBudgetApplied_` 复位。复位一旦被删/被挪到别处,
+    //     第二个导航事件之后的窗口里看门狗就会**早于**闸门到期,而上面那句 static_assert
+    //     照样绿(它只看两个常量)。
+    //     ⚠ **这一半今天没有用例守**:WebViewHost.cpp 不进任何测试目标(见
+    //     WebViewRevealGate.h 头注对同一件事的说明),本机可跑的只有真机验收项。
+    //     把看门狗预算算术抽成不碰 JUCE 组件的纯逻辑类、再用用例钉住复位语义,是**另一张
+    //     卡**的事(v1.1 备忘),不在本卡。
+    static_assert(RevealGate::kRevealFallbackMs < kAfterNavBudgetMs,
+                  "遮挡闸的 timeout 兜底(kRevealFallbackMs)必须早于看门狗预算"
+                  "(kAfterNavBudgetMs),否则占位段会被兜底面板顶掉");
+
+    // 前端 boot 失败上行的事件名(**诊断面,不属契约 §7 manifest**)。走 JUCE 内建的
+    // window.__JUCE__.postMessage ←→ Options::withEventListener 通道,不经 bridge.js、
+    // 不参与 check-bridge-parity;__scvb__ 前缀照 JUCE 自己的 __juce__ 惯例标明非契约面。
+    // 真源在此,web 侧 index.html 的 boot 守卫逐字引用同一个名字。
+    static constexpr const char* kBootErrorEventId = "__scvb__bootError";
+
+    // [SL-370] 前端「首帧已绘」上行信号的事件名(**同样是诊断/时序面,不属契约 §7 manifest**)。
+    // 与 kBootErrorEventId 共用同一条 JUCE 内建通道与同一条纪律,理由不再复述,见上一条。
+    // 真源在此,三份 index.html 的 <head> 内联脚本逐字引用同一个名字(判据 = ⑦)。
+    // 它守的是什么、为什么不能改成 setVisible(false)/零尺寸,只写在 WebViewRevealGate.h 一处。
+    static constexpr const char* kFirstFrameEventId = "__scvb__firstFrame";
+
+    // [SL-430 前半] 上面那条信号载荷里**唯一**被读的字段名:页面量到的
+    // `信号时刻 − first-paint 时刻`(毫秒差值,只进日志)。
+    // ⚠ 它**必须与 kFirstFrameEventId 同一档纪律**:真源在此,三份 index.html 逐字引用。
+    // 为什么单独立常量而不是就地写字面量([SL-429] 第 4 轮复审):这个名字跨了 web → C++
+    // 两侧,任一侧打错一个字母的失败形态是 **C++ 打 `(no paint record)`** ——
+    // 而那与「页面确实走了回落路」在日志里**逐字同形**,用户抓回来的日志分不出是哪一种,
+    // 于是 SL-430 前半整件事失去意义(它存在的理由就是「这个量从来没人量过」)。
+    // 立成常量之后,⑦ 就能照 kFirstFrameEventId 那一格的同一个 shape 做逐字对拍。
+    static constexpr const char* kFirstFramePaintDeltaKey = "paintDeltaMs";
+
+protected:
+    // 子类覆写以落盘全局默认(宿主侧持久化由插件 Processor 实现;默认空实现)。
+    virtual void persistUiScaleAsDefault();
+
+    // 子类覆写以提供首帧全量快照(requestInitialState 回执)。
+    virtual juce::var buildSnapshot();
+
+    // 25Hz diff-then-emit(机制 7):先跑看门狗/就绪门控,再调用子类的 emitTick()。
+    void timerCallback() override;
+
+    // 子类在 timer 里追加自己的 diff-then-emit(仅在 mBridgeReady 且非兜底时被调用)。
+    virtual void emitTick();
+
+    // 通用原生函数 handler(两插件共用;子类可复用/覆写)。
+    void handleRequestInitialState(const juce::Array<juce::var>& args,
+                                   juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    virtual void handleSetLang(const juce::Array<juce::var>& args,
+                               juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    void handleSetUiScale(const juce::Array<juce::var>& args,
+                          juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    void handleCommitUiScale(const juce::Array<juce::var>& args,
+                             juce::WebBrowserComponent::NativeFunctionCompletion complete);
+
+private:
+    enum class FallbackReason
+    {
+        MissingRuntime,
+        RuntimeTooOld,
+        LoadTimeout,
+        BootError
+    };
+
+    // 最后一次导航的状态(诊断口径:区分「WebView2 根本没动」和「导航起来了但页面/脚本没起来」)。
+    enum class NavState
+    {
+        notStarted,
+        started,
+        finished,
+        networkError
+    };
+
+    // 装 juce::WebBrowserComponent 的薄子类:只把三个页面回调转给宿主。看门狗要靠导航事件
+    // 起算,而这三个回调是 JUCE 唯一暴露导航时序的地方,只能经继承拿到。
+    class HostWebView;
+
+    juce::WebBrowserComponent::Options makeOptions(); // 装配通用 Options + 子类 augmentOptions
+    void showFallback(FallbackReason reason);
+    void retryWebView();
+    void resizeToDesignBox(float scale);
+
+    // 加载时序(message 线程):由 HostWebView 的页面回调驱动。
+    void onNavigationStarted(const juce::String& url);
+    void onNavigationFinished(const juce::String& url);
+    void onNavigationError(const juce::String& errorInfo);
+    void handleBootError(const juce::var& payload); // 前端 boot 失败上报(非契约面,见 .cpp)
+    // [SL-370] 前端「首帧已绘」上报(非契约面,同上)。
+    // [SL-430 前半] 载荷从「整个丢掉」改成「读一个诊断字段」:paintDeltaMs = 页面那一侧量到的
+    // `信号时刻 − first-paint 时刻`。**只进日志,不参与任何放行判定**(判定仍全在 revealGate_)。
+    void handleFirstFrame(const juce::var& payload);
+
+    // [SL-370] 遮挡闸的两个动作面。判定全在 revealGate_ 里(纯逻辑、可单测),
+    // 这两个函数只负责把判定落到组件几何上并写诊断行。
+    void applyRevealGate(); // 把 revealGate_.parked() 落到 webView_ 的 bounds 上
+    void noteRevealed(); // 放行时写一行诊断(reason + 用时)
+
+    // [SL-376/SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行(每次加载尝试一条)。
+    void logBackgroundColourSupport() const;
+
+    // 首页 URL = <provider root>/<role>/index.html。让服务 URL 空间与 web/ 的磁盘布局
+    // 逐段对齐,从而保证 ES module 身份唯一(同一文件不会被两个 URL 各实例化一份)。
+    // 完整理由见 .cpp 实现处 —— 这条是 Tab1/Tab3 播放头状态分裂那个 bug 的根子。
+    juce::String entryUrl() const;
+
+    void beginLoadAttempt(); // 起算看门狗(构造 / retry 共用)
+    void releaseReadyBridge(); // 把本实例从「活着的桥」计数里摘掉(retry / 析构)
+    juce::String buildDiagnostics() const; // 兜底面板诊断行 + 日志行的同一份文本
+    void logDiag(const juce::String& line) const; // 既有日志通道(juce::Logger)
+
+    Config config_;
+    ResourceProvider provider_;
+    float uiScale_;
+    juce::String lang_;
+
+    std::atomic<bool> bridgeReady_{false};
+    juce::uint32 startMs_ = 0;
+    juce::uint32 deadlineMs_ = 0; // startMs_ + 冷/热预算;首个导航事件到达时按 kAfterNavBudgetMs 顺延
+    bool navBudgetApplied_ = false; // 只顺延一次:页面若反复导航,不允许无限推迟看门狗
+    NavState navState_ = NavState::notStarted;
+    juce::String navDetail_; // 最后一次导航错误信息(networkError 时非空)
+    juce::String bootError_; // 前端上报的 boot 失败摘要(BootError 分支用)
+    PlatformWebView::RuntimeInfo runtime_; // 本次加载尝试开始时的运行时探测结果(诊断用)
+    juce::File userDataFolder_; // 本插件的 WebView2 user-data 目录(per-plugin 固定,进程组据此复用)
+    juce::String userDataFolderIssue_; // 构造期可写性探针结果;空 = 没问题
+    bool countedAsReady_ = false; // 本实例是否已计入 readyBridgeCount(防重复加减)
+    RevealGate revealGate_; // [SL-370] 「WebView 该不该在可视区外」的唯一判定处(见其头注)
+    bool revealLogged_ = false; // 本次加载尝试是否已写过放行诊断行(只写第一次)
+
+    std::unique_ptr<HostWebView> webView_;
+    std::unique_ptr<FallbackPanel> fallback_;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(WebViewHost)
+};
+
+} // namespace scvb::webview

@@ -1,0 +1,2215 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#191820; font-family:'IBM Plex Sans','Noto Sans SC',sans-serif; -webkit-font-smoothing:antialiased; }
+  a { color:#B9AEDC; text-decoration:none; }
+  a:hover { color:#D8CFF0; }
+  @keyframes livePulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.45; transform:scale(.82); } }
+  @keyframes shakeX { 0%,100% { transform:translateX(0); } 20% { transform:translateX(-5px); } 40% { transform:translateX(5px); } 60% { transform:translateX(-3px); } 80% { transform:translateX(3px); } }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  *::-webkit-scrollbar { width:9px; height:9px; }
+  *::-webkit-scrollbar-track { background:transparent; }
+  *::-webkit-scrollbar-thumb { background:rgba(255,255,255,.22); border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
+  *::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.38); background-clip:padding-box; }
+  *::-webkit-scrollbar-corner { background:transparent; }
+  select { font-family:'IBM Plex Mono',monospace; }
+</style>
+</helmet>
+
+<div style="min-height:100vh;width:max-content;min-width:100%;padding:36px 40px 72px;display:flex;flex-direction:column;align-items:flex-start;gap:26px">
+
+  <div style="width:1180px;max-width:100%;margin:0 auto;display:flex;align-items:flex-end;justify-content:space-between;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.28em;text-transform:uppercase;color:#6E6A80">Synchain · Vocal Balancer · 设计稿 v2.1 + 分组</div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:26px;color:#EDEAF4;letter-spacing:-.01em">SCVB — Output 四页 + Input 单页</div>
+      <div style="font-size:13px;color:#8B8798;max-width:640px;text-wrap:pretty">4+1 个页面、Input 11 个状态、Output 40 个状态场景，含首启红字九条、交互式引导 tour、分组 A–H。切换右上角插件与 SCENE 下拉查看。</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+      <div style="display:flex;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.10);border-radius:999px;padding:3px">
+        <div onClick="{{ showInput }}" style="{{ tabInputStyle }}">SCVB Input</div>
+        <div onClick="{{ showOutput }}" style="{{ tabOutputStyle }}">SCVB Output</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.22em;color:#6E6A80">SCENE</span>
+        <select value="{{ scene }}" onChange="{{ setScene }}" style="min-width:300px;background:#241f2e;color:#E4E0EE;border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:7px 10px;font-size:12px;letter-spacing:.04em;outline:none">
+          <sc-for list="{{ sceneOptions }}" as="o" hint-placeholder-count="4">
+            <option value="{{ o.id }}">{{ o.name }}</option>
+          </sc-for>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ isInput }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="Input" data-glow="1" style="{{ inputBoxStyle }}" style-before="content:'';position:absolute;top:0;left:22%;right:22%;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.75),transparent);z-index:5">
+
+    <div style="position:absolute;width:340px;height:340px;border-radius:50%;top:-120px;left:-90px;background:rgba(181,172,201,.55);filter:blur(58px)"></div>
+    <div style="position:absolute;width:300px;height:300px;border-radius:50%;bottom:-100px;right:-80px;background:rgba(248,206,219,.5);filter:blur(62px)"></div>
+    <div style="position:absolute;width:240px;height:240px;border-radius:50%;bottom:120px;left:-60px;background:rgba(196,176,222,.46);filter:blur(52px)"></div>
+
+    <div style="position:relative;z-index:2;height:100%;display:flex;flex-direction:column;padding:16px 16px 12px;gap:9px">
+
+      <div style="display:flex;align-items:center;gap:11px">
+        <div style="width:38px;height:38px;border-radius:11px;flex:none;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.42);box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 4px 12px rgba(30,24,44,.10)">
+          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M5 3v14M10 3v14M15 3v14"></path><circle cx="5" cy="12" r="2.1" fill="rgba(255,255,255,.6)"></circle><circle cx="10" cy="7" r="2.1" fill="rgba(255,255,255,.6)"></circle><circle cx="15" cy="13" r="2.1" fill="rgba(255,255,255,.6)"></circle></svg>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px;color:#21212A;letter-spacing:-.01em">SCVB Input</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;letter-spacing:.2em;color:#7A7A84;white-space:nowrap">SYNCHAIN · VOCAL BALANCER · VST3</div>
+        </div>
+        <div style="display:flex;gap:2px;padding:2px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28)">
+          <div style="padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.85);font-size:10px;font-weight:600;color:#21212A">中</div>
+          <div style="padding:3px 8px;border-radius:999px;font-size:10px;color:#6A6A74">EN</div>
+          <div style="padding:3px 8px;border-radius:999px;font-size:10px;color:#6A6A74">FR</div>
+        </div>
+      </div>
+
+      <sc-if value="{{ i.abiBanner }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:11px;background:rgba(198,110,120,.16);border:1px solid rgba(198,110,120,.42)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#A85862" stroke-width="1.6" stroke-linecap="round" style="flex:none;margin-top:1px"><path d="M8 2.5 15 14H1L8 2.5Z"></path><path d="M8 6.5v3.2M8 11.8v.01"></path></svg>
+          <div style="font-size:10.5px;line-height:1.45;color:#8E4C55;text-wrap:pretty">两端 SCVB 版本不匹配，已拒绝连接（Output abi 7 / Input abi 6）——请把两个插件升到同一版本</div>
+        </div>
+      </sc-if>
+
+      <div data-glow="1" style="position:relative;overflow:hidden;border-radius:15px;padding:11px 12px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.26);box-shadow:inset 0 1px 0 rgba(255,255,255,.45);display:flex;flex-direction:column;gap:7px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="{{ i.pillStyle }}">
+            <span style="{{ i.dotStyle }}"></span>
+            <span>{{ i.pillText }}</span>
+          </div>
+          <sc-if value="{{ i.capturing }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;background:rgba(120,176,142,.16);border:1px solid rgba(120,176,142,.38)">
+              <span style="width:5px;height:5px;border-radius:50%;background:rgb(120,176,142);animation:livePulse 2.4s infinite"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.14em;color:#4E7A61">采集中</span>
+            </div>
+          </sc-if>
+        </div>
+        <div style="{{ i.subStyle }}">{{ i.subLine }}</div>
+        <sc-if value="{{ i.groupHint }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:flex-start;gap:6px;padding-top:5px;border-top:1px solid rgba(255,255,255,.20)">
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round" style="flex:none;margin-top:1px"><circle cx="7" cy="7" r="5.2"></circle><path d="M7 4.2v3.4M7 9.6v.01"></path></svg>
+            <div style="font-size:10px;line-height:1.45;color:#65656F;text-wrap:pretty">{{ i.groupHint }}</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ i.hysteresis }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:6px;padding-top:2px;border-top:1px solid rgba(255,255,255,.20)">
+            <span style="width:11px;height:11px;border-radius:50%;border:1.6px solid rgba(212,176,118,.9);border-top-color:transparent;animation:spin 1s linear infinite"></span>
+            <span style="font-size:10px;color:#8A7443">连接不稳定，即将切换直通</span>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74;flex:none">组</span>
+          <div style="display:flex;gap:3px;padding:2px;border-radius:999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.20)">
+            <sc-for list="{{ i.groups }}" as="g" hint-placeholder-count="8">
+              <div data-glow="1" style="{{ g.style }}">
+                <span>{{ g.id }}</span>
+                <sc-if value="{{ g.online }}" hint-placeholder-val="{{ false }}">
+                  <span style="width:4px;height:4px;border-radius:50%;background:rgb(120,176,142);flex:none"></span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{ i.chHint }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:9.5px;line-height:1.35;color:#7A7A84;text-wrap:pretty">{{ i.chHint }}</div>
+        </sc-if>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+          <sc-for list="{{ i.channels }}" as="c" hint-placeholder-count="16">
+            <div data-glow="1" style="{{ c.style }}">
+              <div style="{{ c.numStyle }}">{{ c.num }}</div>
+              <div style="{{ c.labelStyle }}">{{ c.label }}</div>
+              <sc-if value="{{ c.occupied }}" hint-placeholder-val="{{ false }}">
+                <span style="position:absolute;top:6px;right:7px;width:5px;height:5px;border-radius:50%;background:rgb(150,152,162)"></span>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74;flex:none">CHANNEL</span>
+          <input type="text" value="{{ i.manual }}" readOnly="{{ true }}" style="width:50px;padding:3px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.30);background:rgba(255,255,255,.14);font-family:'IBM Plex Mono',monospace;font-size:11px;color:#21212A;outline:none;text-align:center">
+          <span style="font-size:9.5px;color:#7A7A84">0–15，清空或 0 = 释放</span>
+        </div>
+        <div style="display:flex;gap:7px;align-items:flex-start;padding:7px 9px;border-radius:10px;background:rgba(198,110,120,.14);border:1px solid rgba(198,110,120,.36)">
+          <div style="font-size:9.5px;line-height:1.45;color:#8E4C55;text-wrap:pretty">同一条人声轨只能属于一个组——同轨插第二个 SCVB Input（无论哪个组）只会收到静音</div>
+        </div>
+      </div>
+
+      <sc-if value="{{ i.confirmBar }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:13px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.42)">
+          <div style="flex:1;font-size:10.5px;line-height:1.4;color:#7E6836;text-wrap:pretty">{{ i.confirmText }}</div>
+          <div data-glow="1" style="position:relative;overflow:hidden;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.30);border:1px solid rgba(255,255,255,.5);font-size:10.5px;color:#52525C;cursor:pointer;white-space:nowrap">取消</div>
+          <div data-glow="1" style="position:relative;overflow:hidden;padding:5px 11px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:10.5px;color:#241f2e;cursor:pointer;white-space:nowrap;box-shadow:0 4px 12px rgba(150,130,200,.35)">{{ i.confirmPrimary }}</div>
+        </div>
+      </sc-if>
+
+      <div style="margin-top:auto;display:flex;flex-direction:column;gap:9px">
+
+        <div style="{{ i.prioStyle }}">
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.2em;color:#6A6A74">PRIORITY</span>
+            <span style="font-size:9.5px;color:#7A7A84">此设置保存在 Output</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px">
+            <div style="width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.20);border:1px solid rgba(255,255,255,.38);cursor:pointer">
+              <svg width="12" height="12" viewBox="0 0 14 14" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M3 7h8"></path></svg>
+            </div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:20px;font-weight:500;color:#21212A;min-width:26px;text-align:center">{{ i.priority }}</span>
+            <div style="width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.20);border:1px solid rgba(255,255,255,.38);cursor:pointer">
+              <svg width="12" height="12" viewBox="0 0 14 14" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M3 7h8M7 3v8"></path></svg>
+            </div>
+          </div>
+        </div>
+
+        <sc-if value="{{ i.remote }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;align-items:center;gap:14px;padding:0 3px">
+            <div style="display:flex;align-items:center;gap:5px">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="6.2" width="8" height="5.3" rx="1.6"></rect><path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6"></path></svg>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:#6A6A74">LEAD</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:7px;height:7px;border-radius:50%;background:rgba(181,172,201,.9);border:1px solid rgba(255,255,255,.6)"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:#6A6A74">PAIR B</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><path d="M7 2.2 3 5v3.6c0 1.9 1.7 3.4 4 4.2 2.3-.8 4-2.3 4-4.2V5L7 2.2Z"></path></svg>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:#6A6A74">冻结 PAN</span>
+            </div>
+          </div>
+        </sc-if>
+
+        <div style="display:flex;align-items:center;gap:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22)">
+          <div style="flex:1;min-width:0;font-size:9.5px;color:#65656F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.footerHint }}</div>
+          <div data-glow="1" style="position:relative;overflow:hidden;display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:9px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.32);cursor:pointer">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#52525C">100%</span>
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.8 6 7.8l3-3"></path></svg>
+          </div>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:#7A7A84">{{ i.verLine }}</span>
+        </div>
+      </div>
+    </div>
+
+    <sc-if value="{{ i.toast }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;z-index:9;right:14px;bottom:52px;display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:13px;background:linear-gradient(158deg,rgba(48,28,34,.92),rgba(30,18,24,.94));border:1px solid rgba(198,110,120,.5);box-shadow:0 12px 30px rgba(20,10,16,.35)">
+        <span style="width:6px;height:6px;border-radius:50%;background:rgba(216,140,140,1)"></span>
+        <span style="font-size:11px;color:#F0DDE0">{{ i.toastText }}</span>
+        <svg width="11" height="11" viewBox="0 0 12 12" stroke="rgba(240,221,224,.6)" stroke-width="1.6" stroke-linecap="round" style="cursor:pointer"><path d="M3 3l6 6M9 3l-6 6"></path></svg>
+      </div>
+    </sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isOutput }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Output 外壳" data-glow="1" style="{{ outputBoxStyle }}" style-before="content:'';position:absolute;top:0;left:30%;right:30%;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.75),transparent);z-index:5">
+
+    <div style="position:absolute;width:600px;height:600px;border-radius:50%;top:-220px;left:-140px;background:rgba(181,172,201,.55);filter:blur(72px)"></div>
+    <div style="position:absolute;width:520px;height:520px;border-radius:50%;bottom:-200px;right:-120px;background:rgba(248,206,219,.5);filter:blur(70px)"></div>
+    <div style="position:absolute;width:420px;height:420px;border-radius:50%;top:120px;right:180px;background:rgba(196,176,222,.42);filter:blur(64px)"></div>
+    <div style="position:absolute;width:380px;height:380px;border-radius:50%;bottom:40px;left:200px;background:rgba(205,191,213,.42);filter:blur(60px)"></div>
+
+    <div style="position:relative;z-index:2;height:100%;display:flex;flex-direction:column;padding:18px 18px 12px;gap:10px">
+
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:38px;height:38px;border-radius:11px;flex:none;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.42);box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 4px 12px rgba(30,24,44,.10)">
+          <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="6.6"></circle><path d="M10 3.4v3M10 13.6v3M3.4 10h3M13.6 10h3"></path><path d="M10 10l3.4-2.6"></path></svg>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px;color:#21212A;letter-spacing:-.01em">SCVB Output</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.2em;color:#7A7A84">SYNCHAIN · VOCAL BALANCER · VST3</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:5px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.24);border:1px solid rgba(255,255,255,.44);box-shadow:inset 0 1px 0 rgba(255,255,255,.6)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.14em;color:#21212A">{{ o.groupBadge }}</span>
+        </div>
+        <sc-if value="{{ o.demo }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:4px 10px;border-radius:999px;background:rgba(212,176,118,.20);border:1px solid rgba(212,176,118,.5);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.16em;color:#7E6836">演示数据</div>
+        </sc-if>
+        <div style="flex:1"></div>
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.2em;color:#6A6A74">版本</span>
+          <sc-if value="{{ o.verRename }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:6px;padding:3px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28)">
+              <div style="{{ o.verChip0 }}">V1 主歌</div>
+              <input type="text" value="主歌 A" readOnly="{{ true }}" style="width:104px;padding:4px 10px;border-radius:999px;border:1px solid rgba(181,172,201,.85);background:rgba(255,255,255,.78);font-size:11px;color:#21212A;outline:none;box-shadow:0 0 0 3px rgba(181,172,201,.28)">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.1em;color:#7A7A84;padding-right:4px">6/16</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ o.verNormal }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;gap:3px;padding:3px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28)">
+              <sc-for list="{{ o.versions }}" as="v" hint-placeholder-count="2">
+                <div data-glow="1" style="{{ v.style }}">
+                  <span>{{ v.name }}</span>
+                  <sc-if value="{{ v.empty }}" hint-placeholder-val="{{ false }}">
+                    <span style="padding:0 4px;border-radius:5px;background:rgba(150,152,162,.28);border:1px solid rgba(150,152,162,.42);font-family:'IBM Plex Mono',monospace;font-size:8px;color:#5E6068">空</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div data-glow="1" onClick="{{ o.openCopy }}" style="position:relative;overflow:hidden;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.30);cursor:pointer">
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#52525C" stroke-width="1.6" stroke-linecap="round"><rect x="5" y="5" width="7" height="7" rx="1.6"></rect><path d="M9 3.4H3.2A1.2 1.2 0 0 0 2 4.6v5.8"></path></svg>
+          </div>
+        </div>
+        <div style="{{ o.pillStyle }}">
+          <span style="{{ o.dotStyle }}"></span>
+          <span>{{ o.pillText }}</span>
+        </div>
+        <div style="display:flex;gap:2px;padding:2px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28)">
+          <div style="padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.85);font-size:10.5px;font-weight:600;color:#21212A">中</div>
+          <div style="padding:4px 10px;border-radius:999px;font-size:10.5px;color:#6A6A74">EN</div>
+          <div style="padding:4px 10px;border-radius:999px;font-size:10.5px;color:#6A6A74">FR</div>
+        </div>
+      </div>
+
+      <sc-if value="{{ o.banner }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ o.bannerStyle }}">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="{{ o.bannerIconColor }}" stroke-width="1.6" stroke-linecap="round" style="flex:none"><path d="M8 2.5 15 14H1L8 2.5Z"></path><path d="M8 6.5v3.2M8 11.8v.01"></path></svg>
+          <div style="flex:1;font-size:11.5px;line-height:1.45;text-wrap:pretty">{{ o.bannerText }}</div>
+          <sc-if value="{{ o.bannerAction }}" hint-placeholder-val="{{ false }}">
+            <div data-glow="1" style="position:relative;overflow:hidden;flex:none;padding:5px 13px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11px;color:#241f2e;cursor:pointer;box-shadow:0 4px 12px rgba(150,130,200,.35)">继续引擎驱动</div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <div style="position:relative;display:flex;padding:3px;border-radius:13px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.4);width:552px;flex:none">
+        <div style="{{ o.slateStyle }}"></div>
+        <sc-for list="{{ o.tabs }}" as="t" hint-placeholder-count="4">
+          <div onClick="{{ t.go }}" style="{{ t.style }}">
+            <span>{{ t.name }}</span>
+            <sc-if value="{{ t.staleDot }}" hint-placeholder-val="{{ false }}">
+              <span style="position:absolute;top:5px;right:12px;width:6px;height:6px;border-radius:50%;background:rgb(212,176,118)"></span>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="flex:1;min-height:0;position:relative">
+
+        <sc-if value="{{ o.roNote }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:-4px;z-index:8;border-radius:15px;background:rgba(226,222,236,.42);backdrop-filter:saturate(.5);display:flex;align-items:flex-start;justify-content:center;padding-top:14px;cursor:not-allowed">
+            <span style="padding:5px 13px;border-radius:999px;background:rgba(198,110,120,.20);border:1px solid rgba(198,110,120,.45);font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.14em;color:#8E4C55">{{ o.roNote }}</span>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ o.isTab1 }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;gap:12px">
+
+          <div style="flex:none;display:flex;align-items:stretch;gap:14px;padding:12px 16px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42)">
+            <div data-tour="cap" style="width:250px;display:flex;flex-direction:column;gap:7px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">01 采集</span>
+              <div style="display:flex;align-items:center;gap:9px">
+                <div style="{{ o.capStyle }}"></div>
+                <span style="{{ o.capDot }}"></span>
+                <span style="font-size:12px;color:#21212A">{{ o.capLabel }}</span>
+              </div>
+              <span style="font-size:10px;line-height:1.4;color:#65656F">开关打开后播放本范围，插件记录响度特征——这一步不写任何自动化</span>
+            </div>
+            <div style="width:1px;background:linear-gradient(180deg,transparent,rgba(255,255,255,.35),transparent)"></div>
+            <div style="width:296px;display:flex;flex-direction:column;gap:6px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">02 分析</span>
+              <span style="font-size:10px;line-height:1.35;color:#65656F">{{ o.anPreview }}</span>
+              <div data-glow="1" style="{{ o.anStyle }}">
+                <sc-if value="{{ o.anRunning }}" hint-placeholder-val="{{ false }}">
+                  <span style="width:12px;height:12px;border-radius:50%;border:1.8px solid rgba(33,33,42,.8);border-top-color:transparent;animation:spin 1s linear infinite"></span>
+                </sc-if>
+                <span>{{ o.anLabel }}</span>
+              </div>
+              <span style="font-size:9.5px;color:#7A7A84">{{ o.anPartial }}</span>
+            </div>
+            <div style="width:1px;background:linear-gradient(180deg,transparent,rgba(255,255,255,.35),transparent)"></div>
+            <div data-tour="out" style="flex:1;display:flex;flex-direction:column;gap:7px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">03 输出</span>
+              <div style="display:flex;align-items:center;gap:9px">
+                <div style="{{ o.outStyle }}"></div>
+                <span style="font-size:12px;font-weight:600;color:#21212A">{{ o.outLabel }}</span>
+                <sc-if value="{{ o.outOn }}" hint-placeholder-val="{{ false }}">
+                  <span style="width:6px;height:6px;border-radius:50%;background:rgb(120,176,142);animation:livePulse 1.2s infinite"></span>
+                </sc-if>
+                <sc-if value="{{ o.outLock }}" hint-placeholder-val="{{ false }}">
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="rgb(180,142,72)" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="6.2" width="8" height="5.3" rx="1.6"></rect><path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6"></path></svg>
+                </sc-if>
+              </div>
+              <span style="font-size:10px;line-height:1.4;color:#65656F;text-wrap:pretty">要录成自动化：在 DAW 侧对本插件参数开 <strong style="font-weight:600;color:#21212A">Latch（推荐）或 Write；请勿使用 Touch</strong></span>
+            </div>
+          </div>
+
+          <sc-if value="{{ o.writeBar }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:none;display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:13px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.42)">
+              <div style="flex:1;font-size:11px;line-height:1.5;color:#7E6836;text-wrap:pretty">引擎驱动 <strong style="font-weight:600">V2</strong> · 范围 <strong style="font-weight:600">33–49</strong> · <strong style="font-weight:600">30 条车道</strong>（15 轨 × pan/vol）；若 DAW 侧已 arm <strong style="font-weight:600">Latch/Write</strong>，播放本范围将<strong style="font-weight:600">覆盖该范围已有自动化</strong>；未 arm 则仅试听、不落盘。插件无法感知 DAW 是否 arm。</div>
+              <div data-glow="1" style="position:relative;overflow:hidden;flex:none;padding:6px 13px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11px;color:#241f2e;cursor:pointer;white-space:nowrap">知道了，开始</div>
+              <div data-glow="1" style="position:relative;overflow:hidden;flex:none;padding:6px 13px;border-radius:999px;background:rgba(255,255,255,.28);border:1px solid rgba(255,255,255,.5);font-size:11px;color:#52525C;cursor:pointer;white-space:nowrap">撤销（关回跟随宿主）</div>
+            </div>
+          </sc-if>
+
+          <div style="flex:1;min-height:0;display:grid;grid-template-columns:352px 1fr 1fr 196px;grid-template-rows:auto auto 1fr;gap:12px">
+
+              <div style="padding:11px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:9px">
+                <div style="display:flex;align-items:baseline;justify-content:space-between">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">组 · GROUP</span>
+                  <span style="font-size:9.5px;color:#7A7A84">本实例只属于一个组</span>
+                </div>
+                <div style="display:flex;gap:3px;padding:3px;border-radius:999px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22)">
+                  <sc-for list="{{ o.groups }}" as="g" hint-placeholder-count="8">
+                    <div data-glow="1" style="{{ g.style }}">
+                      <span>{{ g.id }}</span>
+                      <sc-if value="{{ g.online }}" hint-placeholder-val="{{ false }}">
+                        <span style="width:4px;height:4px;border-radius:50%;background:rgb(120,176,142);flex:none"></span>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ o.groupConfirm }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:12px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.42)">
+                    <span style="flex:1;font-size:10.5px;line-height:1.4;color:#7E6836">{{ o.groupConfirmText }}</span>
+                    <div data-glow="1" style="position:relative;overflow:hidden;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.30);border:1px solid rgba(255,255,255,.5);font-size:10px;color:#52525C;cursor:pointer;white-space:nowrap">取消</div>
+                    <div data-glow="1" style="position:relative;overflow:hidden;padding:4px 10px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:10px;color:#241f2e;cursor:pointer;white-space:nowrap">切换到 C</div>
+                  </div>
+                </sc-if>
+              </div>
+
+
+              <div style="grid-column:4;grid-row:2;padding:11px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">RANGE · 范围</span>
+                </div>
+                <div style="display:flex;padding:3px;border-radius:11px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24)">
+                  <sc-for list="{{ o.rangeTabs }}" as="r" hint-placeholder-count="3">
+                    <div style="{{ r.style }}">{{ r.name }}</div>
+                  </sc-for>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <sc-if value="{{ o.rangeFollow }}" hint-placeholder-val="{{ true }}">
+                    <span style="font-size:10.5px;line-height:1.5;color:#65656F">跟随播放，自动扩展范围。已分析区域共 6 段 · 合计 2:48</span>
+                  </sc-if>
+                  <sc-if value="{{ o.rangeManualOn }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-direction:column;gap:6px">
+                      <div style="display:flex;align-items:center;gap:5px">
+                        <input type="text" value="33.1.000" readOnly="{{ true }}" style="flex:1;min-width:0;padding:4px 6px;border-radius:9px;border:1px solid rgba(255,255,255,.32);background:rgba(255,255,255,.18);font-family:'IBM Plex Mono',monospace;font-size:10px;color:#21212A;outline:none;text-align:center">
+                        <span style="font-size:10px;color:#7A7A84;flex:none">→</span>
+                        <input type="text" value="49.4.480" readOnly="{{ true }}" style="flex:1;min-width:0;padding:4px 6px;border-radius:9px;border:1px solid rgba(255,255,255,.32);background:rgba(255,255,255,.18);font-family:'IBM Plex Mono',monospace;font-size:10px;color:#21212A;outline:none;text-align:center">
+                      </div>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-style:italic;color:rgba(122,122,132,.85)">01:12.400 → 01:47.900</span>
+                      <div style="display:flex;align-items:center;gap:5px">
+                        <span style="flex:1;text-align:center;padding:4px 6px;border-radius:9px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.32);font-size:9.5px;color:#52525C;cursor:pointer;white-space:nowrap">设为播放头</span>
+                        <span style="padding:4px 8px;border-radius:9px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.32);font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#52525C;cursor:pointer">−4</span>
+                        <span style="padding:4px 8px;border-radius:9px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.32);font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#52525C;cursor:pointer">+4</span>
+                      </div>
+                      <span style="font-size:9px;line-height:1.4;font-style:italic;color:rgba(122,122,132,.85)">小节为估算值，播放该区域后精确</span>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ o.rangeLoopOn }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:10.5px;line-height:1.5;color:#7E6836">循环区已失效，沿用上次范围</span>
+                  </sc-if>
+                  <sc-if value="{{ o.loopMissing }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:10.5px;line-height:1.5;color:rgba(122,122,132,.85)">宿主未提供循环区——档位保留但不可选</span>
+                  </sc-if>
+                </div>
+              </div>
+
+              <div style="grid-column:3;grid-row:2;padding:11px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:baseline;justify-content:space-between">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">过渡时间</span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:15px;color:#21212A">80 ms</span>
+                </div>
+                <div style="position:relative;height:5px;border-radius:999px;background:rgba(255,255,255,.22)">
+                  <div style="position:absolute;left:0;top:0;bottom:0;width:21%;border-radius:999px;background:rgba(155,147,196,.85)"></div>
+                  <div style="position:absolute;top:50%;left:21%;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;border-radius:50%;background:#fff;box-shadow:0 2px 7px rgba(30,24,44,.25)"></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:9px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:#7A7A84;flex:none">20 · 300 ms</span>
+                  <svg width="100%" height="20" viewBox="0 0 300 20" preserveAspectRatio="none" style="display:block;flex:1;min-width:0">
+                    <line x1="0" y1="10" x2="300" y2="10" stroke="rgba(255,255,255,.35)" stroke-width="1"></line>
+                    <path d="M0 16 L112 16 L146 5 L300 5" fill="none" stroke="rgba(155,147,196,.95)" stroke-width="2" stroke-linejoin="round"></path>
+                    <line x1="112" y1="1" x2="112" y2="19" stroke="rgba(255,255,255,.45)" stroke-width="1" stroke-dasharray="2 3"></line>
+                    <line x1="146" y1="1" x2="146" y2="19" stroke="rgba(255,255,255,.45)" stroke-width="1" stroke-dasharray="2 3"></line>
+                  </svg>
+                </div>
+                <span style="font-size:9.5px;line-height:1.5;color:#7A7A84;text-wrap:pretty">段与段之间参数不瞬切，走完这段斜坡才到下一段的值。太短交界会「跳」，太长声像糊在两处之间。</span>
+              </div>
+
+                <div style="grid-column:2;grid-row:1;padding:11px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                  <div style="display:flex;align-items:baseline;justify-content:space-between">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">WIDTH · 最大角度</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:15px;color:#21212A">{{ o.widthAngle }}</span>
+                  </div>
+                  <div onPointerDown="{{ o.widthDrag }}" style="position:relative;height:5px;border-radius:999px;background:rgba(255,255,255,.22);cursor:pointer;touch-action:none">
+                    <div style="{{ o.widthFill }}"></div>
+                    <div style="{{ o.widthThumb }}"></div>
+                  </div>
+                  <span style="font-size:9.5px;color:#7A7A84">左右各摆到最外时的角度；0–90°（自动化参数 width 0–150%）</span>
+                </div>
+                <div style="grid-column:3;grid-row:1;padding:11px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                  <div style="display:flex;align-items:baseline;justify-content:space-between">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">MS BALANCE</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:15px;color:#21212A">{{ o.msLabel }}</span>
+                  </div>
+                  <div onPointerDown="{{ o.msDrag }}" style="position:relative;height:5px;border-radius:999px;background:rgba(255,255,255,.22);cursor:pointer;touch-action:none">
+                    <div style="position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.55)"></div>
+                    <div style="{{ o.msFill }}"></div>
+                    <div style="{{ o.msThumb }}"></div>
+                  </div>
+                  <span style="font-size:9.5px;color:#7A7A84">−100 偏 Mid / +100 偏 Side，双击回 0——拖动看下方曲线</span>
+                </div>
+                <div style="grid-column:4;grid-row:1;padding:11px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">LEAD SELECT</span>
+                  <div style="{{ o.leadStyle }}">
+                    <span>{{ o.leadLabel }}</span>
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.8 6 7.8l3-3"></path></svg>
+                  </div>
+                  <span style="{{ o.leadNoteStyle }}">{{ o.leadNote }}</span>
+                </div>
+
+              <div style="grid-column:3 / span 2;grid-row:3;min-height:0;position:relative;border-radius:15px;overflow:hidden;background:linear-gradient(158deg,rgba(34,31,44,.85),rgba(22,20,30,.9),rgba(15,13,21,.92));border:1px solid rgba(255,255,255,.13);box-shadow:0 12px 30px rgba(18,14,26,.28)">
+                <div style="position:absolute;z-index:3;top:9px;left:14px;right:14px;display:flex;align-items:center;gap:14px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#8E88A6">角度域曲线 · ±12 dB</span>
+                  <span style="flex:1"></span>
+                  <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:2px;border-radius:2px;background:rgba(181,172,201,.95)"></span><span style="font-size:9.5px;color:rgba(233,229,244,.62)">声像增益</span></span>
+                  <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:2px;border-radius:2px;background:rgba(255,255,255,.75)"></span><span style="font-size:9.5px;color:rgba(233,229,244,.62)">音量补偿</span></span>
+                </div>
+                <div style="position:absolute;inset:26px 14px 26px 34px">
+                  <svg width="100%" height="100%" viewBox="0 0 660 214" preserveAspectRatio="none" style="display:block">
+                    <g stroke="rgba(255,255,255,.08)" stroke-width="1">
+                      <line x1="0" y1="35" x2="660" y2="35"></line><line x1="0" y1="72" x2="660" y2="72"></line>
+                      <line x1="0" y1="109" x2="660" y2="109" stroke="rgba(255,255,255,.20)"></line>
+                      <line x1="0" y1="146" x2="660" y2="146"></line><line x1="0" y1="183" x2="660" y2="183"></line>
+                      <line x1="0" y1="0" x2="0" y2="214"></line><line x1="165" y1="0" x2="165" y2="214"></line>
+                      <line x1="330" y1="0" x2="330" y2="214" stroke="rgba(255,255,255,.20)"></line>
+                      <line x1="495" y1="0" x2="495" y2="214"></line><line x1="660" y1="0" x2="660" y2="214"></line>
+                    </g>
+                    <path d="{{ o.volPath }}" fill="none" stroke="rgba(255,255,255,.72)" stroke-width="1.6" stroke-dasharray="5 4"></path>
+                    <path d="{{ o.curvePath }}" fill="none" stroke="rgba(181,172,201,.95)" stroke-width="2"></path>
+                  </svg>
+                </div>
+                <div style="position:absolute;left:6px;top:26px;bottom:26px;width:26px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:rgba(233,229,244,.38)">
+                  <span>+12</span><span>+6</span><span>0</span><span>−6</span><span>−12</span>
+                </div>
+                <div style="position:absolute;left:34px;right:14px;bottom:6px;height:16px;display:flex;justify-content:space-between;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:rgba(233,229,244,.38)">
+                  <span style="color:rgba(233,229,244,.72)">左 L −100</span><span>−50</span><span style="color:rgba(233,229,244,.72)">中 C 0</span><span>+50</span><span style="color:rgba(233,229,244,.72)">右 R +100</span>
+                </div>
+                <sc-if value="{{ o.curveEmpty }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:11.5px;color:rgba(233,229,244,.45)">双击添加控制点</div>
+                </sc-if>
+                <sc-if value="{{ o.curveHandles }}" hint-placeholder-val="{{ true }}">
+                  <div style="position:absolute;inset:0;pointer-events:none">
+                    <div style="position:absolute;left:19.5%;top:34%;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:rgba(233,229,244,.95);box-shadow:0 0 10px rgba(181,172,201,.8)"></div>
+                    <div style="position:absolute;left:50%;top:51%;width:10px;height:10px;margin:-5px 0 0 -5px;background:rgba(233,229,244,.95);box-shadow:0 0 10px rgba(181,172,201,.8)"></div>
+                    <div style="position:absolute;left:79%;top:62%;width:0;height:0;margin:-5px 0 0 -6px;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid rgba(233,229,244,.95)"></div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ o.curveSel }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:absolute;left:36%;top:16px;display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:12px;background:rgba(36,31,46,.94);border:1px solid rgba(255,255,255,.16);box-shadow:0 14px 34px rgba(14,10,22,.45)">
+                    <div style="display:flex;padding:2px;border-radius:9px;background:rgba(255,255,255,.07)">
+                      <span style="padding:3px 8px;border-radius:7px;background:rgba(255,255,255,.16);font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#E6E1F0">bell</span>
+                      <span style="padding:3px 8px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:rgba(230,225,240,.45)">shelf</span>
+                      <span style="padding:3px 8px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:rgba(230,225,240,.45)">cut</span>
+                    </div>
+                    <div style="display:flex;padding:2px;border-radius:9px;background:rgba(255,255,255,.07)">
+                      <span style="padding:3px 8px;border-radius:7px;font-size:9.5px;color:rgba(230,225,240,.45)">向外</span>
+                      <span style="padding:3px 8px;border-radius:7px;background:rgba(255,255,255,.16);font-size:9.5px;color:#E6E1F0">向左</span>
+                      <span style="padding:3px 8px;border-radius:7px;font-size:9.5px;color:rgba(230,225,240,.45)">向右</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.14em;color:rgba(230,225,240,.5)">Q</span>
+                      <div style="position:relative;width:64px;height:4px;border-radius:999px;background:rgba(255,255,255,.14)">
+                        <div style="position:absolute;left:0;top:0;bottom:0;width:58%;border-radius:999px;background:rgba(181,172,201,.9)"></div>
+                      </div>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:9.5px;color:#E6E1F0">1.4</span>
+                    </div>
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="rgba(216,140,140,.9)" stroke-width="1.6" stroke-linecap="round" style="cursor:pointer"><path d="M3 4h8M5.5 4V2.8h3V4M4.4 4l.5 7.2h4.2L9.6 4"></path></svg>
+                  </div>
+                </sc-if>
+              </div>
+
+              <div style="grid-column:1 / span 2;grid-row:2 / span 2;min-height:0;padding:10px 14px 8px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:baseline;gap:12px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">声像 / 音量分布</span>
+                  <span style="font-size:9.5px;color:#7A7A84">柱高 = 音量，横位 = 声像；横线 = 立体声源张开度</span>
+                </div>
+                <div ref="{{ o.plotRef }}" style="position:relative;flex:1;min-height:0;overflow:hidden;border-radius:9px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.20)">
+                  <div style="position:absolute;left:50%;top:4px;bottom:14px;width:1px;background:rgba(255,255,255,.45)"></div>
+                  <div style="position:absolute;left:25%;top:9px;bottom:14px;width:1px;background:rgba(255,255,255,.20)"></div>
+                  <div style="position:absolute;left:75%;top:9px;bottom:14px;width:1px;background:rgba(255,255,255,.20)"></div>
+                  <div style="position:absolute;left:0;right:0;bottom:14px;height:1px;background:rgba(255,255,255,.35)"></div>
+                  <sc-for list="{{ o.panBars }}" as="b" hint-placeholder-count="13">
+                    <div style="{{ b.spanStyle }}"></div>
+                  </sc-for>
+                  <sc-for list="{{ o.panBars }}" as="b" hint-placeholder-count="13">
+                    <div style="{{ b.style }}"></div>
+                  </sc-for>
+                  <div style="position:absolute;left:8px;right:8px;bottom:0;height:13px;display:flex;justify-content:space-between;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:#7A7A84">
+                    <span style="color:#52525C">左 L</span><span>−50</span><span style="color:#52525C">中 C</span><span>+50</span><span style="color:#52525C">右 R</span>
+                  </div>
+                </div>
+              </div>
+          </div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ o.isTab2 }}" hint-placeholder-val="{{ true }}">
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;gap:9px">
+          <sc-if value="{{ o.emptyTracks }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+              <span style="font-size:13px;color:#52525C;max-width:560px;text-align:center;line-height:1.7;text-wrap:pretty">{{ o.emptyCopy }}</span>
+              <span style="font-size:11px;color:#7A7A84;max-width:600px;text-align:center;line-height:1.6;text-wrap:pretty">人声轨的输出路由须保持指向本总线（不要改）</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ o.showTracks }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;min-height:0;border-radius:15px;overflow:hidden;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column">
+            <div style="flex:none;display:flex;align-items:center;gap:14px;padding:0 10px;height:30px;background:rgba(255,255,255,.16);border-bottom:1px solid rgba(255,255,255,.30)">
+              <sc-for list="{{ o.trackCols }}" as="c" hint-placeholder-count="15">
+                <span style="{{ c.style }}">{{ c.name }}</span>
+              </sc-for>
+            </div>
+            <div style="flex:1;min-height:0;overflow-y:auto">
+              <sc-for list="{{ o.tracks }}" as="t" hint-placeholder-count="15">
+                <div data-glow="1" style="{{ t.rowStyle }}">
+                  <span style="{{ t.lightStyle }}"></span>
+                  <div style="width:44px;flex:none;display:flex;align-items:center;gap:4px">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:11px;color:#52525C">{{ t.n }}</span>
+                    <sc-if value="{{ t.st }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;letter-spacing:.06em;padding:1px 3px;border-radius:4px;background:rgba(255,255,255,.24);color:#6A6A74">ST</span>
+                    </sc-if>
+                  </div>
+                  <div style="width:150px;flex:none;display:flex;align-items:center;gap:6px">
+                    <span style="{{ t.labelStyle }}">{{ t.label }}</span>
+                    <sc-if value="{{ t.low }}" hint-placeholder-val="{{ false }}">
+                      <span style="flex:none;padding:1px 5px;border-radius:5px;background:rgba(212,176,118,.22);border:1px solid rgba(212,176,118,.45);font-size:8px;color:#7E6836;white-space:nowrap">样本不足</span>
+                    </sc-if>
+                  </div>
+                  <div style="{{ t.panWrap }}"><div style="{{ t.panNeedle }}"></div></div>
+                  <div style="{{ t.wWrap }}"><div style="{{ t.wNeedle }}"></div></div>
+                  <div style="position:relative;width:268px;height:16px;flex:none;border-radius:999px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.32);box-shadow:inset 0 2px 5px rgba(30,24,44,.16),inset 0 -1px 0 rgba(255,255,255,.45),0 1px 0 rgba(255,255,255,.30)">
+                    <div style="position:absolute;inset:2px;border-radius:999px;overflow:hidden">
+                      <div style="{{ t.liquid }}"></div>
+                      <div style="{{ t.peak }}"></div>
+                    </div>
+                    <div style="position:absolute;left:8px;right:8px;top:2px;height:3px;border-radius:999px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);pointer-events:none"></div>
+                    <div style="{{ t.collar }}"></div>
+                  </div>
+                  <div style="width:66px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22)">
+                    <span style="font-size:11px;color:#6A6A74">−</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:11px;color:#21212A">{{ t.prio }}</span>
+                    <span style="font-size:11px;color:#6A6A74">+</span>
+                  </div>
+                  <div style="{{ o.secGroup }}">
+                    <div style="{{ t.leadStyle }}"></div>
+                    <div style="{{ t.pairStyle }}"><span style="{{ t.pairDot }}"></span><span>{{ t.pairText }}</span></div>
+                    <div style="{{ t.exStyle }}"></div>
+                    <div style="{{ t.partStyle }}"></div>
+                    <div data-tour="{{ t.tourKey }}" style="position:relative;display:flex;align-items:center;gap:14px" style-before="content:'';position:absolute;left:-7px;top:-14px;bottom:-14px;width:1px;background:rgba(255,255,255,.26)">
+                      <div style="{{ t.fpStyle }}"></div>
+                      <div style="{{ t.fvStyle }}"></div>
+                    </div>
+                  </div>
+                  <sc-if value="{{ o.drawer }}" hint-placeholder-val="{{ false }}">
+                    <div style="width:26px;flex:none;display:flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.26);cursor:pointer;height:22px;font-size:12px;color:#6A6A74;letter-spacing:.06em">⋯</div>
+                  </sc-if>
+                  <div style="{{ t.onStyle }}"></div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="flex:none;display:flex;align-items:flex-start;gap:12px">
+            <span style="font-size:9.5px;line-height:1.5;color:#7A7A84;max-width:800px;text-wrap:pretty"><strong style="font-weight:600;color:#65656F">音量</strong>＝音量豁免，该轨不进音量平衡计算 ·　<strong style="font-weight:600;color:#65656F">声像</strong>＝参与自动声像，该轨是否进声像重分布（stereo 轨默认关，仍参与音量平衡）·　<strong style="font-weight:600;color:#65656F">冻结P/V</strong>＝结果照算但不再驱动，旋钮解锁为手动（两开关共用一个每轨自动化参数）</span>
+            <span style="flex:1"></span>
+            <sc-if value="{{ o.recapture }}" hint-placeholder-val="{{ false }}">
+              <span style="padding:2px 8px;border-radius:999px;background:rgba(212,176,118,.18);border:1px solid rgba(212,176,118,.45);font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:#7E6836">重采集布防中 · 选区 33–41 · 4 轨</span>
+            </sc-if>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.14em;color:#7A7A84">15 轨 · 滚动 + 表头 sticky</span>
+          </div>
+          <sc-if value="{{ o.ovConfirm }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:none;display:flex;align-items:center;gap:12px;padding:10px 13px;border-radius:13px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.42)">
+              <span style="flex:1;font-size:11px;line-height:1.5;color:#7E6836;text-wrap:pretty">将以固定值替换轨 06（当前版本 V2）的全部分段结果，可撤销（含 2 个锁定段）</span>
+              <div data-glow="1" style="position:relative;overflow:hidden;padding:6px 13px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11px;color:#241f2e;cursor:pointer;white-space:nowrap">继续</div>
+              <div data-glow="1" style="position:relative;overflow:hidden;padding:6px 13px;border-radius:999px;background:rgba(255,255,255,.28);border:1px solid rgba(255,255,255,.5);font-size:11px;color:#52525C;cursor:pointer;white-space:nowrap">撤销</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ o.unfreezeHint }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:none;display:flex;align-items:center;gap:10px;padding:9px 13px;border-radius:13px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.26)">
+              <span style="flex:1;font-size:11px;color:#52525C">轨 06 仍由手动固定值驱动——重新识别该轨？</span>
+              <span style="font-size:11px;color:#6B5FA0;text-decoration:underline;cursor:pointer">重新识别轨 06</span>
+            </div>
+          </sc-if>
+          </sc-if>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ o.isTab3 }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;display:flex;gap:12px">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:9px">
+
+            <div style="flex:none;padding:10px 13px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;gap:16px">
+                <sc-for list="{{ o.vadSliders }}" as="v" hint-placeholder-count="7">
+                  <div style="flex:1;display:flex;flex-direction:column;gap:5px">
+                    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.14em;color:#6A6A74;white-space:nowrap">{{ v.name }}</span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:9.5px;color:#21212A">{{ v.val }}</span>
+                    </div>
+                    <div style="position:relative;height:4px;border-radius:999px;background:rgba(255,255,255,.22)">
+                      <div style="{{ v.fill }}"></div>
+                      <div style="{{ v.thumb }}"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px">
+                <sc-for list="{{ o.toolBtns }}" as="b" hint-placeholder-count="4">
+                  <div data-glow="1" style="{{ b.style }}">{{ b.name }}</div>
+                </sc-for>
+                <sc-if value="{{ o.noSel }}" hint-placeholder-val="{{ true }}">
+                  <span style="font-size:9.5px;color:#7A7A84">勾选左侧轨头选择目标轨（可多选，shift 连选）</span>
+                </sc-if>
+                <sc-if value="{{ o.hasSel }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;align-items:center;gap:7px;padding:4px 5px 4px 10px;border-radius:999px;background:rgba(181,172,201,.24);border:1px solid rgba(181,172,201,.5)">
+                    <span style="font-size:10.5px;color:#5B5075">上面四个操作作用于 <strong style="font-weight:600">{{ o.selChip }}</strong></span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.06em;color:rgba(91,80,117,.75)">{{ o.selNames }}</span>
+                    <span onClick="{{ o.clearSel }}" style="width:15px;height:15px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,.4);font-size:10px;color:#5B5075;cursor:pointer">✕</span>
+                  </div>
+                </sc-if>
+                <span style="flex:1"></span>
+                <sc-if value="{{ o.applying }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;background:rgba(181,172,201,.22);border:1px solid rgba(181,172,201,.5)">
+                    <span style="width:11px;height:11px;border-radius:50%;border:1.6px solid rgba(107,95,160,.9);border-top-color:transparent;animation:spin 1s linear infinite"></span>
+                    <span style="font-size:10.5px;color:#5B5075">正在应用…（4 处手动编辑/锁定段已保留）</span>
+                  </div>
+                </sc-if>
+
+              </div>
+              <sc-if value="{{ o.rangeToast }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:11px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.42)">
+                  <span style="flex:1;font-size:10.5px;color:#7E6836">作用范围已改为选区 33–41——Range 档位已切到「手动」，工作选区本身不变</span>
+                  <span onClick="{{ o.clearRangeToast }}" style="width:15px;height:15px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,.4);font-size:10px;color:#7E6836;cursor:pointer">✕</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ o.recapture }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="padding:2px 8px;border-radius:999px;background:rgba(212,176,118,.18);border:1px solid rgba(212,176,118,.45);font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:#7E6836">重采集布防中 · 选区 33–41 · 4 轨</span>
+                  <span style="font-size:9.5px;color:#7E6836">输出引擎仍按全局范围工作，与本次重采集选区无关</span>
+                </div>
+              </sc-if>
+            </div>
+
+            <sc-if value="{{ o.legend }}" hint-placeholder-val="{{ false }}">
+              <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:10px">
+                <div style="flex:none;display:flex;align-items:baseline;gap:12px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">曲线叠加层 · 图例帧（单条泳道放大 ×4）</span>
+                  <span style="font-size:9.5px;color:#7A7A84">实施参照：段内水平、边界按过渡时间画斜坡，不做垂直跳变</span>
+                </div>
+
+                <div style="flex:1;min-height:0;position:relative;border-radius:15px;overflow:hidden;background:linear-gradient(158deg,rgba(34,31,44,.85),rgba(22,20,30,.9),rgba(15,13,21,.92));border:1px solid rgba(255,255,255,.13);box-shadow:0 12px 30px rgba(18,14,26,.28);display:flex">
+
+                  <div style="width:190px;flex:none;display:flex;flex-direction:column;gap:9px;padding:14px 12px;border-right:1px solid rgba(255,255,255,.10)">
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="width:11px;height:11px;border-radius:3px;flex:none;display:flex;align-items:center;justify-content:center;background:rgba(181,172,201,.95);border:1px solid rgba(181,172,201,.95)">
+                        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="#2A2438" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.6 5.2 3.9 7.4 8.4 2.8"></path></svg>
+                      </span>
+                      <span style="width:7px;height:7px;border-radius:50%;background:rgb(120,176,142);flex:none;animation:livePulse 2.4s infinite"></span>
+                      <span style="flex:1;font-size:12px;font-weight:600;color:#F2EFFA">01 主唱</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:9px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14)">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="rgba(233,229,244,.85)" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4S1.5 8 1.5 8Z"></path><circle cx="8" cy="8" r="1.8"></circle></svg>
+                      <span style="flex:1;font-size:10.5px;color:rgba(233,229,244,.8)">曲线可见</span>
+                      <span style="position:relative;width:24px;height:14px;borderRadius:999px;flex:none;border-radius:999px;background:rgba(120,176,142,.55);border:1px solid rgba(120,176,142,.7)">
+                        <span style="position:absolute;top:1px;right:1px;width:10px;height:10px;border-radius:50%;background:#fff"></span>
+                      </span>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:rgba(233,229,244,.55)">
+                      <div style="display:flex;justify-content:space-between"><span>覆盖率</span><span style="color:rgba(233,229,244,.85)">100%</span></div>
+                      <div style="display:flex;justify-content:space-between"><span>段数</span><span style="color:rgba(233,229,244,.85)">3</span></div>
+                    </div>
+                    <div style="margin-top:2px;padding-top:9px;border-top:1px solid rgba(255,255,255,.10);display:flex;flex-direction:column;gap:6px">
+                      <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:2px;border-radius:2px;background:rgba(181,172,201,.95);flex:none"></span><span style="font-size:10px;color:rgba(233,229,244,.7)">pan 阶梯</span></span>
+                      <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:2px;border-radius:2px;background:rgba(255,255,255,.8);flex:none"></span><span style="font-size:10px;color:rgba(233,229,244,.7)">vol 阶梯</span></span>
+                      <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:9px;border-radius:2px;background:rgba(120,176,142,.16);border:1px solid rgba(120,176,142,.32);flex:none"></span><span style="font-size:10px;color:rgba(233,229,244,.7)">VAD 绿罩</span></span>
+                      <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;flex:none;border-top:1px dashed rgba(255,255,255,.5)"></span><span style="font-size:10px;color:rgba(233,229,244,.7)">auto 边界</span></span>
+                      <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:1px;background:rgba(255,255,255,.75);flex:none"></span><span style="font-size:10px;color:rgba(233,229,244,.7)">手动边界</span></span>
+                    </div>
+                  </div>
+
+                  <div style="flex:1;min-width:0;position:relative">
+                    <div style="position:absolute;left:0;right:44px;top:0;height:20px;border-bottom:1px solid rgba(255,255,255,.08)">
+                      <span style="position:absolute;left:6px;top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.42)">33</span>
+                      <span style="position:absolute;left:33%;top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.42)">35</span>
+                      <span style="position:absolute;left:66%;top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.42)">37</span>
+                      <span style="position:absolute;right:6px;top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.42)">39</span>
+                    </div>
+
+                    <div style="position:absolute;left:0;right:44px;top:20px;bottom:26px">
+                      <div style="position:absolute;left:4%;top:0;bottom:0;width:26%;background:rgba(120,176,142,.13)"></div>
+                      <div style="position:absolute;left:36%;top:0;bottom:0;width:24%;background:rgba(120,176,142,.13)"></div>
+                      <div style="position:absolute;left:66%;top:0;bottom:0;width:28%;background:rgba(120,176,142,.13)"></div>
+
+                      <div style="position:absolute;inset:0;opacity:.5;background:repeating-linear-gradient(90deg,rgba(196,190,220,.5) 0 2px,transparent 2px 6px);mask-image:linear-gradient(90deg,transparent 0 4%,#000 6% 28%,transparent 31% 36%,#000 38% 58%,transparent 61% 66%,#000 68% 92%,transparent 95%);-webkit-mask-image:linear-gradient(90deg,transparent 0 4%,#000 6% 28%,transparent 31% 36%,#000 38% 58%,transparent 61% 66%,#000 68% 92%,transparent 95%)"></div>
+
+                      <svg width="100%" height="100%" viewBox="0 0 600 200" preserveAspectRatio="none" style="position:absolute;inset:0;display:block">
+                        <path d="M0 118 L186 118 L214 66 L336 66" fill="none" stroke="rgba(181,172,201,.5)" stroke-width="2.4"></path>
+                        <path d="M336 66 L364 92 L600 92" fill="none" stroke="rgba(181,172,201,.98)" stroke-width="3"></path>
+                        <path d="M0 148 L186 148 L214 132 L336 132" fill="none" stroke="rgba(255,255,255,.42)" stroke-width="2.4"></path>
+                        <path d="M336 132 L364 158 L600 158" fill="none" stroke="rgba(255,255,255,.92)" stroke-width="3"></path>
+                        <line x1="200" y1="0" x2="200" y2="200" stroke="rgba(255,255,255,.5)" stroke-width="1.4" stroke-dasharray="5 5"></line>
+                        <line x1="350" y1="0" x2="350" y2="200" stroke="rgba(255,255,255,.8)" stroke-width="1.6"></line>
+                      </svg>
+
+                      <span style="position:absolute;left:33.3%;top:50%;transform:translate(-50%,-50%);width:9px;height:26px;border-radius:4px;background:rgba(226,222,244,.28);border:1px solid rgba(255,255,255,.55);cursor:ew-resize;display:flex;align-items:center;justify-content:center">
+                        <svg width="5" height="10" viewBox="0 0 6 12" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="1.1" stroke-linecap="round"><path d="M2 2.5v7M4 2.5v7"></path></svg>
+                      </span>
+                      <span style="position:absolute;left:58.3%;top:50%;transform:translate(-50%,-50%);width:9px;height:26px;border-radius:4px;background:rgba(240,236,255,.5);border:1px solid rgba(255,255,255,.85);box-shadow:0 0 12px rgba(226,222,244,.5);cursor:ew-resize;display:flex;align-items:center;justify-content:center">
+                        <svg width="5" height="10" viewBox="0 0 6 12" fill="none" stroke="#2A2438" stroke-width="1.2" stroke-linecap="round"><path d="M2 2.5v7M4 2.5v7"></path></svg>
+                      </span>
+
+                      <span style="position:absolute;left:34.5%;top:8px;padding:1px 5px;border-radius:5px;background:rgba(181,172,201,.9);font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:600;color:#2A2438">E</span>
+                      <span style="position:absolute;left:59.5%;top:8px;padding:1px 5px;border-radius:5px;background:rgba(181,172,201,.9);font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:600;color:#2A2438">C</span>
+                      <span style="position:absolute;left:70%;top:7px;display:flex;align-items:center;gap:4px;padding:1px 6px 1px 4px;border-radius:5px;background:rgba(212,176,118,.24);border:1px solid rgba(212,176,118,.5)">
+                        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="rgba(240,214,160,.95)" stroke-width="1.5" stroke-linecap="round"><rect x="2.4" y="5.2" width="7.2" height="4.6" rx="1.3"></rect><path d="M4 5.2V3.9a2 2 0 0 1 4 0v1.3"></path></svg>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:rgba(240,214,160,.95)">锁定</span>
+                      </span>
+
+                      <span style="position:absolute;left:8%;bottom:8px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.34)">auto 段</span>
+                      <span style="position:absolute;left:40%;bottom:8px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(233,229,244,.34)">auto 段（半透明）</span>
+                      <span style="position:absolute;left:70%;bottom:8px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;color:rgba(240,236,255,.72)">手动段（实线加重）</span>
+                    </div>
+
+                    <div style="position:absolute;right:0;top:20px;bottom:26px;width:44px;border-left:1px solid rgba(255,255,255,.10);display:flex">
+                      <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding:2px 3px;font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:rgba(181,172,201,.75)">
+                        <span>+100</span><span>0</span><span>−100</span>
+                      </div>
+                      <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding:2px 4px 2px 0;font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:rgba(255,255,255,.6)">
+                        <span>+12</span><span>0</span><span>−24</span>
+                      </div>
+                    </div>
+                    <div style="position:absolute;right:0;top:2px;width:44px;display:flex;font-family:'IBM Plex Mono',monospace;font-size:7px;letter-spacing:.06em">
+                      <span style="flex:1;text-align:right;padding-right:3px;color:rgba(181,172,201,.75)">PAN</span>
+                      <span style="flex:1;text-align:right;padding-right:4px;color:rgba(255,255,255,.6)">dB</span>
+                    </div>
+
+                    <div style="position:absolute;left:0;right:44px;bottom:0;height:4px;background:rgba(120,176,142,.4)"></div>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ o.laneView }}" hint-placeholder-val="{{ true }}">
+              <div data-tour="lanes" style="flex:1;min-height:0;position:relative;border-radius:15px;overflow:hidden;background:linear-gradient(158deg,rgba(34,31,44,.85),rgba(22,20,30,.9),rgba(15,13,21,.92));border:1px solid rgba(255,255,255,.13);display:flex;flex-direction:column">
+                <div style="flex:none;height:22px;display:flex;align-items:center;border-bottom:1px solid rgba(255,255,255,.10)">
+                  <div style="width:158px;flex:none"></div>
+                  <div style="flex:1;position:relative;height:100%">
+                    <sc-for list="{{ o.ruler }}" as="m" hint-placeholder-count="9">
+                      <span style="{{ m.style }}">{{ m.bar }}</span>
+                    </sc-for>
+                  </div>
+                </div>
+
+                <div style="{{ o.selOverlay }}">
+                  <div style="{{ o.selEdgeL }}"></div>
+                  <div style="{{ o.selEdgeR }}"></div>
+                  <div onPointerDown="{{ o.selGrabL }}" style="{{ o.selHeadL }}">
+                    <svg width="7" height="11" viewBox="0 0 8 12" fill="none" stroke="#2A2438" stroke-width="1.3" stroke-linecap="round"><path d="M2.6 2v8M5.4 2v8"></path></svg>
+                  </div>
+                  <div onPointerDown="{{ o.selGrabR }}" style="{{ o.selHeadR }}">
+                    <svg width="7" height="11" viewBox="0 0 8 12" fill="none" stroke="#2A2438" stroke-width="1.3" stroke-linecap="round"><path d="M2.6 2v8M5.4 2v8"></path></svg>
+                  </div>
+                  <span style="{{ o.selReadL }}">{{ o.selTimeL }}</span>
+                  <span style="{{ o.selReadR }}">{{ o.selTimeR }}</span>
+                  <div onClick="{{ o.setRange }}" style="{{ o.selSetBtn }}">设为范围</div>
+                </div>
+                <sc-if value="{{ o.laneEmpty }}" hint-placeholder-val="{{ false }}">
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+                    <span style="font-size:12.5px;color:rgba(233,229,244,.6)">尚无采集数据——开启采集开关并播放</span>
+                    <div style="padding:7px 16px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11.5px;color:#241f2e;cursor:pointer">去 Tab1 打开采集</div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ o.laneRows }}" hint-placeholder-val="{{ true }}">
+                <div style="flex:1;min-height:0;overflow-y:auto;position:relative">
+                  <div style="{{ o.selBand }}"></div>
+                  <div style="position:absolute;left:52%;top:0;bottom:0;width:2px;background:rgba(255,255,255,.5);z-index:3"></div>
+                  <sc-for list="{{ o.lanes }}" as="l" hint-placeholder-count="15">
+                    <div onClick="{{ l.pick }}" style="{{ l.rowStyle }}">
+                      <div style="{{ l.headStyle }}">
+                        <span style="{{ l.boxStyle }}">
+                          <sc-if value="{{ l.checked }}" hint-placeholder-val="{{ false }}">
+                            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="#2A2438" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.6 5.2 3.9 7.4 8.4 2.8"></path></svg>
+                          </sc-if>
+                        </span>
+                        <span style="{{ l.lightStyle }}"></span>
+                        <span style="{{ l.nameStyle }}">{{ l.n }} {{ l.label }}</span>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:rgba(233,229,244,.45)">{{ l.cov }}</span>
+                      </div>
+                      <div style="{{ l.laneStyle }}">
+                        <div style="{{ l.envStyle }}"></div>
+                        <sc-for list="{{ l.vad }}" as="v" hint-placeholder-count="3">
+                          <div style="{{ v.style }}"></div>
+                        </sc-for>
+                        <div style="{{ l.panStyle }}"></div>
+                        <div style="{{ l.volStyle }}"></div>
+                        <div style="position:absolute;left:32%;top:0;bottom:0;width:1px;border-left:1px dashed rgba(255,255,255,.3)"></div>
+                        <div style="position:absolute;left:66%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.5)"></div>
+                        <div style="position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(120,176,142,.4)"></div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+                </sc-if>
+                <div style="flex:none;height:20px;display:flex;align-items:center;padding:0 10px;border-top:1px solid rgba(255,255,255,.10)">
+                  <div style="width:148px;flex:none"></div>
+                  <div style="flex:1;position:relative;height:6px;border-radius:999px;background:rgba(255,255,255,.08)">
+                    <div style="position:absolute;left:18%;right:34%;top:0;bottom:0;border-radius:999px;background:rgba(255,255,255,.26)"></div>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{ o.inspector }}" hint-placeholder-val="{{ false }}">
+            <div style="width:262px;flex:none;padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:11px">
+              <sc-if value="{{ o.inspectorOff }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:7px 10px;border-radius:10px;background:rgba(212,176,118,.15);border:1px solid rgba(212,176,118,.4);font-size:10px;line-height:1.45;color:#7E6836;text-wrap:pretty">跟随宿主中：编辑已保存，开启输出后生效</div>
+              </sc-if>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">段检查器</span>
+                <span style="padding:1px 5px;border-radius:5px;background:rgba(181,172,201,.28);border:1px solid rgba(181,172,201,.5);font-family:'IBM Plex Mono',monospace;font-size:8px;color:#5B5075">E</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:10.5px;color:#52525C">
+                <div style="display:flex;justify-content:space-between"><span style="color:#7A7A84">起</span><span>36.4.480</span></div>
+                <div style="display:flex;justify-content:space-between"><span style="color:#7A7A84">止</span><span>40.2.240</span></div>
+                <div style="display:flex;justify-content:space-between"><span style="color:#7A7A84">时长</span><span>5.94s</span></div>
+                <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#7A7A84;white-space:nowrap">LUFS-S</span><span>−14.2</span></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:7px">
+                <div style="display:flex;align-items:center;gap:9px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.18em;color:#6A6A74;width:28px">PAN</span>
+                  <div style="position:relative;width:26px;height:26px;border-radius:50%;flex:none;background:rgba(255,255,255,.3);box-shadow:0 3px 8px rgba(30,24,44,.14),inset 0 1px 0 rgba(255,255,255,.55)">
+                    <div style="position:absolute;left:50%;top:50%;width:1.6px;height:9px;margin:-9px 0 0 -.8px;border-radius:1px;background:#21212A;transform-origin:50% 100%;transform:rotate(3deg)"></div>
+                  </div>
+                  <input type="text" value="+2" readOnly="{{ true }}" style="flex:1;min-width:0;padding:4px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.32);background:rgba(255,255,255,.18);font-family:'IBM Plex Mono',monospace;font-size:11px;color:#21212A;outline:none;text-align:right">
+                </div>
+                <div style="display:flex;align-items:center;gap:9px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.18em;color:#6A6A74;width:28px">VOL</span>
+                  <div style="position:relative;flex:1;height:5px;border-radius:999px;background:rgba(255,255,255,.22)">
+                    <div style="position:absolute;left:0;top:0;bottom:0;width:64%;border-radius:999px;background:rgba(181,172,201,.6)"></div>
+                    <div style="position:absolute;top:50%;left:64%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(30,24,44,.22)"></div>
+                  </div>
+                  <input type="text" value="+1.6" readOnly="{{ true }}" style="width:52px;flex:none;padding:4px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.32);background:rgba(255,255,255,.18);font-family:'IBM Plex Mono',monospace;font-size:11px;color:#21212A;outline:none;text-align:right">
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22)">
+                <span style="font-size:11px;color:#52525C;flex:1">锁定本段</span>
+                <div style="{{ o.segLockStyle }}"></div>
+              </div>
+              <span style="font-size:9.5px;line-height:1.5;color:#7A7A84;text-wrap:pretty">origin：E = 手动编辑，C = 手动创建，auto 段无角标。锁定段在重新识别时保持不变。</span>
+            </div>
+          </sc-if>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ o.isTab4 }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;display:flex;gap:14px">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:11px;overflow-y:auto;padding-right:4px">
+
+            <div style="flex:none;padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:10px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">使用说明</span>
+              <span style="font-size:11.5px;line-height:1.7;color:#52525C;text-wrap:pretty">采集 → 分析 → 输出。开启采集并播放，插件记录每条轨的响度特征；分析在离线状态下算出每个乐句的声像/音量方案；输出切到「引擎驱动」后由插件驱动参数，要落盘则在 DAW 侧开 Latch 或 Write。</span>
+              <div style="padding:11px 13px;border-radius:12px;background:rgba(198,110,120,.10);border:1px solid rgba(198,110,120,.32);display:flex;flex-direction:column;gap:8px">
+                <span style="font-size:11.5px;font-weight:600;line-height:1.6;color:#8E4C55;text-wrap:pretty">必读：SCVB 的九条硬约束，违反其中任何一条都会导致静音、错音或分析失效。</span>
+                <sc-for list="{{ o.nineTop }}" as="c" hint-placeholder-count="3">
+                  <div style="display:flex;gap:8px">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#A85862;flex:none">{{ c.i }}</span>
+                    <span style="font-size:10.5px;line-height:1.6;color:#8E4C55;text-wrap:pretty"><strong style="font-weight:600">{{ c.t }}</strong>　{{ c.d }}</span>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ o.nineOpen }}" hint-placeholder-val="{{ false }}">
+                  <sc-for list="{{ o.nineRest }}" as="c" hint-placeholder-count="6">
+                    <div style="display:flex;gap:8px">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:rgba(168,88,98,.7);flex:none">{{ c.i }}</span>
+                      <span style="font-size:10.5px;line-height:1.6;color:rgba(142,76,85,.85);text-wrap:pretty">{{ c.t }}　{{ c.d }}</span>
+                    </div>
+                  </sc-for>
+                </sc-if>
+                <div style="display:flex;align-items:center;gap:10px;padding-top:2px">
+                  <span style="font-size:10.5px;color:#A85862;text-decoration:underline;cursor:pointer">{{ o.nineToggle }}</span>
+                  <span style="flex:1"></span>
+                  <div data-glow="1" data-tour="review" style="{{ o.reviewStyle }}">重看引导</div>
+                </div>
+              </div>
+            </div>
+
+            <sc-for list="{{ o.settings }}" as="s" hint-placeholder-count="2">
+              <div style="flex:none;padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:8px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">{{ s.eyebrow }}</span>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <span style="flex:1;font-size:11.5px;color:#21212A">{{ s.title }}</span>
+                  <div style="display:flex;padding:2px;border-radius:9px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.26)">
+                    <sc-for list="{{ s.opts }}" as="p" hint-placeholder-count="3">
+                      <span style="{{ p.style }}">{{ p.name }}</span>
+                    </sc-for>
+                  </div>
+                </div>
+                <span style="font-size:9.5px;color:#7A7A84">{{ s.note }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="width:330px;flex:none;display:flex;flex-direction:column;gap:11px">
+            <div style="padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:10px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">界面</span>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="flex:1;font-size:11.5px;color:#21212A">缩放</span>
+                <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.32);cursor:pointer">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#52525C">100%</span>
+                  <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.8 6 7.8l3-3"></path></svg>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="flex:1;font-size:11.5px;color:#21212A">语言</span>
+                <div style="display:flex;gap:2px;padding:2px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28)">
+                  <span style="padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.85);font-size:10.5px;font-weight:600;color:#21212A">中</span>
+                  <span style="padding:3px 9px;border-radius:999px;font-size:10.5px;color:#6A6A74">EN</span>
+                  <span style="padding:3px 9px;border-radius:999px;font-size:10.5px;color:#6A6A74">FR</span>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22)">
+                <span style="flex:1;font-size:11.5px;color:#21212A">版本</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:#65656F">v2.1.0 · abi 7</span>
+              </div>
+            </div>
+
+            <div style="padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:7px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74">存储</span>
+              <span style="font-size:11.5px;color:#21212A">内嵌于工程（3.4 MB）</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.06em;color:#7A7A84">session 8f2c-41ab-9d07</span>
+            </div>
+
+            <div style="flex:1;min-height:0;padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.42);display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.22em;color:#6A6A74;flex:1">诊断</span>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round" style="{{ o.diagChevron }}"><path d="M3 4.8 6 7.8l3-3"></path></svg>
+              </div>
+              <sc-if value="{{ o.diagOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="flex:1;min-height:0;overflow-y:auto;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:9.5px;color:#65656F;display:flex;flex-direction:column;gap:3px">
+                  <div style="display:flex;gap:8px;color:#7A7A84;letter-spacing:.08em"><span style="width:26px">CH</span><span style="width:44px">HB</span><span style="width:34px">MIS</span><span style="width:34px">GEN</span><span style="flex:1">SEQ</span></div>
+                  <sc-for list="{{ o.diagRows }}" as="d" hint-placeholder-count="8">
+                    <div style="display:flex;gap:8px"><span style="width:26px">{{ d.ch }}</span><span style="width:44px">{{ d.hb }}</span><span style="width:34px">{{ d.mis }}</span><span style="width:34px">{{ d.gen }}</span><span style="flex:1">{{ d.seq }}</span></div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <div data-glow="1" style="position:relative;overflow:hidden;align-self:flex-start;padding:6px 13px;border-radius:999px;background:rgba(255,255,255,.20);border:1px solid rgba(255,255,255,.36);font-size:11px;color:#52525C;cursor:pointer">复制诊断信息</div>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+
+      <div style="flex:none;display:flex;align-items:center;gap:12px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22)">
+        <div style="{{ o.footerStyle }}">{{ o.footerText }}</div>
+        <div data-glow="1" style="position:relative;overflow:hidden;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.32);cursor:pointer">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#52525C">{{ o.zoomLabel }}</span>
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#6A6A74" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.8 6 7.8l3-3"></path></svg>
+        </div>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.12em;color:#7A7A84">v2.1 · abi 7</span>
+      </div>
+    </div>
+
+    <sc-if value="{{ o.zoomOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;z-index:9;right:112px;bottom:44px;width:168px;padding:5px;border-radius:13px;background:linear-gradient(158deg,rgba(34,31,44,.92),rgba(22,20,30,.94));border:1px solid rgba(255,255,255,.14);box-shadow:0 18px 40px rgba(18,14,26,.4)">
+        <sc-for list="{{ o.zoomSteps }}" as="z" hint-placeholder-count="7">
+          <div style="{{ z.style }}">
+            <span>{{ z.label }}</span>
+            <span style="{{ z.noteStyle }}">{{ z.note }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.toast }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;z-index:9;right:18px;bottom:56px;max-width:330px;display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border-radius:14px;background:linear-gradient(158deg,rgba(34,31,44,.90),rgba(22,20,30,.93));border:1px solid rgba(255,255,255,.16);box-shadow:0 16px 38px rgba(18,14,26,.38)">
+        <span style="flex:none;margin-top:5px;width:6px;height:6px;border-radius:50%;background:rgba(212,176,118,1)"></span>
+        <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+          <span style="font-size:11.5px;line-height:1.5;color:#E6E1F0;text-wrap:pretty">{{ o.toastText }}</span>
+          <sc-if value="{{ o.toastAction }}" hint-placeholder-val="{{ false }}">
+            <div style="align-self:flex-start;padding:5px 12px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11px;color:#241f2e;cursor:pointer">立即重分析</div>
+          </sc-if>
+        </div>
+        <svg width="11" height="11" viewBox="0 0 12 12" stroke="rgba(230,225,240,.55)" stroke-width="1.6" stroke-linecap="round" style="flex:none;margin-top:3px;cursor:pointer"><path d="M3 3l6 6M9 3l-6 6"></path></svg>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.firstRun }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:14;display:flex;align-items:center;justify-content:center;background:linear-gradient(158deg,rgba(34,31,44,.62),rgba(20,17,28,.68));backdrop-filter:blur(5px) saturate(115%)">
+        <div style="width:620px;max-height:660px;border-radius:20px;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(158deg,rgba(40,34,52,.96),rgba(28,24,38,.97),rgba(20,17,28,.98));border:1px solid rgba(255,255,255,.16);box-shadow:0 34px 80px rgba(12,9,20,.55),inset 0 1px 0 rgba(255,255,255,.16)">
+          <div style="flex:none;padding:18px 24px;background:rgba(198,110,120,.16);border-bottom:1px solid rgba(198,110,120,.35)">
+            <div style="font-size:14px;font-weight:600;line-height:1.6;color:#F0B7BE;text-wrap:pretty">必读：SCVB 的九条硬约束，违反其中任何一条都会导致静音、错音或分析失效。</div>
+          </div>
+          <div style="flex:1;min-height:0;overflow-y:auto;padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+            <sc-for list="{{ o.nineAll }}" as="c" hint-placeholder-count="9">
+              <div style="display:flex;gap:12px">
+                <span style="{{ c.numStyle }}">{{ c.i }}</span>
+                <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+                  <span style="{{ c.titleStyle }}">{{ c.t }}</span>
+                  <span style="{{ c.bodyStyle }}">{{ c.d }}</span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="{{ o.fadeStyle }}"></div>
+          <div style="flex:none;display:flex;align-items:center;gap:14px;padding:16px 24px;border-top:1px solid rgba(255,255,255,.12)">
+            <div style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <span style="width:14px;height:14px;border-radius:4px;border:1px solid rgba(255,255,255,.34);background:rgba(255,255,255,.08)"></span>
+              <span style="font-size:11.5px;color:#A9A3BC">不再显示</span>
+            </div>
+            <span style="flex:1"></span>
+            <span style="{{ o.scrollNote }}">{{ o.scrollNoteText }}</span>
+            <div style="padding:9px 22px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12.5px;color:#241f2e;cursor:pointer;box-shadow:0 6px 18px rgba(150,130,200,.4)">开始使用</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.tourAsk }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:14;display:flex;align-items:center;justify-content:center;background:linear-gradient(158deg,rgba(34,31,44,.55),rgba(20,17,28,.62));backdrop-filter:blur(4px)">
+        <div style="width:400px;padding:24px;border-radius:20px;display:flex;flex-direction:column;gap:8px;background:linear-gradient(158deg,rgba(40,34,52,.96),rgba(28,24,38,.97),rgba(20,17,28,.98));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 70px rgba(14,10,22,.5),inset 0 1px 0 rgba(255,255,255,.16)">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:17px;color:#EDEAF4">要不要花一分钟快速了解界面？</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#A9A3BC;text-wrap:pretty">引导期间界面会注入演示数据，结束后自动还原。以后也可以在设置页重看。</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+            <span style="flex:1"></span>
+            <div style="padding:8px 16px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);font-size:12px;color:#C6C0D6;cursor:pointer">暂不</div>
+            <div style="padding:8px 20px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12px;color:#241f2e;cursor:pointer;box-shadow:0 6px 18px rgba(150,130,200,.4)">开始引导</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.tour }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:14">
+        <sc-if value="{{ o.tourHole }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;pointer-events:none;filter:blur(7px)">
+            <div style="{{ o.tourHole }}"></div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ o.tourCenter }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;background:linear-gradient(158deg,rgba(34,31,44,.60),rgba(20,17,28,.66))"></div>
+        </sc-if>
+        <div style="{{ o.tourCallout }}">
+          <div style="padding:18px 20px;border-radius:16px;display:flex;flex-direction:column;gap:9px;background:linear-gradient(158deg,rgba(40,34,52,.96),rgba(28,24,38,.97),rgba(20,17,28,.98));border:1px solid rgba(255,255,255,.16);box-shadow:0 26px 60px rgba(12,9,20,.5),inset 0 1px 0 rgba(255,255,255,.16)">
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:#EDEAF4;text-wrap:pretty">{{ o.tourTitle }}</div>
+            <div style="font-size:12px;line-height:1.65;color:#A9A3BC;text-wrap:pretty">{{ o.tourBody }}</div>
+            <sc-if value="{{ o.tourHint }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:11px;line-height:1.5;color:rgba(169,163,188,.72);padding-top:2px">{{ o.tourHint }}</div>
+            </sc-if>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:5px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:10px;letter-spacing:.14em;color:#8E88A6">{{ o.tourIdx }}</span>
+              <div style="display:flex;align-items:center;gap:4px">
+                <sc-for list="{{ o.tourDots }}" as="d" hint-placeholder-count="6">
+                  <span style="{{ d.style }}"></span>
+                </sc-for>
+              </div>
+              <span style="flex:1"></span>
+              <span style="font-size:11px;color:rgba(169,163,188,.7);cursor:pointer;white-space:nowrap">Skip</span>
+              <div style="padding:6px 13px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);font-size:11.5px;color:#C6C0D6;cursor:pointer;white-space:nowrap">上一步</div>
+              <div style="padding:6px 15px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:11.5px;color:#241f2e;cursor:pointer;white-space:nowrap">{{ o.tourNext }}</div>
+            </div>
+          </div>
+          <sc-if value="{{ o.tourArrow }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ o.tourArrow }}"></div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.copyModal }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:13;display:flex;align-items:center;justify-content:center;background:rgba(28,24,38,.42);backdrop-filter:blur(3px)">
+        <div style="width:440px;padding:24px;border-radius:20px;display:flex;flex-direction:column;gap:14px;background:linear-gradient(158deg,rgba(40,34,52,.95),rgba(28,24,38,.96),rgba(20,17,28,.97));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 70px rgba(14,10,22,.5),inset 0 1px 0 rgba(255,255,255,.16)">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:17px;color:#EDEAF4">复制版本</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#A9A3BC;text-wrap:pretty">把当前版本 <strong style="font-weight:600;color:#EDEAF4">V2 副歌</strong> 的全部参数复制到：</div>
+          <div style="display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14)">
+            <span style="width:14px;height:14px;border-radius:50%;border:4px solid #B9AEDC;background:rgba(20,17,28,.9);flex:none"></span>
+            <span style="flex:1;font-size:12.5px;color:#EDEAF4">V1 主歌</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;color:#8E88A6">已有数据</span>
+          </div>
+          <div style="display:flex;gap:9px;padding:11px 13px;border-radius:12px;background:rgba(198,110,120,.14);border:1px solid rgba(198,110,120,.38)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="rgba(240,183,190,.95)" stroke-width="1.6" stroke-linecap="round" style="flex:none;margin-top:1px"><path d="M8 2.5 15 14H1L8 2.5Z"></path><path d="M8 6.5v3.2M8 11.8v.01"></path></svg>
+            <span style="font-size:12px;line-height:1.6;color:#F0B7BE;text-wrap:pretty">目标已有数据将被覆盖——<strong style="font-weight:600">V1 主歌</strong> 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。此操作不可撤销。</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:2px">
+            <span style="flex:1"></span>
+            <div onClick="{{ o.closeCopy }}" style="padding:8px 16px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);font-size:12px;color:#C6C0D6;cursor:pointer;white-space:nowrap">取消</div>
+            <div onClick="{{ o.closeCopy }}" style="padding:8px 20px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12px;color:#241f2e;cursor:pointer;white-space:nowrap;box-shadow:0 6px 18px rgba(150,130,200,.4)">覆盖并复制</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ o.zoomConfirm }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;z-index:12;display:flex;align-items:center;justify-content:center;background:rgba(28,24,38,.42);backdrop-filter:blur(3px)">
+        <div style="width:400px;padding:24px;border-radius:20px;display:flex;flex-direction:column;gap:14px;background:linear-gradient(158deg,rgba(40,34,52,.95),rgba(28,24,38,.96),rgba(20,17,28,.97));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 70px rgba(14,10,22,.5),inset 0 1px 0 rgba(255,255,255,.16)">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:17px;color:#EDEAF4">保持这个缩放级别？</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#A9A3BC;text-wrap:pretty">界面已切换到 125%。10 秒内未确认将自动回退到上一档位。</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+            <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:11px;letter-spacing:.16em;color:#8E88A6">回退倒计时 10s</span>
+            <span style="flex:1"></span>
+            <div style="padding:8px 16px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);font-size:12px;color:#C6C0D6;cursor:pointer">取消</div>
+            <div style="padding:8px 20px;border-radius:999px;background:#B9AEDC;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12px;color:#241f2e;cursor:pointer;box-shadow:0 6px 18px rgba(150,130,200,.4)">保持</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+  </sc-if>
+
+  <div style="width:1180px;max-width:100%;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+    <div style="padding:18px 20px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);display:flex;flex-direction:column;gap:9px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.24em;color:#6E6A80">设计盒结论</div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:#EDEAF4">Output 1180 × 780 · Input 460 × 560</div>
+      <div style="font-size:12px;line-height:1.65;color:#8B8798;text-wrap:pretty">1080×720 的内容区只有 1044×536，装不下 Tab2 的 14 列控件（状态灯 / Ch+ST / label / pan / width / 推子 / 电平 / 优先级 / 主唱锁 / 音量豁免 / 参与 / 配对 / 冻结×2 / 启用）。加宽到 1180 才够横向呼吸；780 高把内容区抬到 596px。15 行 × 44 = 660，1× 下仍需垂直滚动 + 表头 sticky——这是密度方案的前提，不是可绕开的。</div>
+    </div>
+    <div style="padding:18px 20px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);display:flex;flex-direction:column;gap:9px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.24em;color:#6E6A80">Input 通道卡排布</div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:#EDEAF4">4 × 4 紧凑网格 + 组胶囊排</div>
+      <div style="font-size:12px;line-height:1.65;color:#8B8798;text-wrap:pretty">16 张卡（未分配 + 01–15）铺满 4×4，428px 内宽下每张 100×40。组选择器 A–H 压在通道区顶行、比卡片矮一档，在线组带绿点——低频操作不抢主任务。改组确认条复用释放确认条组件（琥珀），展开时暂隐远程摘要行以守住 560px 设计盒。</div>
+    </div>
+    <div style="padding:18px 20px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);display:flex;flex-direction:column;gap:9px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.24em;color:#6E6A80">Tab2 密度 · 两版</div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:#EDEAF4">全列滚动（推荐）/ 行尾抽屉</div>
+      <div style="font-size:12px;line-height:1.65;color:#8B8798;text-wrap:pretty">两版都在稿里，用右侧 Tweaks 的「Tab2 密度方案」切。全列滚动版 15 列全展开、1× 可视 11 行，一屏内能横向比较所有轨的配置——15 轨的场景里这个更重要。行尾抽屉版主行只留 pan/width/vol/电平，次级配置收进「⋯」，行更疏朗但要点两次才能改配对。我选全列滚动：轨道页是配置页不是监看页，横向对比价值高于呼吸感。</div>
+    </div>
+  </div>
+
+  <div style="width:1180px;max-width:100%;margin:0 auto;padding:18px 20px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);display:flex;flex-direction:column;gap:14px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.24em;color:#6E6A80">logo 方案 · 三版（38×38 图标块内，stroke 1.6 / #21212A）</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:18px">
+
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div style="width:56px;height:56px;flex:none;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(157deg,#C3B9D2,#E3D2E0);border:1px solid rgba(255,255,255,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M5 18a9 9 0 0 1 18 0"></path><path d="M9 21a5 5 0 0 1 10 0"></path><circle cx="14" cy="18" r="1.6" fill="#21212A" stroke="none"></circle></svg>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px;color:#EDEAF4">A · 声像弧</div>
+          <div style="font-size:11.5px;line-height:1.6;color:#8B8798;text-wrap:pretty">两道同心声场弧 + 中心点。直译「把人声摆在立体声弧上」，和 pan 旋钮、曲线编辑器的角度域同构。最贴产品语义。</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div style="width:56px;height:56px;flex:none;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(157deg,#C3B9D2,#E3D2E0);border:1px solid rgba(255,255,255,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M8 5v18M14 5v18M20 5v18"></path><circle cx="8" cy="17" r="2.4" fill="rgba(255,255,255,.75)"></circle><circle cx="14" cy="10" r="2.4" fill="rgba(255,255,255,.75)"></circle><circle cx="20" cy="14" r="2.4" fill="rgba(255,255,255,.75)"></circle></svg>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px;color:#EDEAF4">B · 推子阵列</div>
+          <div style="font-size:11.5px;line-height:1.6;color:#8B8798;text-wrap:pretty">三支不等高推子。与 Bridge 家族的仪表气质最近，在 16px favicon 尺寸下也读得出。缺点是通用，任何混音插件都能用。</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div style="width:56px;height:56px;flex:none;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(157deg,#C3B9D2,#E3D2E0);border:1px solid rgba(255,255,255,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="#21212A" stroke-width="1.6" stroke-linecap="round"><path d="M6 20h16"></path><path d="M14 20V9"></path><path d="M7.5 12.5 14 9l6.5 3.5"></path><circle cx="14" cy="7.2" r="1.6" fill="#21212A" stroke="none"></circle></svg>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px;color:#EDEAF4">C · 天平支点</div>
+          <div style="font-size:11.5px;line-height:1.6;color:#8B8798;text-wrap:pretty">「Balancer」的字面像：一根横梁架在支点上，两端是左右声道。概念最清楚，但天平这个符号在音频里没有历史，读起来偏商务。</div>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:11.5px;line-height:1.6;color:#8B8798;border-top:1px solid rgba(255,255,255,.08);padding-top:10px;text-wrap:pretty">当前 header 用的是 B 的变体（Input）与一个角度盘（Output）——两个插件用不同图标是刻意的，让用户在 DAW 插件列表里分得清。若你选定一版做家族标，我把两侧统一成同一枚、再用一个小角标区分 IN / OUT。</div>
+  </div>
+
+  <div style="width:1180px;max-width:100%;margin:0 auto;padding:18px 20px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.24em;color:#6E6A80">分组新增词条 · 三语（供 i18n.js 直接取用）</div>
+    <div style="display:grid;grid-template-columns:150px 1fr 1fr 1fr;gap:8px 18px;font-size:11.5px;line-height:1.5">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.16em;color:#6E6A80">KEY</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.16em;color:#6E6A80">ZH</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.16em;color:#6E6A80">EN</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.16em;color:#6E6A80">FR</div>
+
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A9A3BC">group.label</div>
+      <div style="color:#C8C3D6">组</div><div style="color:#8B8798">Group</div><div style="color:#8B8798">Groupe</div>
+
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A9A3BC">group.oneOnly</div>
+      <div style="color:#C8C3D6">同一条人声轨只能属于一个组</div><div style="color:#8B8798">A vocal track can only belong to one group</div><div style="color:#8B8798">Une piste vocale ne peut appartenir qu'à un seul groupe</div>
+
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A9A3BC">group.noOutput</div>
+      <div style="color:#C8C3D6">组 {g} 无 Output——请在目标总线插入 SCVB Output 并选择组 {g}</div><div style="color:#8B8798">Group {g} has no Output — insert SCVB Output on the target bus and select group {g}</div><div style="color:#8B8798">Le groupe {g} n'a pas d'Output — insérez SCVB Output sur le bus cible et sélectionnez le groupe {g}</div>
+
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A9A3BC">group.switchConfirm</div>
+      <div style="color:#C8C3D6">切换到组 {x} 将断开当前连接（组 {y} · 通道 {n}）</div><div style="color:#8B8798">Switching to group {x} will drop the current connection (group {y} · channel {n})</div><div style="color:#8B8798">Passer au groupe {x} coupera la connexion actuelle (groupe {y} · canal {n})</div>
+
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A9A3BC">ch.occupied</div>
+      <div style="color:#C8C3D6">通道 {n} 已被占用（组 {g}）</div><div style="color:#8B8798">Channel {n} is already taken (group {g})</div><div style="color:#8B8798">Le canal {n} est déjà occupé (groupe {g})</div>
+    </div>
+    <div style="font-size:11.5px;line-height:1.6;color:#8B8798;text-wrap:pretty;border-top:1px solid rgba(255,255,255,.08);padding-top:10px">一处提案回流：状态胶囊我按「唯一词在前、组语境在后」写成「已连接 · 组 A」「Output 未运行 · 组 B」，而不是「组 B 无 Output」——后者会引入第七个 pill 词条，和 05 §2 的状态用词纪律冲突。「组 {g} 无 Output——…」这句留给 group-empty 场景的引导行（状态灯下方），语义不丢。若你决定改 05 的词条表，我再跟着改。</div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;designBoxWidth&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1180,&quot;tsType&quot;:&quot;number&quot;,&quot;min&quot;:960,&quot;max&quot;:1440,&quot;unit&quot;:&quot;px&quot;,&quot;section&quot;:&quot;设计盒&quot;},&quot;designBoxHeight&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:780,&quot;tsType&quot;:&quot;number&quot;,&quot;min&quot;:640,&quot;max&quot;:960,&quot;unit&quot;:&quot;px&quot;,&quot;section&quot;:&quot;设计盒&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;全列滚动&quot;,&quot;options&quot;:[&quot;全列滚动&quot;,&quot;行尾抽屉&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Tab2 密度方案&quot;}}">
+const MONO = "'IBM Plex Mono',monospace";
+const GREEN = "120,176,142", AMBER = "212,176,118", GRAY = "150,152,162";
+
+const CH_LABELS = ["主唱","主唱双","和声 L","和声 R","和声 C","Ad-lib 1","Ad-lib 2","低八度","高八度","群唱 L","群唱 R","呼吸轨","念白","",""];
+
+const GROUP_IDS = ["A","B","C","D","E","F","G","H"];
+const GROUPS_ONLINE = ["A","B","E"];
+
+const INPUT_SCENES = {
+  connected: { name: "connected · 已连接（已接管）", tone: "green", pulse: true, pillText: "已连接",
+    sub: "已接管：本轨静音转发，由 Output 总线出声", selected: 2, occupied: [1,5,9], capturing: true, remote: true,
+    footerHint: "本轨已由 Output 总线出声——不要改人声轨的输出路由" },
+  passthrough: { name: "passthrough · 等待 Output（直通中）", tone: "amber", pillText: "等待 Output",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: 2, occupied: [1,5,9], remote: true,
+    footerHint: "等待 Output 心跳——确认总线首格的 SCVB Output 已加载" },
+  noOutput: { name: "no-output · Output 未运行", tone: "gray", pillText: "Output 未运行", group: "B",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: 2, occupied: [], remote: false, prioDisabled: true,
+    footerHint: "在人声轨共同路由到的总线第一格加载 SCVB Output" },
+  groupEmpty: { name: "group-empty · 该组无 Output", tone: "gray", pillText: "Output 未运行", group: "C",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: null, occupied: [], remote: false, prioDisabled: true,
+    groupHint: "组 C 无 Output——请在目标总线插入 SCVB Output 并选择组 C",
+    chHint: "该组尚无 Output，通道表为空",
+    footerHint: "每个组是一条独立总线，各自独立自动平衡" },
+  groupSwitch: { name: "group-switch · 改组确认条", tone: "green", pulse: true, pillText: "已连接", group: "A",
+    sub: "已接管：本轨静音转发，由 Output 总线出声", selected: 2, occupied: [1,5,9], remote: true,
+    confirmText: "切换到组 C 将断开当前连接（组 A · 通道 02）", confirmPrimary: "切换到 C", pendingGroup: "C",
+    footerHint: "确认后释放组 A 的通道 02，进入组 C 的未分配态" },
+  unassigned: { name: "unassigned · 未选择通道（引导态）", tone: "gray", pillText: "未选择通道",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: null, occupied: [1,5,9], remote: false,
+    chHint: "选择本轨的通道编号（与 Output 轨道页一一对应）",
+    footerHint: "选择本轨的通道编号（与 Output 轨道页一一对应）" },
+  occupied: { name: "occupied · 通道占用冲突", tone: "gray", pillText: "未选择通道",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: null, occupied: [1,3,5,9], shake: 3, toast: true, remote: false,
+    footerHint: "该通道已被另一条人声轨的 Input 占用" },
+  release: { name: "release · 释放确认条", tone: "green", pulse: true, pillText: "已连接",
+    sub: "已接管：本轨静音转发，由 Output 总线出声", selected: 3, occupied: [1,5,9], remote: true,
+    confirmText: "将释放通道 03，本轨回到直通", confirmPrimary: "释放",
+    footerHint: "释放后本轨立即回到直通，80ms ramp 过渡" },
+  abi: { name: "abi-mismatch · 版本不匹配", tone: "red", pillText: "版本不匹配",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: 2, occupied: [1,5,9], abiBanner: true, remote: false,
+    footerHint: "拒连不影响音频直通——升级后自动重连" },
+  sr: { name: "sr-mismatch · 采样率不一致", tone: "red", pillText: "采样率不一致",
+    sub: "直通中：本轨按原路径出声（未经平衡）", selected: 2, occupied: [1,5,9], remote: false,
+    footerHint: "本轨采样率与 Output 不一致，已在 Output 侧禁用该轨" },
+  hysteresis: { name: "hysteresis · 滞回过渡中", tone: "green", pulse: true, pillText: "已连接",
+    sub: "已接管：本轨静音转发，由 Output 总线出声", selected: 2, occupied: [1,5,9], hysteresis: true, remote: true,
+    footerHint: "5 秒滞回只作用于「静音→直通」方向" }
+};
+
+const OUTPUT_SCENES = {
+  default: { name: "default · 12/15 已连接", n: 12 },
+  empty: { name: "empty · 0/15 未连接", n: 0 },
+  capturing: { name: "capturing · 采集中", n: 15, capturing: true },
+  misaligned: { name: "misaligned · banner ① 路由失准", n: 12, banner: "amber",
+    text: "路由失准：3 轨检测到时间线缺口——检查人声轨是否仍指向本总线" },
+  conflict: { name: "conflict · banner ② 只读实例", n: 12, banner: "red", readonly: true,
+    text: "另一 Output 实例已激活，本实例只读" },
+  srBad: { name: "sr-mismatch · banner ③ 采样率", n: 11, banner: "red",
+    text: "轨 07 采样率不一致，已禁用" },
+  newer: { name: "newer-state · banner ④ 版本更新", n: 12, banner: "red",
+    text: "此工程由更新版本的 SCVB 保存，请升级插件（本机 abi 7 / 工程 abi 9）" },
+  stale: { name: "stale · banner ⑤ 数据过期", n: 12, banner: "amber", staleDot: true,
+    text: "采集数据缺失/过期，请重新采集" },
+  noTimeline: { name: "no-timeline · banner ⑥ 无时间线", n: 12, banner: "amber",
+    text: "宿主未提供时间线" },
+  printGuard: { name: "print-guard · banner ⑦ 加载守卫", n: 12, banner: "amber", bannerAction: true,
+    text: "输出开关处于引擎驱动状态（随工程恢复）" },
+  toastCopy: { name: "toast ① 工程副本", n: 12, toast: "检测到工程副本，已创建独立采集数据副本" },
+  toast8mb: { name: "toast ② 采集数据转存", n: 12, toast: "采集数据已超过 8MB，已转存外部文件——发给他人需重新采集" },
+  toastRecap: { name: "toast ③ 重采集完成", n: 12, toast: "已重采集 12.4s，建议重分析该范围", toastAction: true },
+  footerPrint: { name: "printing · footer 打印状态行", n: 15, footer: "print" },
+  footerStop: { name: "printing · footer 停止走带后提示", n: 15, footer: "stop" },
+  footerFollow: { name: "printing · footer 全曲跟随变体", n: 15, footer: "follow" },
+  zoomOpen: { name: "zoom · 缩放下拉展开", n: 12, zoomOpen: true },
+  zoomConfirm: { name: "zoom · 10 秒防呆确认", n: 12, zoomConfirm: true, zoomLabel: "125%" },
+
+  t1Armed:    { name: "Tab1 · 采集已布防", n: 12, tab: 1, w: { cap: "armed" } },
+  t1Capture:  { name: "Tab1 · 采集中", n: 15, tab: 1, capturing: true, w: { cap: "capturing" } },
+  t1Outside:  { name: "Tab1 · 已离开采集范围", n: 15, tab: 1, rangeMode: 1, w: { cap: "outside" } },
+  t1Analyze:  { name: "Tab1 · 分析执行中", n: 15, tab: 1, w: { analyze: "running" } },
+  t1NoData:   { name: "Tab1 · 分析 disabled（无采集数据）", n: 12, tab: 1, w: { analyze: "disabled" } },
+  t1Drive:    { name: "Tab1 · 输出引擎驱动 ON", n: 15, tab: 1, w: { out: 1, analyze: "done" } },
+  t1Write:    { name: "Tab1 · write 确认条（首次 OFF→ON）", n: 15, tab: 1, w: { out: 1, analyze: "done", write: 1 } },
+  t1Guard:    { name: "Tab1 · 加载守卫（横幅 + 小锁）", n: 15, tab: 1, banner: "amber", bannerAction: true,
+                text: "输出开关处于引擎驱动状态（随工程恢复）", w: { out: 1, lock: 1, analyze: "done" } },
+  t1Manual:   { name: "Tab1 · Range 手动档", n: 12, tab: 1, rangeMode: 2 },
+  t1LoopGone: { name: "Tab1 · 循环区能力缺失", n: 12, tab: 1, rangeMode: 1, loopMissing: true },
+  t1Rename:   { name: "版本 · 重命名中（行内 input）", n: 12, tab: 1, verRename: true },
+  t1VerEmpty: { name: "版本 · 空版本 chip", n: 12, tab: 1, verEmpty: true },
+  t1Copy:     { name: "Tab1 · 复制版本确认弹窗", n: 12, tab: 1, copyModal: true },
+  t1Lead:     { name: "Tab1 · Lead Select 强制居中", n: 12, tab: 1, leadSel: 1 },
+  t1CurveSel: { name: "Tab1 · 曲线选中点工具条", n: 12, tab: 1, curveSel: true },
+  t1CurveNil: { name: "Tab1 · 曲线编辑器空态", n: 12, tab: 1, curveEmpty: true },
+
+  t2Confirm:  { name: "Tab2 · 手动覆盖确认条", n: 12, tab: 2, ovConfirm: true },
+  t2Unfreeze: { name: "Tab2 · 解除冻结后手动常值提示", n: 12, tab: 2, unfreezeHint: true },
+  t2Armed:    { name: "Tab2 · 重采集布防 badge", n: 12, tab: 2, recapture: true },
+  t2Empty:    { name: "Tab2 · 组空态（0 轨连接）", n: 0, tab: 2, emptyTracks: true },
+
+  t3Inspect:  { name: "Tab3 · 段检查器展开", n: 12, tab: 3, inspector: true },
+  t3InspectOff:{ name: "Tab3 · 段检查器（输出 OFF 提示）", n: 12, tab: 3, inspector: true, inspectorOff: true },
+  t3Apply:    { name: "Tab3 · 防抖倒计时 / 应用中", n: 12, tab: 3, applying: true },
+  t3Recap:    { name: "Tab3 · 重采集布防 + 选区", n: 12, tab: 3, recapture: true },
+  t3SelDrag:  { name: "Tab3 · 选区手柄拖动中", n: 12, tab: 3, selDrag: "R" },
+  t3SetRange: { name: "Tab3 · 设为范围提示条", n: 12, tab: 3, setRange: true },
+  t3Legend:   { name: "Tab3 · 泳道曲线图例帧（放大）", n: 12, tab: 3, legend: true },
+  t3Empty:    { name: "Tab3 · 泳道空态", n: 0, tab: 3, laneEmpty: true },
+
+  t4Group:    { name: "整体调整 · 改组确认条", n: 12, tab: 1, groupConfirm: true },
+  t4Readonly: { name: "设置 · 组已有主 Output（只读观察）", n: 12, tab: 4, group: "C", banner: "red",
+                text: "组 C 已有主 Output，本实例只读观察", readonly: true },
+  t4Nine:     { name: "设置 · 查看全部九条（展开）", n: 12, tab: 4, nineOpen: true },
+  t4Diag:     { name: "设置 · 诊断折叠区展开", n: 12, tab: 4, diagOpen: true },
+
+  firstRun:   { name: "first-run · 红字九条（滚动态）", n: 0, tab: 1, firstRun: true },
+  firstRunEnd:{ name: "first-run · 已滚到底", n: 0, tab: 1, firstRun: true, atEnd: true },
+  tourAsk:    { name: "first-run-tour · 询问步", n: 15, tab: 1, demo: true, tourAsk: true },
+  tour1:      { name: "tour 1/6 · 首步（居中说明框）", n: 15, tab: 1, demo: true, tour: "tour1" },
+  tour2:      { name: "tour 2/6 · spotlight 采集（下方）", n: 15, tab: 1, demo: true, tour: "tour2" },
+  tour3:      { name: "tour 3/6 · spotlight 输出（下方）", n: 15, tab: 1, demo: true, tour: "tour3" },
+  tour4:      { name: "tour 4/6 · 跨页到轨道页（左侧）", n: 15, tab: 2, demo: true, tour: "tour4" },
+  tour5:      { name: "tour 5/6 · 波形页（右侧）", n: 15, tab: 3, demo: true, tour: "tour5" },
+  tour6:      { name: "tour 6/6 · 末步高亮重看引导", n: 15, tab: 4, demo: true, tour: "tour6" }
+};
+
+const TABS = ["整体调整", "轨道", "波形与分段", "设置"];
+
+const TRACKS = [
+  { n:1, label:"主唱",    st:0, status:"active", pan:-4,  w:100, vol:.62, lv:.74, pk:.88, prio:5, lead:1, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:2, label:"主唱双",  st:0, status:"active", pan:12,  w:100, vol:.55, lv:.61, pk:.72, prio:4, lead:0, ex:0, part:1, pair:"A", fp:0, fv:0, on:1 },
+  { n:3, label:"和声 L",  st:1, status:"active", pan:-58, w:82,  vol:.44, lv:.48, pk:.58, prio:3, lead:0, ex:0, part:0, pair:"B", fp:0, fv:0, on:1 },
+  { n:4, label:"和声 R",  st:1, status:"active", pan:58,  w:82,  vol:.44, lv:.46, pk:.57, prio:3, lead:0, ex:0, part:0, pair:"B", fp:0, fv:0, on:1 },
+  { n:5, label:"和声 C",  st:0, status:"lost",   pan:0,   w:100, vol:.40, lv:0,   pk:0,   prio:3, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:6, label:"Ad-lib 1",st:0, status:"active", pan:-34, w:100, vol:.38, lv:.31, pk:.44, prio:2, lead:0, ex:0, part:1, pair:"",  fp:1, fv:0, on:1 },
+  { n:7, label:"Ad-lib 2",st:0, status:"srErr",  pan:34,  w:100, vol:.38, lv:0,   pk:0,   prio:2, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:8, label:"低八度",  st:0, status:"active", pan:-18, w:100, vol:.34, lv:.28, pk:.39, prio:2, lead:0, ex:1, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:9, label:"高八度",  st:0, status:"warn",   pan:18,  w:100, vol:.34, lv:.26, pk:.36, prio:2, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:10,label:"群唱 L",  st:1, status:"active", pan:-76, w:64,  vol:.30, lv:.22, pk:.33, prio:1, lead:0, ex:0, part:0, pair:"C", fp:0, fv:0, on:1 },
+  { n:11,label:"群唱 R",  st:1, status:"active", pan:76,  w:64,  vol:.30, lv:.21, pk:.32, prio:1, lead:0, ex:0, part:0, pair:"C", fp:0, fv:0, on:1 },
+  { n:12,label:"呼吸轨",  st:0, status:"idle",   pan:0,   w:100, vol:.25, lv:0,   pk:0,   prio:1, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:13,label:"念白",    st:0, status:"active", pan:26,  w:100, vol:.42, lv:.18, pk:.27, prio:1, lead:0, ex:0, part:1, pair:"",  fp:0, fv:1, on:1, low:1 },
+  { n:14,label:"",        st:0, status:"idle",   pan:0,   w:100, vol:.5,  lv:0,   pk:0,   prio:1, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:1 },
+  { n:15,label:"",        st:0, status:"idle",   pan:0,   w:100, vol:.5,  lv:0,   pk:0,   prio:1, lead:0, ex:0, part:1, pair:"",  fp:0, fv:0, on:0 }
+];
+
+const SEGMENTS = [
+  { tr:"01 主唱",   idx:"S-004", from:"33.1.000", to:"36.4.480", dur:"6.82s", pan:"-4",  vol:"+1.2", origin:"",  lock:0 },
+  { tr:"01 主唱",   idx:"S-005", from:"36.4.480", to:"40.2.240", dur:"5.94s", pan:"+2",  vol:"+1.6", origin:"E", lock:0 },
+  { tr:"02 主唱双", idx:"S-004", from:"33.1.000", to:"36.4.480", dur:"6.82s", pan:"+12", vol:"-0.4", origin:"",  lock:0 },
+  { tr:"03 和声 L", idx:"S-004", from:"33.1.000", to:"36.4.480", dur:"6.82s", pan:"-58", vol:"-2.8", origin:"",  lock:1 },
+  { tr:"03 和声 L", idx:"S-006", from:"40.2.240", to:"44.1.000", dur:"6.10s", pan:"-62", vol:"-2.4", origin:"C", lock:0 },
+  { tr:"04 和声 R", idx:"S-004", from:"33.1.000", to:"36.4.480", dur:"6.82s", pan:"+58", vol:"-2.8", origin:"",  lock:1 },
+  { tr:"06 Ad-lib 1", idx:"S-007", from:"44.1.000", to:"46.3.120", dur:"3.40s", pan:"-34", vol:"-4.1", origin:"E", lock:0 },
+  { tr:"13 念白",   idx:"S-008", from:"46.3.120", to:"47.2.000", dur:"1.28s", pan:"+26", vol:"-6.0", origin:"",  lock:0 }
+];
+
+const NINE = [
+  { t:"路由", d:"SCVB Output 插在人声轨共同路由到的总线第一格，人声轨的输出路由保持指向该总线——不要改。", hi:1 },
+  { t:"插槽位置", d:"SCVB Input 插在人声轨插件链最后一格。", hi:1 },
+  { t:"直通-静音", d:"只有在检测到健康的 SCVB Output 时，Input 才向下游输出静音——这是设计行为；检测不到健康 Output 时 Input 自动切回直通，80ms ramp 过渡、5 秒滞回只作用于「静音→直通」方向。", hi:1 },
+  { t:"通道唯一", d:"同一个组内一个通道编号只能被一条人声轨占用；同一条人声轨只能属于一个组。" },
+  { t:"采样率", d:"Input 与 Output 采样率必须一致，不一致的轨会被禁用。" },
+  { t:"版本一致", d:"两端插件必须是同一 abi 版本，否则拒绝连接。" },
+  { t:"自动化录制", d:"要把结果录成自动化，在 DAW 侧对本插件参数开 Latch（推荐）或 Write；请勿使用 Touch。" },
+  { t:"分析前提", d:"必须先采集再分析；范围内没有采集数据时分析不可用。" },
+  { t:"工程副本", d:"复制工程会创建独立的采集数据副本，两份数据此后各自演进。" }
+];
+
+const TOUR_STEPS = {
+  tour1: { i:1, n:6, tab:1, title:"这是 SCVB Output 的主界面", body:"整个流程从左到右：采集 → 分析 → 输出。界面已注入 15 轨演示数据，引导结束后会还原。", center:true, hint:"左键点击任意处继续（说明框按钮除外）" },
+  tour2: { i:2, n:6, tab:1, title:"第一步：采集", body:"打开采集开关并播放本范围，插件会记录每条轨的响度特征。这一步不写任何自动化。", sel:"cap", side:"bottom" },
+  tour3: { i:3, n:6, tab:1, title:"第三步：输出", body:"开关切到「引擎驱动」后，参数由分析结果驱动。要录成自动化，请在 DAW 侧开 Latch 或 Write。", sel:"out", side:"bottom" },
+  tour4: { i:4, n:6, tab:2, title:"轨道页：每轨的微调", body:"两枚冻结开关把该维度从引擎手里接管过来，旋钮与推子随之解锁为手动。", sel:"freeze", pad:14, side:"left" },
+  tour5: { i:5, n:6, tab:3, title:"波形页：看结果、改分段", body:"每条泳道叠着 pan/vol 阶梯曲线。框选一段可以只重采集或只重分析这一段。", sel:"lanes", side:"top" },
+  tour6: { i:6, n:6, tab:4, title:"以后在这里可以再看一次", body:"引导随时可以重看，红字九条也在同一块里展开。", sel:"review", side:"right", last:true }
+};
+
+const TAB_ROWS = {
+  1: { label: "左栏工作流三件套 · 右栏 Width / MS Balance / Lead Select / 曲线编辑器", rowH: 44 },
+  2: { label: "轨道行", rowH: 44 },
+  3: { label: "波形泳道", rowH: 44 },
+  4: { label: "设置块", rowH: 44 }
+};
+
+class Component extends DCLogic {
+  state = { plugin: "input", inputScene: "connected", outputScene: "default", tab: 2, width: 108, ms: -18 };
+
+  drag(e, min, max, key) {
+    const track = e.currentTarget;
+    const rect = track.getBoundingClientRect();
+    const set = (cx) => {
+      const p = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+      this.setState({ [key]: Math.round(min + p * (max - min)) });
+    };
+    set(e.clientX);
+    const mv = (ev) => set(ev.clientX);
+    const up = () => { document.removeEventListener("pointermove", mv); document.removeEventListener("pointerup", up); };
+    document.addEventListener("pointermove", mv);
+    document.addEventListener("pointerup", up);
+  }
+
+  gainAt(x, ms) {
+    const m = ms / 100;
+    return 1.8 * Math.cos(Math.PI * x / 100) * (1 - Math.abs(m) * 0.45) + m * (Math.abs(x) / 100 - 0.5) * 8;
+  }
+  volAt(x, ms) {
+    const m = ms / 100;
+    return -0.55 * this.gainAt(x, ms) - m * 0.9;
+  }
+  curve(ms, fn) {
+    const pts = [];
+    for (let i = 0; i <= 44; i++) {
+      const x = -100 + (200 * i) / 44;
+      const g = fn.call(this, x, ms);
+      pts.push(((x + 100) / 200 * 660).toFixed(1) + " " + (109 - g * 6.1667).toFixed(1));
+    }
+    return "M" + pts.join(" L");
+  }
+
+  componentDidMount() {
+    this._move = (e) => {
+      const el = e.target.closest && e.target.closest("[data-glow]");
+      if (this._last && this._last !== el) {
+        this._last.style.setProperty("--mx", "-999px");
+        this._last.style.setProperty("--my", "-999px");
+      }
+      if (el) {
+        const r = el.getBoundingClientRect();
+        el.style.setProperty("--mx", (e.clientX - r.left) + "px");
+        el.style.setProperty("--my", (e.clientY - r.top) + "px");
+      }
+      this._last = el;
+    };
+    document.addEventListener("mousemove", this._move);
+    this.measureTour();
+  }
+  componentDidUpdate() { this.measureTour(); }
+  componentWillUnmount() { document.removeEventListener("mousemove", this._move); }
+
+  measureTour() {
+    if (this.state.plugin !== "output") return;
+    const sc = OUTPUT_SCENES[this.state.outputScene] || {};
+    const step = sc.tour ? TOUR_STEPS[sc.tour] : null;
+    if (!step || !step.sel) { if (this.state.hole) this.setState({ hole: null, holeFor: null }); return; }
+    const card = document.querySelector('[data-screen-label="Output 外壳"]');
+    const el = card && card.querySelector('[data-tour="' + step.sel + '"]');
+    if (!card || !el) return;
+    const c = card.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const p = step.pad || 10;
+    const h = { x: Math.round(r.left - c.left - p), y: Math.round(r.top - c.top - p),
+                w: Math.round(r.width + p * 2), h: Math.round(r.height + p * 2) };
+    const q = this.state.hole;
+    if (this.state.holeFor !== sc.tour || !q || q.x !== h.x || q.y !== h.y || q.w !== h.w || q.h !== h.h) {
+      this.setState({ hole: h, holeFor: sc.tour });
+    }
+  }
+
+  tog(on, dis) {
+    return {
+      position: "relative", width: "26px", height: "15px", borderRadius: "999px", flex: "none",
+      cursor: dis ? "not-allowed" : "pointer", opacity: dis ? .4 : 1,
+      transition: "background .3s cubic-bezier(.2,.7,.2,1)",
+      background: on ? "rgba(120,176,142,.55)" : "rgba(255,255,255,.16)",
+      border: "1px solid " + (on ? "rgba(120,176,142,.7)" : "rgba(255,255,255,.28)"),
+      boxShadow: "inset 0 1px 0 rgba(255,255,255,.35)"
+    };
+  }
+
+  pill(tone, text, pulse, big) {
+    const map = { green: GREEN, amber: AMBER, gray: GRAY };
+    const rgb = map[tone] || GRAY;
+    const red = tone === "red";
+    return {
+      pillStyle: {
+        display: "inline-flex", alignItems: "center", gap: big ? "7px" : "6px",
+        padding: big ? "5px 12px" : "4px 10px", borderRadius: "999px",
+        background: red ? "rgba(198,110,120,.16)" : "rgba(" + rgb + ",.16)",
+        border: "1px solid " + (red ? "rgba(198,110,120,.45)" : "rgba(" + rgb + ",.42)"),
+        fontFamily: MONO, fontSize: big ? "10.5px" : "10px", letterSpacing: ".1em",
+        color: red ? "#8E4C55" : (tone === "green" ? "#4E7A61" : tone === "amber" ? "#7E6836" : "#5E6068"),
+        whiteSpace: "nowrap"
+      },
+      dotStyle: {
+        width: "6px", height: "6px", borderRadius: "50%",
+        background: red ? "rgba(198,110,120,.95)" : "rgb(" + rgb + ")",
+        animation: pulse ? "livePulse 2.4s infinite" : "none", flex: "none"
+      }
+    };
+  }
+
+  glassBox(w, h) {
+    return {
+      position: "relative", width: w + "px", height: h + "px", flex: "none", overflow: "hidden", margin: "0 auto",
+      borderRadius: "20px",
+      background: "linear-gradient(157deg,#B5ACC9 0%,#CCBFD5 32%,#E3D2E0 64%,#FDE8ED 100%)",
+      border: "1px solid rgba(255,255,255,.42)",
+      boxShadow: "0 32px 70px rgba(14,10,22,.45), 0 2px 0 rgba(255,255,255,.25) inset, inset 0 -1px 0 rgba(255,255,255,.12), inset 1px 0 0 rgba(255,255,255,.16)"
+    };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const isInput = st.plugin === "input";
+    const boxW = this.props.designBoxWidth ?? 1180;
+    const boxH = this.props.designBoxHeight ?? 780;
+    const showRuler = this.props.showRuler ?? true;
+
+    const segStyle = (on) => ({
+      padding: "7px 16px", borderRadius: "999px", cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap",
+      fontFamily: "'Space Grotesk',sans-serif", fontWeight: 600,
+      transition: "all .3s cubic-bezier(.2,.7,.2,1)",
+      background: on ? "rgba(255,255,255,.92)" : "transparent",
+      color: on ? "#241f2e" : "#8B8798"
+    });
+
+    const sceneMap = isInput ? INPUT_SCENES : OUTPUT_SCENES;
+    const sceneOptions = Object.keys(sceneMap).map(k => ({ id: k, name: sceneMap[k].name }));
+    const scene = isInput ? st.inputScene : st.outputScene;
+
+    const vals = {
+      isInput, isOutput: !isInput, scene, sceneOptions, boxW, boxH, showRuler,
+      tabInputStyle: segStyle(isInput), tabOutputStyle: segStyle(!isInput),
+      showInput: () => this.setState({ plugin: "input" }),
+      showOutput: () => this.setState({ plugin: "output" }),
+      setScene: (e) => {
+        const v = e.target.value;
+        if (isInput) return this.setState({ inputScene: v });
+        const sc = OUTPUT_SCENES[v] || {};
+        this.setState(sc.tab ? { outputScene: v, tab: sc.tab } : { outputScene: v });
+      },
+      inputBoxStyle: this.glassBox(460, 560),
+      outputBoxStyle: this.glassBox(boxW, boxH)
+    };
+
+    if (isInput) {
+      const s = INPUT_SCENES[st.inputScene] || INPUT_SCENES.connected;
+      const p = this.pill(s.tone, s.pillText, s.pulse);
+      const grp = s.group || "A";
+      const groups = GROUP_IDS.map(id => {
+        const on = id === grp;
+        const online = GROUPS_ONLINE.indexOf(id) >= 0;
+        const pending = s.pendingGroup === id;
+        return {
+          key: "g" + id, id, online,
+          style: {
+            position: "relative", overflow: "hidden", display: "flex", alignItems: "center", gap: "3px",
+            padding: "3px 7px", borderRadius: "999px", cursor: "pointer",
+            fontFamily: MONO, fontSize: "10px", fontWeight: 500, letterSpacing: ".06em", lineHeight: 1.2,
+            transition: "background .3s cubic-bezier(.2,.7,.2,1)",
+            background: on ? "rgba(255,255,255,.82)" : pending ? "rgba(212,176,118,.22)" : "transparent",
+            border: "1px solid " + (on ? "rgba(255,255,255,.9)" : pending ? "rgba(212,176,118,.5)" : "transparent"),
+            color: on ? "#21212A" : pending ? "#7E6836" : "#6A6A74",
+            boxShadow: on ? "0 3px 9px rgba(30,24,44,.14)" : "none",
+            backgroundImage: "radial-gradient(80px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)"
+          }
+        };
+      });
+      const channels = [];
+      for (let n = 0; n <= 15; n++) {
+        const isNone = n === 0;
+        const sel = s.selected === n;
+        const occ = (s.occupied || []).indexOf(n) >= 0 && !sel;
+        const shake = s.shake === n;
+        channels.push({
+          key: "ch" + n,
+          num: isNone ? "—" : (n < 10 ? "0" + n : "" + n),
+          label: isNone ? "未分配" : (s.groupHint ? "Track " + (n < 10 ? "0" + n : n) : (CH_LABELS[n - 1] || "Track " + (n < 10 ? "0" + n : n))),
+          occupied: occ,
+          style: {
+            position: "relative", overflow: "hidden", height: "40px", borderRadius: "12px",
+            display: "flex", flexDirection: "column", justifyContent: "center", gap: "1px",
+            padding: "0 9px", cursor: "pointer",
+            transition: "background .3s cubic-bezier(.2,.7,.2,1), box-shadow .3s cubic-bezier(.2,.7,.2,1)",
+            border: "1px solid " + (sel ? "rgba(255,255,255,.78)" : shake ? "rgba(198,110,120,.55)" : "rgba(255,255,255,.24)"),
+            background: sel ? "rgba(255,255,255,.66)" : shake ? "rgba(198,110,120,.14)" : "rgba(255,255,255,.09)",
+            backdropFilter: "blur(6px) saturate(120%)",
+            boxShadow: sel ? "0 6px 18px rgba(30,24,44,.16), inset 0 1px 0 rgba(255,255,255,.9)" : "inset 0 1px 0 rgba(255,255,255,.32)",
+            opacity: occ ? .5 : 1,
+            animation: shake ? "shakeX .45s cubic-bezier(.2,.7,.2,1)" : "none",
+            backgroundImage: "radial-gradient(110px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)"
+          },
+          numStyle: {
+            fontFamily: MONO, fontVariantNumeric: "tabular-nums", fontSize: "13px", fontWeight: 500,
+            letterSpacing: ".08em", color: sel ? "#21212A" : "#52525C", lineHeight: 1.1
+          },
+          labelStyle: {
+            fontSize: "8.5px", color: (!s.groupHint && (CH_LABELS[n - 1] || isNone)) ? (sel ? "#52525C" : "#7A7A84") : "rgba(122,122,132,.55)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.2
+          }
+        });
+      }
+      vals.i = {
+        pillStyle: p.pillStyle, dotStyle: p.dotStyle, pillText: s.pillText + " · 组 " + grp,
+        groups, groupHint: s.groupHint || "",
+        confirmBar: !!s.confirmText, confirmText: s.confirmText, confirmPrimary: s.confirmPrimary,
+        subLine: s.sub,
+        subStyle: {
+          fontSize: "10.5px", lineHeight: 1.45, color: s.tone === "green" ? "#4E7A61" : "#65656F",
+          fontWeight: s.tone === "green" ? 500 : 400, textWrap: "pretty"
+        },
+        abiBanner: !!s.abiBanner, capturing: !!s.capturing, hysteresis: !!s.hysteresis,
+        verLine: s.abiBanner ? "v2.0 · abi 6" : "v2.1 · abi 7",
+        toast: !!s.toast, toastText: "通道 03 已被占用（组 " + grp + "）", remote: !!s.remote && !s.confirmText,
+        channels,
+        chHint: s.chHint || "",
+        manual: s.selected ? (s.selected < 10 ? "0" + s.selected : "" + s.selected) : "",
+        priority: 3,
+        prioStyle: {
+          display: "flex", alignItems: "center", gap: "12px", padding: "9px 12px", borderRadius: "15px",
+          background: "rgba(255,255,255,.10)", border: "1px solid rgba(255,255,255,.26)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,.42)",
+          opacity: s.prioDisabled ? .45 : 1
+        },
+        footerHint: s.footerHint
+      };
+    } else {
+      const s = OUTPUT_SCENES[st.outputScene] || OUTPUT_SCENES.default;
+      const n = s.n;
+      const tone = n === 0 ? "gray" : "green";
+      const p = this.pill(tone, "", n > 0 && s.capturing, true);
+      const red = s.banner === "red";
+      const contentW = boxW - 36;
+      const contentH = boxH - 36 - 46 - 10 - 38 - 10 - 34 - 10 - (s.banner ? 46 : 0);
+
+      const tabs = TABS.map((name, idx) => ({
+        key: "t" + idx,
+        name,
+        staleDot: idx === 2 && !!s.staleDot,
+        go: () => this.setState({ tab: idx + 1 }),
+        style: {
+          position: "relative", zIndex: 2, width: "136px", textAlign: "center",
+          padding: "8px 0", borderRadius: "10px", cursor: "pointer",
+          fontSize: "12.5px", fontWeight: st.tab === idx + 1 ? 600 : 500,
+          color: st.tab === idx + 1 ? "#21212A" : "#6A6A74",
+          transition: "color .3s cubic-bezier(.2,.7,.2,1)"
+        }
+      }));
+
+      const grp = s.group || "A";
+      const drawer = (this.props.density ?? "全列滚动") === "行尾抽屉";
+      const W = s.w || {};
+      const demo = !!s.demo;
+      const tour = s.tour ? TOUR_STEPS[s.tour] : null;
+      const hole = tour && !tour.center && st.holeFor === s.tour ? st.hole : null;
+      const clampX = (v) => Math.max(16, Math.min(v, boxW - 366));
+      const clampY = (v) => Math.max(16, Math.min(v, boxH - 226));
+
+      const tone3 = (t) => t === "green" ? "rgb(120,176,142)" : t === "amber" ? "rgb(212,176,118)" : t === "red" ? "rgba(198,110,120,.95)" : "rgb(150,152,162)";
+      const statusMap = {
+        active: { tone: "green", text: "已连接", pulse: 1 },
+        idle:   { tone: "gray",  text: "未连接" },
+        lost:   { tone: "amber", text: "失联" },
+        warn:   { tone: "amber", text: "失准 ×2" },
+        srErr:  { tone: "red",   text: "采样率错误" }
+      };
+
+      const knob = (val, live, dis) => {
+        const ang = (val / 100) * 140;
+        return {
+          wrap: { position: "relative", width: "30px", height: "30px", borderRadius: "50%", flex: "none",
+            background: dis ? "rgba(255,255,255,.06)" : live ? "rgba(255,255,255,.14)" : "rgba(255,255,255,.30)",
+            boxShadow: dis ? "none" : "0 3px 8px rgba(30,24,44,.14), inset 0 1px 0 rgba(255,255,255,.55)",
+            opacity: dis ? .35 : 1, cursor: dis ? "not-allowed" : live ? "default" : "grab" },
+          needle: { position: "absolute", left: "50%", top: "50%", width: "1.6px", height: "11px",
+            marginLeft: "-.8px", marginTop: "-11px", borderRadius: "1px",
+            background: live ? "rgba(33,33,42,.45)" : "#21212A",
+            transformOrigin: "50% 100%", transform: "rotate(" + ang + "deg)",
+            transition: live ? "transform .85s cubic-bezier(.2,.7,.2,1)" : "none" }
+        };
+      };
+
+      const tracks = TRACKS.map(t => {
+        const sm = statusMap[t.status];
+        const dead = t.status === "srErr";
+        const off = !t.on;
+        const dim = t.status === "idle" ? .5 : off ? .3 : dead ? .45 : 1;
+        const kp = knob(t.pan, !t.fp, dead);
+        const kw = knob((t.w - 50) * 2, false, dead || !t.st);
+        return {
+          key: "tr" + t.n, n: t.n < 10 ? "0" + t.n : "" + t.n, label: t.label || "Track " + (t.n < 10 ? "0" + t.n : t.n),
+          st: !!t.st, pair: t.pair, pairText: t.pair || "无", prio: t.prio, low: !!t.low, hasLabel: !!t.label,
+          rowStyle: { position: "relative", overflow: "hidden", display: "flex", alignItems: "center", gap: "14px",
+            height: "44px", padding: "0 10px", borderBottom: "1px solid rgba(255,255,255,.16)",
+            opacity: dim, background: t.lead ? "rgba(255,255,255,.05)" : "transparent",
+            backgroundImage: "radial-gradient(160px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.14),transparent 70%)" },
+          lightStyle: { width: "8px", height: "8px", borderRadius: "50%", flex: "none", background: tone3(sm.tone),
+            animation: sm.pulse ? "livePulse 2.4s infinite" : "none" },
+          labelStyle: { fontSize: "11.5px", color: t.label ? "#21212A" : "rgba(122,122,132,.6)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+          panWrap: kp.wrap, panNeedle: kp.needle, panLive: !t.fp && !dead,
+          wWrap: kw.wrap, wNeedle: kw.needle, wDis: !t.st,
+          liquid: { position: "absolute", left: 0, top: 0, bottom: 0, width: (t.lv * 100) + "%",
+            borderRadius: "999px 3px 3px 999px",
+            background: "linear-gradient(180deg,rgba(196,188,226,.92),rgba(150,140,192,.80) 55%,rgba(126,116,168,.86))",
+            boxShadow: "inset -3px 0 0 rgba(226,220,244,.85), inset 0 1px 0 rgba(255,255,255,.45)",
+            transition: "width .18s linear" },
+          peak: { position: "absolute", top: 0, bottom: 0, left: (t.pk * 100) + "%", width: "2px",
+            borderRadius: "999px", display: t.pk ? "block" : "none",
+            background: t.pk > .86 ? "rgba(214,138,138,.95)" : "rgba(255,255,255,.92)" },
+          collar: { position: "absolute", top: "-4px", bottom: "-4px", left: (t.vol * 100) + "%", width: "11px",
+            marginLeft: "-5.5px", borderRadius: "5px", cursor: dead ? "not-allowed" : "grab",
+            background: t.fv ? "rgba(255,255,255,.82)" : "rgba(255,255,255,.55)",
+            border: "1px solid rgba(255,255,255,.9)",
+            boxShadow: "0 3px 9px rgba(30,24,44,.26), inset 0 1px 0 rgba(255,255,255,.95)" },
+          leadStyle: this.tog(!!t.lead, dead), exStyle: this.tog(!!t.ex, dead),
+          partStyle: this.tog(!!t.part, dead), onStyle: this.tog(!!t.on, dead),
+          fpStyle: this.tog(!!t.fp, dead), fvStyle: this.tog(!!t.fv, dead),
+          tourKey: t.n === 1 ? "freeze" : "",
+          pairStyle: { width: "52px", flex: "none", boxSizing: "border-box", justifyContent: "center",
+            display: "flex", alignItems: "center", gap: "5px", padding: "3px 6px", borderRadius: "9px",
+            background: t.pair ? "rgba(255,255,255,.20)" : "rgba(255,255,255,.08)",
+            border: "1px solid rgba(255,255,255,.24)", fontFamily: MONO, fontSize: "10px", color: t.pair ? "#21212A" : "#7A7A84" },
+          pairDot: { width: "6px", height: "6px", borderRadius: "50%", display: t.pair ? "block" : "none",
+            background: t.pair === "A" ? "rgba(181,172,201,.95)" : t.pair === "B" ? "rgba(120,176,142,.85)" : "rgba(212,176,118,.9)" }
+        };
+      });
+
+      const selDrag = s.selDrag || st.selDrag || null;
+      const picked = st.lanePick || [];
+      const isOn = (n) => picked.indexOf(n) >= 0;
+
+      const lanes = TRACKS.map((t, li) => ({
+        key: "ln" + t.n, n: t.n < 10 ? "0" + t.n : "" + t.n, label: t.label || "Track " + (t.n < 10 ? "0" + t.n : t.n),
+        pick: (e) => {
+          const cur = this.state.lanePick || [];
+          const has = cur.indexOf(t.n) >= 0;
+          if (e && e.shiftKey && cur.length) {
+            const a = Math.min(cur[cur.length - 1], t.n), b = Math.max(cur[cur.length - 1], t.n);
+            const add = [];
+            for (let k = a; k <= b; k++) if (cur.indexOf(k) < 0) add.push(k);
+            return this.setState({ lanePick: cur.concat(add) });
+          }
+          this.setState({ lanePick: has ? cur.filter(x => x !== t.n) : cur.concat([t.n]) });
+        },
+        rowStyle: { display: "flex", alignItems: "stretch", cursor: "pointer",
+          background: isOn(t.n) ? "rgba(181,172,201,.16)" : "transparent",
+          boxShadow: isOn(t.n) ? "inset 3px 0 0 rgba(181,172,201,.95)" : "none",
+          transition: "background .3s cubic-bezier(.2,.7,.2,1)" },
+        headStyle: { width: "158px", flex: "none", display: "flex", alignItems: "center", gap: "7px",
+          padding: "0 10px", borderRight: "1px solid rgba(255,255,255,.10)",
+          borderBottom: "1px solid rgba(255,255,255,.07)" },
+        boxStyle: { width: "11px", height: "11px", borderRadius: "3px", flex: "none",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          border: "1px solid " + (isOn(t.n) ? "rgba(181,172,201,.95)" : "rgba(255,255,255,.3)"),
+          background: isOn(t.n) ? "rgba(181,172,201,.95)" : "rgba(255,255,255,.14)" },
+        checked: isOn(t.n),
+        nameStyle: { flex: 1, minWidth: 0, fontSize: "10.5px", whiteSpace: "nowrap", overflow: "hidden",
+          textOverflow: "ellipsis", fontWeight: isOn(t.n) ? 600 : 400,
+          color: isOn(t.n) ? "#F2EFFA" : "rgba(233,229,244,.82)" },
+        vad: (t.status === "idle" ? [] : [[7, 17], [39, 15], [71, 13]]).map((b, bi) => {
+          const off = (li % 5) * 2.2 - 3;
+          return { key: "vd" + bi, style: { position: "absolute", left: (b[0] + off) + "%",
+            top: 0, bottom: 0, width: (b[1] - (li % 3)) + "%", background: "rgba(120,176,142,.07)" } };
+        }),
+        cov: t.status === "idle" ? "0%" : t.status === "lost" ? "48%" : t.low ? "31%" : "100%",
+        low: !!t.low,
+        lightStyle: { width: "6px", height: "6px", borderRadius: "50%", flex: "none", background: tone3(statusMap[t.status].tone) },
+        laneStyle: { flex: 1, minWidth: 0, position: "relative", height: "34px", borderBottom: "1px solid rgba(255,255,255,.07)",
+          opacity: t.status === "idle" ? .35 : 1, overflow: "hidden" },
+        envStyle: { position: "absolute", left: 0, right: 0,
+          top: (17 - (4 + t.vol * 8)) + "px", height: ((4 + t.vol * 8) * 2) + "px", opacity: .5,
+          background: "repeating-linear-gradient(90deg,rgba(196,190,220,.5) 0 2px,transparent 2px 7px)",
+          maskImage: "linear-gradient(90deg,transparent 0 4%,#000 6% 30%,transparent 32% 36%,#000 38% 62%,transparent 64% 68%,#000 70% 94%,transparent 96%)",
+          WebkitMaskImage: "linear-gradient(90deg,transparent 0 4%,#000 6% 30%,transparent 32% 36%,#000 38% 62%,transparent 64% 68%,#000 70% 94%,transparent 96%)" },
+        panStyle: { position: "absolute", left: 0, right: 0, top: (12 + (t.pan / 100) * 7) + "px", height: "1.5px",
+          background: "rgba(181,172,201,.85)" },
+        volStyle: { position: "absolute", left: 0, right: 0, top: (22 - t.vol * 7) + "px", height: "1.5px",
+          background: "rgba(255,255,255,.65)" }
+      }));
+
+      const settings = [
+        { key: "sec", eyebrow: "第二响度指标", title: "段响度用哪个口径", raw: ["LUFS-S", "RMS", "峰值 dBFS"], sel: 0,
+          note: "影响分析时的段间响度归一化基准；改后需重分析。" },
+        { key: "slot", eyebrow: "中心槽策略", title: "多轨争抢中心位时怎么办", raw: ["按优先级排队", "主唱独占", "均分微偏"], sel: 1,
+          note: "主唱锁与 Lead Select 之外的兜底规则；不影响音量豁免。" }
+      ].map(g => Object.assign({}, g, {
+        opts: g.raw.map((name, k) => ({ key: g.key + k, name, style: {
+          padding: "4px 10px", borderRadius: "7px", fontSize: "10.5px", cursor: "pointer", whiteSpace: "nowrap",
+          background: k === g.sel ? "rgba(255,255,255,.72)" : "transparent",
+          color: k === g.sel ? "#21212A" : "#6A6A74" } }))
+      }));
+
+      const footerMap = {
+        print: { text: "引擎驱动 V2 · 33–49 小节", mono: true },
+        stop: { text: "本次打印覆盖 33–49；若在录制自动化，建议切回跟随宿主试听核对", mono: false },
+        follow: { text: "引擎驱动 V2 · 全曲跟随（已分析区域内）", mono: true }
+      };
+      const f = footerMap[s.footer] || { text: "采集 → 分析 → 输出：在 Tab1 打开采集开关并播放本范围", mono: false };
+
+      const zoomSteps = [0.5, 0.65, 0.8, 1, 1.25, 1.5, 2].map(z => {
+        const off = z === 2;
+        return {
+          key: "z" + z,
+          label: Math.round(z * 100) + "%",
+          note: off ? "超出当前屏幕" : z === 1 ? "当前" : "",
+          style: {
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px",
+            padding: "7px 10px", borderRadius: "9px", cursor: off ? "not-allowed" : "pointer",
+            fontFamily: MONO, fontVariantNumeric: "tabular-nums", fontSize: "11px",
+            background: z === 1 ? "rgba(255,255,255,.10)" : "transparent",
+            color: off ? "rgba(230,225,240,.32)" : "#D8D3E4"
+          },
+          noteStyle: { fontSize: "9px", letterSpacing: ".1em", color: off ? "rgba(212,176,118,.75)" : "rgba(216,211,228,.45)" }
+        };
+      });
+
+      vals.o = {
+        pillStyle: p.pillStyle, dotStyle: p.dotStyle,
+        pillText: n === 0 ? "未连接" : (s.capturing ? n + "/15 已连接 · 采集中" : n + "/15 已连接"),
+        banner: !!s.banner, bannerText: s.text, bannerAction: !!s.bannerAction,
+        bannerIconColor: red ? "#A85862" : "#9A8144",
+        bannerStyle: {
+          display: "flex", alignItems: "center", gap: "10px", flex: "none",
+          padding: "10px 13px", borderRadius: "12px",
+          background: red ? "rgba(198,110,120,.15)" : "rgba(212,176,118,.15)",
+          border: "1px solid " + (red ? "rgba(198,110,120,.42)" : "rgba(212,176,118,.42)"),
+          color: red ? "#8E4C55" : "#7E6836"
+        },
+        tabs,
+        slateStyle: {
+          position: "absolute", zIndex: 1, top: "3px", bottom: "3px", left: (3 + (st.tab - 1) * 136) + "px",
+          width: "136px", borderRadius: "10px",
+          background: "rgba(255,255,255,.62)",
+          border: "1px solid rgba(255,255,255,.7)",
+          boxShadow: "0 4px 14px rgba(30,24,44,.14), inset 0 1px 0 rgba(255,255,255,.9)",
+          transition: "left .42s cubic-bezier(.2,.7,.2,1)"
+        },
+        tabNum: st.tab, contentW, contentH,
+        isTab1: st.tab === 1, isTab2: st.tab === 2, isTab3: st.tab === 3, isTab4: st.tab === 4,
+        group: grp, groupBadge: "组 " + grp, drawer, demo, readonly: !!s.readonly,
+        roStyle: (s.readonly || s.banner === "red" && /只读/.test(s.text || "")) ? {
+          opacity: .42, pointerEvents: "none", filter: "saturate(.55)"
+        } : null,
+        roNote: (s.readonly || s.banner === "red" && /只读/.test(s.text || "")) ? "只读观察：全部写控件已禁用" : "",
+        groups: GROUP_IDS.map(id => ({
+          key: "og" + id, id, online: GROUPS_ONLINE.indexOf(id) >= 0,
+          style: {
+            position: "relative", overflow: "hidden", display: "flex", alignItems: "center", gap: "4px",
+            padding: "5px 11px", borderRadius: "999px", cursor: "pointer",
+            fontFamily: MONO, fontSize: "11px", fontWeight: 500, letterSpacing: ".06em",
+            transition: "background .3s cubic-bezier(.2,.7,.2,1)",
+            background: id === grp ? "rgba(255,255,255,.82)" : (s.groupConfirm && id === "C") ? "rgba(212,176,118,.22)" : "transparent",
+            border: "1px solid " + (id === grp ? "rgba(255,255,255,.9)" : (s.groupConfirm && id === "C") ? "rgba(212,176,118,.5)" : "transparent"),
+            color: id === grp ? "#21212A" : (s.groupConfirm && id === "C") ? "#7E6836" : "#6A6A74",
+            boxShadow: id === grp ? "0 3px 9px rgba(30,24,44,.14)" : "none",
+            backgroundImage: "radial-gradient(80px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)"
+          }
+        })),
+        groupConfirm: !!s.groupConfirm,
+        groupConfirmText: "切换到组 C 将断开本组全部 12 条连接",
+
+        capState: W.cap || "off",
+        capStyle: this.tog(W.cap === "capturing" || W.cap === "armed"),
+        capLabel: W.cap === "capturing" ? "采集中" : W.cap === "armed" ? "已布防·等待播放" : W.cap === "outside" ? "已离开采集范围" : "采集 OFF",
+        capDot: { width: "6px", height: "6px", borderRadius: "50%", flex: "none",
+          background: W.cap === "capturing" ? "rgb(120,176,142)" : (W.cap === "armed" || W.cap === "outside") ? "rgb(212,176,118)" : "rgb(150,152,162)",
+          animation: W.cap === "capturing" ? "livePulse 2.4s infinite" : "none" },
+        anState: W.analyze || "ready",
+        anDisabled: W.analyze === "disabled",
+        anRunning: W.analyze === "running",
+        anLabel: W.analyze === "running" ? "分析中…" : W.analyze === "done" ? "分析完成" : "分析",
+        anStyle: {
+          position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
+          gap: "7px", padding: "9px 0", borderRadius: "11px", cursor: W.analyze === "disabled" ? "not-allowed" : "pointer",
+          fontFamily: "'Space Grotesk',sans-serif", fontWeight: 600, fontSize: "12.5px",
+          background: W.analyze === "done" ? "rgba(120,176,142,.30)" : "rgba(181,172,201,.30)",
+          border: "1px solid " + (W.analyze === "done" ? "rgba(120,176,142,.55)" : "rgba(255,255,255,.42)"),
+          color: W.analyze === "disabled" ? "rgba(82,82,92,.45)" : "#21212A",
+          opacity: W.analyze === "disabled" ? .55 : 1,
+          boxShadow: W.analyze === "done" ? "0 4px 16px rgba(120,176,142,.30)" : "0 4px 14px rgba(150,130,200,.20)",
+          backgroundImage: "radial-gradient(110px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.22),transparent 70%)"
+        },
+        anPreview: W.analyze === "disabled" ? "当前范围内无采集数据——调整范围或先采集"
+          : "将影响 86 区段 / 12 轨；4 处手动编辑将保留",
+        anPartial: W.analyze !== "disabled" ? "范围内 78% 已覆盖，未覆盖部分将保持原状" : "",
+        outOn: !!W.out, outLock: !!W.lock, outStyle: this.tog(!!W.out),
+        outLabel: W.out ? "引擎驱动" : "跟随宿主",
+        writeBar: !!W.write,
+        rangeMode: s.rangeMode == null ? 0 : s.rangeMode,
+        loopMissing: !!s.loopMissing,
+        verRename: !!s.verRename,
+        copyModal: !!s.copyModal || !!st.copyOpen,
+        openCopy: () => this.setState({ copyOpen: true }),
+        closeCopy: () => this.setState({ copyOpen: false }),
+        leadSel: !!s.leadSel,
+        curveSel: !!s.curveSel, curveEmpty: !!s.curveEmpty,
+        tracks, lanes, segments: SEGMENTS, settings, nine: NINE,
+        ovConfirm: !!s.ovConfirm, unfreezeHint: !!s.unfreezeHint, recapture: !!s.recapture,
+        emptyTracks: !!s.emptyTracks, laneEmpty: !!s.laneEmpty,
+        emptyCopy: "组 " + grp + " 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 " + grp,
+        inspector: !!s.inspector, inspectorOff: !!s.inspectorOff,
+        applying: !!s.applying,
+        nineOpen: !!s.nineOpen, diagOpen: !!s.diagOpen,
+        firstRun: !!s.firstRun, atEnd: !!s.atEnd, tourAsk: !!s.tourAsk,
+        tour: !!tour, tourTitle: tour && tour.title, tourBody: tour && tour.body,
+        tourCenter: !!(tour && tour.center), tourHint: tour && tour.hint,
+        tourLast: !!(tour && tour.last), tourIdx: tour ? tour.i + "/" + tour.n : "",
+        tourDots: tour ? Array.from({ length: tour.n }, (_, k) => ({
+          key: "d" + k, style: { width: "5px", height: "5px", borderRadius: "50%",
+            background: k + 1 === tour.i ? "rgba(233,229,244,.95)" : "rgba(233,229,244,.28)" } })) : [],
+        tourHole: hole ? {
+          position: "absolute", left: hole.x + "px", top: hole.y + "px",
+          width: hole.w + "px", height: hole.h + "px", borderRadius: "16px",
+          boxShadow: "0 0 0 9999px rgba(26,22,36,.66)",
+          transition: "all .42s cubic-bezier(.2,.7,.2,1)"
+        } : null,
+        tourCallout: tour ? (tour.center || !hole ? {
+          position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", width: "420px"
+        } : {
+          position: "absolute", width: "330px",
+          left: clampX(tour.side === "left" ? hole.x - 354 : tour.side === "right" ? hole.x + hole.w + 24 : hole.x - 20) + "px",
+          top: clampY(tour.side === "top" ? hole.y - 186 : tour.side === "bottom" ? hole.y + hole.h + 18 : hole.y + 8) + "px",
+          transition: "left .42s cubic-bezier(.2,.7,.2,1), top .42s cubic-bezier(.2,.7,.2,1)"
+        }) : null,
+        showTracks: !s.emptyTracks,
+        secGroup: { display: drawer ? "none" : "flex", alignItems: "center", gap: "14px", flex: "none" },
+        rangeFollow: (s.rangeMode == null ? 0 : s.rangeMode) === 0,
+        rangeManualOn: s.rangeMode === 2,
+        rangeLoopOn: s.rangeMode === 1 && !s.loopMissing,
+        rangeTabs: ["全曲跟随", "循环区", "手动"].map((name, k) => {
+          const on = (s.rangeMode == null ? 0 : s.rangeMode) === k;
+          const dis = k === 1 && s.loopMissing;
+          return { key: "rt" + k, name: k === 0 ? "全曲" : name, style: {
+            flex: 1, textAlign: "center", padding: "5px 0", borderRadius: "9px", cursor: dis ? "not-allowed" : "pointer",
+            fontSize: "10.5px", fontWeight: on ? 600 : 400, whiteSpace: "nowrap", color: dis ? "rgba(106,106,116,.45)" : on ? "#21212A" : "#6A6A74",
+            background: on ? "rgba(255,255,255,.62)" : "transparent",
+            border: "1px solid " + (on ? "rgba(255,255,255,.7)" : "transparent"),
+            boxShadow: on ? "0 3px 9px rgba(30,24,44,.12)" : "none",
+            transition: "background .3s cubic-bezier(.2,.7,.2,1)" } };
+        }),
+        verNormal: !s.verRename,
+        verChip0: { padding: "5px 12px", borderRadius: "999px", fontSize: "11.5px", color: "#6A6A74", whiteSpace: "nowrap" },
+        versions: ["V1 主歌", "V2 副歌"].map((name, k) => {
+          const on = k === 1;
+          const dis = s.footer === "print";
+          const empty = !!s.verEmpty && k === 0;
+          return { key: "vv" + k, name: empty ? "V1" : name, empty, style: {
+            position: "relative", overflow: "hidden", display: "flex", alignItems: "center", gap: "5px",
+            padding: "6px 13px", borderRadius: "999px", cursor: dis ? "not-allowed" : "pointer",
+            fontSize: "11.5px", fontWeight: on ? 600 : 400, whiteSpace: "nowrap",
+            background: on ? "rgba(255,255,255,.72)" : "rgba(255,255,255,.14)",
+            border: "1px solid " + (on ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.28)"),
+            color: on ? "#21212A" : "#6A6A74", opacity: dis ? .45 : empty ? .5 : 1,
+            boxShadow: on ? "0 3px 10px rgba(30,24,44,.14)" : "none",
+            backgroundImage: "radial-gradient(80px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)" } };
+        }),
+        verHint: s.footer === "print" ? "打印中不可切换版本，请先停止走带" : s.verRename ? "双击 chip 重命名，≤16 字符" : "2 套方案可切换，切换时引擎平滑过渡",
+        leadLabel: s.leadSel ? "轨 01 主唱" : "遵循分析",
+        leadStyle: {
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+          padding: "6px 10px", borderRadius: "10px", cursor: "pointer", fontSize: "11.5px",
+          background: s.leadSel ? "rgba(120,176,142,.22)" : "rgba(255,255,255,.16)",
+          border: "1px solid " + (s.leadSel ? "rgba(120,176,142,.5)" : "rgba(255,255,255,.30)"),
+          color: s.leadSel ? "#3F6B53" : "#52525C"
+        },
+        leadNote: s.leadSel ? "该轨实时强制居中，其余轨不重分布；音量豁免为独立选项，不随此联动" : "0 = 遵循分析（默认）",
+        leadNoteStyle: { fontSize: "9.5px", lineHeight: 1.45, color: s.leadSel ? "#4E7A61" : "#7A7A84", textWrap: "pretty" },
+        curvePath: s.curveEmpty ? "M0 109 L660 109" : this.curve(st.ms, this.gainAt),
+        volPath: s.curveEmpty ? "M0 109 L660 109" : this.curve(st.ms, this.volAt),
+        curveHandles: !s.curveEmpty,
+        widthAngle: "±" + Math.round(st.width * 0.6) + "°",
+        widthFill: { position: "absolute", left: 0, top: 0, bottom: 0, width: (st.width / 150 * 100) + "%",
+          borderRadius: "999px", background: "rgba(155,147,196,.85)" },
+        widthThumb: { position: "absolute", top: "50%", left: (st.width / 150 * 100) + "%", width: "13px", height: "13px",
+          margin: "-6.5px 0 0 -6.5px", borderRadius: "50%", background: "#fff", boxShadow: "0 2px 7px rgba(30,24,44,.25)" },
+        widthDrag: (e) => this.drag(e, 0, 150, "width"),
+        msLabel: (st.ms > 0 ? "+" : st.ms < 0 ? "−" : "") + Math.abs(st.ms),
+        msFill: { position: "absolute", top: 0, bottom: 0, borderRadius: "999px", background: "rgba(155,147,196,.85)",
+          left: (st.ms < 0 ? 50 + st.ms / 4 : 50) + "%", width: (Math.abs(st.ms) / 4) + "%" },
+        msThumb: { position: "absolute", top: "50%", left: (50 + st.ms / 4) + "%", width: "13px", height: "13px",
+          margin: "-6.5px 0 0 -6.5px", borderRadius: "50%", background: "#fff", boxShadow: "0 2px 7px rgba(30,24,44,.25)" },
+        msDrag: (e) => this.drag(e, -100, 100, "ms"),
+        plotRef: (el) => {
+          if (!el || this._plot === el) return;
+          this._plot = el;
+          const m = () => {
+            const hh = el.clientHeight - 15 - 8;
+            if (hh > 20 && Math.abs((this.state.plotH || 0) - hh) > 2) this.setState({ plotH: hh });
+          };
+          m(); requestAnimationFrame(m);
+          if (window.ResizeObserver) { this._ro && this._ro.disconnect(); this._ro = new ResizeObserver(m); this._ro.observe(el); }
+        },
+        panBars: TRACKS.filter(t => t.status !== "idle" && t.status !== "srErr").map(t => {
+          const ep = Math.max(-98, Math.min(98, t.pan * (st.width / 100)));
+          const g = this.gainAt(ep, st.ms) + this.volAt(ep, st.ms);
+          const plotH = st.plotH || 170;
+          const h = Math.max(14, Math.min(plotH, t.vol * (plotH / 0.62) + g * (plotH / 20)));
+          const x = (ep + 100) / 200 * 100;
+          const halfRaw = t.st ? (t.w / 100) * (st.width / 100) * 16 : 0;
+          const half = Math.min(halfRaw, x, 100 - x);
+          return {
+            key: "pb" + t.n,
+            style: { position: "absolute", bottom: "15px", left: x + "%", width: "7px", marginLeft: "-3.5px",
+              height: h + "px", borderRadius: "3px 3px 1px 1px",
+              background: t.lead ? "linear-gradient(180deg,rgba(120,176,142,.95),rgba(120,176,142,.55))"
+                : "linear-gradient(180deg,rgba(181,172,201,.95),rgba(150,140,192,.6))",
+              transition: "all .3s cubic-bezier(.2,.7,.2,1)" },
+            spanStyle: { position: "absolute", bottom: Math.min(15 + h + 3, plotH + 12) + "px", left: (x - half) + "%",
+              width: (half * 2) + "%", height: "1.5px", borderRadius: "999px",
+              display: t.st ? "block" : "none", background: "rgba(181,172,201,.55)",
+              transition: "all .3s cubic-bezier(.2,.7,.2,1)" }
+          };
+        }),
+
+        trackCols: [
+          { n: "", w: 8 }, { n: "CH", w: 44 }, { n: "轨道", w: 150 }, { n: "PAN", w: 30 }, { n: "W", w: 30 },
+          { n: "音量 / 电平", w: 268 }, { n: "PRIO", w: 66 }, { n: "LEAD", w: 26 }, { n: "配对", w: 52 },
+          { n: "音量", w: 26 }, { n: "声像", w: 26 },
+          { n: "冻结P", w: 26, tight: 1 }, { n: "冻结V", w: 26, tight: 1 },
+          ...(drawer ? [{ n: "更多", w: 26 }] : []), { n: "ON", w: 26 }
+        ].filter((c, k) => !drawer || k < 7 || k >= 13).map((c, k) => ({ key: "tc" + k, name: c.n, style: {
+          width: c.w + "px", flex: "none", fontFamily: MONO, fontSize: c.tight ? "7.5px" : "8px",
+          letterSpacing: c.tight ? "0" : ".14em", lineHeight: 1.15,
+          color: "#6A6A74", whiteSpace: c.tight ? "normal" : "nowrap", overflow: "hidden" } })),
+
+        vadSliders: [
+          { name: "THRESHOLD", val: "−38 dB", p: .44 }, { name: "HYSTERESIS", val: "6 dB", p: .30 },
+          { name: "HANGOVER", val: "180 ms", p: .36 }, { name: "前留白", val: "120 ms", p: .24 },
+          { name: "后留白", val: "200 ms", p: .40 }, { name: "SENSITIVITY", val: "0.62", p: .62 },
+          { name: "MIN SEG", val: "420 ms", p: .28 }
+        ].map((v, k) => ({ key: "vs" + k, name: v.name, val: v.val,
+          fill: { position: "absolute", left: 0, top: 0, bottom: 0, width: (v.p * 100) + "%", borderRadius: "999px", background: "rgba(155,147,196,.85)" },
+          thumb: { position: "absolute", top: "50%", left: (v.p * 100) + "%", width: "11px", height: "11px", marginLeft: "-5.5px", marginTop: "-5.5px", borderRadius: "50%", background: "#fff", boxShadow: "0 2px 6px rgba(30,24,44,.22)" } })),
+
+        toolBtns: ["重采集选区", "重分析选区", "重新识别（含手动段）", "清除选区采集数据"].map((name, k) => {
+          const dis = picked.length === 0;
+          return { key: "tb" + k, name, style: {
+            position: "relative", overflow: "hidden", padding: "6px 12px", borderRadius: "999px", whiteSpace: "nowrap",
+            fontSize: "11px", cursor: dis ? "not-allowed" : "pointer",
+            background: "rgba(255,255,255,.18)", border: "1px solid rgba(255,255,255,.32)",
+            color: dis ? "rgba(82,82,92,.4)" : "#52525C", opacity: dis ? .5 : 1,
+            backgroundImage: "radial-gradient(90px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)" } };
+        }),
+        selBand: { position: "absolute", left: "44%", top: 0, bottom: 0, width: "26%",
+          background: "rgba(212,176,118,.07)", pointerEvents: "none", zIndex: 2 },
+        selOverlay: { position: "absolute", left: "44%", top: 0, bottom: "20px", width: "26%", zIndex: 5, pointerEvents: "none" },
+        selEdgeL: { position: "absolute", left: 0, top: "22px", bottom: 0, width: "3px",
+          background: selDrag === "L" ? "rgba(226,196,136,.95)" : "rgba(212,176,118,.7)",
+          boxShadow: selDrag === "L" ? "0 0 12px rgba(226,196,136,.7)" : "none" },
+        selEdgeR: { position: "absolute", right: 0, top: "22px", bottom: 0, width: "3px",
+          background: selDrag === "R" ? "rgba(226,196,136,.95)" : "rgba(212,176,118,.7)",
+          boxShadow: selDrag === "R" ? "0 0 12px rgba(226,196,136,.7)" : "none" },
+        selHeadL: { position: "absolute", left: "-8px", top: "1px", width: "18px", height: "20px",
+          display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "5px",
+          cursor: "ew-resize", pointerEvents: "auto",
+          background: selDrag === "L" ? "rgba(240,216,166,.98)" : "rgba(226,196,136,.85)",
+          border: "1px solid rgba(255,255,255,.5)", boxShadow: "0 2px 7px rgba(18,14,26,.4)" },
+        selHeadR: { position: "absolute", right: "-8px", top: "1px", width: "18px", height: "20px",
+          display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "5px",
+          cursor: "ew-resize", pointerEvents: "auto",
+          background: selDrag === "R" ? "rgba(240,216,166,.98)" : "rgba(226,196,136,.85)",
+          border: "1px solid rgba(255,255,255,.5)", boxShadow: "0 2px 7px rgba(18,14,26,.4)" },
+        selReadL: { position: "absolute", left: "6px", top: "26px", fontFamily: MONO,
+          fontVariantNumeric: "tabular-nums", fontSize: "9px", letterSpacing: ".06em",
+          padding: "1px 5px", borderRadius: "5px", whiteSpace: "nowrap",
+          background: selDrag === "L" ? "rgba(226,196,136,.92)" : "rgba(26,22,36,.72)",
+          color: selDrag === "L" ? "#2A2438" : "rgba(233,229,244,.75)" },
+        selReadR: { position: "absolute", right: "6px", top: "26px", fontFamily: MONO,
+          fontVariantNumeric: "tabular-nums", fontSize: "9px", letterSpacing: ".06em",
+          padding: "1px 5px", borderRadius: "5px", whiteSpace: "nowrap",
+          background: selDrag === "R" ? "rgba(226,196,136,.92)" : "rgba(26,22,36,.72)",
+          color: selDrag === "R" ? "#2A2438" : "rgba(233,229,244,.75)" },
+        selTimeL: selDrag === "L" ? "33.1.000 · 01:12.400" : "33.1.000",
+        selTimeR: selDrag === "R" ? "41.2.240 · 01:31.850" : "41.2.240",
+        selSetBtn: { position: "absolute", left: "50%", top: "26px", transform: "translateX(-50%)",
+          padding: "3px 11px", borderRadius: "999px", cursor: "pointer", pointerEvents: "auto",
+          fontSize: "10px", whiteSpace: "nowrap", opacity: selDrag ? 0 : 1,
+          background: "rgba(226,196,136,.90)", border: "1px solid rgba(255,255,255,.45)",
+          color: "#2A2438", boxShadow: "0 3px 10px rgba(18,14,26,.35)",
+          transition: "opacity .3s cubic-bezier(.2,.7,.2,1)" },
+        selGrabL: () => this.setState({ selDrag: this.state.selDrag === "L" ? null : "L" }),
+        selGrabR: () => this.setState({ selDrag: this.state.selDrag === "R" ? null : "R" }),
+        setRange: () => this.setState({ rangeToast: true }),
+        rangeToast: !!st.rangeToast || !!s.setRange,
+        clearRangeToast: () => this.setState({ rangeToast: false }),
+        selCount: picked.length,
+        hasSel: picked.length > 0,
+        noSel: picked.length === 0,
+        selChip: "选区 33–41 · " + picked.length + " 轨",
+        selNames: picked.slice().sort((a, b) => a - b).map(n => (n < 10 ? "0" + n : "" + n)).join(" · "),
+        clearSel: () => this.setState({ lanePick: [] }),
+        allSel: () => this.setState({ lanePick: TRACKS.filter(t => t.status !== "idle").map(t => t.n) }),
+
+        laneView: !s.legend, legend: !!s.legend, laneRows: !s.laneEmpty,
+
+
+        ruler: [33, 35, 37, 39, 41, 43, 45, 47, 49].map((b, k) => ({
+          key: "rm" + k, bar: b, style: { position: "absolute", left: (k * 12.5) + "%", top: "4px",
+            transform: k === 8 ? "translateX(-100%)" : "none",
+            fontFamily: MONO, fontVariantNumeric: "tabular-nums", fontSize: "9px", letterSpacing: ".1em",
+            color: "rgba(233,229,244,.42)" } })),
+
+        segLockStyle: this.tog(true),
+
+        nineTop: NINE.slice(0, 3).map((c, k) => ({ key: "n" + k, i: (k + 1) + ".", t: c.t, d: c.d })),
+        nineRest: NINE.slice(3).map((c, k) => ({ key: "nr" + k, i: (k + 4) + ".", t: c.t, d: c.d })),
+        nineToggle: s.nineOpen ? "收起" : "查看全部九条",
+        nineAll: NINE.map((c, k) => ({
+          key: "na" + k, i: (k + 1) + ".", t: c.t, d: c.d,
+          numStyle: { fontFamily: MONO, fontSize: "12px", flex: "none", width: "20px",
+            color: c.hi ? "rgba(240,183,190,.95)" : "rgba(169,163,188,.6)" },
+          titleStyle: { fontSize: c.hi ? "13px" : "12.5px", fontWeight: 600,
+            color: c.hi ? "#F0B7BE" : "#C6C0D6" },
+          bodyStyle: { fontSize: c.hi ? "12px" : "11.5px", lineHeight: 1.65, textWrap: "pretty",
+            color: c.hi ? "rgba(240,183,190,.88)" : "rgba(169,163,188,.85)" }
+        })),
+        fadeStyle: { position: "absolute", left: 0, right: 0, bottom: "62px", height: "42px", pointerEvents: "none",
+          display: s.atEnd ? "none" : "block",
+          background: "linear-gradient(180deg,rgba(24,20,33,0),rgba(24,20,33,.92))" },
+        scrollNote: { fontSize: "10.5px", color: s.atEnd ? "rgba(120,176,142,.9)" : "rgba(169,163,188,.6)" },
+        scrollNoteText: s.atEnd ? "已读到底" : "向下滚动阅读全部九条",
+        tourNext: tour && tour.last ? "完成" : "下一步",
+        tourArrow: tour && hole ? (tour.side === "bottom" ? {
+          position: "absolute", left: "42px", top: "-7px", width: "14px", height: "14px",
+          transform: "rotate(45deg)", background: "rgba(40,34,52,.96)",
+          borderLeft: "1px solid rgba(255,255,255,.16)", borderTop: "1px solid rgba(255,255,255,.16)"
+        } : tour.side === "left" ? {
+          position: "absolute", right: "-7px", top: "28px", width: "14px", height: "14px",
+          transform: "rotate(45deg)", background: "rgba(40,34,52,.96)",
+          borderRight: "1px solid rgba(255,255,255,.16)", borderTop: "1px solid rgba(255,255,255,.16)"
+        } : tour.side === "top" ? {
+          position: "absolute", left: "42px", bottom: "-7px", width: "14px", height: "14px",
+          transform: "rotate(45deg)", background: "rgba(40,34,52,.96)",
+          borderRight: "1px solid rgba(255,255,255,.16)", borderBottom: "1px solid rgba(255,255,255,.16)"
+        } : {
+          position: "absolute", left: "-7px", top: "28px", width: "14px", height: "14px",
+          transform: "rotate(45deg)", background: "rgba(40,34,52,.96)",
+          borderLeft: "1px solid rgba(255,255,255,.16)", borderBottom: "1px solid rgba(255,255,255,.16)"
+        }) : null,
+        reviewStyle: {
+          position: "relative", overflow: "hidden", padding: "6px 14px", borderRadius: "999px", cursor: "pointer",
+          fontSize: "11px", whiteSpace: "nowrap",
+          background: tour && tour.last ? "rgba(255,255,255,.85)" : "rgba(255,255,255,.24)",
+          border: "1px solid " + (tour && tour.last ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.4)"),
+          color: "#52525C",
+          backgroundImage: "radial-gradient(90px circle at var(--mx,-999px) var(--my,-999px),rgba(255,255,255,.20),transparent 70%)"
+        },
+        diagChevron: { transform: s.diagOpen ? "rotate(180deg)" : "none", transition: "transform .3s cubic-bezier(.2,.7,.2,1)", cursor: "pointer" },
+        diagRows: TRACKS.slice(0, 8).map(t => ({
+          key: "dg" + t.n, ch: t.n < 10 ? "0" + t.n : "" + t.n,
+          hb: t.status === "idle" ? "—" : t.status === "lost" ? "4.2s" : "0.08s",
+          mis: t.status === "warn" ? "2" : "0", gen: "7", seq: "1284" })),
+
+        footerText: f.text,
+        footerStyle: {
+          flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontFamily: f.mono ? MONO : "inherit", fontVariantNumeric: "tabular-nums",
+          fontSize: f.mono ? "10.5px" : "11px", letterSpacing: f.mono ? ".1em" : "0", color: "#65656F"
+        },
+        zoomLabel: s.zoomLabel || "100%",
+        zoomOpen: !!s.zoomOpen, zoomSteps,
+        zoomConfirm: !!s.zoomConfirm,
+        toast: !!s.toast, toastText: s.toast, toastAction: !!s.toastAction
+      };
+    }
+    return vals;
+  }
+}
+</script>
+</body>
+</html>

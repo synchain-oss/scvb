@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// ShmRingMixSource —— IMixSource 的共享内存实现(01 §5.2 读环语义)。
+// bind() 一次性几何快照(sample_rate / ring_frames / channels,Registry.h 几何纪律);
+// read() 只读快照,绝不回读段头几何字段(宿主编排 mono⇄stereo 重建环时的撕裂防护)。
+// read() 逐行实现:covered 判定 → 读中换代弃用 → 套圈弃用 → 失准计数(01 §5.2)。
+// [SL-486] 上面那句「一次性」是**对音频线程**说的:段头几何被 Input 侧原地改写后,[M] 线程会
+// 拿同一个 header/data 再 bind 一次(OutputSession::refreshAudioGeometry),发布一份新的不可变
+// 快照 —— 音频线程该读的仍然只有快照,只是快照本身会在 [M] 侧换新。这是安全的:旧绑定由
+// owned_ 保活到进程结束,read() 靠绑定**指针变化**自行重置代际状态,不存在半新半旧的中间态。
+//
+// 跨线程发布协议(T16 DspArbiter / T23 AudioRing 同款 Snapshot 模式):
+//   绑定是「不可变快照 + std::atomic<const AudioRingBinding*>」发布 —— 消息线程 bind()/unbind()
+//   构造完整绑定后 release-store;音频线程每块 acquire-load 一次、整块复用同一份(无撕裂、无
+//   bound==true 且 header==nullptr 的中间态)。旧绑定由本类 owned_ 保活(进程寿命);绑定内裸指针
+//   指向的段由调用方(OutputSession)经 SegmentHandle 宽限期保活,音频线程块内使用、绝不跨块持有。
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "output/IMixSource.h"
+#include "ipc/AudioRing.h"
+#include "ipc/SegmentLayout.h"
+
+namespace scvb::output
+{
+
+class ShmRingMixSource final : public IMixSource
+{
+public:
+    ShmRingMixSource() = default;
+
+    // 绑定段头与环数据;一次性快照几何。channels ∉ {1,2} 或 ring_frames 非 2^k 或
+    // magic/abi 不符 → 发布 bound==false 的绑定(或 nullptr),read() 恒 false 且不计数。
+    void bind(AudioRingHeader* header, float* data) noexcept;
+
+    // 解绑(释放/改组路径,防悬垂):release-store nullptr,此后 read()/bound() 均空操作。
+    void unbind() noexcept;
+
+    // 音频线程:每 block acquire-load 一次不可变绑定快照,整 block 复用。
+    const AudioRingBinding* acquire() const noexcept { return binding_.load(std::memory_order_acquire); }
+
+    // IMixSource
+    bool bound() const noexcept override;
+    u32 channels() const noexcept override;
+    // 见 stallFailCount_ 头注。[M] 读,[A] 写(relaxed)。
+    u32 stallFailCount() const noexcept { return stallFailCount_.load(std::memory_order_relaxed); }
+    u32 sampleRate() const noexcept override;
+    u32 ringFrames() const noexcept override;
+    bool read(int64_t t0, float* dst, int n) noexcept override;
+    u32 gapCount() const noexcept override { return gapCount_.load(std::memory_order_relaxed); }
+    u64 writeHead() const noexcept override;
+    u64 epoch() const noexcept override;
+
+private:
+    std::atomic<const AudioRingBinding*> binding_{nullptr}; // [M] 写 / [A] 读
+    std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命;T16 已改回收,SL-445)
+
+    // 音频线程独占(仅 read() 访问;换代/重绑由 lastBinding_ 指针变化检测,不回读成员)。
+    const AudioRingBinding* lastBinding_ = nullptr; // 上次块所用绑定(变指针 → 重置代际状态)
+    u64 lastEpoch_ = 0;
+    int64_t validFrom_ = 0; // 本代有效数据起点(epoch 跳变后 = 当前块起点,§5.2)
+    // 本代是否已成功读到过数据。未 primed 的 covered 失败 = 写方还没追到本位置(刚 attach 的空环 /
+    // 起播瞬间 / 宿主先渲染 Output 再渲染 Input),是「尚未上线」而非「失准」,不得计数 ——
+    // 否则所有注入轨会在同一块同时 +1(T37 三轮 A 族「五轨几乎同时报失准」)。
+    bool primed_ = false;
+    // covered 失败的**写头停滞**判别(P1-7)。covered 会因两个物理上相反的原因失败:
+    //   ① 写头还没推到本块(w < t0+n)—— 写方压根没在写(宿主在静音段挂起了 Input 的
+    //      processBlock、bypass、轨道未激活),这归 OutputSession 的 CH_SUSPENDED 管;
+    //   ② 写方套圈(w-t0 > ringFrames)—— 数据已被覆盖,这才是真失准。
+    // 老写法两者都 +1,于是「音频在但 −inf」的段落里,宿主一挂起 Input,失准就在
+    // CH_SUSPENDED 的 500ms 判定期内被误报出来,500ms 后自愈(v5 实测 P1-7)。
+    // 判别办法:连续失败期间写头一动不动 = ①,写头仍在推进 = 读方真的跟丢了。
+    u64 lastFailWriteHead_ = 0;
+    bool sawFail_ = false;
+
+    std::atomic<u32> gapCount_{0};
+    // 被「写头停滞」判据挡下来的失败读:不是失准,但也不是无事发生 —— 它精确表示
+    // 「Output 要 t0 处的数据,而写方压根没推到那里」。OutputSession 拿它给 CH_SUSPENDED
+    // 加第二个条件,以便把「Input 被 bypass / 宿主跳过该轨」与「走带停了,大家都没动」分开:
+    // 后者读得到数据(t0 冻在已写区),一次失败都不会有。
+    std::atomic<u32> stallFailCount_{0};
+};
+
+} // namespace scvb::output

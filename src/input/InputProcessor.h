@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// windows.h 的 min/max 宏会污染 std::numeric_limits<T>::min() 与 std::max;先禁用再包含
+// SegmentBackendWin32.h(其内部 include windows.h 但未定义 NOMINMAX)。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include "input/InputSession.h"
+#include "input/OutputStage.h"
+#include "ipc/CtrlPlane.h"
+#include "ipc/SegmentBackendWin32.h"
+#include "state/InputStateCodec.h"
+#include "state/StateCodec.h"
+
+// ScvbInputAudioProcessor —— Input 插件处理器(01 §5.1 伪代码全实现,T23)。
+// 捕获(mono/stereo,[J57])→ 时间线定位 → epoch → 写音频环 → 特征(BS.1770 多通道求和,T08 口径)
+// → 输出级仲裁(J12/J32:健康静音 / 其余直通,80ms 等功率 ramp + 5s 滞回)。
+class ScvbInputAudioProcessor final : public juce::AudioProcessor, private juce::Timer
+{
+public:
+    ScvbInputAudioProcessor();
+    ~ScvbInputAudioProcessor() override;
+
+    void prepareToPlay(double sampleRate, int samplesPerBlock) override;
+    void releaseResources() override;
+
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) override;
+
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
+
+    const juce::String getName() const override { return "SCVB Input"; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    bool isMidiEffect() const override { return false; }
+    double getTailLengthSeconds() const override { return 0.0; }
+
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int index) override;
+    const juce::String getProgramName(int index) override;
+    void changeProgramName(int index, const juce::String& newName) override;
+
+    void getStateInformation(juce::MemoryBlock& destData) override;
+    void setStateInformation(const void* data, int sizeInBytes) override;
+
+    // [J150] 宿主告知本轨的轨道属性(JUCE:只在消息线程调)。只取 name:记下来,由 25Hz timer 写进
+    // 本组 ctrl 段轨道名区,Output 据此给「用户没改过名」的通道自动填 label(04 §7 步 2)。
+    // name 缺席(宿主没给)时保留上一次的值;宿主明确给空串时记成空串(= 没有轨道名)。
+    void updateTrackProperties(const TrackProperties& properties) override;
+
+    // [M] UI/桥入口(T25 冻结契约):设置 channel/group,触发 claim 迁移(01 §4.1)。
+    // 返回**这次请求本身**的结果,不一定等于会话此刻的 state():补偿式回滚成功时会话回到旧通道、仍是
+    // kActive;改组时 ctrl 段打不开则会话原样留在旧组 —— 两种都是请求失败。桥面回执据此映射(InputBridgeLogic.h
+    // claimRequestResponse, §3.2/§3.3,[J156]);会话当下的 claim 态另经 scvb.state 回推。
+    scvb::input::InputClaimState setChannelId(int channelId);
+    scvb::input::InputClaimState setGroupId(int groupId);
+
+    // PR#51 红旗#1:setStateInformation 读到 abi > kCurrentAbi → 拒载并置位(冻结契约 §7.3:
+    // 高版本拒载 + 提示升级,绝不静默丢数据;原 blob 由宿主工程保有)。消息线程读写(setStateInformation
+    // 持 lifecycleMutex_),T30 桥经此把 abiMismatch 横幅推给 UI。
+    bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
+    scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
+
+    // --- T30 Input 桥接入面([M] 编辑器消息线程;除注明外均持 lifecycleMutex_,绝不触碰音频线程成员)---
+    struct PriorityResult
+    {
+        bool queued = false;
+        juce::String reason; // ""=成功;"ringFull" | "outputOffline" | "unassigned" | "busy"(§3.4/§5.6;busy=ctrl
+                             // 段未打开,临时可重试)
+    };
+    struct BridgeTickSnapshot
+    {
+        int channelId = 0; // 实际持有(session_.boundChannel())——scvb.state / scvb.config 用它
+        // [SL-446 第 2 轮补充] 配置/请求值(session_.channelId(),即 InputProcessor::channelId_
+        // 镜像)——**只给 scvb.error 用**(payload 的 ch 与边沿键都要用它,两处必须同源,否则
+        // "同一冲突状态、不同请求号"这种组合会被边沿键误判成"没变化"而漏发)。
+        // ⚠ 这个值不是"用户最近一次请求"的严格同义词,只在"emitClaimError 真的会触发"的那两条
+        // 路径(硬失败 / 回滚也失败)上二者恰好相等——补偿式回滚**成功**那条路上它会收敛成旧
+        // channel,但那条路 session_.state() 早已变回 kActive,emitClaimError 根本不会看到
+        // claim=="conflict",所以这个分叉进不了这里。别把这个字段的名字读成"两者等价"的证明。
+        int configuredChannelId = 0;
+        int groupId = 1;
+        scvb::input::InputClaimState claimState = scvb::input::InputClaimState::kUnassigned;
+        scvb::input::InputConnSnapshot conn;
+        bool healthy = false; // session_.isHealthy(now)
+        bool passthrough = true; // StageSwitchStateMachine 当前目标档
+        double sampleRate = 48000.0;
+        int sourceChannels = 1;
+        scvb::OutputGlobalInfoSnapshot globalInfo; // 本组 ctrl 段 OutputGlobalInfo(srMismatch 推导源)
+        // 本组 ctrl 段广播区(Output→Input 配置只读镜像,§4.3)。broadcastValid=false = 段未打开
+        // 或本次 seqlock 撕裂 —— 调用方沿用上帧,不自旋。
+        scvb::CtrlBroadcastSnapshot broadcast;
+        bool broadcastValid = false;
+        // 变化检测真源 = **广播区的** config_seq。**不是** registry 的 OutputSlot.config_seq:
+        // 后者从未被插件代码写过(只有单测调 bumpConfigSeq),恒 0,于是 scvb.config 每开一次
+        // 编辑器只发一帧就再不更新(T37 三轮 C 族)。
+        scvb::u32 configSeq = 0;
+        scvb::u32 localAbi = scvb::kScvbAbi;
+        scvb::u32 remoteAbi = 0; // abi 不符时探测到的对端 abi(0 = 未探测到)
+        // [SL-462] 载入工程时的一次性冲突信号:载入要的那个通道被占、会话回滚到旧通道仍活着
+        // (claim 因此是 active,边沿检测看不到这次冲突,载入路径也没有 RPC 返回值可挂)。
+        // loadConflictChannelId==0 = 没有待报的;非 0 = 请求被拒的那个号(载入的工程写的号)。
+        // 编辑器发出 scvb.error{channelConflict} 后调 bridgeAckLoadConflict(loadConflictSerial)。
+        int loadConflictChannelId = 0;
+        int loadConflictGroupId = 1;
+        scvb::u32 loadConflictSerial = 0;
+    };
+    BridgeTickSnapshot bridgeTickSnapshot(); // 25Hz emitTick 单次持锁采集(含 ctrl 段懒打开)
+    // [SL-462] 界面已把那次载入冲突发出去了:serial 与当前一致才清(期间又来一次新的就不清)。
+    void bridgeAckLoadConflict(scvb::u32 serial);
+    std::uint8_t bridgeGroupsOnline(); // 1Hz:本组位 + 跨组只读探测(01 §4.5/J70)
+    PriorityResult bridgeRemoteSetPriority(int n); // remoteSetPriority(§3.4;内部 clamp 0..10)
+    void bridgeSetUiLanguage(const juce::String& lang); // setLang 落 state(normalize 由桥层做)
+    void bridgeSetUiScalePercent(int percent); // commitUiScale 落 state(clamp 33..300)
+    int bridgeUiScalePercent() const;
+    juce::String bridgeUiLanguage() const;
+    // [SL-258] setGuideSeen(§3.8)落 state `ui.guide_seen`。**它只是会话内运行时态,不随工程保存**
+    // —— 这是契约口径,不是待补的缺口:[J177](卡 SL-238)从 STATE_SCHEMA 撤回了原先登记的
+    // 「InputStateCodec 尾部追加一个 u32」落点,codec 不编码它,重开工程回 false。
+    // 跨工程的「不再显示」承诺由 `uidefaults::guideSeenGlobalInput()`(真落盘)兜住。
+    void bridgeSetGuideSeen(bool seen);
+    bool bridgeUiGuideSeen() const;
+
+private:
+    // 25Hz [M] 定时器:健康判定 → C18 模式字;每 ~250ms 心跳(4Hz)。
+    void timerCallback() override;
+
+    // 命令环 ctrl 段懒打开(调用方已持 lifecycleMutex_):Input 是本组 ctrl 段的合法创建/覆盖者
+    // (写命令环 + 读 OutputGlobalInfo;CtrlPlane::open 注释同口径)。
+    void ensureCtrlOpen();
+
+    // [M] 25Hz:把 [A] 攒下的 fingerprint 上报转投本 slot 的 ctrl 命令环(04 §4.5)。
+    // 调用方已持 lifecycleMutex_ 且已 ensureCtrlOpen()。
+    void drainFpReports();
+
+    // [SL-495] 冲突态 1Hz 静默重试 claim(调用方已持 lifecycleMutex_;timerCallback 4Hz 分支内)。
+    void retryConflictClaim(scvb::u64 now);
+    scvb::u64 lastClaimRetryMs_ = 0;
+    static constexpr scvb::u64 kClaimRetryIntervalMs = 1000;
+
+    // [SL-462] 载入路径上 prepare() 撞车但回滚成功时,记一次待报的冲突(调用方已持锁)。
+    void noteLoadConflict(scvb::input::InputClaimState result, int requestedChannel);
+    int loadConflictChannelId_ = 0; // 0 = 无待报
+    int loadConflictGroupId_ = 1;
+    scvb::u32 loadConflictSerial_ = 0;
+    // 每拍排水上限:稳态 1 条/秒/轨,25Hz 下留足余量(宿主卡顿后一次补投也够)。
+    static constexpr std::uint32_t kFpDrainMax = 16;
+
+    // [J150] [M] 25Hz:把 trackNameUtf8_ 写进本组 ctrl 段轨道名区里**实际持有**的那一条,附上本 slot
+    // 此刻的心跳值作归属判据(见 CtrlPlane.h 的 CtrlTrackName)。调用方已持 lifecycleMutex_ 且已
+    // ensureCtrlOpen()。只有实际持有 slot 时才写 —— 与 drainFpReports 同一条单写纪律。
+    void publishTrackName();
+
+    // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。取 src 各声道的 [offset, offset + n),
+    // n ≤ capInterleaved_ 的每声道定长(preparedMaxBlock_)。[SL-523] offset = 分段写环的段首。
+    static void captureFrames(const float* const* src, int srcCh, int offset, float* dst, int n);
+    // 跨零点段(段首 t0<=0 < 段尾 t0+n;[SL-523] n = 段长、t0 = 段首):写时间线 >= 0 的尾段(R3,
+    // 01 §5.1 步骤 2)。b = 本块 acquireBlock() 的音频环绑定快照。
+    void writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n, int64_t t0);
+
+    juce::CriticalSection lifecycleMutex_; // 串行化 prepareToPlay/release/setState/claim/心跳([M] 与宿主回调互斥)
+
+    // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
+    scvb::SegmentBackendWin32 backend_;
+    scvb::input::InputSession session_;
+    // 本组 ctrl 段(T30 桥:remoteSetPriority 命令环上行 + OutputGlobalInfo 只读;per-组语义 J66,
+    // setGroupId 经 CtrlPlane::changeGroup 随组走)。
+    scvb::CtrlPlane ctrl_;
+    // 广播区上一帧成功读到的配置([M] 独占,持 lifecycleMutex_)。seqlock 撕裂时沿用它,
+    // 免得 UI 闪一帧默认值(见 bridgeTickSnapshot)。
+    // ctrl 段懒开的退避时刻(见 ensureCtrlOpen:open() 最坏含 500ms sleep,不能每 25Hz 重试)。
+    scvb::u64 ctrlOpenRetryAtMs_ = 0;
+    static constexpr scvb::u64 kCtrlOpenRetryMs = 1000;
+
+    scvb::CtrlBroadcastSnapshot lastBroadcast_{};
+    bool lastBroadcastValid_ = false;
+    // 缓存所属的组号。改组/释放后旧组的 label/priority/lead 必须立刻作废,否则 Input 会长期
+    // 显示**上一组**的配置。存组号而不是在五处 changeGroup/release 调用点手工复位。
+    int lastBroadcastGroup_ = 0;
+
+    // 输出级仲裁(J12/J32)。
+    scvb::input::StageSwitchStateMachine stageMachine_;
+    scvb::input::RampSwitcher rampSwitcher_;
+    std::atomic<scvb::u32> c18Stage_{static_cast<scvb::u32>(scvb::input::OutputStageMode::kPassthrough)};
+    // [SL-254 / J95①] Output「已确认死」否决位([M] 25Hz 发布 = 自称 kSlotActive 但心跳陈旧)。
+    // 非实时逐块路径用它补齐 isHealthy 里**取不到时钟**的那一半健康前提;实时路径不读它。
+    // ⚠ 极性刻意是「已确认死」而不是「在场」:默认 0 ⇒ Output 一置 mask,Input 当块即可静音。
+    // 用「在场位」做前提会在上升沿晚一拍 ⇒ Output 已注入而 Input 还直通 = 双路叠加(实测红:
+    // 注入@304 早于静音@320)。
+    std::atomic<scvb::u32> outputStale_{0};
+    std::atomic<scvb::u32> captureArmed_{0}; // 采集开关(Output ctrl 广播 capture_enabled;ADR-007)
+    std::atomic<float> meter_{0.0f};
+
+    // state(持久化经 T19 StateCodec + InputStateCodec;params-v0 §三)。
+    int channelId_ = 0;
+    // [SL-446 第 5 轮] 工程存档里"channel_id 那个字段"该记的值——与 channelId_(配置/请求值
+    // 镜像,供寻址与 scvb.error 用)是两件事,只在"已绑定实例载入不同工程、这次加载触发的
+    // 重新认领撞了车"这一个场景下会分叉(见 getStateInformation()/setStateInformation() 的
+    // 头注)。⚠ 与 channelId_ 同初值(0),保证一个从未载入过工程、也没点过通道的全新实例,
+    // 存档字节与改动前逐字节相同——这不是随手定的默认值,是为了不在最常见的路径(新建轨道)
+    // 上引入静默的行为变化。
+    int savedChannelId_ = 0;
+    int groupId_ = 1;
+    // [SL-458] 工程存档里 group_id 该记的值,与 groupId_(实际寻址的组:session/ctrl 段跟它走)
+    // 分开。两者只在「载入工程时目标组 ctrl 段打不开(残段/abi 不符)、寻址回退到上一组」这一个
+    // 场景下分叉 —— 此前存档直接读 groupId_,随后任何一次保存都会把工程里的组号覆盖成回退组。
+    // 只在 setStateInformation() 解码时、以及 setGroupId() 成功或同组 no-op 时写入(同组 no-op
+    // 那条 Input 页面走不到,见 setGroupId() 里的注释);
+    // setGroupId() 换段失败的早退分支不写(那一次没改成组)。
+    // ⚠ 与 groupId_ 同初值(1),全新实例的存档字节不变。
+    int savedGroupId_ = 1;
+    int uiScale_ = 100;
+    juce::String uiLanguage_ = "en";
+    bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态,不随工程保存([J177])
+    // [J150] 宿主给的 DAW 轨道名(UTF-8;空 = 宿主没给)。**不进 state**:轨道名的真源在宿主工程里,
+    // 由宿主经 updateTrackProperties 告知(何时调、调不调由宿主决定);自存一份只会与宿主不同步。
+    // 消息线程读写,持 lifecycleMutex_。
+    std::string trackNameUtf8_;
+
+    bool prepared_ = false;
+
+    // PR#51 红旗#1:state abi 拒载标志(setStateInformation 持锁写;T30 桥消息线程读)。
+    bool stateAbiMismatch_ = false;
+    scvb::u32 stateAbiSeen_ = 0;
+    // PR#51 重要#2:拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写,持 lifecycleMutex_)。
+    std::vector<std::uint8_t> preservedStateBlob_;
+
+    // 音频线程零分配缓冲(prepareToPlay 分配)。
+    double sampleRate_ = 48000.0;
+    int srcChannels_ = 1; // [J57] 1|2,每次 prepareToPlay 依布局重判
+    int preparedMaxBlock_ = 512;
+    std::vector<float> capInterleaved_; // stereo 容量(2 × preparedMaxBlock),interleaved LR
+    std::array<const float*, 2> planarPtrs_{};
+
+    // 时间线定位(§5.1 步骤 3)。
+    int64_t lastT0_ = std::numeric_limits<int64_t>::lowest();
+    int64_t expectedNext_ = std::numeric_limits<int64_t>::lowest();
+    // 上一块看到的特征段绑定状态([A] 独占)。绑定边沿要补一次 startRun —— 走带已在跑时
+    // 才插上 Output(或改组重建段),否则 nextHop/fpHop 停在 0 而时间线已经走远(见 processBlock)。
+    bool featBoundPrev_ = false;
+    uint64_t lastHeartbeatMs_ = 0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbInputAudioProcessor)
+};
