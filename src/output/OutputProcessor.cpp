@@ -1657,7 +1657,8 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位 + ui.active_tab。
     // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表把 guide_seen /
     // tour_seen / lang_chosen / active_tab 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language
-    // 才是两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
+    // 只登记在 CFGS 名下,[J183] 起 PRMS 那一行不再列它们);同 abi 内 ValueTree 两个方向都容忍属性增删,
+    // 不用动 abi、不用写迁移函数。
     // 见 OutputUiState.h 头注(那里另记了 CFGS 尾扩口径自 [J69/U24] 起的变化,以及跨 abi 整块
     // 拒载是 PRMS/CFGS 共同处境、论证不了字段该放哪一节)。
     auto state = apvts.copyState();
@@ -1700,8 +1701,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // (见 setStateInformation)。没有哪个 DAW 会把「录音已布防且正在滚动」存进工程再替你恢复。
     // 顺带把 v5.6 期间被污染的旧工程一并救回来 —— 它们再打开就是正常的,用户不用做任何事。
     //
-    // 字段**保留在 CFGS 布局里、不删不挪**(abi 仍为 2):老工程照常解码,新工程在老构建里
-    // 读到 0 也只是「用户存前把采集关了」,两个方向都无异常。
+    // 字段**保留在 CFGS 布局里、不删不挪**,本条没有为它升 abi(当时是 2;此后别的字段把它升到了今天的
+    // 值,见 StateCodec.h 的 kCurrentAbi):老工程照常解码;同 abi 的构建读到新工程里的 0,也只是
+    // 「用户存前把采集关了」,两个方向都无异常。abi 更低的构建对新工程整块拒载,与本字段无关。
     // 契约:docs/STATE_SCHEMA.md §三 CFGS 与 [J91] 一条;docs/SCVB_CONTRACT.md §1.2。
     //
     // ⚠ `recaptureAutoEnabledCapture` 这本账**仍然要留着** —— 它现在只服务于 §1.23 裁定③ 的

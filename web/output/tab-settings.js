@@ -117,9 +117,9 @@ export const DOCS_URL_EN =
  * **固定指向 `prod` 分支上的固定路径,不随插件版本号变**:用户裁定 [J149]
  * (「prod 是稳定正式版的 branch,dev 是研发 branch」)。它取代了 [SL-220] / #298 的
  * 「按插件版本号 pin 到同号 tag」,所以这里**不读快照、不拼版本号**。
- * prod 只在发正式版时前移(见 docs/RELEASE.md),所以用户读到的是**最新正式版**的手册;
+ * prod 什么时候前移,以 docs/RELEASE.md「`staging` 与 `prod` 两个分支」为准,用户读到的是
+ * **prod 最近一次前移时**那一版的手册;
  * 旧版插件点开的也是它,不是自己那一版的手册 —— 这是 J149 的取舍。
- * ⚠ prod 前移到首个正式版之前,prod 上还没有这两份手册,这两个地址是 404。
  * 九条红字里 DAW 兼容表的地址同一口径,写在红字真源 docs/USER_GUIDE.zh-CN.md#硬约束 里。
  *
  * @param {string} lang 界面语言 zh / en / fr
