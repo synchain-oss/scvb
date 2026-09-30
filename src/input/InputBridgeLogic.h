@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// InputBridgeLogic —— T30 Input 桥的纯载荷/判定逻辑(无 WebView2、无 GUI,离线 Catch2 可测)。
+// claim 六值映射(§5.2/R3)、srMismatch 推导(§4.1/§5.2)、remoteSetPriority 拒绝判定(§3.4/§5.6)、
+// 五个事件与首帧快照的载荷构造(§3.1/§4.1-§4.5,键名逐字照契约)。IPC 数据的采集在
+// InputProcessor/InputEditor,本层只做「快照 → 载荷」的纯变换。
+
+#include <juce_core/juce_core.h>
+
+#include "input/InputSession.h"
+#include "ipc/CtrlPlane.h" // CtrlBroadcastSnapshot(§4.3 配置广播区)
+
+namespace scvb::input::bridge
+{
+
+// --- claim 六值(§5.2;[R3 收口] 与 01 §6.3/05 §1.4 逐字一致)--------------------------
+// state + maskBit(本组 connected_mask 本位)+ srMismatch(Output 已报 SR 且 ≠ 本机 SR)映射到六值:
+//   unassigned | idle | active | conflict | abiMismatch | srMismatch。
+// kUnavailable(I0 段不可用,未持有 slot)→ idle(§5.2 idle 第 ② 支);srMismatch 只在 kActive 上成立且优先于 active/idle。
+juce::String claimValue(InputClaimState state, bool maskBit, bool srMismatch);
+
+// srMismatch 推导(§4.1):claim 态为 kActive ∧ Output 已报非零 SR ∧ ≠ 本机 SR。
+bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate);
+
+// [SL-446 合并前独立复核] scvb.state/首帧快照顶层 channel_id 该显示哪个源:配置/请求值
+// (configuredChannelId)还是实际持有(channelId,=boundChannel())——五态逐个给理由,别笼统
+// 归成"其余都一样"(那句话此前是假的,见下面 kUnassigned 那条的订正):
+//   kActive:两值本就相等(不变式:kActive ⟹ configuredChannelId==channelId,见 InputSession.h
+//     prepare() 头注),走哪个字段结果都一样,选它是因为它和 kUnassigned 共用同一个分支。
+//   kUnassigned:⚠ 两值**可能分叉**,不是"用哪个都一样"——releaseResources() 之后
+//     claimedChannel_(=channelId)清 0,但该函数全程不碰 channelId_,配置值原样留着;这一态
+//     必须用 configuredChannelId,否则宿主换音频设备/改缓冲区/冻结禁用轨道这类会短暂
+//     releaseResources() 的常见操作就会把选中态清空、重弹首启空态引导——**这正是这条分支
+//     存在的理由**,本次合并前独立复核抓到的用户可见回归就是这一态。
+//   kConflict/kAbiMismatch/kUnavailable:⚠ [轮 9 复审【重要】订正] 这三态统一走
+//     channelId(=0),**不是**只挑 kConflict——InputSession::openAndClaim() 的失败分支
+//     (src/core/input/InputSession.cpp)里,previousChannel==0(没有旧 channel
+//     可回滚)时这三个失败码走的是完全同一条代码路径:channelId_(配置)同样停在被拒的请求
+//     号,claimedChannel_(实际持有)同样是 0——kAbiMismatch/kUnavailable 与 kConflict 只是
+//     失败原因不同(注册表 abi 不符/段打不开 vs 通道被占),"配置了但什么都没绑定"这件事
+//     完全一样。上一版只摘 kConflict、把 kAbiMismatch/kUnavailable 归进"用哪个都一样"是
+//     假的,会把这两态下被拒的号显示成"已选中 + 已连接"——可达路径,不是理论场景。
+// ⚠ "kConflict/kAbiMismatch/kUnavailable 走 channelId"这条分支不是可选的复杂度,删掉/收窄
+// 它会在"首次绑定、点了一个被占通道(或段打不开/abi 不符)"这个场景重新打开 SL-19/SL-446
+// 本身要堵的洞:界面会把被拒的那个号显示成"已选中"。CHANGELOG.md 里 SL-446 那条已发版的
+// 文案("抢回也失败的极罕见情况下……才会如实显示未分配")说的正是 kConflict 这一态,
+// kAbiMismatch/kUnavailable 是同一条承诺在另外两个失败原因上的自然延伸,不是这里新加的判断。
+int displayChannelId(InputClaimState claimState, int channelId, int configuredChannelId);
+
+// --- remoteSetPriority 拒绝判定(§3.4/§5.6)-----------------------------------------
+// 判定顺序(全部不满足 = 投递):channel_id==0 → unassigned;Output 离线 → outputOffline;
+// 非活跃态(conflict/abiMismatch/unavailable,不持有 slot)→ unassigned(§5.2 未 claim 任何 slot;
+//   SPSC 纪律:非持有者不得写命令环,见 InputProcessor::bridgeRemoteSetPriority);
+// 命令环满 → ringFull(满环仍投递:写方覆盖最旧 + 溢出计数,回执 queued:false 提示重试)。
+enum class PriorityReject
+{
+    kNone,
+    kRingFull,
+    kOutputOffline,
+    kUnassigned,
+    kNotActive
+};
+
+PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active);
+juce::String priorityRejectReason(PriorityReject r); // kNone → ""
+
+// --- diff-then-emit 缓存推进(§0.4 变化才发 + 首帧必发;PR#54 R4)------------------
+// 判定:json == lastJson → false 不重发;json != lastJson 且 visible → 推进 lastJson 并返回
+// true(调用方 emit);json != lastJson 且不可见 → 保持 lastJson 并返回 false —— 隐藏期
+// emitEventIfBrowserIsVisible 会丢弃事件,缓存不推进则恢复可见后下一 tick 因 json != lastJson
+// 自然重发(避免隐藏期变化永久丢失 → UI 陈旧)。
+bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool visible);
+
+// §4.5 claim 边沿消费判定(PR#54 R5,与 advanceEmitCache 同口径):有 error 边沿(needsError =
+// claim/prev 为 conflict/srMismatch)时仅当 visible(事件已实际发出)才消费并推进基线;无 error
+// 边沿恒消费。隐藏 + error 边沿 → 不消费 → 基线保持 → 恢复可见后下一 tick 重发。
+bool claimEdgeConsumed(bool needsError, bool visible);
+
+// §4.5 error 边沿键检测(PR#54 R6):(claim, channelId, groupId, inputSr, outputSr)任一变化即
+// true —— 同 claim 换组(conflict 的 detail.groupId)、srMismatch 的 SR 变化都须重发,否则 UI
+// 横幅陈旧。
+bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId, int inputSr, int outputSr,
+                           const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
+                           int lastOutputSr);
+
+// [SL-462] 首帧快照(requestInitialState)时 error 边沿基线的起点。一般取当前 claim —— 已经
+// 处在的状态由 scvb.state.claim 承载,不补发 error;**唯独 "conflict" 返回空串**,让下一拍的
+// 边沿检测照常发一次 channelConflict:冲突的提示面(卡片抖动 + ch.occupied toast,契约 §5.1/§5.2)
+// 要知道**被拒的那个号**,而 conflict 态下 scvb.state.channel_id 恒为 0(§3.1),号只在
+// scvb.error 的 ch 里。典型场景:工程打开时通道被占,用户之后才打开 Input 界面 —— 此前基线
+// 直接吞掉这次冲突,界面只剩一个灰 pill「未选择通道」。
+juce::String initialClaimErrorBaseline(const juce::String& claim);
+
+// [SL-462] 载入冲突的一次性提示在**发出那一刻**是否仍然成立:组没变、本实例没持有这个号、
+// 这个号此刻被心跳新鲜的实例占着(occupiedMask 含本实例自己的位,故先排除「持有者就是自己」)。
+// 不成立(占用方已经释放、或用户已改组)就丢弃,不弹过期提示。
+bool loadConflictStillHolds(int requestedChannel, int noticeGroupId, int currentGroupId, int boundChannel,
+                            std::uint16_t occupiedMask);
+
+// §4.3 config_seq 基线推进(PR#54 R7,与 advanceEmitCache/claimEdgeConsumed 同口径):config_seq
+// 变化即需重发,仅当事件实际发出(emitted)时推进基线并返回 true;隐藏时保持基线返回 false,恢复
+// 可见后下一 tick 因 seq 仍 != 基线而重发。
+bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq);
+
+// --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
+// 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
+// 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,
+// 处理器 clamp 只处理 int 域内的业务范围)。绝不把非数值静默夹取为 0:0 是 setChannelId「释放」
+// 与 remoteSetPriority 的合法业务值。
+juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args);
+
+// --- 载荷构造(键名与契约逐字一致;全部返回新 DynamicObject)--------------------------
+// §4.1 scvb.state:{channel_id, group_id, claim, abi, abi_remote?, ui:{scale, language, guide_seen}}。
+// abi_remote 仅 abiMismatch 且探测到(≠0)时存在(§4.1 字段纪律:探测不到则字段不存在)。
+// [SL-258] `ui.guide_seen` 是 §4.1 载荷行逐字要求的第三个 ui 字段,也是 `setGuideSeen` 写入后的
+// 回推路径;它与 §3.1 快照的 ui 子树**字段集必须一致**(§4.1 字段纪律行),两处一起改。
+juce::var buildStatePayload(int channelId, int groupId, const juce::String& claim, u32 abi,
+                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang,
+                            bool guideSeen);
+
+// §4.2 scvb.conn:{outputOnline, maskBit, capturing, passthrough, passthroughPending, occupiedMask}。
+juce::var buildConnPayload(const InputConnSnapshot& s);
+
+// §4.3 scvb.config 快照。数据源 = ctrl 广播区(CtrlBroadcast,Output [M] 写 / Input [M] 读):
+// label/priority/lead_lock/pair_id/freeze/channelLabels 全部来自本组主 Output 的实况。
+// **不含 lead_vol_exempt**:§4.3 的载荷是逐字冻结的九键,该字段属于 Output 侧的
+// scvb.state.channels[](§2.1/§4.1),Input 页没有消费面 —— 与 A-32 否决「其余通道 priority/
+// lead/pair 下推」是同一条理由。广播区里仍镜像着它的 flag 位,只是不上 Input 的桥。
+// 广播区读不到(Output 离线 / seqlock 撕裂 / 段未打开)时 broadcastValid=false,调用方沿用上帧,
+// 载荷退回默认值 —— 此前这些字段是**恒定硬编码**,Output 改什么 Input 都看不见(T37 三轮 C 族)。
+struct ConfigSnapshot
+{
+    int sourceChannels = 1; // Input 实测 1|2([J57]);恒本机真源,不吃广播区
+    u32 configSeq = 0; // 广播区 config_seq(变化检测真源)
+    bool broadcastValid = false; // 本次是否读到有效广播区
+    int channelId = 0; // 本实例 channel(1..15;0=未分配 → 无「本轨」配置可取)
+    CtrlBroadcastSnapshot broadcast{}; // 全组 15 轨配置镜像 + label 表
+};
+juce::var buildConfigPayload(const ConfigSnapshot& s);
+
+// §4.4 scvb.groups:{groups_online: u8}(bit0=组A … bit7=组H)。
+juce::var buildGroupsPayload(int groupsOnline);
+
+// §4.5 scvb.error:{code, ch?, detail, active}。ch ≤0 时字段不存在。
+juce::var buildErrorPayload(const juce::String& code, int ch, const juce::var& detail, bool active);
+
+// §3.4 remoteSetPriority 回执:{queued:true} | {queued:false, reason}。
+juce::var buildPriorityResponse(bool queued, const juce::String& reason);
+
+// §5.6 拒绝语义 {conflict:true}(Input setChannelId/setGroupId)。
+juce::var conflictResponse();
+
+// [SL-463 / J156] §3.2 setChannelId / §3.3 setGroupId 的回执:把**这次请求本身**的结果映射成桥面形状。
+//   kConflict             → {conflict:true}(§5.6)
+//   kAbiMismatch          → {ok:false, reason:"abiMismatch"}(registry 或 ctrl 段 abi 不符,拒连)
+//   kUnavailable          → {ok:false, reason:"unavailable"}(段打不开 / 映射失败 / claimInput 非冲突失败 /
+//                           createSegments 失败)
+//   ⚠ 版本不符**不全**落在 abiMismatch:audio / feat 段由另一 abi 的 SCVB 建时,createSegments() 里
+//     initHeader 回 kAbiMismatch,openAndClaim() 统一置 kUnavailable ⇒ 回执是 unavailable。
+//     abiMismatch 只覆盖 registry(以及 setGroupId 的 ctrl 段)那一层。
+//   kActive / kUnassigned → {ok:true}
+// 入参是 InputProcessor::setChannelId()/setGroupId() 的**返回值**(请求结果),不是会话此刻的 state():
+// 补偿式回滚成功时 state() 是 kActive(会话回到了旧通道),而这次请求仍然失败 —— 回执要报失败,
+// 与冲突那一支是同一条纪律。
+// 枚举外的值(防御性)按 unavailable 报,**不回 {ok:true}**:本卡要堵的就是「失败被报成成功」。
+juce::var claimRequestResponse(InputClaimState requestResult);
+
+// §3.1 首帧快照 InputSnapshot:{channel_id, group_id, role:"input", conn, config,
+//   ui:{scale, language, guide_seen}, guide_seen_global, version:{plugin, abi}}。
+// claim 不经快照回推(唯一通道 = §4.1 scvb.state,§3.1 无 claim 键)。
+// [SL-258] `guide_seen_global` 挂**顶层**而不进 ui:§3.1 语义行明写它「只读、不属工程 state」。
+juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot& conn, const ConfigSnapshot& config,
+                             float uiScale, const juce::String& lang, bool guideSeen, bool guideSeenGlobal,
+                             const juce::String& pluginVersion, u32 abi);
+
+} // namespace scvb::input::bridge

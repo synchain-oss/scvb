@@ -14,9 +14,27 @@ path = "web/js/juce/**"
 SPDX-FileCopyrightText = "Raw Material Software Limited"
 SPDX-License-Identifier = "AGPL-3.0-or-later"   # 随 JUCE 许可,不加 Synchain 版权头
 
+# 字体:版权行 = 各 .woff2 的 name 表 nameID 0 原文(fontTools 逐字读出,平台 3 / 语言 0x409),
+# 与 THIRD-PARTY-NOTICES.md「版权行」一节的字体表逐字相同。逐文件写,不用 web/fonts/** 通配:
+# 同目录的 README.md 是本仓自己写的说明,归兜底块(GPL-3.0-or-later),不是 OFL 字体。
 [[annotations]]
-path = "web/fonts/**"
-SPDX-FileCopyrightText = "见 THIRD-PARTY-NOTICES.md 的字体家族版权行"
+path = "web/fonts/SpaceGrotesk.woff2"
+SPDX-FileCopyrightText = "Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = "web/fonts/ScvbSans.woff2"
+SPDX-FileCopyrightText = "Copyright 2019 IBM Corp. All rights reserved."
+SPDX-License-Identifier = "OFL-1.1"   # 上游 IBM Plex Sans,按 OFL-1.1 §3 改名分发
+
+[[annotations]]
+path = "web/fonts/ScvbMono.woff2"
+SPDX-FileCopyrightText = "Copyright 2017 IBM Corp. All rights reserved."
+SPDX-License-Identifier = "OFL-1.1"   # 上游 IBM Plex Mono,按 OFL-1.1 §3 改名分发
+
+[[annotations]]
+path = "web/fonts/NotoSansSC.woff2"
+SPDX-FileCopyrightText = "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'."
 SPDX-License-Identifier = "OFL-1.1"
 
 [[annotations]]
@@ -29,3 +47,63 @@ SPDX-License-Identifier = "GPL-3.0-or-later"
 path = "third_party/miniz/**"
 SPDX-FileCopyrightText = "2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC"
 SPDX-License-Identifier = "MIT"
+
+# ④ JUCE 静态链进 .vst3 的第三方库 + WebView2 静态 loader 的上游许可证原文(逐字副本,
+#    来源:JUCE 8.0.8 modules/ 与 Microsoft.Web.WebView2 1.0.2957.106 nupkg,Unicode 那份除外、见本节末块;清单与取舍见
+#    THIRD-PARTY-NOTICES.md)。这些库的源码不在本仓(JUCE 构建期取、nupkg 构建期取),
+#    这里只放它们的版权/许可声明,让 LICENSES/ 里对应的全文有据可查(reuse lint 不许有未被引用的全文)。
+[[annotations]]
+path = "third_party/notices/webview2.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "Microsoft Corporation"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = "third_party/notices/vst3sdk.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "2024 Steinberg Media Technologies GmbH"
+SPDX-License-Identifier = "GPL-3.0-only"   # 上游双授权(Steinberg VST3 License 或 GPLv3),本项目取 GPLv3
+
+[[annotations]]
+path = "third_party/notices/zlib.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "1995-2022 Jean-loup Gailly and Mark Adler"
+SPDX-License-Identifier = "Zlib"
+
+[[annotations]]
+path = "third_party/notices/libpng.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = [
+  "1995-2019 The PNG Reference Library Authors",
+  "2018-2019 Cosmin Truta",
+  "2000-2002, 2004, 2006-2018 Glenn Randers-Pehrson",
+  "1996-1997 Andreas Dilger",
+  "1995-1996 Guy Eric Schalnat, Group 42, Inc.",
+]
+SPDX-License-Identifier = "libpng-2.0"
+
+[[annotations]]
+path = "third_party/notices/libjpeg.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "1991-1998 Thomas G. Lane"
+SPDX-License-Identifier = "IJG"
+
+[[annotations]]
+path = "third_party/notices/harfbuzz.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "HarfBuzz authors (full list in third_party/notices/harfbuzz.COPYING)"
+SPDX-License-Identifier = "MIT-Modern-Variant"   # HarfBuzz COPYING 所称 "Old MIT"
+
+[[annotations]]
+path = "third_party/notices/sheenbidi.*"
+precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
+SPDX-FileCopyrightText = "2014-2022 Muhammad Tayyab Akram"
+SPDX-License-Identifier = "Apache-2.0"
+
+# [SL-571/J173] HarfBuzz / SheenBidi / JUCE 里由 Unicode 数据生成的查找表(文件清单见 THIRD-PARTY-NOTICES.md)。
+# 与上面各块不同,这份声明原文不来自 JUCE 源码(JUCE 里没有这份文件),逐字取自 https://www.unicode.org/license.txt。
+[[annotations]]
+path = "third_party/notices/unicode.*"
+precedence = "override"   # 以本块为准,与上面各块同一口径;版权行与原文里那一行相同
+SPDX-FileCopyrightText = "1991-2026 Unicode, Inc."
+SPDX-License-Identifier = "Unicode-3.0"

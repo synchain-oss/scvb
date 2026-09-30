@@ -6,17 +6,49 @@
     pwsh scripts/gates.ps1 -PluginOnly     # gate 1-7,跳过真机 GUI(gate 8)
     pwsh scripts/gates.ps1 -Quick          # 跳过 pluginval(gate 7/8),快速回环
   所有 cmake/ctest/pluginval 路径基于 -BuildDir(默认 build),并行 agent 靠它隔离构建目录。
-  [R4/J56] 本骨架不含 gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 —— 由 T01d 一次性接入。
+  [R4/J56] gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 已由 T01d 接入(06 §5.1)。
+  [SL-265] gate 3j(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
+  个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3j 管;CI 侧对应 compliance.yml 两步。
+  [SL-267] gate 3k(check-font-names)= 字体保留名门禁(OFL-1.1 §3),与 3c/3j 同属合规族:
+  断言分发的 woff2 `name` 表与进包文本资源的字体栈都不含上游 RFN;
+  CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
+  [SL-277/J96] + [SL-301] **锁纪律**:gate 1-5 里**只有 3e 的页面级冒烟那一趟持锁**,
+  configure/build 完全不持锁(多个 agent 可以同时编译);
+  gate 3e 与 gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行
+  ——**两段分别持、之间放开**([SL-301];3f..5 的 configure/build 不持锁,可并行)。
+  调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
+  等锁上界**由 3e 的段预算推出、不写字面量**(默认预算 480s ⇒ 30 分钟;见 `$script:ScvbMutexWaitMinutes`
+  处的推导)。超时(或互斥体建不出来)→ 锁那一行判负,该段 **一概不执行**
+  (本档位下本来要跑的记 FAIL、本来就跳过的仍记 SKIP),整条 gates 以 1 退出。
+  绝不无锁硬跑 —— 无锁跑会去抢隔壁持锁 agent 的共享内存段,让那一侧收到查不出的假红。
+  逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
+#Requires -Version 7.0
+# 本脚本一直是 pwsh 7 跑的,但那是**隐含前提**;PR#182 复审建议显式化。两处依赖它:
+#   · gate 3e 的 `$proc.Kill($true)`(连进程树)是 .NET Core 3.0+ 的重载;
+#   · gate 3e 读重定向输出用的 `Get-Content` 默认 UTF-8 —— Windows PowerShell 5.1 下
+#     默认 ANSI,捞出来给人看的中文 `[FAIL]` 行会是乱码。
+# 与其在编码上打补丁,不如把前提写在门口。
+
 param(
   [switch]$Quick,
   [switch]$PluginOnly,
   [string]$Config = 'Release',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
-  [string]$PluginvalExe = $env:PLUGINVAL_EXE
+  [string]$PluginvalExe = $env:PLUGINVAL_EXE,
+  # [SL-277] CMake 生成器。默认空 = 沿用 CMake 在本机的默认选择(Windows 上是 Visual
+  # Studio 生成器),与本卡之前的行为逐字一致。
+  # 传 'Ninja Multi-Config' 可复现 CI 侧的构建(CI 自 [J96] 起用它 + sccache)。
+  # **不做自动探测**:`ninja` 在 PATH 上但当前 shell 没有 vcvars 时,`-G Ninja` 会
+  # 因为找不到 cl.exe 直接配置失败 —— 自动探测会把所有 agent 的 gate 4 一起变红,
+  # 而他们什么都没改。所以要用就显式传,并且在 Developer Command Prompt 里跑。
+  [string]$Generator = $env:SCVB_CMAKE_GENERATOR,
+  # [SL-277] 逃生口:确认本机没有第二个 agent 在跑 gate 3e / 6/7/8 时才用。
+  # 平时**不要**加 —— 关掉互斥后并行跑出来的红大概率是抢共享内存段,不是回归。
+  [switch]$NoIpcLock
 )
 
 $ErrorActionPreference = 'Continue'
@@ -45,6 +77,269 @@ function Set-Skip {
   Write-Host ("[SKIP] {0}" -f $Name) -ForegroundColor Yellow
 }
 
+# 「哪个档位跑哪几道」的**单一真源**([SL-277] PR#176 复审采纳)。gate 7/8 的正常路径
+# 与「拿不到 IPC 锁」的判负路径都读这两个变量 —— 各写各的 `if ($Quick …)` 就会在改档位时
+# 只改一处,失效形态是汇总表把 SKIP/FAIL 记反:退出码不受影响,所以没人会立刻发现。
+# gate 6(ctest)在所有档位都跑,不需要这样的开关。
+$runGate7 = -not $Quick
+$runGate8 = -not ($Quick -or $PluginOnly)
+
+# ---- IPC 测试锁(两段:gate 3e 与 gate 6/7/8;[SL-277]/[J96] 拆锁、[SL-301] 纳入 3e)----
+# **为什么不包 4/5**:gate 4(configure)/ 5(build)只读写各自的 `-BuildDir`,
+# 并行 agent 之间零共享状态;真正需要互斥的是**跨进程共享内存段** —— 段名前缀
+# `SynchainSCVB.v1.` 是全机唯一的(docs/IPC_CONTRACT.md),ctest 里的 ipc 套件与
+# pluginval 加载插件时都会去开同名段,两份同时跑必然互相踩,红得很像回归。
+# 改造前的做法是各 agent 在**脚本外面**把整条 gates 包进一把目录锁,于是 20 分钟的
+# 编译也被串行化了:四个 agent 排队等一个人编译,而它们本来完全可以并行编。
+#
+# **为什么用命名互斥体而不是目录锁**:内核对象在进程退出时**必然**释放(哪怕被
+# kill、哪怕崩溃),所以没有 owner.txt、没有孤儿判定、也没有「等超时后覆写别人的锁」
+# 这条已经实伤过人的路径。目录锁那套协议仍然可以留给「不经 gates.ps1 手跑 ctest」
+# 的场景,但经 gates.ps1 的路径不再需要它。
+#
+# **只用 `Local\`,不设 Global 降级**(PR#176 复审采纳)。曾经写成「先试 `Global\`,
+# 失败退 `Local\`」,那是一个**静默失去互斥**的洞:`Global\` 创建失败的现实原因不是
+# 缺 SeCreateGlobalPrivilege(交互登录用户一般都有),而是**已存在的同名 Global 对象
+# 的 DACL 拒绝当前 token** —— 提权终端里的 agent A 先建了 `Global\`,普通终端里的
+# agent B 抛 UnauthorizedAccessException 被 catch 吃掉、退到 `Local\`,于是 A 持
+# Global、B 持 Local,**两把不同的锁**,共享内存段照抢,而日志里只有一行黄字。
+# 本项目的并行形态就是同一用户登录会话下的多个 agent 终端,`Local\` 本来就够;
+# 去掉那一档,混合作用域的洞就不存在了。
+# 建不出来时**判负**(见调用处的 Set-Gate),绝不静默继续 —— 并发假红最难查的
+# 就是「以为有锁,其实没有」。
+
+function New-ScvbMutex {
+  param([string]$Name, [string]$Tag)
+  try { return New-Object System.Threading.Mutex($false, "Local\$Name") }
+  catch {
+    Write-Host ("  [{0}] 互斥体 Local\{1} 创建失败({2}):{3}" -f $Tag, $Name, $_.Exception.GetType().Name, $_.Exception.Message) -ForegroundColor Red
+    return $null
+  }
+}
+
+# [SL-301 复审] **「这一套起不起浏览器」只有一份判据**,两处共用(算等锁预算、实际分类)。
+# 此前写了两遍同一条正则、靠人工同步 —— 漂了不会报错,只会让上界按错的套数算。
+#
+# 判据**有意取并集、偏向多判**,因为两种漂法的代价严重不对称:
+#   · 多判(纯 node 被当成页面级)⇒ 多串行几十秒,**无害**;
+#   · **漏判**(真起 Chrome 的被当成纯 node)⇒ **无锁跑起浏览器**,正是本卡要根除的形态,
+#     而且**完全静默**。
+# 所以宁可宽:`cdpConnect`(与 gate 3i 的 check-smoke-hygiene 同一判据,故本集合 ⊇ 它那一族)
+# 或 `.on(`/`.once(` 挂 error 的浏览器句柄、或命令行里出现 `--headless`、或文件名 `-page.mjs`。
+# 只认单一写法(比如只认 `chrome.on("error"`)会被 prettier 换引号、或新冒烟写成
+# `browser.once('error'` 静默绕过 —— 那正是危险的那一侧。
+
+function Test-ScvbPageSuite {
+  param([string]$Path)
+  if ($Path -like '*-page.mjs') { return $true }
+  $t = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+  if ($null -eq $t) {
+    # **读不到就当页面级**(复审指出:上一版这里 `return $false`,恰好倒向我自己在头注里
+    # 点名的危险侧 —— 读不到文件时把它判成纯 node ⇒ **无锁跑起浏览器**,而且完全静默)。
+    # 兜底必须与判据同向:多判只是多串几十秒,漏判是本卡白做。出声,别让它静默生效。
+    Write-Host ("  [ipc-lock] 读不到 {0},保守当作页面级(持锁跑)" -f (Split-Path $Path -Leaf)) -ForegroundColor Yellow
+    return $true
+  }
+  # 四条任一命中即算「起浏览器」。`cdpConnect` 与 gate 3i 的 check-smoke-hygiene 同判据,
+  # 故本集合 ⊇ 它那一族;其余三条是往「宁可多判」偏的保险。
+  if ($t -match 'function cdpConnect') { return $true }
+  if ($t -match '--headless') { return $true }
+  if ($t -match '\.(on|once)\(\s*["'']error') { return $true }
+  return $false
+}
+
+# [SL-311] 本机上还活着的 `scvb_*` 测试二进制,附「父进程还在不在」。
+#
+# **为什么按进程名判是安全的**:`scvb_*_tests.exe` 是本仓的构建产物,不会撞到用户自己的
+# 程序。这与 gate 3e 的 Chrome 残留判据**故意相反** —— 那边绝不能按名字判(会杀掉用户
+# 正开着的浏览器),只能按命令行。两处判据不同不是不一致,是「名字够不够独占」不同。
+#
+# **为什么要分「父进程还在不在」**:
+#   · 父进程**已死** ⇒ 真孤儿,多半是上一次 `ctest --timeout` 到点后留下的
+#     ——**残留确实出现过一次**(实测:它在时,同名测试连挂 3/3、全部撞满上界;
+#     `Stop-Process` 掉它之后同一条命令 221s 通过)。这种可以放心收掉。
+#     ⚠ **别把「ctest 超时必留残留」当定论**:受控复现里(注入永不返回的用例 + `TIMEOUT 30`)
+#     ctest 到点**杀掉了**被测进程 —— 返回后立刻数与 5 秒后再数都是 0。也就是说
+#     那次残留的成因**还没查清**,只知道它真的会发生。这两次扫描因此是**便宜的保险**:
+#     没有残留时零成本,有残留时省掉别人一次查不出的红。
+#   · 父进程**还活着** ⇒ 有人正在跑测试。这种**不能杀** —— 杀掉是在破坏别人正在跑的
+#     东西;点名并判负,让人去处理。
+#     ⚠ **别在这里断言「那一定是绕开互斥裸跑的」**:本函数不知道调用方此刻持没持锁。
+#     `-NoIpcLock` 下没持锁的是**我们自己**,对方很可能正老老实实持着锁。责任怎么指、
+#     两种情形各打什么话,由调用点判(搜「责任要指对」)—— 那里才有 `$NoIpcLock`。
+#     (裸跑为什么危险见 scripts/with-ipc-lock.ps1 的头注。)
+function Get-ScvbTestLeftover {
+  $out = @()
+  try {
+    # 判据与头注**同口径**:只认 `tests` 那一族。原来的 `scvb_*` 比头注承诺的宽,而这条
+    # 判据后面接的是 `Stop-Process -Force` —— 将来任何 `scvb_tool.exe` / `scvb_daemon.exe`
+    # 都会被它连带命中并杀掉,而头注那句「是本仓构建产物所以安全」并不覆盖它们。
+    #
+    # 两段筛:WQL 只支持 `%`(`\_` 转义在 Win32_Process 上会被拒:「查询参数无效」),
+    # 所以 CIM 侧只做**粗筛**少拉数据,精确判据交给 PowerShell 的 `-like`(它把 `_`
+    # 当字面量)。`scvb_*tests*` 按**形态**收,不按名单收:它覆盖 `tests/**` 里所有
+    # `scvb_<...>tests` 目标,排除 scvb_tool / scvb_daemon / scvbtests 这类形态不合的。
+    # 要问「今天有哪几套」请读生成物(`ctest -N` 或 `build*/**/CTestTestfile.cmake`),
+    # 别在这里抄一份名单 —— 名单会随 tests/** 的增删悄悄变假,而这个 glob 不会。
+    $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'scvb%tests%'" -ErrorAction Stop |
+      Where-Object { $_.Name -like 'scvb_*tests*' })
+  }
+  catch {
+    # 取不到就**不猜**:返回 $null 让调用处报「未知」,而不是拿空数组冒充「没有残留」。
+    return $null
+  }
+  foreach ($pr in $all) {
+    $par = $null
+    try { $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.ParentProcessId) -ErrorAction Stop } catch {}
+    # **「这个 pid 上有进程」≠「它就是父」**(复审【重要】):Windows 的 pid 回收很快,
+    # 而本卡要收的孤儿,其父恰恰是 `ctest.exe` / `pwsh.exe` 这类**短命高频**、pid 最容易
+    # 被立刻复用的进程。误判的代价是一条**自我延续且指错人**的假红:复用一发生 ⇒ 判成
+    # 「有人绕开互斥在跑」⇒ gate 6 判负且不执行 ⇒ 这个残留一个都不收 ⇒ 下一轮同样判负。
+    #
+    # 真父必然**早于**子进程存在;晚于子进程起来的那个一定是复用者。所以只有
+    # 「父的 CreationDate ≤ 子的 CreationDate」才算活父,其余(含任一侧时间取不到)
+    # 一律按孤儿处理 —— 统筹裁定「否则按孤儿收」。
+    $parentReal = $false
+    $parentWhy = ''
+    if ($null -ne $par) {
+      if ($null -eq $par.CreationDate -or $null -eq $pr.CreationDate) {
+        $parentWhy = '父子任一方的启动时刻取不到,无法排除 pid 复用'
+      }
+      elseif ($par.CreationDate -le $pr.CreationDate) {
+        $parentReal = $true
+      }
+      else {
+        $parentWhy = ('pid {0} 上那个进程({1})起于 {2},**晚于**本进程 {3} —— 是 pid 复用,不是它的父' -f $pr.ParentProcessId, $par.Name, $par.CreationDate, $pr.CreationDate)
+      }
+    }
+    $out += [pscustomobject]@{
+      ProcId     = $pr.ProcessId
+      Name       = $pr.Name
+      ParentId   = $pr.ParentProcessId
+      ParentName = if ($parentReal) { $par.Name } else { $null }
+      ParentWhy  = $parentWhy
+      Started    = $pr.CreationDate
+    }
+  }
+  return , $out
+}
+
+# 等锁**必须有上界**(PR#176 复审采纳)。这把锁现在包着 gate 8 的 GUI pluginval,
+# 而 `--timeout-ms` 只管单个测试项 —— 进程本身卡在模态框或崩溃对话框上时它不受约束。
+# 无超时的 `WaitOne()` 会让其余 agent 在「等待 Local\...」那一行之后静静挂几个小时,
+# 零输出。改造前的目录锁至少有「超时 + 接管」那条路(那条路自身实伤过人,删掉是对的),
+# 现在换成:**宁可红,不要无限挂** —— 超时返回 $false,调用处把对应 gate 判负。
+# 返回值就是「有没有真的拿到」,调用处一律要判,别丢。
+# `SCVB_MUTEX_WAIT_MINUTES` 只为**验证这条判据**而存在(反向验证:外面另起一个进程占住
+# 互斥体,把上界调到 1 分钟,就能在一分钟内看到 6/7/8 判负而不是等半小时)。平时不要设 ——
+# 调小不会削弱互斥(拿不到锁一律判负 + 跳过,绝不无锁跑),只会让正常排队更容易被判负。
+# [SL-301] 等锁上界**由 3e 的实际预算推出来,不写字面量**。
+#
+# 为什么不能写死:等锁上界要盖住**持锁方最坏占住多久**,而那个量在本卡里改过两次口径,
+# 每改一次,写死的常数就悄悄失配一次 —— 所以它必须是算出来的。
+#
+# 现在的口径(裁定 (a) 落地之后,**唯一有效的那个**):持锁方最坏就是 **3e 的段预算**
+# (`$script:ScvbSmokeSegmentBudgetSec`,默认 480s)。到点即杀当前套、其余记 FAIL、立即放锁,
+# 所以「页面级套数」与「每套上界 `SCVB_SMOKE_TIMEOUT_SEC`」**都不再决定持锁上限** —— 谁把
+# 每套上界调到 600s 也撑不破这个封顶,因为先到的是预算。
+#
+# 于是:`ceil(段预算 × 1.5 / 60)`,再与 30 取大(6/7/8 段本身也要排队,历史持锁 9-10 分钟)。
+# 默认 480s ⇒ ceil(12)=12,取大后 **30 分钟**,正是统筹裁定要留的值;把预算调大,上界自动跟上。
+#
+# (历史,仅供追溯、勿据以推理:(a) 之前这里算的是「页面级套数 × 每套上界」,
+#  更早一版锁包着**整个 3e** 的 24 套、把 6×300s≈31 分钟错当上界写死了 45 —— 真值是
+#  24×300s=120 分钟。两版口径都已被段预算取代。)
+$script:ScvbSmokeSegmentBudgetSec = 480
+if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
+  $parsedSegBudget = 0
+  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedSegBudget) -and $parsedSegBudget -ge 10) {
+    $script:ScvbSmokeSegmentBudgetSec = $parsedSegBudget
+  }
+  else {
+    Write-Host ("  [WARN] SCVB_SMOKE_SEGMENT_BUDGET_SEC='{0}' 不是 >=10 的整数,回落到默认 480s" -f $env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) -ForegroundColor Yellow
+  }
+}
+# 解析与段预算那份**同形**(先给出默认、再试解析、坏值出声回落),不要两套风格:
+# 裸 `[int]$env:...` 在 `=abc` 时抛在脚本顶层、**整条 gates 当场挂**,而 `=0` / 负数会被
+# 悄悄收下,把等锁上界压成「几乎不等」—— 拿不到锁一律判负,于是并发时人人假红。
+# `[ref]` 只能作用在**已存在**的变量上,所以这一行的 `= 0` 不是多余的初始化:
+# 去掉它,设了这个环境变量的那一跑会以「[ref] cannot be applied…」在顶层直接死掉。
+$script:ScvbMutexWaitMinutes = [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSec * 1.5 / 60))
+if ($env:SCVB_MUTEX_WAIT_MINUTES) {
+  $parsedWaitMin = 0
+  if ([int]::TryParse($env:SCVB_MUTEX_WAIT_MINUTES, [ref]$parsedWaitMin) -and $parsedWaitMin -ge 1) {
+    $script:ScvbMutexWaitMinutes = $parsedWaitMin
+  }
+  else {
+    Write-Host ("  [WARN] SCVB_MUTEX_WAIT_MINUTES='{0}' 不是 >=1 的整数,回落到推导值 {1} 分钟" -f $env:SCVB_MUTEX_WAIT_MINUTES, $script:ScvbMutexWaitMinutes) -ForegroundColor Yellow
+  }
+}
+
+function Wait-ScvbMutex {
+  param($Mutex, [string]$Name, [string]$Tag, [int]$TimeoutMinutes = $script:ScvbMutexWaitMinutes)
+  # 时间戳带毫秒:并发验证时,「谁在什么时刻拿到/放开」这条证据只能来自进程**内部**的
+  # 时钟。外面用管道加时间戳靠不住 —— pwsh 往管道写是块缓冲的,读到的时刻会晚于打印
+  # 时刻,两条流的偏移量还不一样,拿它对拍会看出根本不存在的重叠。
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2}(上界 {3} 分钟)..." -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes) -ForegroundColor Yellow
+  # [SL-301] 排队要**显形**:只打「等待…」「已获得」两行,读日志的人看不出等了多久 ——
+  # 而本卡把 3e 也纳入互斥面之后,排队会变成常态。等了 0 秒和等了 8 分钟必须一眼可分,
+  # 否则就是本仓治了一整轮的那个形态(降级/排队发生了,但摘要里看不见)。
+  # **拿不到持有者身份**:命名互斥体是内核对象,没有 owner 信息;要给出「持有者 X」
+  # 得再引一个 owner 文件,那正是判例里实伤过人的目录锁形态,不做。所以只报时长。
+  $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+  $got = $false
+  try { $got = $Mutex.WaitOne([TimeSpan]::FromMinutes($TimeoutMinutes)) }
+  catch [System.Threading.AbandonedMutexException] {
+    # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
+    $got = $true
+    Write-Host ("  [{0}] 前一持有者异常退出(AbandonedMutex),已接管" -f $Tag) -ForegroundColor Yellow
+  }
+  if (-not $got) {
+    $waitSw.Stop()
+    Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2} 超过 {3} 分钟仍未获得(实等 {4:N1} 秒),判负" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes, $waitSw.Elapsed.TotalSeconds) -ForegroundColor Red
+    Write-Host ("  [{0}] 提示:多半有卡死的 pluginval / ctest 进程还占着锁,查一下再重跑。" -f $Tag) -ForegroundColor Yellow
+    # [SL-301 裁定] 持锁方也可能在 3e 的页面级段(它现在也持这把锁)。等锁方的日志里
+    # 看不到对方是谁,所以要指路 —— 否则又变成「查不到原因在别人的 web smoke 上」。
+    Write-Host ("  [{0}] 也可能是持锁方正在 3e 的页面级段:看它日志里的 `[ipc-lock] … gate 3e(页面级)` 行" -f $Tag) -ForegroundColor Yellow
+    return $false
+  }
+  $waitSw.Stop()
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 已获得 Local\{2}(等锁 {3:N1} 秒)" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $waitSw.Elapsed.TotalSeconds) -ForegroundColor Green
+  return $true
+}
+
+# [SL-301] 参数化段名:这把锁现在有**两个**持锁段(3e 与 6/7/8),判负信息必须说清
+# 是**哪一段**没拿到锁 —— 否则汇总里只看到一条「IPC 测试锁」判负,读的人不知道
+# 是 web smoke 那段还是 ctest 那段没跑。
+function Enter-ScvbIpcLock {
+  param([string]$Segment = 'gate 6/7/8')
+  if ($NoIpcLock) {
+    Write-Host ("  [ipc-lock] -NoIpcLock:跳过 IPC 测试锁({0};仅限确认无并行 agent 时)" -f $Segment) -ForegroundColor Yellow
+    return $null
+  }
+  $m = New-ScvbMutex -Name 'SCVB-ipc-tests' -Tag 'ipc-lock'
+  if ($null -eq $m) {
+    # 判负而不是静默放行:拿不到锁就等于没有并发保护,该段的结果不可信。
+    Set-Gate ("IPC 测试锁({0} 互斥)" -f $Segment) $false
+    return $null
+  }
+  if (-not (Wait-ScvbMutex -Mutex $m -Name 'SCVB-ipc-tests' -Tag 'ipc-lock')) {
+    # 等超时 = 同样没有并发保护,与建不出来同一档处理。句柄没拿到锁,直接 Dispose。
+    Set-Gate ("IPC 测试锁({0} 互斥)" -f $Segment) $false
+    $m.Dispose()
+    return $null
+  }
+  return $m
+}
+
+function Exit-ScvbIpcLock {
+  param($Mutex, [string]$Segment = 'gate 6/7/8')
+  if ($null -eq $Mutex) { return }
+  try { $Mutex.ReleaseMutex() } catch { Write-Host ("  [ipc-lock] 释放异常:{0}" -f $_.Exception.Message) -ForegroundColor Yellow }
+  $Mutex.Dispose()
+  Write-Host ("  [ipc-lock] {0:HH:mm:ss.fff}Z 已释放({1})" -f (Get-Date).ToUniversalTime(), $Segment) -ForegroundColor Green
+}
+
 # ---- 定位 pluginval ----
 if (-not $PluginvalExe) {
   $PluginvalExe = (Get-Command pluginval -ErrorAction SilentlyContinue).Source
@@ -54,11 +349,80 @@ if (-not $PluginvalExe) {
   if (Test-Path $candidate) { $PluginvalExe = $candidate }
 }
 
+# ---- [SL-329] 外部命令存在性:一处解析,各 gate 复用 ----
+# 病灶(#211 复审在 gate 5b 上点出、本卡按「同族整族收」扫全文件):PowerShell 找不到外部命令时
+# 抛 CommandNotFoundException,默认 `ErrorActionPreference=Continue` 下**不更新** `$LASTEXITCODE`
+# —— 它保留**上一条外部命令**的值。于是任何「跑完看 `$LASTEXITCODE` 判 PASS/FAIL」的调用点,
+# 在命令缺席时都会**沿用上一条的 0 判绿**:判据一行没跑过,汇总表却写着 PASS。
+# **误报绿比硬失败危险得多** —— 这句话本文件早就为 node(gate 3e)/ gitleaks(3b)写过,
+# 本卡只是把它补齐到剩下的调用点上。
+#
+# 全文件扫过一遍,分三类(分类依据是**判法**,不是命令名):
+#   ① 退出码判据 + 无守卫 ⇒ 静默变绿,**本卡要修(6 处)**:
+#      gate 1 的 check-constitution-sync(pwsh)、gate 2 的 clang-format、
+#      **gate 3 的 prettier(npx)**、**gate 3c 的 reuse 回退分支(pipx)**、
+#      check-spdx(pwsh)、gate 3f 的 check-readme-parity(pwsh)。
+#   ② 输出判据 + 缺席时**不判负** ⇒ 也是静默变绿,本卡一并修:
+#      gate 1 里用 `git describe` 核 JUCE tag —— 没有 git 时 `$juceTag` 为空,
+#      原来直接走 else 打印版本号,那条「tag 与 .juce-version 一致」的判据等于没跑。
+#   ③ 输出判据 + 缺席时**已经判负** ⇒ 方向偏红,不动(动了反而多一层壳):
+#      `cmake --version`(空输出即 `$ok = $false`)、`clang-format --version`
+#      (空串不匹配 `18.1.8` 即判负)、`git ls-files`(空集合即 gate 2 判负)。
+#   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、python、pluginval、cmake/ctest,
+#   以及 `reuse` **本身**(注意:守着的只是 `reuse`,它的 `pipx` 回退分支原来是裸的)。
+#
+# ⚠ **npx / pipx 两处是本卡第一版漏掉的**(#214 复审补上),两次漏的方式还不同 ——
+#   这段故事连同它的结论(**按名字列清单这件事本身不可靠**)写在那道机检的头注里,
+#   见 `scripts/check-gates-guards.ps1` 的 `.DESCRIPTION`。[SL-338] 这里不抄第二份:
+#   它是那道判据存在的理由,理应长在判据旁边,而不是在被判据扫的这个文件里再躺一份。
+#
+# [SL-338] **那条机检已经落地了** —— 落点最后没选 `check-gates-visibility.mjs`(上一版这里
+#   写的是一句**选址提案**,不是「判据在那儿」的断言;那个文件今天是 gate 3e 可见性那条链的
+#   真门禁,「它在读本文件」这句今天也仍然成立),而是新写了 `scripts/check-gates-guards.ps1`
+#   —— 读 AST 现算,由 gate 3i 跑、并接进 CI 的 docs-truth。
+#   所以「复核这份清单请手跑下面这段 AST 片段」这条操作手册**连同那份 AST 配方一起删掉了**:
+#   一份被自己的执行者取代、却还留在原地的手册,只会让下一个人去手跑一件机器每轮都在做的事,
+#   而且那份手册里的三条 ⚠(`ExternalScript` 那一档不能省 / 「解析不到」要 fail-closed /
+#   本文件自己的函数要用 `FunctionDefinitionAst` 从同一棵 AST 里排掉)今天都写在执行者的
+#   头注里,而且各有**明确的自测格**钉着 —— 手册那份没有。
+#
+#   ⚠ 只有一条与那份配方无关、留在这里:拿**本段注释文本**当锚点写补丁脚本时别用 `-like`。
+#     PowerShell 的 `-like` 走 WildcardPattern,而**反引号是它的转义字符** —— 模式里带反引号
+#     (本文件注释里到处都是)会去转义下一个字符、并把反引号本身从模式里去掉,于是对含反引号
+#     的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,反引号用 `[char]96` 拼。
+#     写 SL-329 那个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
+#
+# [SL-338] **今天有几处调用、几个名字、哪几处被豁免,由那道机检每轮当场打出来**(它把被豁免
+#   的逐条列名,不只报数)。上一版这里手抄了一份「10 个名字」的快照和一份「③类那三处」的清单
+#   —— 两份今天都还对,但它们是快照,而快照会在没人注意的时候变成假清单;真要对账,读那道
+#   机检的输出,或直接看下面各调用点旁的 `[gates-guard-exempt]` 标记(**那些标记才是真源**:
+#   它们贴着被豁免的调用点、带着各自的理由,而且被机检当数据读、孤悬即判负)。
+#   ⚠ 别把③类那几处「包进守卫」:它们按「空输出即判负」,方向已经偏红,加壳只是多一层。
+#     上一版这里还写过一句全称从句「每一处都落在某个守卫的 if/else 里」,与第③条自相矛盾
+#     (#214 第 4 轮点出)—— 现在不写全称,由机检去说。
+#   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
+#     分组数 —— **这里不写具体数**。写过两次都错:一次是「26 处」(来自一次跑挂了的审计脚本,
+#     我拿坏输出的行数当了结论),一次是「29 处 / pwsh 5」,而**同一个 commit** 在下面 gate 3i
+#     新接了两处 `& pwsh`,当场把它变成 31 / pwsh 7。手抄的数活不过下一次改动,而
+#     `scripts/check-gates-guards.ps1` 每次运行都会把当下的分布打出来 —— 要数就去看它。
+#
+# 两半一起用,缺一半都不够:
+#   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
+#   · 调用前 `$global:LASTEXITCODE = 1` —— 万一守卫被绕过(例如日后有人在守卫外面新加一处调用),
+#     「没写退出码」也等价于判负。实测:`cmd /c exit 0` 之后调不存在的命令,`$LASTEXITCODE`
+#     仍是 0;预置 1 之后调不存在的命令,值保持 1。
+$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+$clangFormatCmd = Get-Command clang-format -ErrorAction SilentlyContinue
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+$npxCmd = Get-Command npx -ErrorAction SilentlyContinue
+$pipxCmd = Get-Command pipx -ErrorAction SilentlyContinue
+
 # ==================================================================
 Write-Host '=== Gate 1: 依赖预检 ==='
 # ==================================================================
 $ok = $true
 
+# [gates-guard-exempt] ③类:输出判据 —— 空输出即 $ok = $false(见下一行的 if),缺席方向偏红,包守卫反而多一层壳
 $cmakeVer = ((& cmake --version 2>$null | Select-Object -First 1) -replace 'cmake version ', '')
 if (-not $cmakeVer) { Write-Host '  cmake 未找到' -ForegroundColor Red; $ok = $false }
 else { Write-Host ("  cmake {0}" -f $cmakeVer) }
@@ -72,15 +436,27 @@ else { Write-Host ("  MSVC {0}" -f $msvc) }
 if (-not $JucePath -or -not (Test-Path (Join-Path $JucePath 'CMakeLists.txt'))) {
   Write-Host '  JUCE_PATH 未设置或无效' -ForegroundColor Red; $ok = $false
 }
+elseif (-not $gitCmd) {
+  # [SL-329] 第②类:没有 git 时 `$juceTag` 为空,原来直接走 else 打印版本号 ——「tag 与
+  # .juce-version 一致」这条判据**一次没跑却记 PASS**。缺工具判负,不静默跳过。
+  Write-Host '  git 不在 PATH —— 无法核对 JUCE tag 与 .juce-version(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
 else {
   $juceTag = (& git -C $JucePath describe --tags 2>$null)
   if ($juceTag -and ($juceTag.Trim() -ne $juceVersion)) {
     Write-Host ("  JUCE tag '{0}' 与 .juce-version '{1}' 不一致" -f $juceTag, $juceVersion) -ForegroundColor Red
     $ok = $false
   }
+  elseif (-not $juceTag) {
+    # git 在,但这个目录问不出 tag(浅克隆 / 无 tag / 不是 git 仓)。同样不能当「一致」。
+    Write-Host ("  git 问不出 JUCE tag(浅克隆或无 tag?)—— 无法与 .juce-version '{0}' 对拍" -f $juceVersion) -ForegroundColor Red
+    $ok = $false
+  }
   else { Write-Host ("  JUCE {0}" -f $juceVersion) }
 }
 
+# [gates-guard-exempt] ③类:输出判据 —— 空串不匹配 18.1.8 即判负(见下一行的 if),缺席方向偏红
 $cfVer = ((& clang-format --version 2>$null) -join ' ')
 if ($cfVer -notmatch '18\.1\.8') {
   Write-Host ("  clang-format 18.1.8 未找到(当前: {0})" -f $cfVer) -ForegroundColor Red
@@ -94,21 +470,40 @@ if (-not $PluginvalExe -or -not (Test-Path $PluginvalExe)) {
 else { Write-Host ("  pluginval {0}(要求 {1})" -f $PluginvalExe, $pluginvalVersion) }
 
 # 宪法只读副本同步(06 §3.4 / 07 T01,进 gate 1)
-& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
-if ($LASTEXITCODE -ne 0) { $ok = $false }
+# [SL-329] 第①类:这一行按退出码判,没有 pwsh 时**沿用上一条外部命令**的值 ——
+# 上一条是 `clang-format --version`,它成功时留下 0 ⇒ 冻结契约的同步对拍一次没跑却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— 宪法只读副本同步无法核对(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
+  if ($LASTEXITCODE -ne 0) { $ok = $false }
+}
 
 Set-Gate '1 依赖预检' $ok
 
 # ==================================================================
 Write-Host '=== Gate 2: clang-format (18.1.8) ==='
 # ==================================================================
+# [gates-guard-exempt] ③类:输出判据 —— 没有 git 时集合为空,下面 $files.Count -eq 0 那支即判负,缺席方向偏红
 $files = @(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | Where-Object { $_ -notmatch '^third_party/' })
 $cf = $true
 if ($files.Count -eq 0) {
-  Write-Host '  未发现 C++ 源文件' -ForegroundColor Red
+  # 没有 git 时这里也会是空集合 —— 那条路已经判负,方向偏红,所以第③类不再加壳。
+  Write-Host '  未发现 C++ 源文件(没有 git 时也会走到这里)' -ForegroundColor Red
+  $cf = $false
+}
+elseif (-not $clangFormatCmd) {
+  # [SL-329] 第①类:这一格按退出码判。没有 clang-format 时上一条外部命令是 `git ls-files`,
+  # 它成功留下 0 ⇒ 「全仓格式没问题」一次没查却记 PASS。gate 1 那边确实也会红,但两道
+  # 各判各的,不能拿别人的红替这道判负 —— 何况 gates 不会因为 gate 1 红就停下。
+  Write-Host '  clang-format 不在 PATH —— gate 2 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   $cf = $false
 }
 else {
+  $global:LASTEXITCODE = 1
   $cfOut = (& clang-format --dry-run --Werror --style=file $files 2>&1)
   if ($LASTEXITCODE -ne 0) {
     Write-Host '  clang-format 差异:' -ForegroundColor Red
@@ -121,13 +516,1133 @@ Set-Gate '2 clang-format' $cf
 # ==================================================================
 Write-Host '=== Gate 3: prettier (--check .) ==='
 # ==================================================================
-$pp = (npx --yes prettier@3 --check . 2>&1)
-Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+# 版本钉死到补丁号,且与 .github/workflows/format.yml 的 prettier 步、scripts/format.ps1 的
+# prettier --write **三处同步改**(后者是本 gate 的配对写入器):`@3` 是浮动
+# major,本地与 CI 会在不同时间各自解析出不同的 prettier —— 同一份代码「本地绿、CI 红」,
+# 而中间没有任何东西变过。
+# [SL-329] 第①类。这一处是**裸调用**(不带 `&`),第一版的扫描形态没盖到 —— 没有 npx 时
+# `Set-Gate` 吃到的是上一条外部命令(gate 2 的 `clang-format`)留下的 0 ⇒ **全仓 prettier
+# 一个文件没检却记 PASS**。`npx` 随 node 装,但 `$nodeCmd` 是 gate 3e 才解析的、也不等价于
+# 「npx 在」(有人只装了 node 而 npm 的 shim 没进 PATH),所以这里单独判 `npx`。
+if (-not $npxCmd) {
+  Write-Host '  npx 不在 PATH —— gate 3 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:npx 随 Node.js 一起装;只装了 node 而 npm shim 没进 PATH 时也会走到这里。' -ForegroundColor Yellow
+  Set-Gate '3 prettier' $false
+}
+else {
+  # [SL-309 后半] **红时回显**。此前 `$pp` 捕了输出却从不打出来,于是这一道红的时候滚屏上
+  # 没有任何线索 —— 得另跑一次 `prettier --check .` 才知道是哪个文件(我自己在 SL-325 那一轮
+  # 就这么跑过一次)。取 `Select-Object -Last 30`,名单见下。
+  # ⚠ 别写成「与 3b/3c 逐字相同」——**3b(gitleaks)是 `-Last 20`**,本仓这个数今天不是铁板一块:
+  # **含本处共四处 `-Last 30`**(`3 prettier` / `3c reuse lint` / `5 构建` / `6 ctest`),
+  # **一处 `-Last 20`**(`3b gitleaks`)。这里点闸名不点行号 —— 行号会被上面任何一次插入改掉,而闸名是
+  # `Set-Gate` 的字面量,活得久。**这个数上一轮写的是「三处」,是本卡自己把 gate 6 从 40 收成
+  # 30 之后作废的**:同一个 commit 既改了事实又留着旧数,正是本仓「自己的 commit 把自己写的
+  # 数字作废」那一族(#222 复审第 3 轮)。
+  # [SL-337] [gates-last-source] **本文件里这份名单只此一份**,别处一律指路回来 —— 上一版
+  # 它在本文件里躺着三份(这里、上面那行、gate 6 回显处),而只要有人调一个截断值,
+  # 三份里改漏哪份都不会有人发现,因为没有任何机器在看。
+  # ⚠ 上面两行名单**故意写成 `-Last 30` / `-Last 20`** 而不是光写数字:那道机检的
+  #   「孤悬标记判负」靠**本段里至少有一行落在判据形态上**来锚定。名单行不带 `-Last`
+  #   的话,锚就只能落在上一行那句**告诫**上 —— 于是谁按本段自己的主张把那句告诫
+  #   改写掉,整段就没了可锚的行 ⇒ docs-truth 那个 required check 上当场**假红**,
+  #   而名单其实好端端地在这里(#225 复审第 3 轮)。
+  # 现在有了:`scripts/check-gates-guards.ps1` 的第二道判据(与守卫完备那道同时跑,无需开关)
+  # 判「一条注释里 `-Last <数>` 与另一道闸的档号同现」,唯一豁免是**带上面那个标记的
+  # 这一整段连续注释**(它是真源)。
+  # 标记形态与本文件 `[gates-guard-exempt]` 同款:豁免长在被豁免的东西旁边,不另立清单。
+  # 本卡只保证**新加/改动的这几处**取仓里的多数值 30(prettier 是新加、gate 6 是 40→30 的改动
+  # —— 与下面 gate 6 处那句同口径),不顺手去动 3b 那个 20
+  # (那是另一处的判断,不在本卡范围)。这句话本身就被 #222 复审抓过一次:注释里说「逐字相同」
+  # 而代码不同,正是本仓「假注释成为下一个人的依据」那一族。
+  # prettier 的失败输出本来就是**一行一个文件**(`[warn] path/to/file`),末尾一行是
+  # 「Code style issues found in the above file(s)」—— 所以留末 30 行正好覆盖文件清单的尾部;
+  # 文件多到 30 行装不下时,尾部那句仍在,读的人知道还有更多、可以自己跑一次拿全量。
+  $global:LASTEXITCODE = 1
+  $pp = (npx --yes prettier@3.9.6 --check . 2>&1)
+  # **立刻捕获**,别让中间那条回显管道夹在两次读 `$LASTEXITCODE` 之间。今天安全
+  # (`Select-Object` / `ForEach-Object` / `Write-Host` 都是 cmdlet,不写 `$LASTEXITCODE`),
+  # 但本文件的既定写法就是立刻捕获 —— 3c 的 `$reuseExit`、gate 6 的 `$ctestRc` 都是这个形,
+  # 而 SL-329 治的正是「隔了几条语句再读 `$LASTEXITCODE`」那一族(#222 复审)。
+  $prettierRc = $LASTEXITCODE
+  if ($prettierRc -ne 0) { $pp | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3 prettier' ($prettierRc -eq 0)
+}
+
+# ==================================================================
+Write-Host '=== Gate 3b: gitleaks (密钥扫描) ==='
+# ==================================================================
+$gitleaksVer = (Get-Content .gitleaks-version -Raw).Trim()
+$GitleaksExe = (Get-Command gitleaks -ErrorAction SilentlyContinue).Source
+if (-not $GitleaksExe) {
+  $candidate = Join-Path $RepoRoot '..\tools\gitleaks\gitleaks.exe'
+  if (Test-Path $candidate) { $GitleaksExe = $candidate }
+}
+if (-not $GitleaksExe -or -not (Test-Path $GitleaksExe)) {
+  Write-Host ("  gitleaks 未找到(要求 {0};设 PATH 或放 tools\gitleaks\gitleaks.exe)" -f $gitleaksVer) -ForegroundColor Red
+  Set-Gate '3b gitleaks' $false
+}
+else {
+  $gl = (& $GitleaksExe detect --no-git --redact --config .gitleaks.toml 2>&1)
+  if ($LASTEXITCODE -ne 0) { $gl | Select-Object -Last 20 | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3b gitleaks' ($LASTEXITCODE -eq 0)
+}
+
+# ==================================================================
+Write-Host '=== Gate 3j: check-privacy (公开仓隐私门禁) ==='
+# ==================================================================
+# [SL-265] 与 gitleaks 同族但管的是**另一半**:gitleaks 只认 secrets(密钥/令牌),
+# 个人身份信息(代号禁词 / 本机路径 / 个人邮箱域 / 主机名)它一条都不拦,故单列一关。
+# **先自检再扫**:本门禁的失效模式是「静默放行」—— 针被改坏或豁免表被放宽后扫描照样退 0,
+# 门禁看着绿其实什么都没拦。自检红 = 门禁自己坏了,比扫描结果更要紧。
+# 与 .github/workflows/compliance.yml 的两步逐字同参。
+$privacyOk = $false
+if (Get-Command node -ErrorAction SilentlyContinue) {
+  $pvSelf = (& node scripts/check-privacy.mjs --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $pvSelf | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
+    Write-Host '  自检失败 = 门禁本身坏了(不是仓里有命中)' -ForegroundColor Red
+  }
+  else {
+    $pv = (& node scripts/check-privacy.mjs 2>&1)
+    $privacyOk = ($LASTEXITCODE -eq 0)
+    if ($privacyOk) { $pv | Select-Object -Last 1 | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $pv | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red } }
+  }
+}
+else {
+  Write-Host '  node 未找到(需 Node >= 18)' -ForegroundColor Red
+}
+Set-Gate '3j check-privacy' $privacyOk
+
+# ==================================================================
+Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='
+# ==================================================================
+# [SL-329] 第①类,且是**两条命令都缺**才触发的那一档:`reuse` 有守卫,但它的 `pipx` 回退分支
+# 是**裸调用**、没有守卫 —— 两者都不在 PATH 时(Windows 上不装 Python 就没有 pipx,而 gate 3c
+# 正是 CI `compliance` 的本地对应物),`$reuseExit` 沿用上一条外部命令
+# (`node scripts/check-privacy.mjs`)留下的 0 ⇒ **REUSE 合规一条没查却记 PASS**。
+if (Get-Command reuse -ErrorAction SilentlyContinue) {
+  $global:LASTEXITCODE = 1
+  $rl = (& reuse lint 2>&1)
+  $reuseExit = $LASTEXITCODE
+}
+elseif ($pipxCmd) {
+  $global:LASTEXITCODE = 1
+  $rl = (pipx run reuse lint 2>&1)
+  $reuseExit = $LASTEXITCODE
+}
+else {
+  Write-Host '  reuse 与 pipx 都不在 PATH —— gate 3c 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:装 reuse(pipx install reuse)或让 pipx 进 PATH;Windows 上不装 Python 就没有 pipx。' -ForegroundColor Yellow
+  $rl = @()
+  $reuseExit = 1
+}
+if ($reuseExit -ne 0) { $rl | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
+Set-Gate '3c reuse lint' ($reuseExit -eq 0)
+
+# ==================================================================
+Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
+# ==================================================================
+# [SL-329] 第①类:`Set-Gate` 直接吃 `$LASTEXITCODE`,没有 pwsh 时吃到的是上一条
+# (gate 3c 实际跑的那一支:`reuse` 或 `pipx`)留下的值 —— SPDX 头一个文件没查却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— check-spdx 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Set-Gate 'check-spdx' $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
+  Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
+}
+
+# ==================================================================
+Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
+# ==================================================================
+# 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致
+# (01 §6.1 / 05 §1.2;消除 Bridge 双处硬编码技术债)。--check 重生成并对拍,漂移即红。
+#
+# ⚠ 先判 python 在不在,理由同 Gate 3e 的 node 守卫(PR#64 评审【建议】):
+# 命令不存在时 PowerShell 抛 CommandNotFoundException 而**不更新 $LASTEXITCODE**,
+# 它保留上一条外部命令的 0 ⇒ 对拍一次没跑却判绿。误报绿比硬失败危险得多。
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(gen-design-box.py 需要)' -ForegroundColor Red
+  Set-Gate '3d 设计盒真源' $false
+}
+else {
+  $designBox = (& python scripts\gen-design-box.py --check 2>&1)
+  if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
+}
+
+# ==================================================================
+# ===== 持锁段①起点:gate 3e **页面级冒烟**持 IPC 测试锁(惰性取锁,[SL-301])=====
+# ==================================================================
+# **为什么 3e 也要这把锁**([SL-301] 实测):3e 起 6 个无头 Chrome(单跑峰值 15 个进程、
+# 吃掉约 11 个核),而这份负载会**把同机另一个 agent 的 gate 6 拖红** —— 实测一次:
+# `scvb_ipc_tests` 的「15 claimer 抢同一 channel ⇒ 恰好 1 个成功」在对方 3e 跑着时判红,
+# 而那个 PR 只动 `tests/host/`。互斥体原来只串行化 6/7/8,**挡得住别人的 ctest、挡不住 3e**。
+# 形态与真回归不可分,所以这不是「重试能兜住」的一档。
+#
+# **为什么分两段持、不是一路持到 gate 8**:取锁点前移到 3e 之后,若一路持到 8,
+# `4 configure` / `5 build` 就一起进了锁 —— 实测持锁从 **9-10 分钟涨到约 36 分钟**,
+# 而多出来的 22 分钟全是 build。要的不变式是「全机任一时刻只有一份 3e **或**一份 6/7/8」,
+# 两段持锁**同样满足**(两段都要这把锁),而 build 保持并行。观测到的伤害是 3e↔gate 6,
+# 不是 3e↔build:build 没有时序断言。
+#
+# 拿不到锁的处置与 6/7/8 **逐字同款**:判负 + 不执行。理由也同款 —— 无锁硬跑就是去抢
+# 隔壁持锁 agent 的资源,让那一侧收到一个自己日志里查不到原因的假红。
+# 惰性取锁:实际的 Enter 在下面循环里「跑到第一套页面级之前」才做,
+# 于是纯 node 的那些无锁先跑、可与别的 agent 并行。下面这几个 `$script:Smoke*` 是段内状态。
+$script:SmokeLock = $null
+$script:SmokeLockTaken = $false
+$script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
+$script:SmokeSegSw = $null    # 持锁段计时,取到锁那一刻才起
+$script:SmokeSegStart = $null # [SL-305] 取到锁的**时刻**,用来把残留进程按「起于本段之后」筛出来
+# 段预算只解析一份(见脚本顶部 `$script:ScvbSmokeSegmentBudgetSec` 的头注),这里直接用 ——
+# 两份解析漂了会让「等锁上界」与「实际预算」脱钩,而且上一版两份的行为还不一致(一份出声一份静默)。
+$smokeSegBudgetSec = $script:ScvbSmokeSegmentBudgetSec
+$smokeBudgetHit = $false
+$smokeNoLock = $false
+
+# ==================================================================
+Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
+# ==================================================================
+# web-preview/tests 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到端 + 源码级
+# 纪律断言),T31–T36 六张卡的回归保护全压在上面。与 .github/workflows/format.yml
+# 的 web-smoke job 同口径。零依赖:不装 npm 包直接 node 跑;每套退出码 0 = 全绿,
+# 非 0 会逐条打印 [FAIL]。**单套判红不 break**,一次跑完看全所有红项;整段中止只有
+# 两个出口,都不是「某一套红了」:拿不到 IPC 锁、以及 [SL-301] 的页面级段预算见底。
+#
+# ⚠ **必须先判 node 在不在**(PR#64 评审【重要】):PowerShell 找不到外部命令时抛
+# CommandNotFoundException,默认 ErrorActionPreference=Continue 下**不更新**
+# $LASTEXITCODE —— 它会保留上一条外部命令(check-spdx)的 0,于是「一套都没跑」
+# 被判成全绿。**误报绿比硬失败危险得多**。口径照 3b/3c(gitleaks/reuse)。
+# CI 侧由 actions/setup-node 钉死版本,无此风险;本守卫只为本地。
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$nodeMajor = 0
+if ($nodeCmd) {
+  $nv = (& node --version 2>&1) -as [string]      # 形如 v22.5.0
+  if ($nv -match '^v(\d+)\.') { $nodeMajor = [int]$Matches[1] }
+}
+$smokeDir = Join-Path $RepoRoot 'web-preview\tests'
+$smokeFiles = @(Get-ChildItem -Path $smokeDir -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue)
+try {
+
+if (-not $nodeCmd) {
+  # 用到 node 内建 fetch 与全局 WebSocket,故要求 ≥ 22(与 CI 的 node-version 一致)
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+elseif ($nodeMajor -lt 22) {
+  Write-Host ("  node 版本过低: {0}(要求 >= 22:内建 fetch / 全局 WebSocket)" -f $nv) -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+elseif ($smokeFiles.Count -eq 0) {
+  Write-Host '  未发现 web smoke(web-preview/tests/smoke-*.mjs)' -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+else {
+  # 退出码约定(T46 起,[SL-297] 增第三档):0 = 全绿;1 = 有断言失败;
+  # **2 = 缺可选外部依赖(本机没有浏览器)**;**3 = 浏览器在,但这一次没起来 / 没连上**。
+  # 2 与 3 都**不判红**,区别只在摘要里怎么显形:2 = `[SKIP]`,3 = `[FLAKY-SKIP]` + 单独计数。
+  # 分这两档的代价是实测出来的:压成一个码时,一台装着 Chrome 的机器上一次瞬时超时会让
+  # 整套判据无声消失,而汇总行照写全 PASS(SL-293 多轮 gates 撞到三次,掉的套件每次不同)。
+  # 会回 2 的是**页面级**那几套(都要一个无头 Chrome/Edge)。**哪几套由 `Test-ScvbPageSuite`
+  # 判**(单一真源),套数由下面那行 Cyan 当场打出来 —— 这里既不抄名单也不写数:
+  # 执行面按 glob 自动收,加一套不必改这里,而抄一份名单在这里只会在下次加套时变假。
+  # 为什么单列一档:
+  # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,
+  # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
+  # 打印 SKIP 行并计数,总结里带上,免得「一套没跑」看起来和「跑过了」一样。
+  # ⚠ **每套都要有整体超时**([SL-287])。原来这里是裸的 `(& node $f.FullName 2>&1)` ——
+  # 一套挂死,gate 3e 就停在那儿不动 —— SL-274 实测过一次:75 分钟零输出,
+  # node 与 Chrome 都还活着。
+  # ⚠ **[SL-301] 这段因果已经变了,别照旧说法推断锁的作用域。** SL-277 拆锁之后曾有一段
+  # 时间 gate 1–5 完全不持锁,那时「一套挂死」的代价收窄成「**本轮** gates 停死」、不连累别人。
+  # **现在 3e 自己持锁**(它的 Chrome 负载会把同机别人的 gate 6 拖红),所以「一套挂死」
+  # **重新会堵住全场** —— 这条超时因此比那时更要紧,不是「照加」而是**承重**。
+  # 最坏账现在由**段预算**封顶,不再是「套数 × 每套上界」:见 `$smokeSegBudgetSec` 的头注
+  # (默认 480s)。别人可能等锁的上限 = 那个预算,而不是这条 300s 乘出来的数。
+  #(此处原先写「6 × 300s ≈ 31 分钟、上界从 30 抬到 45」—— 两句都随裁定 (a) 作废:
+  # 上界留 30 且改成跟着预算算,持锁方由预算封顶。**引章节名不引行号**:行号一改就漂,
+  # 这正是上一轮被点名的那个失效形态。)
+  # 页面级冒烟内部现在有 CDP 截止时间兜住「响应不回来」那一类,但兜不住「Chrome 根本没起来」
+  # 「WebSocket 没连上」「页面永不 load」——那些卡在 CDP 之外,只有这一层能收。
+  #
+  # 上界取 300s:实测最慢的一套(seg-diff-fold)健康时跑 57s,其余 5–34s,**5 倍余量**;
+  # 而代价上限从 75 分钟降到 5 分钟。
+  # 超时后**判红并继续下一套**,不整段中止 —— 一次跑完看全所有红项。
+  # (整段中止的两个出口在别处:拿不到锁、段预算见底;「某一套超时」从来不是其中之一。)
+  # 用 Start-Process + WaitForExit 而不是 `&`:`&` 没有超时可言;`Kill($true)` 连子进程树
+  # 一起收,否则被杀的只是 node,它起的 Chrome 会留下来(正是 SL-274 压住锁的那个形态)。
+  $smokeOk = $true
+  $smokeSkipped = 0
+  $smokeFlaky = 0      # [SL-297] rc=3:浏览器在但没连上
+  $smokeRanCount = 0   # [SL-301 复审] 实际跑到的套数(break 之后 < 总数,汇总不能说谎)
+  $smokeHungByBudget = 0  # [SL-301 复审] `$smokeHung` 里属于「被段预算腰斩」的那部分
+  # [SL-305 复审] 被**我们自己** kill 掉的套。它的 teardown 按定义没跑完,
+  # 残留不能记在「该套漏收」头上 —— 那是把我们杀出来的后果归给被杀者。
+  $killedSuites = @{}
+  $smokeHung = 0
+  # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
+  # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
+  # **非法值要钳住**(PR#182 复审):`=abc` 会让 `[int]` 转换抛错、整条 gates 挂;
+  # `=0` 或负数会让 `WaitForExit(0)` 立刻返回 false ⇒ **每一套都被判 [HUNG]**,
+  # 而且看起来像真挂死。转换失败回默认值,并压一个 30s 下界。
+  $smokeTimeoutSec = 300
+  if ($env:SCVB_SMOKE_TIMEOUT_SEC) {
+    $parsed = 0
+    if ([int]::TryParse($env:SCVB_SMOKE_TIMEOUT_SEC, [ref]$parsed) -and $parsed -ge 30) {
+      $smokeTimeoutSec = $parsed
+    }
+    else {
+      Write-Host ("  [WARN] SCVB_SMOKE_TIMEOUT_SEC='{0}' 不是 >=30 的整数,回落到默认 300s" -f $env:SCVB_SMOKE_TIMEOUT_SEC) -ForegroundColor Yellow
+    }
+  }
+  # [SL-301 复审] **持锁面收窄到真正起浏览器的那几套。**
+  # 只有一部分套件起无头 Chrome,其余是纯 node、零共享状态 —— 把它们也串行化
+  # 是「持锁面比论据宽」:论据是「Chrome 负载拖红别人的 gate 6」,纯 node 那些一个 Chrome 都不起。
+  # (三个数**不写在这里**:下面那行 Cyan 每轮当场打出「本轮 N 套里 M 套起浏览器」。)
+  # 分类判据见 `Test-ScvbPageSuite`(单一真源,有意取并集偏向多判 —— 漏判的代价是
+  # 「无锁跑起浏览器」且完全静默,多判只是多串几十秒)。
+  # 排序把纯 node 的排前面,**跑到第一套页面级时才取锁**,循环结束在 finally 里放 ——
+  # 于是无锁那些可以与别的 agent 并行。持锁段占住多久由**段预算**封顶
+  # (`$script:ScvbSmokeSegmentBudgetSec`),不再是「套数 × 每套上界」——
+  # 等锁上界正是从那个预算推出来的,两处口径同源。
+  $pageSuites = @($smokeFiles | Where-Object { Test-ScvbPageSuite -Path $_.FullName })
+  $pageNames = @($pageSuites | ForEach-Object { $_.Name })
+  $smokeFiles = @($smokeFiles | Where-Object { $pageNames -notcontains $_.Name }) + $pageSuites
+  Write-Host ("  [ipc-lock] 本轮 {0} 套里 {1} 套起浏览器(仅这几套持锁,其余 {2} 套无锁先跑)" -f $smokeFiles.Count, $pageSuites.Count, ($smokeFiles.Count - $pageSuites.Count)) -ForegroundColor Cyan
+  # 判出 0 套页面级 ⇒ **整个 3e 无锁跑完**。四条判据取并集,归零几乎不可能,
+  # 但「几乎不可能」正是不会有人盯着的那一格:真发生时唯一的痕迹是上面那行 Cyan,
+  # 混在正常输出里没人会觉得不对。出声,与 `Test-ScvbPageSuite` 的兜底同向。
+  $smokeZeroPage = ($pageSuites.Count -eq 0)
+  if ($smokeZeroPage) {
+    Write-Host '  [ipc-lock] ⚠ 判出 0 套页面级 —— 本轮 3e 将全程无锁。冒烟改名 / 判据失效都会长这样,先去核 Test-ScvbPageSuite 再信这个结果' -ForegroundColor Yellow
+  }
+  foreach ($f in $smokeFiles) {
+    # 第一套页面级之前才取锁(惰性取锁);`$smokeLock` 在段外声明,finally 负责放。
+    if (($pageNames -contains $f.Name) -and (-not $script:SmokeLockTaken)) {
+      $script:SmokeLockTaken = $true
+      $script:SmokeLock = Enter-ScvbIpcLock -Segment 'gate 3e(页面级)'
+      $script:SmokeLockOk = ($null -ne $script:SmokeLock) -or $NoIpcLock
+      if (-not $script:SmokeLockOk) {
+        # 与 6/7/8 同款:拿不到锁 = 没有并发保护,页面级那几套**不执行**、整段判负。
+        Write-Host '  [ipc-lock] 拿不到锁 ⇒ 页面级冒烟不执行(无锁硬跑会去抢隔壁持锁 agent 的机器)' -ForegroundColor Red
+        $smokeOk = $false
+        # 与超预算那条 break **同型,待遇要一致**:两条都让余套没跑,都必须在摘要里显形。
+        # 复审点出上一版只有超预算进了标签 —— 同一个 commit 里两条同型路径不同待遇,
+        # 正是「降级不可见」换个入口又回来。
+        $smokeNoLock = $true
+        break
+      }
+      # [SL-301 裁定(a)] **持锁段整体预算**从拿到锁的那一刻开始计。
+      # ⚠ 只在**真的持着锁**时计:`-NoIpcLock` 下 `Enter` 返回 $null、根本没有锁,
+      # 那就不存在「占着锁不放」这回事 —— 再用预算腰斩就是一条**凭空的假红**,
+      # 而且超预算那行还会说一句不存在的「立即放锁」(复审点出)。
+      if ($null -ne $script:SmokeLock) {
+        $script:SmokeSegSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $script:SmokeSegStart = Get-Date
+      }
+    }
+    # [SL-301 裁定(a)] 预算兜的是**持锁方**,等锁上界兜的是**等锁方**,两者并存、不可互相替代:
+    # 上界只保证「等的人不会被判负」,**不保证「等的人不用干等满」** —— 病态 3e 持锁
+    # 6 × 每套上界时,全机其他 agent 照样干等。所以持锁方自己要有封顶。
+    if ($script:SmokeLockTaken -and $script:SmokeLockOk -and $null -ne $script:SmokeSegSw) {
+      $usedSec = [int]$script:SmokeSegSw.Elapsed.TotalSeconds
+      if ($usedSec -ge $smokeSegBudgetSec) {
+        # 预算已耗尽:**余套一律判负且不跑**,立刻跳出 —— 锁在 finally 里当场释放。
+        Write-Host ("  [ipc-lock] 3e 页面级段超预算({0}s ≥ {1}s):余下的套不再执行,整段判负,立即放锁" -f $usedSec, $smokeSegBudgetSec) -ForegroundColor Red
+        $smokeOk = $false
+        $smokeBudgetHit = $true
+        break
+      }
+    }
+    $soPath = [System.IO.Path]::GetTempFileName()
+    $sePath = [System.IO.Path]::GetTempFileName()
+    # 路径要**自己加引号**(PR#182 复审):`Start-Process` 把 `-ArgumentList` 按空格拼成
+    # 命令行、**不会**自动引号化,而旧写法 `& node $f.FullName` 是 PowerShell 直接传参、
+    # 自带引号化。检出路径含空格时 node 会收到被拆词的路径,这一套直接跑不起来,
+    # 报的还是「找不到文件」,不会有人想到是 gates 这一行的锅。
+    $proc = Start-Process -FilePath $nodeCmd.Source -ArgumentList ('"{0}"' -f $f.FullName) `
+      -NoNewWindow -PassThru -RedirectStandardOutput $soPath -RedirectStandardError $sePath
+    # 单套的等待上界 = min(每套上界, 预算剩余)。这样「杀当前套」由同一条 WaitForExit 承担,
+    # 不必另起一套超时机制;非持锁段(纯 node 那 18 套)不受预算约束,取值仍是每套上界。
+    $waitSec = $smokeTimeoutSec
+    if ($script:SmokeLockTaken -and $script:SmokeLockOk -and $null -ne $script:SmokeSegSw) {
+      $remain = $smokeSegBudgetSec - [int]$script:SmokeSegSw.Elapsed.TotalSeconds
+      if ($remain -lt $waitSec) { $waitSec = [Math]::Max(1, $remain) }
+    }
+    if ($proc.WaitForExit($waitSec * 1000)) {
+      $rc = $proc.ExitCode
+    }
+    else {
+      # 连进程树一起收:只杀 node 的话,它起的无头 Chrome 会活下来继续占资源。
+      # `Kill($true)`(连进程树)是 .NET Core 3.0+ 的重载。回退到 `Kill()` 时**只杀 node,
+      # 它起的 Chrome 会留下** —— 正是本段要根除的形态,所以回退必须出声,不能静默。
+      # [SL-305] 记下**到底走了哪条 kill**:回退路径只杀 node,底下那行 [HUNG] 不能照旧
+      # 写「已连进程树杀掉」—— 同一次运行里 WARN 说回退了、HUNG 说连树杀了,读的人只能信一个。
+      $killedTree = $true
+      try { $proc.Kill($true) }
+      catch {
+        $killedTree = $false
+        # 异常要分类([SL-311] 并入 #198 的建议):上一版把**所有**异常都说成
+        # 「本机 pwsh 不支持 Kill($true)」—— 而这个重载自 .NET Core 3.0 就有,现实里
+        # 更常见的是「进程刚好已经自己退了」和「拒绝访问」。把后两者报成「不支持」,
+        # 会让人去查一个不存在的环境问题,而真正的原因(比如权限)反而看不见。
+        $exName = $_.Exception.GetType().Name
+        if ($_.Exception -is [System.MissingMethodException] -or $exName -eq 'MethodException') {
+          Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
+        }
+        elseif ($_.Exception -is [System.InvalidOperationException]) {
+          # 进程已退出:这一支其实是**好消息**(树也就没了),但仍然不能声称「连树杀过了」。
+          Write-Host '         [WARN] 连进程树杀时该进程已退出(InvalidOperationException)—— 没能连树收,残留请以放锁前那次核对为准' -ForegroundColor Yellow
+        }
+        else {
+          Write-Host ("         [WARN] 连进程树杀失败({0}:{1}),回退成只杀 node —— 它起的 Chrome 可能留下" -f $exName, $_.Exception.Message) -ForegroundColor Yellow
+        }
+        try { $proc.Kill() } catch {}
+      }
+      # `Kill` 是**异步**的:句柄未必已关,紧跟着读重定向文件可能读到截断的输出 ——
+      # 而这恰恰是最需要诊断信息的那条路径。等一个有界的短时,不会重新引入无限等。
+      try { $null = $proc.WaitForExit(5000) } catch {}
+      $rc = -1
+      $smokeHung++
+      $killedSuites[$f.Name] = $true
+      $smokeOk = $false
+      # 杀因要分清:**预算截断**与**真挂死**是两回事,而两者都走这条 kill 路径。
+      # 只写「超时被杀」会让人去追一套其实没挂的冒烟(它只是被段预算腰斩了)。
+      if ($waitSec -lt $smokeTimeoutSec) {
+        Write-Host ("  [HUNG] {0}:被**段预算**腰斩(只等了 {1}s,每套上界是 {2}s)——它未必挂死,是 3e 页面级段的 {3}s 预算见底了" -f $f.Name, $waitSec, $smokeTimeoutSec, $smokeSegBudgetSec) -ForegroundColor Red
+        # **在这里也置位**(复审第 5 轮):`$smokeBudgetHit` 原本只在循环**顶部**的预算检查里置真,
+        # 而被腰斩的若是**最后一套**页面级,循环就此结束、那个检查再也不会执行 ⇒ 汇总把
+        # 「预算被击穿」报成一次普通挂死。滚屏里说对了、摘要里说错了 —— 正是本卡在治的形态。
+        $smokeBudgetHit = $true
+        # 杀因分档要做全:并进 `$smokeHung` 一个数,摘要就只会写「N 套超时被杀」,
+        # 与上面这行滚屏刚说的「它未必挂死」自相矛盾 —— 同一次运行里两个口径。
+        $smokeHungByBudget++
+      }
+      else {
+        $killWord = if ($killedTree) { '已连进程树杀掉' } else { '**只杀掉了 node**(连树杀不可用,它起的 Chrome 可能还在)' }
+        Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,{2}并判红" -f $f.Name, $smokeTimeoutSec, $killWord) -ForegroundColor Red
+        Write-Host '         (这一套内部的 CDP 截止时间没能兜住 ⇒ 多半卡在 CDP 之外:Chrome 没起来 / WebSocket 没连上 / 页面永不 load)' -ForegroundColor Yellow
+      }
+    }
+    $out = @()
+    foreach ($fp in @($soPath, $sePath)) {
+      if (Test-Path $fp) { $out += (Get-Content -LiteralPath $fp -ErrorAction SilentlyContinue) }
+    }
+    Remove-Item -LiteralPath $soPath, $sePath -Force -ErrorAction SilentlyContinue
+    $smokeRanCount++
+    if ($rc -eq 2) {
+      $smokeSkipped++
+      Write-Host ("  [SKIP] {0}:缺可选外部依赖(见该脚本文件头)" -f $f.Name) -ForegroundColor Yellow
+      $out | Select-String -Pattern '^❌' | Select-Object -First 2 |
+      ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
+    elseif ($rc -eq 3) {
+      # [SL-297] **浏览器在、这一次没跑成**。与 rc=2 分开的理由见那一族脚本的
+      # `browserFailed()`:压成同一个码时,一台**装着 Chrome** 的机器上一次瞬时超时
+      # 会让整套判据无声消失,而汇总行照写全 PASS(SL-293 多轮 gates 实测撞到三次,
+      # 每次掉的套件还不一样,两套单独重跑都全绿 —— 丢的是运行机会,不是代码)。
+      # **判定不变**:与 rc=2 一样不判红。把超时直接改成硬红在当前抖动率下会卡住所有人,
+      # 那是第二步(重试/退避)的事,不在本卡。这里只负责让它**在摘要里显形**。
+      $smokeFlaky++
+      Write-Host ("  [FLAKY-SKIP] {0}:浏览器在,但这一次没起来 / 没连上 —— **本套没跑成**,不是缺依赖" -f $f.Name) -ForegroundColor Yellow
+      $out | Select-String -Pattern '^❌' | Select-Object -First 2 |
+      ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
+    elseif ($rc -ne 0) {
+      $smokeOk = $false
+      Write-Host ("  {0}:" -f $f.Name) -ForegroundColor Red
+      # 捞 `[FATAL]` 与 `[FAIL]` 两种([SL-287])。页面级冒烟的 uncaughtException /
+      # unhandledRejection 处理器打的是 `[FATAL]`,只捞 `[FAIL]` 的话「脚本自己炸了」
+      # 会一行不显示 —— 而 [J96] 之后本机 gates 是子 PR 上唯一的编译/行为门,
+      # 致命错误不进摘要等于没报。
+      $out | Select-String -Pattern '\[FAIL\]|\[FATAL\]' | Select-Object -First 20 |
+      ForEach-Object { Write-Host ("  " + $_) }
+    }
+  }
+  # [SL-301 复审] **汇总不能说谎**:拿不到锁或超预算时会 `break`,实际跑到的套数 < 总数,
+  # 而原来无论如何都写「24 套」—— 与本 gate 自己「降级要显形」的口径冲突。
+  # 跑满时保持原样(不给正常路径添噪声),没跑满才写成 `N/总数 套跑到`。
+  $smokeCountText =
+    if ($smokeRanCount -lt $smokeFiles.Count) { '{0}/{1} 套跑到' -f $smokeRanCount, $smokeFiles.Count }
+    else { '{0} 套' -f $smokeFiles.Count }
+  $smokeLabel = '3e web smoke({0},node {1})' -f $smokeCountText, $nv
+  if ($smokeSkipped -gt 0) {
+    $smokeLabel = '3e web smoke({0} −{1} SKIP,node {2})' -f $smokeCountText, $smokeSkipped, $nv
+  }
+  # [SL-297] FLAKY-SKIP **必须进汇总标签**:跑完 gates 的人看的是这张表,不是往回滚屏。
+  # 这一条正是本卡要堵的洞 —— 只在滚屏里打一行 `[FLAKY-SKIP]`、汇总仍写「24 套」,
+  # 等于「没跑成」长得和「跑过了」一模一样。`!` 前缀与 [HUNG] 同款,一眼能看出是异常档。
+  if ($smokeFlaky -gt 0) {
+    $smokeLabel = '{0}(!{1} 套没跑成:浏览器在但没连上)' -f $smokeLabel, $smokeFlaky
+  }
+  # 挂死也要进摘要:跑完 gates 的人看的是汇总表,不是往回滚屏找那行 [HUNG]。
+  # 两种杀因分开写:「真挂死」要有人去查,「被段预算腰斩」不用 —— 那一套多半没病,
+  # 是这一段的时间用完了。合成一个数就是把前者的紧迫性摊薄、把后者的无辜抹掉。
+  $smokeHungReal = $smokeHung - $smokeHungByBudget
+  if ($smokeHungReal -gt 0) {
+    $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHungReal
+  }
+  # [SL-301 裁定(a)] 超预算同理必须进摘要 —— 「余套没跑」与「都跑过了」不能长得一样。
+  if ($smokeBudgetHit) {
+    # 预算被击穿有两种后果,可能同时发生,也可能只发生一种:
+    #   · 当前那一套被**腰斩**(kill 分支,`$smokeHungByBudget`);
+    #   · 后面的套**根本没跑到**(循环顶部 break,`$smokeRanCount < 总数`)。
+    # 一句话把发生了的都说出来。**「腰斩」只说一次** —— 早先拆成两个后缀连写会变成
+    # 「(!1 套被段预算腰斩)(!……,末套被腰斩)」,同一件事说两遍。
+    # 也不能写死「余套未跑」:预算若在**最后一套**上见底,24 套全都起过跑,
+    # 那句话是往更糟的方向说谎。所以两半都由计数决定,一半不成立就不写。
+    $budgetParts = @()
+    if ($smokeHungByBudget -gt 0) { $budgetParts += ('{0} 套被腰斩' -f $smokeHungByBudget) }
+    if ($smokeRanCount -lt $smokeFiles.Count) { $budgetParts += ('余 {0} 套未跑' -f ($smokeFiles.Count - $smokeRanCount)) }
+    if ($budgetParts.Count -eq 0) { $budgetParts += '余套未跑' }
+    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, ($budgetParts -join '、')
+  }
+  # 地板也要进摘要,理由与上面三个降级逐字相同:跑完 gates 的人看的是这张表。
+  # 而这一格是**汇总看起来最正常**的那一格 —— 全绿、无 SKIP、无 HUNG、无预算后缀,
+  # 只有一行黄字。既然承认没人会盯滚屏,就不该把唯一的痕迹留在滚屏里。
+  if ($smokeZeroPage) {
+    $smokeLabel = '{0}(!0 套页面级,全程无锁)' -f $smokeLabel
+  }
+  if ($smokeNoLock) {
+    $smokeLabel = '{0}(!拿不到 IPC 锁,页面级未跑)' -f $smokeLabel
+  }
+  Set-Gate $smokeLabel $smokeOk
+}
+
+}
+finally {
+  # [SL-301] **放锁前核一眼机器上还有没有无头 Chrome**(注意:核的是**机器状态**,
+  # 不是「本段起的那些」—— 判据数不出父进程,见下面那条措辞注)。放了锁而 Chrome 还活着,
+  # 下一个 agent 拿到锁开始跑 6/7/8,机器上却仍有上一份的 6 个 Chrome 在吃核 ——
+  # 「放了锁但资源还占着」等于没放,本卡的不变式当场失效。
+  # 正常路径下 3e 自己会收干净(每套跑完即退,超时那支走 `Kill($true)` 连进程树);
+  # 这里只做**核对与兜底**:仍有残留就等一小会儿再报,让读日志的人看得见。
+  # 不去杀 —— 杀掉用户自己的浏览器是更坏的副作用;3e 的临时 user-data-dir 由各套自己的
+  # teardown 负责([SL-287])。
+  #
+  # [SL-305] 判据分两层,**只有归得到套的那一层判负**:
+  #   · **归属层**:命令行里的 `--user-data-dir` 带某一套**自己声明**的 `scvb-<套>-` 前缀,
+  #     且进程**起于本持锁段之后** ⇒ 只可能是本轮这一套漏下的 ⇒ **判负并点名**。
+  #   · **兜底层**:其余带 `--headless` / `scvb-` 但归不到套的 ⇒ 照旧只报不判负 ——
+  #     它们可能是别的 agent、别的 worktree、或用户自己的无头进程。拿它们判负就是
+  #     「一条可能永远为真的警告」,与 SL-301 第一版把用户浏览器算进来是同一个毛病。
+  #
+  # 前缀**不写死在这里**:从各套源码自己的 `mkdtempSync(join(tmpdir(), "scvb-…-"))`
+  # 字面量里读出来(单一真源)。套改了自己的前缀,这里自动跟上;抄一份写死就会漂,
+  # 而漂了之后判据只会**静默地归不到套** —— 又一条「降级不可见」。
+  if ($script:SmokeLockTaken -and $script:SmokeLockOk -and -not $NoIpcLock) {
+    $uddOwner = @{}
+    $uddParsed = @{}
+    foreach ($ps in $pageSuites) {
+      $srcText = Get-Content -LiteralPath $ps.FullName -Raw -ErrorAction SilentlyContinue
+      if ($null -eq $srcText) { continue }
+      foreach ($mm in [regex]::Matches($srcText, '"(scvb-[A-Za-z0-9_-]*?-)"')) {
+        $uddOwner[$mm.Groups[1].Value] = $ps.Name
+        $uddParsed[$ps.Name] = $true
+      }
+    }
+    # **判据自检**(复审指出):`Test-ScvbPageSuite` 是并集判据,完全可以判出一个**没有**
+    # `mkdtempSync(join(tmpdir(), "scvb-…-"))` 双引号字面量的页面级套(有人把 udd 构造抽进
+    # 共享 helper、或改写成单引号)。真发生时 `$uddOwner` 里就少了那一套,归属层**对它整个
+    # 失效**,它的残留会悄悄落进兜底层的「只报不判负」—— 正是本卡要治的「静默归不到套」。
+    # 「每套各恰好一个前缀」是**当下事实,不是不变式**:两边现在相等,分叉时没人会发现。
+    $uddMissing = @($pageSuites | Where-Object { -not $uddParsed.ContainsKey($_.Name) } |
+      ForEach-Object { $_.Name })
+    if ($uddMissing.Count -gt 0) {
+      Write-Host ("  [ipc-lock] ⚠ 这几套解析不出 scvb- 前缀,归属层对它们失效(残留只会落进「只报不判负」):{0}" -f ($uddMissing -join '、')) -ForegroundColor Yellow
+      Write-Host '         判据靠的是各套源码里的 mkdtempSync(join(tmpdir(), "scvb-…-")) 双引号字面量;改写法就要同步改这里的正则。' -ForegroundColor Yellow
+    }
+    # 枚举写成一份(两次核对共用):第一次看有没有,睡 3 秒后再核一次定论。
+    $enumLeftover = {
+      param($Owners, $Since)
+      $all = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
+        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
+      $mine = @(); $other = @()
+      foreach ($pr in $all) {
+        $owner = $null
+        # **最长前缀优先**([SL-311] 并入 #198 的建议):Hashtable 的 `.Keys` 枚举顺序
+        # **不保证**,而前缀之间可以互为前缀(今天没有,但改个套名就会有 —— 比如
+        # `scvb-output-` 与 `scvb-output-dist-`)。那时先枚举到短的就会**点错套名**,
+        # 而点错的名字看起来和点对了一模一样。按长度降序取,匹配唯一且与顺序无关。
+        foreach ($pref in ($Owners.Keys | Sort-Object -Property Length -Descending)) {
+          if ($pr.CommandLine -like ('*--user-data-dir=*{0}*' -f $pref)) { $owner = $Owners[$pref]; break }
+        }
+        # 起于本段之前的一律不算自己的:同一个前缀上一轮也用过,时间是唯一能分开两轮的东西。
+        # **两边都归一到 UTC 再比**([SL-311] 并入 #198 的建议):`Get-Date` 给的是 Local,
+        # `Win32_Process.CreationDate` 也是 Local —— 相等**是个隐式约定**,不是保证。
+        # 夏令时切换或 CIM 换成 UTC 口径时,这个比较会静默偏一小时:偏一边漏判(残留归不到套),
+        # 偏另一边把上一轮的算成这一轮的假红。写死 `.ToUniversalTime()` 就与两边的 Kind 无关。
+        # `CreationDate` 取不到时**不能调方法**(复审【重要】,是我上一轮改出来的回归):
+        # 旧写法 `$null -ge [datetime]` 求值为 `$false`,安全落进 `$other`(只报不判负);
+        # 改成 `.ToUniversalTime()` 之后空值会抛 RuntimeException,把**整段残留核对**
+        # 掀掉,而且报错指向「枚举失败」这个错误的原因。先判空,再比。
+        if ($null -ne $owner -and $null -ne $Since -and $null -ne $pr.CreationDate -and
+          $pr.CreationDate.ToUniversalTime() -ge $Since.ToUniversalTime()) {
+          $mine += [pscustomobject]@{ Suite = $owner; ProcId = $pr.ProcessId }
+        }
+        else { $other += $pr }
+      }
+      [pscustomobject]@{ Mine = $mine; Other = $other; Total = $all.Count }
+    }
+    $lo = $null
+    try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
+    catch {
+      # 取不到命令行(权限/CIM 不可用)时**不猜**:宁可不报,也不要拿「所有 chrome」冒充。
+      Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+      $lo = $null
+    }
+    # 超预算那条路径上**照样核残留,只是不多睡那 3 秒** —— 那恰恰是残留最可能存在的一条路径
+    # (套被腰斩,它自己的 teardown 没跑完)。「尽快交锁」省的是 3 秒等待,不是省掉诊断。
+    if ($null -ne $lo -and $lo.Total -gt 0) {
+      if (-not $smokeBudgetHit) { Start-Sleep -Seconds 3 }
+      try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
+      catch {
+        # 第二次枚举同样守「不猜就出声」:用 SilentlyContinue 的话,CIM 这一刻恰好失败
+        # 会静默变成「0 个残留」—— 那是把查不到当成没有,与本卡治的毛病同源。
+        Write-Host ("  [ipc-lock] 复核残留时枚举失败({0}),这一轮的残留数**未知**(不是 0)" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+        $lo = $null
+      }
+    }
+    # **判负前再等一次**(复审指出的假红入口):超预算那条路径跳过了上面的 3 秒宽限,
+    # 而 Windows 回收「被杀 node 的子 Chrome」不是同步的 —— `WaitForExit(5000)` 等的是
+    # node 自己,不是它的 Chrome 树。快照撞进回收窗口,旧代码只多一句不准的黄字,
+    # 新代码的代价升级成**整条 gates 判负**。这 2 秒只在**真数到东西时**才花。
+    if ($null -ne $lo -and $lo.Mine.Count -gt 0) {
+      Start-Sleep -Seconds 2
+      try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
+      catch {
+        Write-Host ("  [ipc-lock] 判负前复核枚举失败({0}),这一轮的残留数**未知**(不是 0),不判负" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+        $lo = $null
+      }
+    }
+    if ($null -ne $lo -and $lo.Mine.Count -gt 0) {
+      # 归因要分两支(复审指出上一版把两者混了):
+      #   · **被我们自己 kill 掉的套**:它的 teardown 按定义没跑完(超时/腰斩走的就是那支
+      #     `Kill`,回退分支还刚打印过「它起的 Chrome 可能留下」)。把这份残留写成
+      #     「该套 teardown 漏收」是把我们杀出来的后果归给被杀者,而且与同一次运行里那句
+      #     [HUNG] 自相矛盾 —— 与本 PR 顺手修掉的 `$killedTree` 是同族问题。
+      #     它那一套**已经因超时/腰斩判红**,这里只据实说明,不再叠一条判负。
+      #   · **没被杀、自己跑完的套**:残留才真是它 teardown 漏收 ⇒ 判负并点名。
+      $mineKilled = @($lo.Mine | Where-Object { $killedSuites.ContainsKey($_.Suite) })
+      $mineOwn = @($lo.Mine | Where-Object { -not $killedSuites.ContainsKey($_.Suite) })
+      if ($mineKilled.Count -gt 0) {
+        $k = @($mineKilled | Group-Object Suite | Sort-Object Name |
+          ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
+        Write-Host ("  [ipc-lock] 放 3e 锁前仍有残留,但归属到**本轮被我们杀掉**的套:{0} —— 它的 teardown 按定义没跑完,不记作它漏收(那一套已因超时/腰斩判红)" -f ($k -join '、')) -ForegroundColor Yellow
+      }
+      if ($mineOwn.Count -gt 0) {
+        $bySuite = @($mineOwn | Group-Object Suite | Sort-Object Name |
+          ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
+        Write-Host ("  [ipc-lock] 放 3e 锁前仍有**本轮自己**的无头 chrome 未退:{0}" -f ($bySuite -join '、')) -ForegroundColor Red
+        Write-Host '         判据:--user-data-dir 带该套源码里自己声明的 scvb- 前缀,进程起于本持锁段之后,且该套**没有被我们杀过** —— 归不到别的 agent、也不是我们杀出来的。' -ForegroundColor Red
+        Write-Host '         后果:锁放了但核还占着,下一个 agent 的 6/7/8 在被占的机器上跑,SL-301 的隔离当场打折。' -ForegroundColor Red
+        # 单独一行判定,不改 3e 自己的红绿:3e 的断言全过是事实,漏收是另一回事,
+        # 混进同一行会让「哪个坏了」说不清。这一行红 ⇒ 整条 gates 判负。
+        Set-Gate ('3e 收尾:页面级 Chrome 归零({0})' -f ($bySuite -join '、')) $false
+      }
+    }
+    if ($null -ne $lo -and $lo.Other.Count -gt 0) {
+      # 措辞要经得起追问:数的是**进程**不是浏览器实例(renderer / GPU / utility 同样带
+      # `--headless`,一套通常对应 8-9 个进程);而且这一层归不到套,可能是别的 agent、
+      # 别的 worktree、或起于本段之前 —— 所以只报不判负。
+      Write-Host ("  [ipc-lock] 另有 {0} 个带 --headless/scvb- 的 chrome **进程**归不到本轮任何一套(别的 agent / 别的 worktree / 起于本段之前)—— 只报不判负" -f $lo.Other.Count) -ForegroundColor Yellow
+    }
+  }
+  Exit-ScvbIpcLock -Mutex $script:SmokeLock -Segment 'gate 3e(页面级)'
+}
+# ===== 持锁段①终点:3f..5(configure/build)**不持锁**,可与别的 agent 并行 =====
+
+# ==================================================================
+Write-Host '=== Gate 3f: 文档真源(九条红字生成物 + 双语结构对等)==='
+# ==================================================================
+# 12 §3.4 第 5 条把 gen-hard-rules --check 挂在「与 check-i18n.mjs 同一 gates 档」。
+# 手抄必漂,而既有的那几道机检只查得出**数量与标题**、查不出条目**文本**漂移 ——
+# 逐字节比对生成物是唯一查得出的那道,所以这一格跑的是 `gen-hard-rules --check`。
+# [SL-338] 落地面有几处、既有机检具体是哪几道,详见 `scripts/gen-hard-rules.mjs` 的头注
+#   (它离机制最近:被描述的那几道机检有一部分就实现在它自己文件里)。这里不抄第二份:上一版这句话
+#   在本文件、`gen-hard-rules.mjs`、`format.yml` 三处近乎逐字各躺一份。
+#   ⚠ 不写「只写在那里」—— `CLAUDE.md` 的法条里也写着同一份事实,排他性断言是最强的一类
+#     复述:任何第四份出现它就变假,而那第四份已经在了(#228 复审)。
+# node 守卫同 Gate 3e:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
+# 「一条都没跑」会被判成全绿,而误报绿比硬失败危险得多。
+if (-not $nodeCmd) {
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3f 文档真源' $false
+}
+else {
+  $docsOk = $true
+
+  $genOut = (& node scripts\gen-hard-rules.mjs --check 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $docsOk = $false
+    Write-Host '  gen-hard-rules --check:' -ForegroundColor Red
+    $genOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+
+  # guide.rule1..9 已由 gen-hard-rules 落地,不再需要 --skip-guide-rules 过渡开关(12 §3.4)。
+  $i18nOut = (& node scripts\check-i18n.mjs 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $docsOk = $false
+    Write-Host '  check-i18n:' -ForegroundColor Red
+    $i18nOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+
+  # [SL-329] 第①类,也是本卡点名的那一处:没有 pwsh 时上一条外部命令是
+  # `node scripts\check-i18n.mjs`,它成功留下 0 ⇒ 双语结构对拍一次没跑却不影响 `$docsOk`,
+  # gate 3f 照打 PASS。gate 3f 的另外两条(gen-hard-rules / check-i18n)由 `$nodeCmd` 守着,
+  # 唯独这一条没有 —— 同一道门里两种待遇,本卡把它补齐。
+  if (-not $pwshCmd) {
+    $docsOk = $false
+    Write-Host '  pwsh 不在 PATH —— check-readme-parity 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  }
+  else {
+    $global:LASTEXITCODE = 1
+    $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $docsOk = $false
+      Write-Host '  check-readme-parity:' -ForegroundColor Red
+      $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
+  }
+
+  Set-Gate '3f 文档真源' $docsOk
+}
+
+# ==================================================================
+Write-Host '=== Gate 3g: IPC 契约文档对拍(IPC_CONTRACT.md <-> ipc-layout golden)==='
+# ==================================================================
+# #75(T39a)把 docs/IPC_CONTRACT.md 转正时,文档里的结构体偏移/大小与实现漂移,
+# 靠人审来回修了三轮才收口 —— 人眼数不住 offset,「16..76」错成「16..80」评审
+# 100% 看不出来。真源链是 代码 →(tests/core/test_ipc_layout.cpp 的编译期断言)→
+# tests/golden/ipc-layout.txt → docs/IPC_CONTRACT.md;最后一环此前全靠人肉维护,
+# 本 gate 就是把它机检起来(方向不可颠倒:以 golden 为真,文档是被检侧)。
+# 顺带补 golden 的完备性洞:C++ 测试只查「golden 每行都对得上代码」,查不出
+# 「代码新增字段而 golden 漏冻」,故脚本另读头文件比对字段集合与顺序。
+#
+# node 守卫同 Gate 3e/3f:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
+# 「一条都没跑」会被判成全绿。误报绿比硬失败危险得多。
+if (-not $nodeCmd) {
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3g IPC 契约文档对拍' $false
+}
+else {
+  # 脚本要求三侧文件齐备(缺一侧自己会硬失败),这里再做一次存在性守卫,
+  # 好在文件被挪走时给出比 node 栈更直白的提示。
+  $ipcParityInputs = @(
+    'docs\IPC_CONTRACT.md',
+    'tests\golden\ipc-layout.txt',
+    'src\core\ipc\SegmentLayout.h',
+    'src\core\ipc\CtrlPlane.h'
+  )
+  $ipcMissing = @($ipcParityInputs | Where-Object { -not (Test-Path (Join-Path $RepoRoot $_)) })
+  if ($ipcMissing.Count -gt 0) {
+    Write-Host ('  对拍输入缺失: {0}' -f ($ipcMissing -join ', ')) -ForegroundColor Red
+    Set-Gate '3g IPC 契约文档对拍' $false
+  }
+  else {
+    $ipcOut = (& node scripts\check-ipc-doc-parity.mjs --strict-missing 2>&1)
+    $ipcOk = ($LASTEXITCODE -eq 0)
+    # 非零才打全量;绿时也把 [WARN](文档未标注、无法机检的项)透出来,
+    # 免得「机检覆盖不到的洞」悄悄扩大 —— 补齐后可给脚本加 --strict 收紧。
+    if (-not $ipcOk) { $ipcOut | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $ipcOut | Select-String -Pattern '\[WARN\]' | ForEach-Object { Write-Host ("  " + $_) } }
+    Set-Gate '3g IPC 契约文档对拍' $ipcOk
+  }
+}
+
+# ==================================================================
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备 对拍(scripts/check-*)==='
+# ==================================================================
+# [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
+# 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
+# 扩到 input/monitor 三侧的版本,都只有人手动 node 才会红。同一族的洞因此栽了两次
+# (exportSuggestions 与 setGuideSeen:契约齐全、常量在、web 真调用,唯独没注册 handler),
+# **即便门禁当时已经写好也照样栽**。判级理由与 Gate 3g 逐字同款:门禁没有执行者等于没有门禁。
+# 三条本地实跑均 exit=0 后才接线(curve 最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
+# [SL-283] check-native-paths.mjs 同理接进来:它与 format.yml 的 docs-truth 跑
+# **逐字同一条命令**。本仓的纪律是「只挂在本地 gates 上等于没有执行者」,反过来同样成立 ——
+# 只挂在 CI 上,改 NATIVE_RE 的人本地全绿、推上去才红。
+# [SL-297] check-gates-visibility.mjs:它读的是 **gates.ps1 自己**,断言 Gate 3e 的
+# rc=3(浏览器在但没连上)有独立计数**且计数接进了汇总标签**。本卡修的洞就是「降级了但
+# 摘要里看不见」,而那个修复自己也会被人删回去 —— 删掉标签里那段插值,`[FLAKY-SKIP]`
+# 退回只在滚屏出现一行,洞原样复现而所有现有用例照绿。所以钉的是**接线**不是常量。
+# 注意它在**没有 grep 的机器上**(Windows 裸装)会把引擎对拍降级成警告仍返回 0。
+# [SL-286] 起那是**两档**(手写用例 / 全仓真实路径);另外**没有 git 时**
+# 「顶层条目全覆盖」**与「全仓路径引擎对拍」两档**一起降级(后者嵌在前者的代码块里,
+# 拿不到全仓文件清单就无从对拍)。所以本地绿不等于这几档验过,它们以 CI(ubuntu)为准。
+# [SL-295] check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
+# 预写条目却还留着」的条目。它是这一圈里**唯一要读 git 历史**的一条 —— 已上线集合取自
+# base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改;PR 号另认提交
+# 正文末段的 `Landed-PRs` 尾注,[SL-576] 里程碑 squash 用,见脚本头注 §边界)。取不到那个
+# ref、或仓库是浅克隆时它**判负而不是跳过**:近乎空的已上线集合会让门禁永远绿,正是本仓
+# 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
+if (-not $nodeCmd) {
+  Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍' $false
+}
+else {
+  $parityOk = $true
+  $parityWarn = 0
+  $draftsAllow = 0   # [SL-315] check-changelog-drafts 打出的放行行数(只认行首标记)
+  # [SL-318] **计数口径一处定义**,下面**两处计数**共用(WARN 与 ALLOW;BASE 只回显、没有计数,
+  # 不在这一档里)。`^\s*` 那半吃掉真信号行的两个前导空格(`"  [标记] …"`),`^` 那半把
+  # 「成功散文里提了一嘴」挡在外面。两个方向都栽过,理由写在下面各自的用点上。
+  # 写成一份是因为它此前是**两份逐字相同的字面量**,而两份就会只改一份 ——
+  # 那时「WARN 收紧了、ALLOW 没有」在汇总表上看不出任何差别。
+  # 只管**计数**;回显是另一份判据(ALLOW / BASE 要把两类都打出来,故按裸标记匹配)。
+  #
+  # ⚠ 这份模式里**除 `{0}` 外不得出现花括号**。`-f` 是 String.Format,`{0,2}` 这类会被读成
+  #   「第 0 个参数、右对齐宽 2」而不是正则量词 —— 写成 `'^\s{0,2}\[{0}\]'` 得到的真正则是
+  #   `^\sWARN\[WARN\]`,**永不命中 ⇒ 有降级也恒报 0**,而「恒 0」连删除式都照不出来。
+  #   要写量词请改用 `\s\s?` 这类不带花括号的等价形态。这条边界已由 check-gates-visibility
+  #   变成机器判据(把 `{0}` 抠掉后还剩花括号就判红),不只是这句注释。
+  #
+  # ⚠ 对**生产者**的硬要求:标记必须**开输出行**,别在它前面拼任何前缀。
+  #   `log(prefix + "  [WARN] …")` 这种写法能过 check-gates-visibility 的散文守卫
+  #   (标记确实紧跟引号),但输出行不以标记起头 ⇒ 在这里**既不回显也不计数**,
+  #   静默漏一档降级。同一条要求的散文版见 check-bridge-parity 的「一律走 warn() helper」。
+  #
+  # ⚠ [SL-322] 用它的地方一律走 **`-cmatch`,不是 `-match`**:PowerShell 的 `-match` 默认
+  #   **不区分大小写**,`[warn]` / `[allow]` 会被这里数进去,而守卫(JS 正则,默认区分大小写)
+  #   与它的夹具都只认大写 —— 于是「gates 数到一档降级」和「守卫看得见那一档」在小写标记上
+  #   分家,两边各自都是绿的。实测:`'  [warn] x' -match '^\s*\[WARN\]'` 为 True,
+  #   `-cmatch` 为 False。**没有任何生产者打小写标记** —— 这一圈脚本的真信号一律是大写起头的
+  #   输出行;注释里为了讲清这条边会出现小写字样,那是散文、不进任何输出行。所以收紧没有反向
+  #   代价。别把这句写成「全仓零命中」:本次提交自己就让那条 grep 有了命中(复审第 1 轮)。
+  $markerCount = '^\s*\[{0}\]'
+  # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
+  # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
+  $draftsSelfTest = (& node (Join-Path 'scripts' 'check-changelog-drafts.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-changelog-drafts.mjs --self-test:' -ForegroundColor Red
+    $draftsSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  # [SL-325] 第二条自测,理由与上面那条逐字同款。这一条尤其需要:它的实跑今天基线是
+  # **0 处违规**,而「0 处」与「判据面被改空了」在输出上长得一模一样(脚本自己另有一道
+  # 「一处族内调用都没扫到就判负」的守卫,但那只挡得住极端形态)。
+  $encSelfTest = (& node (Join-Path 'scripts' 'check-source-encoding.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-source-encoding.mjs --self-test:' -ForegroundColor Red
+    $encSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  # [SL-330b] 剥注释的那份扫描器自己也要有自测:它是**下面这一圈判据共用的判据面** ——
+  # 剥多了(把串里的东西当注释删掉)判据无声缩水,剥少了(注释冒充代码)判据变哑弹,
+  # 两个方向在实跑里都长得像「全绿」。它是库不是门禁,只有 --self-test 一个入口,
+  # 所以不进下面那个 foreach。
+  $stripSelfTest = (& node (Join-Path 'scripts' (Join-Path 'lib' 'strip-comments.mjs')) --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  lib/strip-comments.mjs --self-test:' -ForegroundColor Red
+    $stripSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  # [SL-335] 同款:实跑绿有两种可能(文案真在表里 / 判据被改坏),自测把后一种单独照出来。
+  $msgSelfTest = (& node (Join-Path 'scripts' 'check-preview-messages.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-preview-messages.mjs --self-test:' -ForegroundColor Red
+    $msgSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs', 'check-source-encoding.mjs', 'check-preview-messages.mjs')) {
+    $out = (& node (Join-Path 'scripts' $sc) 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host ("  {0}:" -f $sc) -ForegroundColor Red
+      $out | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    else {
+      # [SL-283] **成功时也要把 [WARN] 行回显,并把「降级了几档」带进汇总表**。
+      # check-native-paths 在没有 grep 的机器上会把引擎对拍降级成警告并**仍返回 0** ——
+      # [SL-286] 起那是**两档**(手写用例 / 全仓真实路径),各打一行;没有 git 时
+      # 掉的是「顶层条目全覆盖」**与「全仓路径引擎对拍」两档,但只打一行**(后者嵌在
+      # 前者的代码块里)—— 这就是下面那段说「行数是档数的下界」的来处。
+      # 而 Windows 上 `grep` 通常不在 PATH 上
+      # (Git for Windows 的 grep 只在 Git Bash 里),所以降级在本地是**常态而不是例外**。
+      # 只回显还不够:`Set-Gate` 只有 PASS/FAIL 两态,汇总表里「降级过的一次」和「全跑过的
+      # 一次」会长得一模一样,而跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字。
+      # 与 Gate 3e 同款处理(见那段 **但绝不静默** —— SKIP 计数要带进总结):把降级计数拼进
+      # gate 名,让「有一档没跑」在汇总表里就与「跑过了」不同形。
+      # [SL-318] 匹配走上面那份**一处定义**的 $markerCount(行首 + 吃掉前导空格),
+      # 此前这里是裸 `\[WARN\]`。风险比 ALLOW 那条**高一档**:ALLOW 的裸匹配只多回显一行,
+      # 而 WARN 是**直接进 $parityLabel 的计数** —— 任一脚本在成功路径的散文里提一句
+      # 「见 WARN 那档」(带方括号),汇总表当场多报一档降级,正撞下面那段自己写的
+      # 「喊错一次,下次真降级也会被当噪声」。真警告行带两个前导空格
+      # (见 check-native-paths / check-bridge-parity 的写法),所以 `^\s*` 那半不能省 ——
+      # 只写 `^` 会**有降级也恒报 0**,而「恒 0」连删除式都照不出来(0 == 0)。
+      # 与 ALLOW 那条不同的是:WARN 的**计数与回显共用这一个数组**,
+      # 收紧计数的同时回显也一并收紧 —— 散文本来就不该冒充一行警告。
+      # 散文侧另有执行者:check-gates-visibility 对 gate 3i 这一圈脚本禁「散文里出现方括号标记」,
+      # ALLOW / BASE / WARN 三个标记同一条守卫。
+      # 边界:gate 3g 也回显 [WARN],但那一处**不进任何计数**(只把「文档未标注、机检覆盖不到」
+      # 的项透出来),散文多一行的代价止于滚屏;它读的脚本也不在上面那道守卫的执行面里。
+      # 所以本卡只收紧这一处,不顺手改 3g。
+      $warnLines = @($out | Where-Object { $_ -cmatch ($markerCount -f 'WARN') })
+      if ($warnLines.Count -gt 0) {
+        $parityWarn += $warnLines.Count
+        $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+      }
+      # [SL-295] check-changelog-drafts 有两行**只在成功路径上**、却必须显形的输出,
+      # 这一圈默认只回显 [WARN],会把它们整段吞掉:
+      #   · `[ALLOW] #<号> 放行 —— <理由>` —— 豁免不显形就等于没有豁免纪律(脚本头注口径);
+      #   · `[BASE] <base>@<sha> (<date>) —— N 条提交标题、A 条 Landed-PRs 尾注(只在 HEAD 上的另有
+      #     B 条;落地位 K 个,最大 #M);块里 T 个待合并的号`,[SL-576] 起每条尾注另有一行同标记的明细
+      #     (⚠ 这行格式是**手抄摘录** —— SL-319 改输出格式时它与
+      #     `check-changelog-drafts.mjs` 头注那处一起漏了一轮,SL-326 才回扫补上,机器一次都没醒;
+      #     但它**已有执行者**:[SL-327] 起由 check-gates-visibility 的 §⑤ 与真拼装逐片段对拍,
+      #     改了输出格式而没回扫这里会当场判红。上面那段历史保留 —— 它解释的正是为什么要加 §⑤)
+      #     —— 陈旧的 remote-tracking ref 会让
+      #     门禁**静默变绿**,而这条降级**只在本地发生**(CI 那边每次都从远端重新 fetch,
+      #     `fetch-depth: 0`;「新 clone」本身并不保证 base 新,保证它的是「这一次就是拉来的」)。
+      #     放进成功消息又被成功分支吞掉,等于修在了唯一用不到的地方。
+      # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
+      # 这行回显静默失效(#197 复审第 5 轮【建议】)。
+      # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
+      # [SL-315] 放行**还要进汇总标签**,不能只到滚屏 —— 本文件里这是常规做法:
+      # 搜 `Label = '{0}(` 这个形态就是那一族的拼装点(`$smokeLabel` / `$parityLabel` /
+      # `$ctestLabel` 是今天的几个例子,**不是全集**)。理由逐字写在上面那段:
+      # 「跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字」。一个烂在注释块里的放行,
+      # 若只在滚屏里闪一行,本地看到的形态与「没有任何放行」完全一样。
+      # 计数走上面那份**一处定义**的 $markerCount(行首 + 吃掉前导空格)—— 放行行带两个前导
+      # 空格,只写 `^` 会**有放行也恒报 0**;而按裸标记数的话,成功消息里提到这两个信号的名字
+      # 也会被数进去,**0 条放行也会数出 1**(SL-313 那轮 gates 在主线上实测到回显 2 行,
+      # 就是这个)。两个方向一样坏,`check-gates-visibility` 各配了一格夹具。
+      # [SL-318] 这条口径此前与 WARN 那条是**两份逐字相同的字面量**,已合成一份。
+      # 回显仍按裸标记匹配(要把两类都打出来),只有**计数**收紧到行首 —— 两者判据不同,别合并。
+      # [SL-318] 这一条**只对 ALLOW / BASE 成立**:它俩的回显不进任何计数,多打一行的代价止于
+      # 滚屏。上面 WARN 那条不一样(计数与回显共用一份匹配、且计数直接进标签),所以那里两半
+      # 一起收到了行首。别把这句「回显按裸标记」推广过去。
+      $draftsAllow += @($out | Where-Object { $_ -cmatch ($markerCount -f 'ALLOW') }).Count
+      @($out | Where-Object { $_ -cmatch '\[ALLOW\]|\[BASE\]' }) |
+        ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
+  }
+  # 标签只说**数出来的东西**,不替别人的 `[WARN]` 下定义(PR#180 复审采纳)。
+  # 这里数的单位是**行**,不是「档」。
+  # [SL-286] 这段论证原先举的两个例子**都已被 SL-286 改掉**,留着会把人带向不存在的东西:
+  #   · 原文说「check-native-paths 的降级是单次单行 console.warn」——它现在有**三个**降级点:
+  #     ①「没 grep ⇒ 跳过手写用例对拍」②「没 grep ⇒ 全仓路径对拍也一并跳过」
+  #     ③「没 git ⇒ 跳过顶层条目全覆盖」。但**单次运行最多打两行**:② 落在「git 可用」
+  #     那一支里,与 ③ 互斥(没 git 时 ④ 整档不进,② 根本走不到)。**四种组合实测**
+  #     (上一版只列了三种 —— 一张不完整却看着像穷举的表,和写死行号是同一类账):
+  #       无 git 无 grep = 2 行   有 git 无 grep = 2 行
+  #       无 git 有 grep = 1 行   两者都有       = 0 行
+  #     **注意 1:1 并不成立**(SL-283 时成立,现在不了):没 git 时 ② 走不到、连一行都不打,
+  #     但它确实**没跑**。逐格算「打几行 / 实际跳掉几档」:
+  #       无 git 无 grep = 2 行 / 3 档   有 git 无 grep = 2 行 / 2 档
+  #       无 git 有 grep = 1 行 / 2 档   两者都有       = 0 行 / 0 档
+  #     即**行数是档数的下界,会少报**。这反而是「不能冒充降级档数」的又一条理由 ——
+  #     标签只能说「上方有几处 WARN,自己看」。
+  #   · 原文说 check-bridge-parity 的 `warn()` helper「已定义、当前零调用」,并举
+  #     那一处「真跳过却裸 warns.push、这里数不到」当反例 —— 那四处**已改走 warn()**
+  #     (全在 check-bridge-parity 的「四、事件载荷字段对拍」那一节里),裸 push 只剩
+  #     helper 自己那一处,反例没了。
+  #     ⚠ 这里**故意不写行号**:上一版那两个数就是这么失效的,而换成四个新数只是把时钟
+  #     归零、耦合原样留着 —— 且它们指向**另一个文件**,那边任何增删都会让四个数一起漂,
+  #     不会有人发现。同一条规矩 check-smoke-hygiene.mjs 的头注也写过(那边管的是格数)。
+  # 但**结论不变**,理由换成仍然成立的那条:`warn()` 的语义是「**通过但有提示**」,不等于
+  # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
+  # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
+  # 所以这半句只能是「上方有几处 WARN,自己看」,不能冒充「降级档数」的权威计数。
+  # ---- [SL-331 后续批] check-gates-guards.ps1(外部命令调用点必须有存在性守卫)----
+  # **不进上面那圈 foreach**:那一圈是 `& node (Join-Path 'scripts' $sc)`,而本判据是 `.ps1`,
+  # 要走 pwsh。口径照 gate 5b:先判 `$pwshCmd` 在不在(找不到外部命令时 PowerShell 抛
+  # CommandNotFoundException 且**不更新** `$LASTEXITCODE`),每次调用前再把它显式置 1。
+  # CI 侧已在 `.github/workflows/format.yml` 的 docs-truth 接好(#217);这里补的是**本地**
+  # 执行者 —— 改本文件的人应当在自己机器上就看见它红,而不是推上去才知道。
+  # ⚠ `check-gates-visibility.mjs` 的执行面是从上面那圈 `foreach` 的字面量里读的,所以它
+  #   **扫不到这一段**。这是预期,不是漏接:本判据不是 `.mjs`、也不打 ALLOW/BASE/WARN 标记,
+  #   不在那道散文守卫的题域内。要让可见性判据也覆盖 `.ps1` 这一族是**另一张卡**的事,
+  #   别为了这一句去改它的执行面。
+  if (-not $pwshCmd) {
+    $parityOk = $false
+    Write-Host '  pwsh 不在 PATH —— check-gates-guards 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  }
+  else {
+    # 两次调用写开、不绕数组嵌套:`foreach ($a in @(,@('-SelfTest')), @(,@()))` 每轮拿到的是
+    # **嵌套数组**(实测 `$a.Count -eq 1`、内容是 `System.Object[]`),splat 出去就不是原意了。
+    # 与 gate 5b 一样两句写清楚,读的人也一眼看得出「先自测、再实扫」。
+    $ggScript = Join-Path 'scripts' 'check-gates-guards.ps1'
+    # 自测与实扫**并列**,不把实扫塞进自测的 else —— 与同圈 check-changelog-drafts /
+    # check-source-encoding 的口径一致,也与 CI 侧的两个独立 step 一致。塞进 else 的话,
+    # 「判据被改坏」与「gates.ps1 真的多了一处无守卫调用」这两个信号在一次运行里只看得到
+    # 前一个,而这一圈的注释反复在讲「两种可能要分开照出来」(#219 复审)。
+    $global:LASTEXITCODE = 1
+    $ggSelf = (& pwsh -NoProfile -File $ggScript -SelfTest 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-guards.ps1 -SelfTest:' -ForegroundColor Red
+      $ggSelf | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    $global:LASTEXITCODE = 1
+    $ggOut = (& pwsh -NoProfile -File $ggScript 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-guards.ps1:' -ForegroundColor Red
+      $ggOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    # ---- [SL-330c] check-gates-visibility.ps1(降级/放行的计数必须接进汇总标签)----
+    # 与上面同一段、同一套写法(先自测再实扫、两者并列、每次调用前把退出码置 1)。
+    # 它判的是本文件里「`$smokeLabel` / `$parityLabel` 的赋值右侧是不是 `-f` 表达式、
+    # 实参里有没有那个计数」—— 那是**语法**问题,此前在 `check-gates-visibility.mjs` 里
+    # 用文本级正则逼近,压了四层补丁(只认单行/格式串不跨引号/尾部排 `#`/行首锚)。
+    # ⚠ 两个脚本合起来才是完整的一段:分支与计数器的**存在性**仍在那个 `.mjs` 里,
+    #   跑一个不等于守住了这一段。
+    $gvScript = Join-Path 'scripts' 'check-gates-visibility.ps1'
+    $global:LASTEXITCODE = 1
+    $gvSelf = (& pwsh -NoProfile -File $gvScript -SelfTest 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-visibility.ps1 -SelfTest:' -ForegroundColor Red
+      $gvSelf | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    $global:LASTEXITCODE = 1
+    $gvOut = (& pwsh -NoProfile -File $gvScript 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-visibility.ps1:' -ForegroundColor Red
+      $gvOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
+  }
+
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍'
+  if ($parityWarn -gt 0) {
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+  }
+  # [SL-315] 放行数另拼一段,与上面 [WARN] 那句同形、同口径:**只报行数**,不冒充「有几个号
+  # 被豁免」——「一个号一行」是注释块的写法约定,不是这里数得出来的事实。0 条时整句不出现,
+  # 于是「有放行」与「没有放行」在汇总表里就不同形(这正是本卡要立的那一点)。
+  if ($draftsAllow -gt 0) {
+    $parityLabel = '{0}(上方 {1} 处 [ALLOW] 放行,逐条看理由还成不成立)' -f $parityLabel, $draftsAllow
+  }
+  Set-Gate $parityLabel $parityOk
+}
+
+# ==================================================================
+Write-Host '=== Gate 3h: 字体子集覆盖(文案字符 <-> web/fonts/*.woff2 逐字对拍)==='
+# ==================================================================
+# [F12] web/fonts/README.md 早就写着「新增文案不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」。
+# 那句话在 2026-08-17 → 08-25 之间被兑现:i18n.js 连改四批词条、子集一次没重跑,feature/v1
+# 主线带着几百个无字形字符(含「卡箍」这种正经词条)一路合入,当时的门禁没有一道看得见。
+# 人审 PR diff 永远发现不了「这个新汉字字体里没有」—— 只有逐字比对字符集与 cmap 查得出。
+#
+# CI 侧跑**同一条命令**:.github/workflows/format.yml 的 docs-truth job(与 3f/3g 同档)。
+# 那边由 setup-python 钉版本 + pip 锁 fontTools/Brotli 补丁号;本地用开发机现装的。
+#
+# python 守卫同 Gate 3d:命令不存在时 PowerShell 抛 CommandNotFoundException 而**不更新**
+# $LASTEXITCODE,它会保留上一条外部命令的 0,于是「一次没跑」被判成绿。
+# 脚本自身也不静默:缺 fontTools/brotli 会以非零退出并打安装命令,不会假绿跳过。
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(check-font-coverage.py 需要,另需 fontTools + brotli)' -ForegroundColor Red
+  Set-Gate '3h 字体子集覆盖' $false
+}
+else {
+  $fontOut = (& python scripts\check-font-coverage.py 2>&1)
+  $fontOk = ($LASTEXITCODE -eq 0)
+  # 绿时也透出 [INFO](按设计走字体栈回退、以及上游家族本身没有的字形),
+  # 免得那张白名单悄悄变长而无人过问;红时打全量,缺字逐个带码位。
+  if (-not $fontOk) { $fontOut | ForEach-Object { Write-Host ("  " + $_) } }
+  else { $fontOut | Select-String -Pattern '\[INFO\]|—' | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3h 字体子集覆盖' $fontOk
+}
+
+# ==================================================================
+Write-Host '=== Gate 3k: 字体保留名(woff2 name 表 <-> OFL-1.1 §3 RFN 断言)==='
+# ==================================================================
+# [SL-267] 与 3h 同吃 web/fonts/*.woff2,但问的是**另一个问题**:3h 问「字够不够」,
+# 3k 问「名字能不能用」。OFL-1.1 §3 禁止 Modified Version 使用上游保留字体名(RFN),
+# 而子集化就是修改;IBM Plex 两款的 RFN 是 "Plex" 一词本身,仓库带着这个违规转了 public。
+# 判据落在字体 `name` 表而非文件名:文件改叫 ScvbSans.woff2 而 name 表里仍写 "IBM Plex Sans"
+# 的话,装进系统字体册 / DevTools 字体面板 / PDF 导出读到的依然是上游名 —— 违规照旧,
+# 而 diff 看着已经改完了。woff2 是 brotli 压缩的,grep 二进制不命中不等于名字已清除。
+# 违规面还有第三处:进包的 CSS/JS 里的 `@font-face` family 与字体栈字面量 —— 只守 woff2 的话,
+# 把 family 改回上游名而字体一字不动,解表照样全绿,而分发出去的 CSS 又在呈现 RFN。
+# 故本门禁同时扫 web/ 下的 .css/.js/.html(vendored 的 web/js/juce/ 除外),
+# 判据只落在字体名上下文(font-family: / font: 简写 / 驼峰 fontFamily / --ff-* 变量 /
+# 含通用族关键字的字符串字面量含模板串 / src: local(...) 里的家族名),
+# 不是整文件 grep —— RFN "Source" 是常用词,整文件扫会刷出几十条假红。
+#
+# **先自检再扫**,理由与 3j 逐字同款:本门禁的失效模式是「静默放行」——
+# 署名豁免表被放宽、或子串比对被写成相等比对之后,扫描照样退 0。自检用仓内真字体就地
+# 合成坏样例,验证「漏改的呈现名必红 / 署名记录不误伤 / 未登记字体必红」三档确实成立。
+# python 守卫同 Gate 3d/3h:命令不存在时 $LASTEXITCODE 会保留上一条外部命令的 0。
+# 与 .github/workflows/compliance.yml 的两步逐字同参。
+$fontNameOk = $false
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(check-font-names.py 需要,另需 fontTools + brotli)' -ForegroundColor Red
+}
+else {
+  $fnSelf = (& python scripts\check-font-names.py --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $fnSelf | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
+    Write-Host '  自检失败 = 门禁本身坏了(不是字体里有 RFN)' -ForegroundColor Red
+  }
+  else {
+    $fnOut = (& python scripts\check-font-names.py 2>&1)
+    $fontNameOk = ($LASTEXITCODE -eq 0)
+    if ($fontNameOk) { $fnOut | Select-Object -Last 1 | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $fnOut | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red } }
+  }
+}
+Set-Gate '3k 字体保留名' $fontNameOk
+
+# ==================================================================
+# ---- gate 4/5 前置守卫:cmake 必须真实可执行 ----
+# 不设守卫的后果不是「报错」,是**假绿**:外部命令不存在时 PowerShell 抛
+# command-not-found,但 $LASTEXITCODE 保留上一条命令的旧值(通常 0),
+# 于是 Set-Gate ($LASTEXITCODE -eq 0) 判 PASS —— 构建与测试一次没跑却全绿。
+# 同族教训见 node(Gate 3e)/ gitleaks(Gate 3b)的 Get-Command 守卫。
+# [SL-277] ctest 的守卫已随 gate 6 一起挪到下面的持锁段里 —— 拆锁后 gate 6 不再
+# 与 gate 4/5 同处一个 if/else,守卫也得跟着走,否则「ctest 不在 PATH」这条会漏判。
+$cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
+$ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
+if (-not $cmakeCmd) {
+  Write-Host '  cmake 不在 PATH —— gate 4/5 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
+  Set-Gate '4 配置' $false
+  Set-Gate '5 构建' $false
+  # [SL-325] 5b 读的是 configure 的**生成物**,没有 cmake 就没有那份文件。这里必须显式判负
+  # 而不是不写:`Set-Gate` 没被调用过的道在汇总表里**根本不出现**,读表的人看不出它没跑。
+  Set-Gate '5b ctest 上界属性完备' $false
+}
+else {
 
 # ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
-$cfg = (& cmake -S . -B $BuildDir "-DCMAKE_BUILD_TYPE=$Config" "-DSCVB_BUILD_TESTS=ON" "-DJUCE_PATH=$JucePath" 2>&1)
+$cfgArgs = @('-S', '.', '-B', $BuildDir, '-DSCVB_BUILD_TESTS=ON', "-DJUCE_PATH=$JucePath")
+if ($Generator -like '*Multi-Config*') {
+  # 多配置生成器下档位由 `--build --config` / `ctest -C` 选,`CMAKE_BUILD_TYPE` 会被忽略;
+  # 传了只会让人以为它在起作用 —— CI 侧同理,那边也不传(build-vst3.yml 的 configure 步)。
+  $cfgArgs += "-DCMAKE_CONFIGURATION_TYPES=$Config"
+}
+else {
+  # **这条分支是按生成器名字分,不是按「是不是多配置」分**(PR#176 复审的一处校正):
+  # 默认路径($Generator 为空)在 Windows 上落到 Visual Studio 生成器,那**也是**多配置的,
+  # 于是照样拿到一个被忽略的 `CMAKE_BUILD_TYPE`。明知如此仍这么写,是因为默认路径要**逐字**
+  # 保持本卡之前的行为(默认档位不该因为这条清理而变),而单配置生成器(`-G Ninja`、
+  # Makefiles)确实需要它。想连默认路径一起清,得先把「默认生成器是什么」钉死,那是另一张卡。
+  $cfgArgs += "-DCMAKE_BUILD_TYPE=$Config"
+}
+if ($Generator) {
+  $cfgArgs = @('-G', $Generator) + $cfgArgs
+  Write-Host ("  生成器:{0}(显式指定)" -f $Generator) -ForegroundColor Cyan
+}
+else {
+  # [SL-277] 本地与 CI 的生成器**不同**,这不是等价关系,别当成等价的用:
+  # CI 是 Ninja Multi-Config + sccache,本地默认是 Visual Studio 生成器。
+  # 两者会在不同的地方红(add_custom_command 隐式依赖漏声明、生成物时序、PCH 行为),
+  # 而 push→feature/** 的 CI 触发已在 [J96] 撤掉 —— Ninja 侧的错第一次被看见的时刻
+  # 就是出包前那次 dispatch。改到构建系统的 PR 请打 `ci:full`,或在 Developer
+  # Command Prompt 里跑 `-Generator "Ninja Multi-Config"` 先自己对一遍。
+  Write-Host '  生成器:CMake 默认(CI 用的是 Ninja Multi-Config,二者不等价;见 CLAUDE.md §2)' -ForegroundColor DarkGray
+}
+$cfg = (& cmake @cfgArgs 2>&1)
 if ($LASTEXITCODE -ne 0) { $cfg | ForEach-Object { Write-Host ("  " + $_) } }
 Set-Gate '4 配置' ($LASTEXITCODE -eq 0)
 
@@ -153,16 +1668,305 @@ if ($w.Count -gt 0) {
 Set-Gate '5 构建' $buildOk
 
 # ==================================================================
-Write-Host '=== Gate 6: ctest ==='
+Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cmake)==='
 # ==================================================================
-$ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
-if ($LASTEXITCODE -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
-Set-Gate '6 ctest' ($LASTEXITCODE -eq 0)
+# [SL-325] SL-320 把七套的上界全部写进了 TIMEOUT 属性,于是下面 gate 6 的 `--timeout 300`
+# 与 build-vst3.yml 的那个 300「今天一套都管不到」。这句话是**当下事实,没有执行者** ——
+# 新加一个测试目标、忘了写 `set_tests_properties(... TIMEOUT ...)`,它会静默退回 CTest
+# 默认的 **1500s**,而这条退化在本机与 CI 上**都不会红**:它看起来「有上界」,只是那个
+# 上界在两条路上又分叉了(gates 300 / 出包硬门 1500),正是 SL-320 修掉的那个洞的复发形态。
+#
+# **为什么放在这里、不放进 gate 3 那一圈**:判据读的是**生成物**,configure 之后才有。
+# 放进 3i 就得读手边的 `tests/CMakeLists.txt` —— 而属性可以写在任何一个 CMakeLists 里
+# (`scvb_ipc_tests` 的 900 就在 `tests/ipc/CMakeLists.txt`),也可以由 `SCVB_BUILD_IPC_TESTS`
+# 这类开关决定进不进集合。本文件的注释在 SL-320 里为这件事栽过一次(只 grep 了一个文件、
+# 把 ipc 写成「没有属性」),所以这一条从设计上就只认 ctest 真正吃的那份。
+# 不持锁:纯读文件,不起任何进程。
+#
+# ⚠ **必须先判 pwsh 在不在**(#211 复审【重要】),口径与 gate 3e 为 `node` 写的那条守卫
+# 同源(搜「必须先判 node 在不在」):PowerShell 找不到外部命令时抛 CommandNotFoundException,默认
+# ErrorActionPreference=Continue 下**不更新** $LASTEXITCODE —— 它会保留上一条外部命令的值,
+# 而这里上一条正是 gate 5 的 `cmake --build`。构建成功 ⇒ 0 ⇒ $timeoutOk 为真 ⇒ 汇总表打出
+# 「5b PASS」,**而判据一行都没跑过**。5b 恰恰是唯一一道「不跑就恒绿」的门(它的实跑输出与
+# 「没跑」在汇总表里同形),所以这个失效方向正是本卡要根治的那一族。
+# 这条路不是假想:gates 的调用口径是 `pwsh scripts/gates.ps1`,但从 Windows PowerShell 5.1
+# (`powershell.exe`)起跑是本仓真实存在的一条路,那条路上 `pwsh` 未必在 PATH 上。
+# 双保险:除 Get-Command 守卫外,每次调用前把 $LASTEXITCODE 显式置 1 —— 「没写」等价于判负。
+# [SL-329] `$pwshCmd` 已经提到文件开头**一处解析**(见那段的三类清单),这里不再各解析一次:
+# 两处 `Get-Command pwsh` 就会变成两份口径,而「只改一份」在汇总表上看不出任何差别。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— gate 5b 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:本 gate 的两条命令都要 PowerShell 7+;从 powershell.exe(5.1)起跑时请先把 pwsh 加进 PATH。' -ForegroundColor Yellow
+  Set-Gate '5b ctest 上界属性完备' $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  $timeoutSelfTest = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -SelfTest 2>&1)
+  $timeoutOk = ($LASTEXITCODE -eq 0)
+  $timeoutSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  if ($timeoutOk) {
+    $global:LASTEXITCODE = 1
+    $timeoutOut = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -BuildDir $BuildDir 2>&1)
+    $timeoutOk = ($LASTEXITCODE -eq 0)
+    $timeoutOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  Set-Gate '5b ctest 上界属性完备' $timeoutOk
+}
+
+} # end gate 4/5 守卫 else
+
+# ==================================================================
+# ===== 持锁段起点:gate 6 / 7 / 8 全程持 IPC 测试锁([SL-277]/[J96] 拆锁)=====
+# 锁**只包这一段**。gate 4(configure)/ 5(build)在上面已经跑完并释放,理由见
+# Enter-ScvbIpcLock 的头注。
+# ==================================================================
+$ipcLock = Enter-ScvbIpcLock -Segment 'gate 6/7/8'
+# 拿不到锁(建不出互斥体 / 等超时,两种都已在 Enter-ScvbIpcLock 里判负)时**不跑**
+# 6/7/8,而不是无锁硬跑一遍(PR#176 复审采纳)。本进程反正注定 exit 1,自己没损失;
+# 有损失的是**隔壁那个正老老实实持着锁跑的 agent** —— 它会被这一份无锁的 ipc 套件抢走
+# 共享内存段、收到一个假红,而它自己的日志里什么异常都看不到。那正是本卡要根除的
+# 失效类的镜像版(「以为别人有锁,其实没有」)。
+# `-NoIpcLock` 不受影响:那是用户显式声明「本机没有第二个 agent」,$ipcLock 为 $null
+# 是预期的,所以这里要 `-or $NoIpcLock` 而不是只判 $null。
+$ipcLockOk = ($null -ne $ipcLock) -or $NoIpcLock
+try {
+
+if (-not $ipcLockOk) {
+  Write-Host '=== Gate 6/7/8: 跳过执行,直接判负(没有 IPC 测试锁 = 没有并发保护)===' -ForegroundColor Red
+  Set-Gate '6 ctest' $false
+  # 档位照旧:`-Quick` / `-PluginOnly` 本来就不跑的那几道仍记 SKIP,不要因为锁的问题
+  # 把它们写成 FAIL —— 汇总表要如实说「这一道压根没安排跑」还是「安排了但不可信」。
+  # 判负的力度不受影响:锁那一行与 gate 6 已经让整条 gates 以 1 退出。
+  if ($runGate7) { Set-Gate '7 pluginval 非 GUI' $false } else { Set-Skip '7 pluginval 非 GUI' }
+  if ($runGate8) { Set-Gate '8 pluginval 全量含 GUI' $false } else { Set-Skip '8 pluginval 全量含 GUI' }
+}
+else {
+
+  # ==================================================================
+  Write-Host '=== Gate 6: ctest ==='
+  # ==================================================================
+  if (-not $cmakeCmd -or -not $ctestCmd) {
+    Write-Host '  cmake / ctest 不在 PATH —— gate 6 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+    Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
+    Set-Gate '6 ctest' $false
+  }
+  else {
+    # [SL-311] **起跑前先看有没有同名残留**。残留在时,同名测试会必挂 —— 实测连挂 3/3、
+    # 全部撞满上界,`Stop-Process` 掉之后同一条命令 221s 通过。不看就跑,等来的是一次
+    # 「代码没改却次次红」的假回归,而且要等满整个上界才知道。
+    # (成因未定:受控复现里 ctest 超时**是**杀掉了被测进程的;所以这里治的是**现象**,
+    #  不是某条已证实的机制 —— 扫描没有残留时零成本,有残留时省掉别人一次查不出的红。)
+    $ctestPre = Get-ScvbTestLeftover
+    $ctestBlocked = $false
+    if ($null -eq $ctestPre) {
+      Write-Host '  [ctest] 无法枚举进程,起跑前的残留核对**未知**(不是「没有」)' -ForegroundColor Yellow
+    }
+    elseif ($ctestPre.Count -gt 0) {
+      $orphans = @($ctestPre | Where-Object { $null -eq $_.ParentName })
+      $adopted = @($ctestPre | Where-Object { $null -ne $_.ParentName })
+      foreach ($o in $orphans) {
+        # 「父 pid 已不在」只对**查不到父**那一档成立;pid 复用那一档里那个 pid 上
+        # **明明有进程**。照写会给排障的人假证据:他去任务管理器一查,发现 pid 活得好好的,
+        # 于是开始怀疑判据坏了 —— 而真相是判据这次做对了。`$parentWhy` 就是为这句话准备的。
+        $whyText = if ([string]::IsNullOrEmpty($o.ParentWhy)) { ('父 pid={0} 已不在' -f $o.ParentId) } else { $o.ParentWhy }
+        Write-Host ("  [ctest] 起跑前发现**孤儿**残留:{0} pid={1}({2},起于 {3})—— 现在收掉" -f $o.Name, $o.ProcId, $whyText, $o.Started) -ForegroundColor Yellow
+        try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
+        catch { Write-Host ("         收不掉({0}),它会继续毒到本轮" -f $_.Exception.GetType().Name) -ForegroundColor Red }
+      }
+      foreach ($a in $adopted) {
+        # 父进程还活着 = 有人正在跑测试。而我们此刻**持着 IPC 互斥**,所以那一定是绕开
+        # 互斥裸跑的。杀它是在破坏别人正在跑的东西,所以只点名 + 判负。
+        Write-Host ("  [ctest] 起跑前发现**别人正在跑**的测试:{0} pid={1},父进程 {2} pid={3}(起于 {4})" -f $a.Name, $a.ProcId, $a.ParentName, $a.ParentId, $a.Started) -ForegroundColor Red
+        $ctestBlocked = $true
+      }
+      if ($ctestBlocked) {
+        # **责任要指对**(复审【建议】):`-NoIpcLock` 下 `$ipcLock` 是 `$null`,
+        # 本进程**根本没持锁**,却照样走到这里。此时对方可能是**老老实实持着锁**在跑,
+        # 绕开互斥的是我们自己 —— 照写「对方绕开了互斥」就把责任指反了。
+        if ($NoIpcLock) {
+          Write-Host '         注意:本次是 -NoIpcLock,**我们自己没持锁**。对方很可能是正常持锁在跑 —— 该让路的是我们。' -ForegroundColor Yellow
+          Write-Host '         -NoIpcLock 的前提是「确认本机没有第二个 agent」,这一条现在不成立。' -ForegroundColor Yellow
+        }
+        else {
+          Write-Host '         我们持着 Local\SCVB-ipc-tests,对方却在跑 —— 它绕开了互斥。两边会抢全机唯一的 viz 共享段,谁先红都不算数。' -ForegroundColor Red
+        }
+        Write-Host '         手跑测试请走 `pwsh scripts/with-ipc-lock.ps1 -Command ''ctest ...''`(与 gates 同一把锁)。' -ForegroundColor Yellow
+      }
+    }
+
+    if ($ctestBlocked) {
+      # 不跑:跑了也是抢共享段抢出来的结果,红绿都不可信。判负比给一个不可信的绿好。
+      Set-Gate '6 ctest(有人绕开互斥在跑测试,未执行)' $false
+    }
+    else {
+      # [SL-311] `--timeout` 给**没有 TIMEOUT 属性**的测试定默认上界;有属性的不受影响
+      # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(**测量当时**属性 600、实际 16s)
+      #  照样 Passed 16.25s。这个 600 是那次观测的一部分,不是对今天的断言 —— 今天的值读生成物。)
+      #
+      # [SL-320] 这个数**今天一套都管不到,纯粹是兜底**:每一套的上界都由自己的 TIMEOUT
+      # 属性给,而「是否每一套都有属性」由 **gate 5b(`scripts/check-ctest-timeouts.ps1`)**
+      # 当门禁判 —— 它读的是生成物 `CTestTestfile.cmake`,也就是 ctest 真正吃的那份。
+      # [SL-337] **具体哪套多少秒不抄在这里**:那份值表的真源在 `tests/**/CMakeLists.txt`
+      # (不止 `tests/CMakeLists.txt` 一个文件),抄过来就是一份会随对面增删悄悄变假的副本。
+      # 本卡之前这里就躺着一整张七套的值表 —— 而同一段里还写着「别照着这张表推谁落在兜底上」,
+      # 一边给表一边叫人别用,那张表存在的唯一作用就是等着变假。要看今天的值请读生成物。
+      # 属性跟着**测试**走,所以本机与出包硬门(build-vst3.yml)吃的是同一份;此前那四套没有
+      # 属性,本机吃这里的 300、CI 吃 ctest 默认的 1500,同一个「上界」两个真源、差 5 倍。
+      # 所以这里剩下的职责只有一条:**给新加的、还没写属性的测试兜一个底**,免得它悄悄
+      # 退回 1500s。新加测试请去 CMake 里写属性,不要靠这个数。
+      # ⚠ 别只 grep `tests/CMakeLists.txt` 一个文件就下结论 —— SL-320 第 1 轮复审就是这么栽的:
+      # 漏扫 `tests/**` 于是把 ipc 写成「没有属性」,而它的属性一直在 `tests/ipc/CMakeLists.txt`。
+      # 要问「谁有属性」请扫全树,或直接读生成物 `build*/**/CTestTestfile.cmake`。
+      $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error --timeout 300 2>&1)
+      $ctestRc = $LASTEXITCODE
+
+      # [SL-309 后半] **失败用例名要完整,而且要进汇总表**。此前这里只有 `-Last 40` 一刀 ——
+      # 汇总表那行永远是「6 ctest」,滚屏上的失败清单又可能被这一刀切掉(七套里几套一起红、
+      # 或某套的 `--output-on-failure` 正文很长时,末尾那个 `The following tests FAILED:` 块
+      # 会被挤出 40 行)。于是「哪一套红了」这个最该一眼看见的信息,反而要往回滚二十屏找。
+      #
+      # 名字从 ctest 尾部那个块里抠(形如 `	  3 - scvb_host_tests (Timeout)`),**不截断**:
+      # 七套顶天七行,而这几行正是全部信息量所在。抠不到时**明说**抠不到,不假装没有失败
+      # —— 那样会让人以为 gate 6 是因为别的原因红的(本仓「SKIP 吞掉判据」的同族形态)。
+      $ctestFailed = @()
+      $ctestReported = $null   # 在 if 外声明:下面拼汇总标签时要用
+      if ($ctestRc -ne 0) {
+        # ⚠ **不在首个不匹配行上关掉块态**(#222 复审):`2>&1` 会把 ctest 自己的 stderr 行
+        #   插进块中间(顺序不保证),用例名带空格时 `(\S+)` 也抓不住 —— 早退会把后面的失败行
+        #   **整段丢掉**,而滚屏仍打「失败 N 套」,读起来像一个权威计数。所以见到块起点之后
+        #   一路扫到底,只收形态匹配的行。
+        $inFailBlock = $false
+        foreach ($line in $ct) {
+          $t = [string]$line
+          if ($t -match 'The following tests FAILED:') { $inFailBlock = $true; continue }
+          if (-not $inFailBlock) { continue }
+          $m = [regex]::Match($t, '^\s*\d+\s*-\s*(\S+)\s*\((.+)\)\s*$')
+          if ($m.Success) { $ctestFailed += ('{0}({1})' -f $m.Groups[1].Value, $m.Groups[2].Value) }
+        }
+        # 与 ctest **自己报的失败数**对拍(尾部那行 `X% tests passed, N tests failed out of M`)。
+        # 对不上就明说清单不全 —— 一个抠了一半却打成「失败 k 套」的计数,比不打更糟:
+        # 它看起来是权威的(本仓「假计数」那一族,gate 3i 的 WARN 计数为同样的理由收过口径)。
+        foreach ($line in $ct) {
+          $mc = [regex]::Match([string]$line, '(\d+)\s+tests?\s+failed\s+out\s+of\s+\d+')
+          if ($mc.Success) { $ctestReported = [int]$mc.Groups[1].Value }
+        }
+        if ($ctestFailed.Count -gt 0) {
+          Write-Host ('  [ctest] 失败 {0} 套:' -f $ctestFailed.Count) -ForegroundColor Red
+          $ctestFailed | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
+          if ($null -ne $ctestReported -and $ctestReported -ne $ctestFailed.Count) {
+            # **两个方向都要说准**(#222 复审):去掉早退之后「多抠」也成了可能 ——
+            # `$inFailBlock` 一旦置真就不复位,某个用例的 `--output-on-failure` 正文里若回显了
+            # 块起点那句话,其后任何形如 `N - name (status)` 的行都会被收进来 ⇒ 抠到的比自报的多。
+            # 只写「不全」会把方向说反,读的人会去找「少了哪一套」。
+            $ctestDir = if ($ctestFailed.Count -lt $ctestReported) { '**不全**' } else { '**多收了**(可能把用例正文里的同形行也收了进来)' }
+            Write-Host ('  [ctest] ⚠ 上面这份清单{0}:ctest 自己报失败 {1} 套,这里抠到 {2} 套 —— 尾部原文为准' -f
+              $ctestDir, $ctestReported, $ctestFailed.Count) -ForegroundColor Yellow
+          }
+          elseif ($null -eq $ctestReported) {
+            # **对拍本身没跑成**也是一档降级(#222 复审第 3 轮):找不到 `N tests failed out of M`
+            # 那行,就没有第二个来源可比,这份清单是**未经对拍**的。不说破的话,滚屏与汇总表
+            # 都与「对拍通过」长得一模一样 —— 而本卡两轮论证的正是「降级要说破」。
+            Write-Host '  [ctest] ⚠ 未找到 ctest 自报失败数(`N tests failed out of M`),上面这份清单**未经对拍** —— 尾部原文为准' -ForegroundColor Yellow
+          }
+        }
+        else {
+          $why = if ($null -eq $ctestReported) { '连失败计数行也没找到' }
+          elseif ($ctestReported -gt 0) { ('ctest 自己报失败 {0} 套' -f $ctestReported) }
+          else { 'ctest 自己报 0 套失败 —— 退出码非 0 多半不是用例判负,而是 ctest 自身出错' }
+          Write-Host ('  [ctest] 退出码非 0,但抠不出失败用例名({0})—— 用例名未知(不是「没有失败」),看下面尾部原文' -f $why) -ForegroundColor Yellow
+        }
+        # 尾部照旧回显。**取值、名单与理由都只写在 gate 3(prettier)那一处**,这里连数都不抄
+        # (抄两处就是下一句待漂的注释 —— #222 复审第 4 轮点的正是这个,那时同一份名单在
+        # 本文件里躺着三份)。此前这里是另一个数,没有独立理由。
+        $ct | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) }
+      }
+      # 汇总表那行带上失败用例名:跑完 gates 的人看汇总表的概率远高于往回滚屏
+      # (同款先例:gate 3e 的 `$smokeLabel`、gate 3i 的 `$parityLabel`)。
+      # [#222 复审] **「抠一半」这件事也要进汇总表**,不能只在滚屏闪一次 —— 本卡的立论就是
+      # 「跑完 gates 的人看汇总表的概率远高于往回滚屏」,只修滚屏等于修了不看的那一半。
+      # 三档都要在标签上分得开:
+      #   · 清单与 ctest 自报数一致 ⇒ 直接列名字(看起来穷举,而它确实穷举);
+      #   · 对不上          ⇒ 标签里就写明「k/N,清单不可信」,别给一个看起来穷举的清单;
+      #   · 一条都没抠到    ⇒ 标签写「失败用例名未知」,而不是干净的 `6 ctest`
+      #     (那一档此前只有滚屏说了一句,汇总表上与「没失败」长得一样)。
+      # [#222 复审第 3 轮] 再拆两档:
+      #   · 清单非空但**对拍没跑成**(找不到自报数)—— 此前落进最后那个 `else`,标签与
+      #     「对拍通过」**逐字相同**,读不出这份清单没经过校验;
+      #   · 清单为空而自报数**恰为 0**(rc≠0 但 ctest 说 0 失败,例如 ctest 自身出错而用例全过)
+      #     —— 此前会打成「失败 **0** 套,用例名未抠到」,字面自相矛盾,读的人会以为脚本算错了。
+      $ctestLabel = '6 ctest'
+      if ($ctestRc -ne 0) {
+        if ($ctestFailed.Count -eq 0) {
+          # `-gt 0` 而不是 `-ne $null`:自报 0 时带数字那支会写出「失败 **0** 套」。
+          # 自报 0 也不并进「未知」—— 「退出码非 0 而 ctest 说没有用例失败」是**另一件事**
+          # (多半是 ctest 自身出错、或一条用例都没跑起来),并进去就把这条线索丢了。
+          $ctestLabel = if ($null -eq $ctestReported) {
+            '6 ctest(失败用例名未知 —— 看滚屏尾部原文)'
+          }
+          elseif ($ctestReported -gt 0) {
+            '6 ctest(失败 {0} 套,用例名未抠到 —— 看滚屏尾部原文)' -f $ctestReported
+          }
+          else {
+            '6 ctest(退出码非 0,但 ctest 自报 0 套失败 —— 看滚屏尾部原文)'
+          }
+        }
+        elseif ($null -eq $ctestReported) {
+          $ctestLabel = '6 ctest(失败:{0};未找到 ctest 自报失败数,清单未经对拍)' -f ($ctestFailed -join '、')
+        }
+        elseif ($ctestReported -ne $ctestFailed.Count) {
+          # 措辞**方向中立**:去掉早退之后「多抠」也可能发生,写「只列出 k 套」在那一档上是反的。
+          $ctestLabel = '6 ctest(ctest 自报失败 {0} 套、这份清单 {1} 套,对不上不可信:{2})' -f
+          $ctestReported, $ctestFailed.Count, ($ctestFailed -join '、')
+        }
+        else {
+          $ctestLabel = '6 ctest(失败:{0})' -f ($ctestFailed -join '、')
+        }
+      }
+      Set-Gate $ctestLabel ($ctestRc -eq 0)
+
+      # [SL-311] **跑完再扫一次,把这一轮可能留下的孤儿收掉**。不收就等着毒下一轮 ——
+      # 而下一轮多半是**别人**的 gates,他会看到一次查不出的红。
+      # (同上:受控复现里 ctest 到点会杀,所以这一扫多数时候数到 0;它防的是那个
+      #  已经真实发生过、但成因还没查清的形态。)
+      # 只收孤儿(父进程已死);父进程还活着的不动,理由同起跑前那一段。
+      # 两段式(与 gate 3e 的残留核对同款):这一扫紧跟在 ctest 返回之后,正是
+      # 「刚被 ctest 杀掉、还在退出」的窗口最宽的时刻。不等就定论,会把一个**正在消失**的
+      # pid 点名成孤儿,`Stop-Process -ErrorAction Stop` 对它抛异常,于是打出红字
+      # 「收不掉,下一轮同名测试大概率会挂」—— 而下一轮什么事都没有。那句断言在这条
+      # 路径上站不住。这 3 秒只在**第一次真数到东西时**才花。
+      $ctestPost = Get-ScvbTestLeftover
+      if ($null -ne $ctestPost -and $ctestPost.Count -gt 0) {
+        Start-Sleep -Seconds 3
+        $ctestPost = Get-ScvbTestLeftover
+      }
+      if ($null -eq $ctestPost) {
+        Write-Host '  [ctest] 跑完后无法枚举进程,本轮残留**未知**(不是「没有」)' -ForegroundColor Yellow
+      }
+      else {
+        $postOrphans = @($ctestPost | Where-Object { $null -eq $_.ParentName })
+        # **非孤儿也要出声**(复审【重要】):只收孤儿、把其余的直接丢掉,就是静默漏收。
+        # 而这个时刻的先验比起跑前更强:ctest 已经返回、`ctest.exe` 已经退出,所以此刻
+        # 还挂着「活父」的 `scvb_*_tests`,要么真是别人在跑,要么是判据没排除干净 ——
+        # 两种都该有人看一眼,不能一声不吭地放过(放过的代价由下一位承担:他的前扫会
+        # 看到它,判成「有人绕开互斥」,吃一次查不出的红)。
+        $postAdopted = @($ctestPost | Where-Object { $null -ne $_.ParentName })
+        foreach ($a in $postAdopted) {
+          Write-Host ("  [ctest] 跑完仍有 {0} pid={1},父 {2} pid={3} 仍活着 —— **未收**,请人工确认是不是别人在跑" -f $a.Name, $a.ProcId, $a.ParentName, $a.ParentId) -ForegroundColor Yellow
+        }
+        foreach ($o in $postOrphans) {
+          $whyText2 = if ([string]::IsNullOrEmpty($o.ParentWhy)) { ('父 pid={0} 已不在' -f $o.ParentId) } else { $o.ParentWhy }
+          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}({2})—— 现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $whyText2) -ForegroundColor Yellow
+          try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
+          catch { Write-Host ("         收不掉({0}),下一轮同名测试大概率会挂,手动查 pid {1}" -f $_.Exception.GetType().Name, $o.ProcId) -ForegroundColor Red }
+        }
+      }
+    }
+  }
 
 # ==================================================================
 # Gate 7: pluginval 非 GUI(与 CI 等价,06 §3.1)
 # ==================================================================
-if ($Quick) {
+if (-not $runGate7) {
   Set-Skip '7 pluginval 非 GUI'
 }
 else {
@@ -174,10 +1978,12 @@ else {
   else {
     $logDir = Join-Path $BuildDir 'pluginval-logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory)
+    # [issue #24] 只统计正式插件的三个 bundle([J75] 增 Monitor);其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
+    # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
     $pv = $true
-    if ($bundles.Count -ne 2) {
-      Write-Host ("  期望 2 个 .vst3 bundle(SCVB Input / SCVB Output),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
+    if ($bundles.Count -ne 3) {
+      Write-Host ("  期望 3 个 .vst3 bundle(SCVB Input / SCVB Output / SCVB Monitor),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
       $pv = $false
     }
     else {
@@ -197,7 +2003,7 @@ else {
 # ==================================================================
 # Gate 8: pluginval 全量含 GUI(本地真机;全局互斥,06 §5.1)
 # ==================================================================
-if ($Quick -or $PluginOnly) {
+if (-not $runGate8) {
   Set-Skip '8 pluginval 全量含 GUI'
 }
 else {
@@ -207,37 +2013,71 @@ else {
     Set-Gate '8 pluginval 全量含 GUI' $false
   }
   else {
-    $mutex = New-Object System.Threading.Mutex($false, 'Global\SCVB-pluginval-gui')
-    Write-Host '  等待 GUI pluginval 全局互斥体...' -ForegroundColor Yellow
-    $null = $mutex.WaitOne()
-    Write-Host '  已获得 GUI pluginval 互斥体' -ForegroundColor Green
-    $pv = $true
-    try {
-      $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
-      New-Item -ItemType Directory -Force $logDir | Out-Null
-      $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory)
-      if ($bundles.Count -ne 2) {
-        Write-Host ("  期望 2 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
-        $pv = $false
-      }
-      else {
-        foreach ($b in $bundles) {
-          & $PluginvalExe --strictness-level 5 --timeout-ms 60000 --output-dir $logDir $b.FullName 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host ("  pluginval FAIL: {0}" -f $b.Name) -ForegroundColor Red
-            $pv = $false
+    # [SL-277] 这把 GUI 专用互斥体保留:经 gates.ps1 的路径此时已经持着外层的
+    # SCVB-ipc-tests(两把锁的获取顺序全脚本唯一 = 先 ipc 后 gui,不会死锁),
+    # 但**不经 gates.ps1** 手跑 GUI pluginval 的场景只认得这一把,去掉就没保护了。
+    #
+    # PR#176 复审两处采纳:
+    #  ① 原来是裸 `New-Object`,没有任何守卫。脚本顶部是 `$ErrorActionPreference =
+    #     'Continue'`,所以构造失败时不中止:`$mutex` 留 $null → `$mutex.WaitOne()`
+    #     报错继续 → `$pv` 保持 $true → pluginval 整段可能一次没跑,最后判 **PASS**。
+    #     这就是 gate 4/5 守卫注释里反复说的那种**假绿**,只是从「$LASTEXITCODE 陈旧」
+    #     换成了「在 $null 上调方法」。现在走 New-ScvbMutex,建不出来直接判负。
+    #  ② 作用域由 `Global\` 改 `Local\`,与 IPC 锁同一档 —— 理由见 New-ScvbMutex 头注
+    #     (提权终端先建 Global 会让普通终端拿不到,于是各持一把)。
+    #     **过渡期注意**:本 PR 合并前,别的 worktree 里还是旧脚本(用 `Global\`),
+    #     那期间两侧不互斥;gate 8 只在 feature→dev 收口跑,窗口很短,合并后即消失。
+    #  ③ 等锁超时与建不出来同一档处理:`-and` 在 PowerShell 里短路,所以 $mutex 为
+    #     $null 时不会去调 Wait-ScvbMutex。拿不到就判负、不跑 —— 与外层 IPC 锁
+    #     ($ipcLockOk)一个道理:无锁硬跑会把隔壁 agent 的 GUI 会话搅了。
+    $mutex = New-ScvbMutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock'
+    $guiLockOk = ($null -ne $mutex) -and (Wait-ScvbMutex -Mutex $mutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock')
+    if (-not $guiLockOk) {
+      # 判负,**不是** return:本段处在脚本级 try/finally 里,`return` 会直接结束整个
+      # 脚本 —— finally 照跑、但汇总表与 `exit 1` 全被跳过,进程以 0 退出 = 又一种假绿。
+      if ($null -ne $mutex) { $mutex.Dispose() }   # 超时路径:句柄没拿到锁,不能 ReleaseMutex
+      Set-Gate '8 pluginval 全量含 GUI' $false
+    }
+    else {
+      $pv = $true
+      try {
+        $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
+        New-Item -ItemType Directory -Force $logDir | Out-Null
+        # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
+        $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
+        if ($bundles.Count -ne 3) {
+          Write-Host ("  期望 3 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
+          $pv = $false
+        }
+        else {
+          foreach ($b in $bundles) {
+            & $PluginvalExe --strictness-level 5 --timeout-ms 60000 --output-dir $logDir $b.FullName 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ("  pluginval FAIL: {0}" -f $b.Name) -ForegroundColor Red
+              $pv = $false
+            }
+            else { Write-Host ("  pluginval PASS: {0}" -f $b.Name) -ForegroundColor Green }
           }
-          else { Write-Host ("  pluginval PASS: {0}" -f $b.Name) -ForegroundColor Green }
         }
       }
+      finally {
+        $mutex.ReleaseMutex()
+        $mutex.Dispose()
+      }
+      Set-Gate '8 pluginval 全量含 GUI' $pv
     }
-    finally {
-      $mutex.ReleaseMutex()
-      $mutex.Dispose()
-    }
-    Set-Gate '8 pluginval 全量含 GUI' $pv
   }
 }
+
+} # end IPC 锁守卫 else
+
+}
+finally {
+  # 无论 gate 6/7/8 里哪一步抛异常都必须归还 —— 但即便这里没跑到,互斥体也会在
+  # 进程退出时由内核释放(这正是不用目录锁的理由)。
+  Exit-ScvbIpcLock -Mutex $ipcLock -Segment 'gate 6/7/8'
+}
+# ===== 持锁段终点 =====
 
 # ==================================================================
 # 汇总(可直接粘进 PR 描述的表格)

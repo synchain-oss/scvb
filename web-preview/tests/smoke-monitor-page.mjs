@@ -1,0 +1,1247 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+// SCVB Monitor —— **页面级**冒烟(无头 Chrome + CDP;T46)
+// -----------------------------------------------------------------------------
+// 为什么非有它不可 —— 两个真实的例子,都是同一类错:
+//
+//   ① `onViz()` 里写了 `vizPlayheadEvent(viz)`,而 `viz` 是 `render()` 的块级局部量,
+//      在那个作用域里根本不存在 ⇒ **ReferenceError**。它恰好落在「首帧可读且还没收到
+//      playhead」这唯一一拍上,之后 25Hz 的 playhead 一到就再也不进那个分支 ——
+//      于是页面看起来完全正常,只是每次装载白扔一帧。
+//   ② `pagehide` 处理器第一句是 `clearTimeout(staleTimer)`,而 `staleTimer` 早在判据
+//      改归 native 时就删掉了 ⇒ 关窗必抛 ⇒ **同一个处理器里的 `traj.destroy()` 一次都
+//      没跑过**。而 node 侧的 smoke 还有一条 `/clearTimeout\(staleTimer\)/` 的源码正则
+//      当「不留孤儿 timer」的证据钉着,全绿。
+//
+// 两条都逃过了 `smoke-monitor.mjs`,因为**那边从不执行 app.js**:仓内零 node_modules
+// (无 jsdom/linkedom),页面接线只能靠源码正则去「看」。源码正则能证明的只有「字符在」,
+// 证明不了「代码跑得通」。而这两条错的共同点是:**画面上看不出来**,DAW 里更看不出来。
+//
+// 本脚本因此把真页面在无头 Chrome 里跑起来,断言两件 node 侧永远断言不到的事:
+//   • **零未捕获异常、零 console.error**(逐场景分桶,含 pagehide/换组/换语言这些
+//     只在真事件里才走到的路径);
+//   • **投影结果与 DOM 的数值**(`__SCVB_MONITOR__.snapshot()` + 柱数/图例行数/
+//     横幅可见性/CSS 空态闸的 computed display)。
+//
+// CDP 那套连接方式与 `web-preview/shot.mjs` 同源(node 内置 fetch + WebSocket,零依赖 ——
+// 仓库红线是不引 puppeteer)。**没有抽公共模块**:那份是给人用的截图 CLI,本份是给机器
+// 用的断言器,合并只会让两边都被对方的参数面绑住;这里只搬了那 30 行连接逻辑。
+// 静态服务也自带(node http,临时端口)—— 断言器不该要求谁先手动把 serve.ps1 起起来。
+//
+// 用法:node web-preview/tests/smoke-monitor-page.mjs [仓库根绝对路径]
+//   --keep-open   不杀 Chrome(排障用)
+//   --chrome=<路径>  显式指定浏览器
+// 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(与失败区分开:
+//   本机没浏览器不是代码错,但也绝不能当成「通过」静默混过去);
+//   **3 = 浏览器在,但这一次没起来 / 没连上**([SL-297] 新增,见 `browserFailed()`)。
+//   2 与 3 都不判红,但 **3 在 gates 汇总里打 `[FLAKY-SKIP]` 而不是 `[SKIP]`** ——
+//   压成同一个码时,一台装着 Chrome 的机器上一次瞬时超时会让整套判据无声消失,
+//   而汇总行照写全 PASS。
+// =============================================================================
+
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import {
+    existsSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT =
+    process.argv.find((a) => !a.startsWith("--") && a.includes(":\\")) &&
+    process.argv[2] &&
+    !process.argv[2].startsWith("--")
+        ? process.argv[2]
+        : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const argv = new Map(
+    process.argv
+        .slice(2)
+        .filter((a) => a.startsWith("--"))
+        .map((a) => {
+            const i = a.indexOf("=");
+            return i < 0 ? [a.slice(2), "1"] : [a.slice(2, i), a.slice(i + 1)];
+        }),
+);
+
+const CHROME_CANDIDATES = [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    `${process.env.LOCALAPPDATA || ""}\\Google\\Chrome\\Application\\chrome.exe`,
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- 断言器
+let fail = 0;
+const log = (s) => console.log(s);
+function check(cond, msg) {
+    if (cond) return true;
+    fail++;
+    console.log(`  [FAIL] ${msg}`);
+    return false;
+}
+function eq(got, want, msg) {
+    const a = JSON.stringify(got);
+    const b = JSON.stringify(want);
+    if (a === b) return true;
+    fail++;
+    console.log(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
+    return false;
+}
+
+// ---------------------------------------------------------------- 静态服务
+// 站点根 = 仓库根:壳页用 `../web/monitor/index.html` 引真源,两棵目录必须同源
+// (mock 注入靠同源 iframe,见 web-preview/shell.js 文件头)。
+const MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
+};
+const server = createServer((req, res) => {
+    let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
+    if (p.endsWith("/")) p += "index.html";
+    const abs = resolve(join(ROOT, p));
+    // 目录逃逸闸:URL 里的 `..` 不该能读到仓库外的文件
+    if (!abs.startsWith(resolve(ROOT))) {
+        res.writeHead(403).end("nope");
+        return;
+    }
+    if (!existsSync(abs) || !statSync(abs).isFile()) {
+        res.writeHead(404).end("not found");
+        return;
+    }
+    res.writeHead(200, {
+        "Content-Type":
+            MIME[extname(abs).toLowerCase()] || "application/octet-stream",
+        "Cache-Control": "no-store",
+    });
+    res.end(readFileSync(abs));
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const HTTP_PORT = server.address().port;
+const base = `http://127.0.0.1:${HTTP_PORT}`;
+
+// ---------------------------------------------------------------- CDP 小客户端
+function cdpConnect(wsUrl) {
+    const ws = new WebSocket(wsUrl);
+    const pending = new Map();
+    const listeners = [];
+    let id = 0;
+    ws.addEventListener("message", (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.id && pending.has(msg.id)) {
+            const { resolve: ok, reject: no } = pending.get(msg.id);
+            pending.delete(msg.id);
+            msg.error ? no(new Error(msg.error.message)) : ok(msg.result);
+        } else if (msg.method) {
+            for (const fn of listeners) fn(msg);
+        }
+    });
+    const ready = new Promise((ok, no) => {
+        ws.addEventListener("open", ok, { once: true });
+        ws.addEventListener("error", () => no(new Error("CDP 连接失败")), {
+            once: true,
+        });
+    });
+    // ⚠ CDP 截止时间**按调用点取,不取一个文件级常数**([SL-287],本机实测逼出来的)。
+    //
+    // 两类调用的合法时长根本不同,一个常数满足不了:
+    //   · `waitFor` 内部的 evaluate —— 上界必须**小于该次 waitFor 自己的预算**,
+    //     否则一次超时就吃穿整个预算,把「丢一次响应下一轮补上」变成硬红。
+    //   · 一次性的直接 evaluate —— 里面可能是**故意跑很久**的在页探针。
+    //     实测 smoke-output-dist-page 的 `measureOff` 合法跑满 12s,而同一文件最紧的
+    //     `waitFor` 预算也是 12s:两个约束互相矛盾,任何单一常数都满足不了。
+    //
+    // 所以:`waitFor` 内部的 evaluate 传**本次还剩多少预算**(见下面 waitFor —— 第一版写的是
+    // 「预算的一半」,被复审指出那会把耗时落在 (ms/2, ms) 的**合法**调用从过变成必红,
+    // 等于新增一类红;按剩余预算取则不改变任何原本能过的行为)。其余调用用这个宽的默认值 ——
+    // 它只负责兜住**真挂死**,不负责区分快慢。
+    const CDP_DEFAULT_TIMEOUT_MS = 20000;
+    return {
+        ready,
+        on: (fn) => listeners.push(fn),
+        send(method, params, timeoutMs) {
+            const mid = ++id;
+            const budget = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;
+            return new Promise((ok, no) => {
+                // 每条 CDP 调用都必须有截止时间:原版把 resolve 塞进 `pending` 就返回,
+                // 响应不来就**永远不 resolve**。SL-274 在同源的 seg-diff-fold 上实测挂过
+                // 75 分钟零输出(Chrome 与 node 都还活着)。
+                // ⚠ 因果限定在**当时**:那次还赶上 [SL-277] 拆锁**之前**的形态 ——
+                // 整条 gates 被外部目录锁包着,所以一套挂死会把整批 agent 一起堵住。
+                // [SL-301] 起 3e 也持 `Local\SCVB-ipc-tests` 了(它的 Chrome 负载会把同机
+                // 别人的 gate 6 拖红)⇒ **一套挂死会堵住全场**,不再只停死本轮。
+                // 这正是本文件那条 CDP 截止时间与 gates 3e 的 300s/套上界现在更要紧的原因。
+                // 那仍然是一整轮,所以超时照加;但别照着旧说法去推断锁的作用域。
+                // CI 上则是一路烧到 job 超时才红。
+                //
+                // 超时**抛错而不重试**:响应不来说明页面或渲染器已经不对了,
+                // 重试只会把一个确定的红拖成一个更慢的红。错误里带 method 与 id,
+                // 红出来直接指到是哪一条卡住。
+                const timer = setTimeout(() => {
+                    pending.delete(mid);
+                    no(
+                        new Error(
+                            `CDP 调用超时 ${budget}ms:${method}(id=${mid})—— ` +
+                                "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
+                                "**不要**改成重试或调大超时,那只是把红拖慢",
+                        ),
+                    );
+                }, budget);
+                pending.set(mid, {
+                    resolve: (v) => {
+                        clearTimeout(timer);
+                        ok(v);
+                    },
+                    reject: (e) => {
+                        clearTimeout(timer);
+                        no(e);
+                    },
+                });
+                ws.send(
+                    JSON.stringify({ id: mid, method, params: params || {} }),
+                );
+            });
+        },
+        close: () => ws.close(),
+    };
+}
+
+/** 缺浏览器 ⇒ 退出码 2(与「断言失败」的 1 分开;口径见文件头与 CLAUDE.md §6)。 */
+function noBrowser(msg) {
+    console.error(
+        `❌ ${msg}\n` +
+            "   页面级冒烟无法运行(退出码 2)。这**不是**通过:装一个 Chrome/Edge," +
+            "或用 --chrome=<路径> 指定。",
+    );
+    try {
+        server.close();
+    } catch {}
+    process.exit(2);
+}
+
+// [SL-297] **浏览器在,但没起来 / 没连上** —— 与 `noBrowser()` 分开走 **退出码 3**。
+// 为什么必须分开:gates 3e 与 CI 都把 **2 读成「本机没有浏览器」** 并按可选依赖记 SKIP、
+// 照算 PASS。而「装着 Chrome、这一次没连上」是**一次失败的运行**,不是缺依赖 ——
+// 压成同一个码之后,一台装着 Chrome 的机器上一次瞬时超时就会让整套判据**无声消失**,
+// 汇总行还写着全 PASS(SL-293 实测撞到三次,每次掉的套件还不一样)。
+// **仍然不判红**(理由见调用点):判红会把每个 PR 卡在与改动无关的环境抖动上。
+// 3 的语义就是「这一轮没跑成,而且不是因为没装浏览器」——由 gates 打成 [FLAKY-SKIP]。
+function browserFailed(msg) {
+    console.error(
+        `❌ ${msg}\n` +
+            "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
+            "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
+            "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。",
+    );
+    try {
+        server.close();
+    } catch {}
+    process.exit(3);
+}
+
+function chromePath() {
+    // `--chrome` 给了就**只认它**,但要先确认存在 —— 直接丢给 spawn 会炸成
+    // 「Unhandled 'error' event」那种看不懂的栈,而它本质上就是「没有浏览器」。
+    if (argv.has("chrome")) {
+        const p = argv.get("chrome");
+        if (!existsSync(p)) noBrowser(`--chrome 指定的路径不存在:${p}`);
+        return p;
+    }
+    for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
+    noBrowser("本机找不到 Chrome/Edge");
+    return null; // 到不了(noBrowser 已退出),写着让读的人不必回头找
+}
+
+const exe = chromePath();
+
+// CDP 端口随机取:`shot.mjs` 固定用 9333,而本机同时跑两个 agent 的门禁并不罕见 ——
+// 固定端口一撞,失败形态是「Chrome 起不来」这种看不懂的超时。HTTP 那一路已经用了
+// 临时端口(listen 0),这里也别留死数字。
+const CDP_PORT = Number(
+    argv.get("cdp") || 9400 + Math.floor(Math.random() * 400),
+);
+const userDataDir = mkdtempSync(join(tmpdir(), "scvb-monitor-page-"));
+const chrome = spawn(
+    exe,
+    [
+        "--headless=new",
+        `--remote-debugging-port=${CDP_PORT}`,
+        `--user-data-dir=${userDataDir}`,
+        "--window-size=1200,900",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        // 后台节流会让 rAF/定时器在无头下被压到 1Hz,4Hz 的 mock 帧就等不到了
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--force-device-scale-factor=1",
+        // CI 的 runner 里 Chrome 的沙箱常常起不来(容器/无 user namespace)。只在 CI 上关,
+        // 本机保持默认 —— 页面只加载 127.0.0.1 上的本仓库文件,但没必要平时也松一档。
+        ...(process.env.CI ? ["--no-sandbox"] : []),
+        "about:blank",
+    ],
+    { stdio: "ignore" },
+);
+
+// ⚠ 收尾必须走**所有**退出路径,不只是跑完那一条([SL-287])。
+// 本文件原有的 try/finally 只包住**主断言体**,而 Chrome 是在进入那个 try **之前**就 spawn 的 ——
+// 那段窗口里抛错(CDP 连接、Page.enable、首次导航,恰好是上面新加的超时最可能开火的地方)
+// 就会把 headless Chrome 留在机器上。
+// 而且信号完全没人接:SL-287 同时给 gates 3e 加了整套超时,超时会向本进程发信号。
+//
+// ⚠ **本机(Windows)实测的边界,别把这段的作用说大**:
+//   · 浏览器进程:node 一死,Windows 会把 spawn 出来的 Chrome 一起收掉 —— 实测原版在
+//     SIGTERM 下也能从 10 个进程回到 0。所以在 Windows 上这段对**进程**是双保险,不是唯一解。
+//     它真正吃劲的地方是 **Linux**:`web-smoke` 跑在 ubuntu-latest,而 POSIX 下父进程退出
+//     **不会**自动收掉 spawn 的子进程 —— 而本文件的 try/finally 只包住主断言体,
+//     spawn 到进 try 之间那段窗口(CDP 连接、Page.enable、首次导航)在 Linux 上没人收。
+//   · 临时目录:`chrome.kill()` 之后文件句柄未必立刻释放,紧跟的 `rmSync` 在 Windows 上
+//     **会失败**,留下一个空壳目录 —— 实测本 PR 版本与原版在注入失败时**同样各留 1 个**。
+//     这一点不吹:本机 temp 下现有 981 个 `scvb-*` 残留目录,这段收不干净它们。
+//     它保证的是「每条退出路径都**尝试过**收尾」,以及在 Linux 上真的收得掉。
+let tornDown = false;
+function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    try {
+        cdp?.close();
+    } catch {}
+    try {
+        if (!argv.has("keep-open")) chrome?.kill();
+    } catch {}
+    try {
+        server.close();
+    } catch {}
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+// `exit` 处理器只能同步收尾(Node 规范),所以这里不等句柄、不重试 rmSync ——
+// 留一个空壳目录是可接受的残渣(系统会清),而**跑着的 headless Chrome 不是**。
+process.on("exit", teardown);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+        teardown();
+        process.exit(130);
+    });
+}
+// 未捕获异常 / 未处理拒绝:先打印再收尾,否则 Chrome 会跟着一起漏。
+// 新加的 CDP 超时是**定时器里 reject**,那条 promise 当时若没人 await,
+// 就会以 unhandledRejection 形式到这里 —— 这一支不是摆设。
+for (const ev of ["uncaughtException", "unhandledRejection"]) {
+    process.on(ev, (e) => {
+        console.error(`  [FATAL] ${ev}:`, e && e.message ? e.message : e);
+        teardown();
+        process.exit(1);
+    });
+}
+
+// 起不来(权限 / 可执行坏了 / 沙箱拒绝)= **浏览器在,但这一次没起来** ⇒ `browserFailed()`
+// 的 rc=3、汇总里打 `[FLAKY-SKIP]`。[SL-297] 前这里写的是「也归**缺依赖**那一档」——
+// 与本文件 CDP 超时处那句被证伪的话是**同一句的孪生**,一并订正:`existsSync` 已经在
+// `chromePath()` 里把「本机没有浏览器」筛掉了,能走到 spawn 这一步就说明二进制是在的。
+// 不挂这个监听器的话,node 会把它变成 Unhandled 'error' event 直接崩,
+// 退出码与「断言失败」混成一个,门禁那边就分不出该不该判红。
+chrome.on("error", (e) => browserFailed(`浏览器启动失败:${e.message}`));
+
+let cdp = null;
+let crashed = null;
+
+// 逐场景分桶的页面诊断(未捕获异常 / console.error / console.warn)
+let bucket = { label: "启动", errors: [], warns: [], exceptions: [] };
+const newBucket = (label) => {
+    bucket = { label, errors: [], warns: [], exceptions: [] };
+};
+
+async function evaluate(expression, timeoutMs) {
+    const r = await cdp.send(
+        "Runtime.evaluate",
+        {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        },
+        timeoutMs,
+    );
+    if (r.exceptionDetails) {
+        throw new Error(
+            "页内求值抛错:" +
+                (r.exceptionDetails.exception?.description ||
+                    r.exceptionDetails.text),
+        );
+    }
+    return r.result?.value;
+}
+
+/** 轮询直到页内表达式为真(默认 10s);超时不抛,由调用方的断言去报。 */
+async function waitFor(expr, ms = 10000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+        let v = null;
+        try {
+            // 这次 evaluate 的上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),
+            // 不是「预算的一半」。第一版写成 ms/2,被复审指出**把语义改窄了**:
+            // 一次耗时落在 (ms/2, ms) 区间的**合法**调用,改动前能过、改动后必红 ——
+            // 而 monitor 这一套的实测最慢单次是 3020ms、上界只有 5000ms,余量 1.65 倍,
+            // 在与别的 job 抢 CPU 的 ubuntu runner 上抖一下就会把慢但合法判成红。
+            // (PR 里那次「未复现的 monitor exit=1」很可能就是这个,首要假设。)
+            // 按剩余预算取则**不改变任何原本能过的行为**:慢调用可以用掉几乎整个预算,
+            // 真挂死仍会在预算到点前被砍断,由下面的 while 条件收尾。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
+        } catch {
+            v = null;
+        }
+        if (v) return true;
+        await sleep(100);
+    }
+    return false;
+}
+
+// 真源文档在 iframe 里(壳页只有工具条);一切选择器走它。
+const IN = (js) => `(() => {
+    const f = document.querySelector("iframe");
+    const w = f && f.contentWindow;
+    const d = f && f.contentDocument;
+    if (!w || !d) return null;
+    const q = (s) => d.querySelector(s);
+    const all = (s) => Array.from(d.querySelectorAll(s));
+    const gb = (n) => q('[data-gb="' + n + '"]');
+    const M = w.__SCVB_MONITOR__;
+    ${js}
+})()`;
+
+const SNAP = IN(`return M ? M.snapshot() : null;`);
+
+/** 一次性把要断言的 DOM 事实取回来(减少往返,也让失败时能一眼看全)。 */
+const PROBE = IN(`
+    const card = q("#card");
+    const disp = (el) => (el ? w.getComputedStyle(el).display : "(缺节点)");
+    const vis = (el) => !!el && !el.hidden;
+    const empty = gb("monitor-empty");
+    return {
+        cardOnline: card ? card.getAttribute("data-online") : null,
+        distBars: all(".dist-bar").length,
+        distLeadCaps: all('.dist-bar[data-lead="1"]').length,
+        distSpans: all(".dist-span").length,
+        legendItems: all(".chart-legend__item").length,
+        abiBanner: vis(gb("monitor-banner-abi")),
+        stalledBanner: vis(gb("monitor-banner-stalled")),
+        emptyTitle: vis(gb("monitor-empty-title")),
+        emptyText: vis(gb("monitor-empty-text")),
+        emptyTextKey: (gb("monitor-empty-text") || {}).getAttribute
+            ? gb("monitor-empty-text").getAttribute("data-t")
+            : null,
+        emptyTextContent: (gb("monitor-empty-text") || {}).textContent || "",
+        trajEmptyHidden: !!(gb("monitor-traj-empty") || {}).hidden,
+        trajEmptyKey: gb("monitor-traj-empty")
+            ? gb("monitor-traj-empty").getAttribute("data-t")
+            : null,
+        trajEmptyText: (gb("monitor-traj-empty") || {}).textContent || "",
+        emptyPanelDisplay: disp(empty),
+        trajCardDisplay: disp(q(".mon-chart--traj")),
+        distCardDisplay: disp(q(".mon-chart--dist")),
+        groupPressed: all("[data-group]")
+            .filter((b) => b.getAttribute("aria-pressed") === "true")
+            .map((b) => Number(b.getAttribute("data-group"))),
+        groupDots: all("[data-group]")
+            .filter((b) => b.getAttribute("data-online") === "1")
+            .map((b) => Number(b.getAttribute("data-group"))),
+        version: (gb("monitor-version") || {}).textContent || "",
+        scaleConfirm: vis(gb("monitor-scale-confirm")),
+        writeControls: all("input, textarea, [contenteditable='true']").length,
+        langPressed: all("[data-lang]")
+            .filter((b) => b.getAttribute("aria-pressed") === "true")
+            .map((b) => b.getAttribute("data-lang")),
+    };
+`);
+
+const clickIn = (sel) =>
+    evaluate(
+        IN(
+            `const el = q(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true;`,
+        ),
+    );
+
+/** 打开一个场景,等到投影稳定;返回 `{snap, probe}`。 */
+async function open(scenario, readyExpr, extraQuery = "") {
+    await cdp.send("Page.navigate", { url: "about:blank" });
+    await sleep(120);
+    newBucket(scenario + (extraQuery ? ` ${extraQuery}` : ""));
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/monitor.html?scenario=${scenario}${extraQuery}`,
+    });
+    // 先等页面把测试面挂出来,再等本场景自己的稳定判据
+    const up = await waitFor(IN(`return !!M;`));
+    check(up, `${scenario}:页面装载并挂出 __SCVB_MONITOR__ 测试面`);
+    if (readyExpr) {
+        const ok = await waitFor(readyExpr);
+        check(ok, `${scenario}:等到了本场景的稳定态`);
+    }
+    return { snap: await evaluate(SNAP), probe: await evaluate(PROBE) };
+}
+
+/** 本场景内页面必须**零未捕获异常、零 console.error**。 */
+function assertClean(label) {
+    check(
+        bucket.exceptions.length === 0,
+        `${label}:零未捕获异常(实得 ${bucket.exceptions.length} 条:${bucket.exceptions.join(" | ").slice(0, 400)})`,
+    );
+    check(
+        bucket.errors.length === 0,
+        `${label}:零 console.error(实得 ${bucket.errors.length} 条:${bucket.errors.join(" | ").slice(0, 400)})`,
+    );
+    if (bucket.warns.length) {
+        log(
+            `  (warn ×${bucket.warns.length}:${bucket.warns[0].slice(0, 160)})`,
+        );
+    }
+}
+
+// CDP 启动握手的等待预算。本机冷启动 0.3–2s;CI runner 首次拉起 Chrome 明显更慢
+// (实测 12s 不够),给到 60s —— 这段只在**启动失败**时才会真的等满,正常路径上
+// 第一次 fetch 成功就退出,不影响正常耗时。
+const CDP_WAIT_TRIES = 300;
+const CDP_WAIT_STEP_MS = 200;
+
+const RANGE15 = Array.from({ length: 15 }, (_, i) => i + 1);
+
+try {
+    // ---- 等 CDP 起来(本机冷启动 0.3–2s;CI runner 上冷启动慢得多,给到 60s)
+    let targets = null;
+    for (let i = 0; i < CDP_WAIT_TRIES && !targets; i++) {
+        try {
+            const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
+            const list = await res.json();
+            targets = list.find((t) => t.type === "page") ? list : null;
+        } catch {
+            await sleep(CDP_WAIT_STEP_MS);
+        }
+    }
+    if (!targets) {
+        // **不归失败,但也不归「缺依赖」**。这一步发生在我们的页面代码跑起来**之前** ——
+        // 浏览器在,只是它没能在预算内把调试端口开出来,那是环境能力问题、与被测页面无关。
+        // 判红仍然不对:会让每个 PR 卡在一个与改动无关的环境抖动上
+        //(CI 实测:GitHub runner 冷启动超过 12s,而本机 0.3–2s 就起来了)。
+        //
+        // ⚠ [SL-297] 改的是**另一半**:这里原先写着「与『机器上根本没有浏览器』是同一类」,
+        // 并因此与 `noBrowser()` 共用退出码 2。**那句话是错的,代价也实测到了** ——
+        // 2 会被 gates 与 CI 记成「缺可选依赖」⇒ `[SKIP]` ⇒ 照算 PASS,于是在一台
+        // **装着 Chrome** 的机器上,一次瞬时超时就让整套判据无声消失、汇总行照写全 PASS。
+        // SL-293 那一卡的多轮 gates 里撞到三次,每次掉的套件还不一样,两套单独重跑都全绿。
+        // 所以现在走 `browserFailed()`(退出码 3):**判定不变(仍不红)**,变的是它在汇总里
+        // 显形为 `[FLAKY-SKIP]` 而不是 `[SKIP]` —— 「没跑成」不能长得和「跑过了」一样。
+        //
+        // 牙齿没有变松:CDP 一旦连上、页面一旦加载,后面任何失败仍然是真失败 ——
+        // 被降级的只有**启动握手**这一步。
+        browserFailed(
+            `Chrome 未在 ${Math.round((CDP_WAIT_TRIES * CDP_WAIT_STEP_MS) / 1000)}s 内开出 CDP 端口`,
+        );
+    }
+    cdp = cdpConnect(
+        targets.find((t) => t.type === "page").webSocketDebuggerUrl,
+    );
+    await cdp.ready;
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    cdp.on((m) => {
+        if (m.method === "Runtime.exceptionThrown") {
+            const d = m.params.exceptionDetails;
+            bucket.exceptions.push(
+                (d.exception?.description || d.text || "").split("\n")[0],
+            );
+        } else if (m.method === "Runtime.consoleAPICalled") {
+            const text = (m.params.args || [])
+                .map((a) => a.value ?? a.description ?? "")
+                .join(" ");
+            if (m.params.type === "error") bucket.errors.push(text);
+            else if (m.params.type === "warning") bucket.warns.push(text);
+        }
+    });
+    log(`(站点根 ${ROOT} → ${base};CDP ${CDP_PORT})`);
+
+    // =========================================================================
+    log("=== ① 满配在线(monitor-online):两图都画,数值与 fixture 对得上 ===");
+    {
+        const { snap, probe } = await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(snap.reason, "", "可读:无拒读理由");
+        eq(snap.online, true, "online");
+        eq(snap.stalled, false, "不是停更态");
+        eq(snap.observed, 1, "开箱观察组 A");
+        eq(snap.groups, 0b00010011, "组位图 = A/B/E");
+        eq(snap.hasLanes, true, "帧带车道");
+        eq(snap.durationS, 300, "时间线全长 300s");
+        eq(snap.seriesTracks, RANGE15, "轨迹图 15 轨,轨号逐项");
+        eq(snap.distTracks, RANGE15, "分布图 15 轨");
+        eq(snap.legendTracks, RANGE15, "图例 15 行");
+        check(
+            snap.seriesRuns.every((n) => n >= 1),
+            "每轨至少一条折线段(断线不是把整轨画没)",
+        );
+        check(
+            snap.seriesRuns.some((n) => n > 1),
+            "至少一轨真的断成了多段(位图 0 位确实生效)",
+        );
+        // ---- DOM:投影出来的数字必须真的进了 DOM(node 侧断言不到这一步)
+        eq(probe.cardOnline, "1", "卡片总闸 data-online=1");
+        eq(probe.distBars, 15, "DOM 里真的有 15 根柱");
+        eq(probe.legendItems, 15, "DOM 里真的有 15 行图例");
+        eq(probe.groupPressed, [1], "只有 A 处于 aria-pressed");
+        eq(probe.groupDots, [1, 2, 5], "绿点亮在 A/B/E(键名读错就全灭)");
+        eq(probe.abiBanner, false, "无红横幅");
+        eq(probe.stalledBanner, false, "无琥珀横幅");
+
+        // [SL-402 · 第 2 推] 内联占位渐变的 **applied cascade**(渲染层):真源文档
+        // (iframe 内)的 html 的 backgroundAttachment 必须解析为 fixed —— 内联里那条
+        // `background-attachment: fixed` 真的生效(base.css 不覆盖该属性)。源码层由
+        // smoke-embedded-resources.mjs 的 ⑥(e) 同块 + 顺序钉管,这里管渲染层。
+        eq(
+            await evaluate(
+                IN(
+                    `return w.getComputedStyle(d.documentElement).backgroundAttachment;`,
+                ),
+            ),
+            "fixed",
+            "html 的 backgroundAttachment 解析为 fixed(占位渐变渲染层生效)",
+        );
+        eq(probe.emptyPanelDisplay, "none", "空态面板被 CSS 收起");
+        check(probe.trajCardDisplay !== "none", "轨迹图卡可见");
+        check(probe.distCardDisplay !== "none", "分布图卡可见");
+        eq(probe.trajEmptyHidden, true, "轨迹图的空态文案收起(真的有线)");
+        check(
+            /^v\d/.test(probe.version),
+            `页脚写上了版本号(实得 ${probe.version}）`,
+        );
+        // 只读身份:整页零输入控件(J75 B「没有任何写控件」的 DOM 级证据)
+        eq(probe.writeControls, 0, "整页零 input/textarea/contenteditable");
+        assertClean("monitor-online");
+    }
+
+    // =========================================================================
+    log("=== ② 停更(monitor-stalled):琥珀横幅 + **图照常显示** ===");
+    {
+        // 这一条正是真机截图抓到、node 侧看不出来的那个 bug 的回归位:
+        // 判成掉线的话 seriesTracks 会变成 []、空态面板会显示出来。
+        const { snap, probe } = await open(
+            "monitor-stalled",
+            IN(`return M && M.snapshot().stalled === true;`),
+        );
+        eq(snap.reason, "stale", "reason = stale");
+        eq(snap.online, true, "仍然 ok(不清图)");
+        eq(snap.seriesTracks, RANGE15, "**15 轨折线还在**(停更不清图)");
+        eq(snap.distTracks, RANGE15, "分布图也还在");
+        eq(probe.stalledBanner, true, "琥珀横幅出现");
+        eq(probe.abiBanner, false, "不是红横幅(Output 还在,不是拒连)");
+        eq(probe.emptyPanelDisplay, "none", "**不进空态面板**");
+        eq(probe.distBars, 15, "DOM 里柱子没被清掉");
+        assertClean("monitor-stalled");
+    }
+
+    // =========================================================================
+    log("=== ②b 先停更、再退出:必须从琥珀横幅切到空态,不能停在横幅上 ===");
+    {
+        // T45 检测掉线的真实路径:帧陈旧 ⇒ 松开映射再探一次 ⇒ 探不到 ⇒ offline。
+        // 关键形态:第二段只推 `scvb.state`,viz 事件流**停发**,页面手里只剩一帧
+        // `online:true, fresh:false` 的**留存帧**(`store.frame` 永不清空,它同时是
+        // 车道缓存)。留存帧若压过 native 的段级事实,画面就**永久**停在停更横幅上,
+        // 而 Output 其实已经没了 —— 这条曾经真的错着。
+        const { snap, probe } = await open(
+            "monitor-stall-then-gone",
+            IN(`return M && M.snapshot().stalled === true;`),
+        );
+        eq(snap.reason, "stale", "第一段:停更 ⇒ 琥珀横幅");
+        eq(probe.stalledBanner, true, "横幅在");
+        eq(snap.seriesTracks.length, 15, "图还在(停更不清图)");
+
+        // 2 秒后段没了;只有 scvb.state 会说话
+        const gone = await waitFor(
+            IN(`return M.snapshot().reason === "offline";`),
+            8000,
+        );
+        check(gone, "第二段:段没了 ⇒ **切到 offline**(不是停在停更横幅上)");
+        const p2 = await evaluate(PROBE);
+        eq(p2.stalledBanner, false, "琥珀横幅撤掉");
+        eq(p2.cardOnline, "0", "卡片总闸 data-online=0");
+        eq(p2.emptyTitle, true, "空态标题出现");
+        eq(p2.distBars, 0, "柱子清干净(不是留着上一帧的 15 根)");
+        assertClean("monitor-stall-then-gone");
+    }
+
+    // =========================================================================
+    log("=== ③ 掉线(monitor-offline):空态面板 + 组字母 ===");
+    {
+        const { snap, probe } = await open(
+            "monitor-offline",
+            IN(`return M && M.snapshot().reason === "offline";`),
+        );
+        eq(snap.online, false, "不可读");
+        eq(snap.emptyState, true, "归空态(不是错误)");
+        eq(snap.observed, 3, "观察组 C");
+        eq(snap.seriesTracks, [], "没有折线");
+        eq(probe.cardOnline, "0", "卡片总闸 data-online=0");
+        eq(probe.emptyTitle, true, "空态标题「Output 未运行」出现");
+        eq(probe.emptyTextKey, "monitor.offline", "正文用 offline 词条");
+        check(
+            probe.emptyTextContent.includes("C"),
+            `正文点名了组 C(实得「${probe.emptyTextContent}」)`,
+        );
+        check(probe.trajCardDisplay === "none", "轨迹图卡被 CSS 收起");
+        check(probe.distCardDisplay === "none", "分布图卡被 CSS 收起");
+        eq(probe.abiBanner, false, "掉线不挂红横幅");
+        assertClean("monitor-offline");
+    }
+
+    // =========================================================================
+    log("=== ④ 拒连(monitor-abi):红横幅,且**不说** Output 未运行 ===");
+    {
+        const { snap, probe } = await open(
+            "monitor-abi",
+            IN(`return M && M.snapshot().reason === "abi";`),
+        );
+        eq(snap.online, false, "停止读取");
+        eq(snap.emptyState, false, "**不归空态** —— 话由红横幅说");
+        eq(probe.abiBanner, true, "红横幅出现");
+        eq(probe.emptyTitle, false, "不挂「Output 未运行」(它明明在跑)");
+        eq(probe.emptyText, false, "也不说「尚无分段结果」(不是没有分段)");
+        assertClean("monitor-abi");
+    }
+
+    // =========================================================================
+    log("=== ⑤ 三种「没有线」互不混淆 ===");
+    {
+        const { snap, probe } = await open(
+            "monitor-no-lanes",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(snap.hasLanes, false, "桥没送车道");
+        eq(snap.seriesTracks, [], "轨迹图空");
+        eq(snap.distTracks, RANGE15, "**分布图照常 15 轨**(缺车道只砍一半)");
+        eq(probe.distBars, 15, "DOM 里柱子照画");
+        eq(probe.trajEmptyHidden, false, "轨迹图显示空态文案");
+        eq(
+            probe.trajEmptyKey,
+            "monitor.noLanes",
+            "用的是「监视数据未接通」那条",
+        );
+        check(probe.trajEmptyText.length > 0, "文案真的填进去了(不是空 span)");
+        eq(probe.emptyPanelDisplay, "none", "不把整页拖进空态");
+        assertClean("monitor-no-lanes");
+    }
+    {
+        const { snap, probe } = await open(
+            "monitor-no-tracks",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(snap.distTracks, [], "分布图画空(缺 trackVolDb ⇒ 不猜、不填 0)");
+        eq(probe.distBars, 0, "DOM 里一根幽灵柱都没有");
+        eq(snap.seriesTracks, RANGE15, "轨迹图照常 15 轨");
+        eq(snap.legendTracks, RANGE15, "图例跟着轨迹图列 15 行");
+        assertClean("monitor-no-tracks");
+    }
+    {
+        const { snap, probe } = await open(
+            "monitor-no-lead",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(snap.distTracks, RANGE15, "15 根柱照画");
+        eq(probe.distBars, 15, "DOM 里 15 根柱");
+        eq(probe.distLeadCaps, 0, "**一顶绿帽都没有**(缺 leadMask 不猜主唱)");
+        assertClean("monitor-no-lead");
+    }
+
+    // =========================================================================
+    log("=== ⑥ 换组(点胶囊):数据面真的换了,且没有旧组残影 ===");
+    {
+        const { snap } = await open(
+            "monitor-groups",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(snap.observed, 2, "开箱停在 B");
+        eq(snap.seriesTracks, [1, 2, 3, 4, 5, 6], "B = 6 轨小编制");
+
+        check(await clickIn('[data-group="5"]'), "点到了 E 胶囊");
+        const gotE = await waitFor(IN(`return M.snapshot().observed === 5;`));
+        check(gotE, "换组回显到 E");
+        const e = await evaluate(SNAP);
+        eq(
+            e.seriesTracks,
+            [1, 2, 7, 8, 9, 10, 11, 12, 13],
+            "E = 9 轨且轨号不连续(换组真的换了数据面)",
+        );
+        const probeE = await evaluate(PROBE);
+        eq(probeE.groupPressed, [5], "只有 E 处于 aria-pressed");
+        eq(probeE.distBars, 9, "DOM 里柱数跟着变成 9");
+        eq(probeE.legendItems, 9, "图例也变成 9 行(没有 B 组残影)");
+
+        check(await clickIn('[data-group="1"]'), "点回 A");
+        check(
+            await waitFor(
+                IN(`return M.snapshot().seriesTracks.length === 15;`),
+            ),
+            "切回 A ⇒ 又是 15 轨",
+        );
+        // 换到一个没有 Output 的组:空态面板要说得出是哪个组
+        check(await clickIn('[data-group="3"]'), "点到没有 Output 的 C");
+        check(
+            await waitFor(IN(`return M.snapshot().reason === "offline";`)),
+            "C 组 ⇒ 空态",
+        );
+        const probeC = await evaluate(PROBE);
+        check(
+            probeC.emptyTextContent.includes("C"),
+            `空态点名组 C(实得「${probeC.emptyTextContent}」)`,
+        );
+        eq(probeC.distBars, 0, "换到空组把上一组的柱子清干净");
+        assertClean("monitor-groups(含三次换组)");
+    }
+
+    // =========================================================================
+    log("=== ⑦ 重连(monitor-reconnect):离线 → 自动恢复,零手动干预 ===");
+    {
+        const { snap } = await open("monitor-reconnect", null);
+        eq(snap.reason, "offline", "开箱:Output 还没起来 ⇒ 空态");
+        const back = await waitFor(
+            IN(`return M.snapshot().online === true;`),
+            12000,
+        );
+        check(back, "3s 后 Output 起来 ⇒ 页面自己恢复(不用刷新)");
+        const s2 = await evaluate(SNAP);
+        eq(s2.seriesTracks, RANGE15, "恢复后 15 轨折线补齐");
+        const p2 = await evaluate(PROBE);
+        eq(p2.emptyPanelDisplay, "none", "空态面板收起");
+        eq(p2.distBars, 15, "柱子补齐");
+        assertClean("monitor-reconnect");
+    }
+
+    // =========================================================================
+    log("=== ⑧ 交互:换语言 / 缩放确认条 / pagehide 拆图 ===");
+    {
+        await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+
+        // ---- 语言:三语各切一遍,词条真的换掉且不报错
+        for (const lang of ["en", "fr", "zh"]) {
+            check(await clickIn(`[data-lang="${lang}"]`), `点了 ${lang}`);
+            await sleep(200);
+            const p = await evaluate(PROBE);
+            eq(p.langPressed, [lang], `${lang} 胶囊按下`);
+        }
+
+        // ---- 缩放:预览 → 确认条出现 → 取消回退(10 秒防呆的两端)
+        const changed = await evaluate(
+            IN(`
+            const sel = gb("monitor-scale");
+            if (!sel) return false;
+            sel.value = "0.8";
+            sel.dispatchEvent(new w.Event("change"));
+            return true;
+        `),
+        );
+        check(changed, "改了缩放档位");
+        check(
+            await waitFor(
+                IN(
+                    `const c = gb("monitor-scale-confirm"); return c && !c.hidden;`,
+                ),
+            ),
+            "确认条弹出(10 秒防呆)",
+        );
+        check(
+            await clickIn('[data-gb="monitor-scale-confirm-revert"]'),
+            "点取消",
+        );
+        await sleep(200);
+        const pr = await evaluate(PROBE);
+        eq(pr.scaleConfirm, false, "确认条收起");
+        eq(
+            await evaluate(IN(`return q("#card").style.zoom;`)),
+            "1",
+            "档位回退到 1x",
+        );
+
+        // ---- pagehide:**真的派发一次**。这里曾经必抛 ReferenceError,
+        // 于是同一处理器里的 traj.destroy() 一次都没跑过(node 侧的源码正则看不出来)。
+        const before = bucket.exceptions.length;
+        await evaluate(
+            IN(`w.dispatchEvent(new w.Event("pagehide")); return true;`),
+        );
+        await sleep(400); // 让后续几帧 mock 事件打到已 destroy 的图上
+        eq(
+            bucket.exceptions.length,
+            before,
+            "pagehide 处理器零抛错(拆图真的执行了)",
+        );
+        // 拆图之后 mock 仍在 4Hz 发帧、25Hz 发播放头 —— 死图上再来事件也不许炸
+        await sleep(400);
+        eq(
+            bucket.exceptions.length,
+            before,
+            "destroy 之后继续来事件仍然零抛错",
+        );
+        assertClean("交互(语言/缩放/pagehide)");
+    }
+
+    // =========================================================================
+    log("=== ⑧b 宿主不推 playhead:回落到 viz 帧自带的种子 ===");
+    {
+        // 「首帧播放头种子」那一支的条件是「本帧可读 **且** 25Hz 那一路还没来过」——
+        // 一次装载最多命中一拍,而命中与否取决于两个事件谁先到。那一支里曾经藏着一个
+        // ReferenceError,当初是靠某个场景的时序**恰好撞上**才暴露的。
+        // **靠撞上的覆盖等于没有覆盖**,故这里用 `?playhead=off`(宿主拿不到
+        // AudioPlayHead 的真实降级)把 25Hz 整路关掉,让那一支**确定**被走到。
+        const { snap, probe } = await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+            "&playhead=off",
+        );
+        eq(
+            snap.playheadSeen,
+            false,
+            "`?playhead=off` 真的把 25Hz 那一路关掉了(下一条断言的前提)",
+        );
+        // 种子那一支挂在 **viz 帧到达**这条路径上,而 `online` 翻绿可能是
+        // `scvb.state` 先到那一拍造成的 —— 两者之间隔着最多一个 4Hz 周期。
+        // 故这里**等条件**,不是采一次样(采样会把「还没轮到」读成「没跑到」)。
+        const seeded = await waitFor(
+            IN(`return M.snapshot().seededFromFrame === true;`),
+            4000,
+        );
+        check(
+            seeded,
+            "没有 25Hz 那一路时,**确定**走到首帧播放头种子(不是碰运气撞上)",
+        );
+        eq(
+            (await evaluate(SNAP)).playheadSeen,
+            false,
+            "并且全程没有一个 playhead 事件顶替它(竖线只能靠这条种子)",
+        );
+        eq(snap.seriesTracks.length, 15, "图照常出(播放头缺席不影响两图)");
+        eq(probe.emptyPanelDisplay, "none", "不进空态");
+        assertClean("monitor-online&playhead=off");
+    }
+
+    // =========================================================================
+    log("=== ⑧c 分布图帧间补间(SL-192):rAF 驱动,不是收到帧才画 ===");
+    {
+        // 用户实测:「声像/音量分布……帧数很低,一秒钟刷新一两次」。viz 是 **4Hz** 数据面
+        // (冻结口径),直出就是 15 根柱每 250ms 同拍齐跳。修法是 `dist-motion.js` 的 rAF 补间。
+        //
+        // 这一节要证的是 node 侧证不到的两件:**循环真的是 rAF 驱动**,以及**插出来的中间值
+        // 真的写进了 DOM**。判据不靠「某次采样恰好落在动画中段」那种运气 —— `dist.frames`
+        // 是补间循环的帧计数,事件驱动的实现里它**恒为 0**,这是最干脆的分界。
+        const { snap } = await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(typeof snap.dist.frames, "number", "快照挂出了补间诊断面");
+
+        // 页内密集采样(每 30ms 一次),把往返开销与时序抖动都关在页内。
+        const collect = (ms, stepMs) =>
+            evaluate(
+                IN(`
+            return new Promise((res) => {
+                const out = [];
+                const t0 = performance.now();
+                const step = () => {
+                    const d = M.snapshot().dist;
+                    out.push({
+                        x: all(".dist-bar")
+                            .map((b) => b.style.getPropertyValue("--x"))
+                            .join("|"),
+                        target: (d.target || []).map((r) => r.pan).join("|"),
+                        shown: (d.shown || []).map((r) => r.pan).join("|"),
+                        frames: d.frames,
+                        pushes: d.pushes,
+                    });
+                    if (performance.now() - t0 >= ${ms}) res(out);
+                    else setTimeout(step, ${stepMs});
+                };
+                step();
+            });
+        `),
+            );
+
+        const samples = await collect(3000, 30);
+        const first = samples[0];
+        const last = samples[samples.length - 1];
+        const pushes = last.pushes - first.pushes;
+        const frames = last.frames - first.frames;
+        // 前提:这 3 秒里数据面**真的动过**。fixture 的乐句 3.2–7.6s 一段,15 轨叠起来
+        // 平均每 0.4s 就有一轨换段;没动过的话下面两条断言等于没测,故先把前提断死。
+        check(
+            pushes >= 2,
+            `3 秒内至少有两帧带来新值(实得 ${pushes} —— 为 0 说明这段时间数据面没动,下面的断言不作数)`,
+        );
+        // ⚠ 判据必须**与机器速度无关**。这里原本写的是 `frames >= pushes * 3`
+        // (「每帧数据铺成至少 3 帧渲染」)—— 那是按帧率判红。CI 的无头 Chrome 上 rAF
+        // 节奏比本机慢,SL-203 在 Output 那套同款断言上实测「23 渲染帧 / 15 数据帧」
+        // 就红了,而代码完全正确。**这正是隐藏用例那边刚讲过的坑,自己又踩了一次。**
+        //
+        // 换成按**构造**成立的两侧夹(下面这条 + ⑧d 那条),两条都与帧率无关:
+        //   • 可见且数据在动 ⇒ `frames` **严格 > 0**:每一次「值真的变了」的 push 都会
+        //     `start()` 一个 rAF 循环,循环至少跑一帧。事件驱动的实现里这个计数**恒为 0**
+        //     (它只在循环里自增),所以 >0 本身就是「rAF 驱动」的完整判据;
+        //   • 不可见 / 值没变 ⇒ `frames` **恒等于 0**(⑧d)。
+        //
+        // 补间的**数值正确性**(半程、到位、封顶不外推、时长定值……)归 node 侧
+        // `smoke-monitor.mjs` ⑨ 节:那边用**注入的逻辑时钟**驱动 `tick()`,确定且与机器无关。
+        // 页面级只回答「循环是不是真的在跑、写出去的东西有没有到屏幕上」。
+        check(
+            frames > 0,
+            `补间循环真的在跑(实得 ${frames} 渲染帧 / ${pushes} 数据帧;事件驱动时恒为 0)`,
+        );
+
+        // 中间态采样数 —— **只打印,不判红**:能不能采到 `shown ≠ target`,取决于 rAF
+        // 周期与补间时长的相对快慢;机器慢到 rAF 周期 ≥ 补间时长时,第一帧就 p=1,
+        // 永远采不到中段 —— 那时代码没错,是那台机器本来就补不出中间帧。
+        // 留作排障读数:红了能一眼分清「循环没跑」和「循环跑了但一步到位」。
+        const midFlight = samples.filter((s) => s.shown !== s.target).length;
+        log(
+            `  (补间中段采样 ${midFlight} / ${samples.length};渲染帧 ${frames} / 数据帧 ${pushes})`,
+        );
+
+        // DOM 面:插出来的中间值必须**真的写进了柱子**。不在这里重算一遍几何(那等于把
+        // distGeometry 抄第二份),而是比「不同取值的档数」—— 直出的话柱位只可能取到目标值
+        // 那几档,补间会在两档之间铺出更多档。
+        const distinctX = new Set(samples.map((s) => s.x)).size;
+        const distinctTarget = new Set(samples.map((s) => s.target)).size;
+        check(
+            distinctTarget >= 2,
+            `目标值在采样窗口内确实变过(实得 ${distinctTarget} 档)`,
+        );
+        // 同上,这条也是**帧率相关**的(慢机上补不出中间档,两个档数就相等)——
+        // 降级成读数。DOM 面真正与机器无关的守卫是下面那条「渲染位置紧跟写入值」:
+        // 它量的是**空间一致性**(写进去的 `--x` 与 `getBoundingClientRect` 的柱心对不对得上),
+        // 与快慢无关,而 `transition: all` 那个坑正是被它抓出来的。
+        log(`  (--x 取值 ${distinctX} 档 / 目标 ${distinctTarget} 档)`);
+        // ---- **渲染面**:插出来的中间值必须真的落到柱子的位置上,而不是被 CSS 过渡糊住。
+        //
+        // 上面几条读的都是 inline 的 `--x`(= `paint()` 刚写进去的值),它证明不了屏幕上
+        // 的柱子在哪 —— 这正是 PR 审查抓到的盲区:`.dist-bar` 原本带 `transition: all .3s`,
+        // 而补间改成「给既有节点逐帧写 CSS 变量」之后,`left`/`height` 这些几何属性**落进了
+        // 过渡集**,于是浏览器在 40ms 补间之上又叠了一层 ~300ms 低通 —— 补间逻辑全绿,
+        // 屏幕上却仍旧慢半拍,正是用户抱怨的那一半被悄悄还原。
+        //
+        // 故这里量「写进去的百分比」与「渲染出来的百分比」的偏差:
+        // 柱宽 7px 配 margin-left:-3.5px ⇒ 柱心恰好落在 `--x` 上,可直接比。
+        const drift = await evaluate(
+            IN(`
+            return new Promise((res) => {
+                const out = [];
+                const t0 = performance.now();
+                const step = () => {
+                    const cont = q(".dist-bars");
+                    const bars = all(".dist-bar");
+                    if (cont && bars.length) {
+                        const cr = cont.getBoundingClientRect();
+                        for (const b of bars) {
+                            const written = parseFloat(
+                                b.style.getPropertyValue("--x"),
+                            );
+                            const r = b.getBoundingClientRect();
+                            const rendered =
+                                ((r.left + r.width / 2 - cr.left) / cr.width) *
+                                100;
+                            if (Number.isFinite(written) && cr.width > 0) {
+                                out.push(Math.abs(rendered - written));
+                            }
+                        }
+                    }
+                    if (performance.now() - t0 >= 3000) {
+                        res({
+                            n: out.length,
+                            max: out.length ? Math.max(...out) : -1,
+                        });
+                    } else setTimeout(step, 25);
+                };
+                step();
+            });
+        `),
+        );
+        check(drift.n > 100, `渲染面采样够多(实得 ${drift.n}）`);
+        // 阈值 1.5 个百分点:亚像素误差 + 取整远小于它;而 300ms 过渡下的滞后是**几个到
+        // 十几个**百分点(几何属性一旦进过渡集,写入与渲染在整段运动里都追不上)。
+        check(
+            drift.max >= 0 && drift.max < 1.5,
+            `柱子渲染位置紧跟写入值,没有被 CSS 过渡拖住(最大偏差 ${drift.max.toFixed(2)} 个百分点,阈值 1.5)`,
+        );
+        assertClean("monitor-online 补间");
+    }
+
+    // =========================================================================
+    log("=== ⑧d 空闲零 rAF(05 §6.1):没有新值就不许空转 ===");
+    {
+        // `?play=0` = 走带停住:viz 事件照旧 4Hz 到达,但每帧的三条标量逐字相同。
+        // 「值没变也照起一帧 rAF」是补间层最容易犯的错,而它在画面上**完全看不出来** ——
+        // 只是插件窗口开着就白烧一条 60fps 的循环。
+        await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+            "&play=0",
+        );
+        // 先等补间收手(开箱首帧之后可能还有一两拍在走)
+        await waitFor(
+            IN(`return M.snapshot().dist.animating === false;`),
+            4000,
+        );
+        const a = await evaluate(IN(`return M.snapshot().dist;`));
+        await sleep(800);
+        const b = await evaluate(IN(`return M.snapshot().dist;`));
+        eq(
+            b.frames - a.frames,
+            0,
+            `停住 800ms 里一帧 rAF 都不许跑(实得 ${b.frames - a.frames} 帧)`,
+        );
+        eq(b.animating, false, "循环处于停止态");
+        check(b.shown.length > 0, "而柱子还在(停帧不等于清图)");
+        assertClean("monitor-online&play=0");
+    }
+
+    // =========================================================================
+    // =========================================================================
+    // ⑧e [SL-362] 全局「最大角度」真的走到几何 —— 不是只到段里就断了
+    //
+    // 这一格钉的是**最后一跳**:`createDistMotion` 的 `getGlobalWidthPct` 读的是不是真有值的
+    // 那个对象。初版把它写成了 `store.viz` —— **`store` 上根本没有这个键**,于是求值链是
+    // `undefined → 回落 100`:段里的字段、+1 哨兵、0..150 夹取域、三条 static_assert、golden、
+    // 契约文档全部做对了,唯独这一跳读了个不存在的属性 ⇒ **页面上一格没修,而且不报错、
+    // 看起来完全正常**(复审第 4 轮红旗)。
+    //
+    // 量法:同一个场景开两次,只改 `?globalwidth=`,比**几何的确定性产物**(见下面那段)。
+    // 为什么不只断 `dist.globalWidthPct`:那只证明 getter 读对了对象,证不了它**被几何用上了**;
+    // 两者都断,红了能一眼分清是「没读到」还是「读到了没用上」。
+    // ← 把 `visibleFrame()` 改回 `store.viz`,**3 条都红**(实跑,连跑两次一致)。
+    log("=== ⑧e [SL-362] 全局最大角度走到几何(两档柱位必须不同)===");
+    {
+        // ⚠ **不读 DOM 上的 `--x`**:那是 rAF 补间**逐帧**写的插值中间态,两次页面加载采到
+        //   不同动画相位就会不同 —— **与 width 无关**。初版读它,于是注入缺陷(两档都回落
+        //   100)时这一格**照样绿**:脚本跑 rc=0、手工跑却红,同一份代码两种结果 ⇒ 判据本身
+        //   不确定。而「等补间收敛」也不成立:播放中每帧都有新目标,`shown` 追不平 `target`。
+        //
+        //   读的是 `distMotion.diag().geometryXs` —— **建器内部**拿当前 target 行 + 当前 width
+        //   现调一次**生产同一条** `distBarsHtml` 得到的 `--x`。无动画、无时序,且**确实经过
+        //   了几何**。初版是在**用例里**手写 `gw * r.pan` 冒充几何,于是第三条断言成了前两条
+        //   的算术推论、**恒真**(复审第 5 轮点名)——「在页内调 distGeometry」那句也是假的,
+        //   页内根本取不到它。
+        //
+        //   证据面(`dist.globalWidthPct`)与几何取自**同一个 `diag()`、同一次求值**:各算一份
+        //   的话,坏了被测那条、证据那条照样对(实测过:删除式连跑两次都不红)。
+        const geoAt = IN(`
+            const dg = M.snapshot().dist;
+            return { w: dg.globalWidthPct, xs: dg.geometryXs };
+        `);
+
+        await open(
+            "monitor-online",
+            IN(`return M.snapshot().distTracks.length > 0;`),
+            "&globalwidth=50",
+        );
+        const g50 = await evaluate(geoAt);
+        check(
+            g50 && g50.w === 50,
+            `⑧e width=50 页面拿到的就是 50(实得 ${g50 && g50.w})`,
+        );
+        assertClean("monitor-online &globalwidth=50");
+
+        await open(
+            "monitor-online",
+            IN(`return M.snapshot().distTracks.length > 0;`),
+            "&globalwidth=150",
+        );
+        const g150 = await evaluate(geoAt);
+        check(
+            g150 && g150.w === 150,
+            `⑧e width=150 页面拿到的就是 150(实得 ${g150 && g150.w})`,
+        );
+        // 同一批 rows、只换 width ⇒ 几何产物必须不同。缺陷在(恒回落 100)时两档相等。
+        check(
+            !!g50 && !!g150 && g50.xs !== g150.xs,
+            "⑧e 两档几何产物不同(width 真的进了几何,不是只到 getter)",
+        );
+        assertClean("monitor-online &globalwidth=150");
+    }
+
+    log("=== ⑨ 裸开(无 mock 后端):零 console.error,页面不白屏 ===");
+    {
+        // 直开真源页(不经壳页 ⇒ 没有 __SCVB_MOCK__,也没有 __JUCE__)。
+        // 纪律逐字来自 app.js 文件头:「裸开浏览器必须零 console.error」——
+        // 桥接不上只能 console.warn 并给一句英文提示,不能抛。
+        await cdp.send("Page.navigate", { url: "about:blank" });
+        await sleep(120);
+        newBucket("裸开");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web/monitor/index.html`,
+        });
+        check(
+            await waitFor(`!!document.querySelector("#card")`),
+            "页面装载出卡片(不白屏)",
+        );
+        await sleep(500);
+        const hint = await evaluate(
+            `(() => { const el = document.querySelector('[data-gb="monitor-footer-hint"]'); return el ? el.textContent : ""; })()`,
+        );
+        check(
+            /No backend attached/.test(hint),
+            `页脚给出了无后端提示(实得「${hint}」)`,
+        );
+        check(
+            bucket.errors.length === 0,
+            `裸开零 console.error(实得:${bucket.errors.join(" | ").slice(0, 300)})`,
+        );
+        check(
+            bucket.exceptions.length === 0,
+            `裸开零未捕获异常(实得:${bucket.exceptions.join(" | ").slice(0, 300)})`,
+        );
+        check(
+            bucket.warns.length > 0,
+            "但**有** warn(桥接不上要说话,不是静默)",
+        );
+    }
+} catch (e) {
+    crashed = e;
+    console.error("❌ 页面级冒烟自身出错:" + e.message);
+} finally {
+    try {
+        cdp?.close();
+    } catch {}
+    if (!argv.has("keep-open")) chrome.kill();
+    server.close();
+    await sleep(200);
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+
+if (crashed || fail > 0) {
+    console.error(
+        `\n=== 失败 ${fail} 条${crashed ? " + 脚本自身出错" : ""} ===`,
+    );
+    process.exit(1);
+}
+log("\n=== 结果:全部通过 ===");
+process.exit(0);

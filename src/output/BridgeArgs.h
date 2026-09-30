@@ -1,0 +1,678 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// BridgeArgs —— 桥面 native function 参数提取/白名单助手(消息线程)。纯 JUCE 工具,可离线单测。
+// 与 SegmentEditService.h 同放 src/output/(不落 scvb_core,因依赖 JUCE)。
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <vector>
+
+#include "BridgeBase.h" // strictBool 真身(两插件共用的桥面参数口径)
+#include "analysis/PanCurve.h" // [J157] parsePanCurvePointsArg
+#include "state/StateCodec.h" // CrvsData/VersionCurve(R4 降级链的输入)
+
+namespace scvb::output
+{
+
+// 严格布尔提取 —— 真身已上提到 scvb::bridge(plugin-common/BridgeBase.h),两侧共用一份。
+// 这里转发,Output 既有调用点(unqualified strictBool)与单测一个字都不用改。
+using scvb::bridge::strictBool;
+
+// 读取参数的**工程值**(契约 §2.2 f32 工程值)。APVTS 的 getRawParameterValue 返回归一化 0..1 原子,
+// 须经 convertFrom0to1 还原(PR#55 第3轮重要1;AudioParameterFloat::get() 同款)。
+inline float readParamEngineering(juce::AudioProcessorValueTreeState& apvts, const juce::String& id)
+{
+    if (auto* p = apvts.getParameter(id))
+        return p->convertFrom0to1(p->getValue());
+    return 0.0f;
+}
+
+// gesture 通道白名单(契约 §1.12):全局三件 + 当前激活版本每轨 width/freeze。
+// pan/vol 走 setTrackManual(未冻结通道 = 曲线真身 + 参数面;[J85] 冻结通道 = **只**落参数面),
+// 非激活版本参数不进本通道;白名单外回 badArg(不得静默忽略)。
+// 「不在 gesture 白名单」≠「不写参数面」:UI 侧从不对 pan/vol 调 setParam(§1.13 防回环),但
+// native 侧处理 setTrackManual 时会自己带 gesture 落一次参数(#87 裁定②)。
+inline bool isGestureParam(const juce::String& id, int activeVersion)
+{
+    if (id == "width" || id == "ms_balance" || id == "lead_select")
+        return true;
+    for (int t = 1; t <= 15; ++t)
+    {
+        if (id == juce::String::formatted("v%d_t%02d_width", activeVersion, t) ||
+            id == juce::String::formatted("v%d_t%02d_freeze", activeVersion, t))
+            return true;
+    }
+    return false;
+}
+
+// segmentation.mode 白名单(02-dsp-spec §362,params-v0):vad_only(不做 S1)/ valley(默认)。
+inline bool isSegmentationMode(const juce::String& mode)
+{
+    return mode == "vad_only" || mode == "valley";
+}
+
+// 「无末端」哨兵:CRVS 里 t1 = 1<<40 表示「覆盖到时间线末端」,真末端由宿主时间线提供
+// (`SegmentEditService.h` `makeManualDimSegments` 在空表上产出的 setTrackManual 常值段)。
+// 与 `kVizOpenEndedT1` 同一个数,#89 已在 viz 侧按「只取 t0」处理过;桥面 §2.8 的处理见 `OutputEditor::emitSegments`。
+inline constexpr std::int64_t kOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
+
+// ---- R4 降级链(桥面 §2.8):无末端段上桥前的有效右端 ----
+// 这三个函数是降级链的**唯一实现**,`OutputEditor::buildSegmentsPayload` 与 harness 的
+// HOST R4 用例走同一份代码 —— 用例断的就是真实上桥值,revert 任何一级都会红。
+//
+// ① 工程级已知末端:全 15 轨该版本里所有非哨兵段的最大真末端;一个都没有(全是手动/
+//    冻结轨)→ ② 已采集时间线末端。**必须是工程级、不能是本轨级**:`setTrackManual` 在
+//    空表上的产物是单段全时限(`makeManualDimSegments`),按本轨算永远得 0。
+inline std::int64_t knownTimelineEndSamples(const scvb::state::VersionCurve& vc, double capturedExtentS,
+                                            double sampleRate)
+{
+    std::int64_t knownEnd = 0;
+    for (const auto& track : vc.tracks)
+        for (const auto& sg : track.segments)
+            if (sg.t1 < kOpenEndedT1)
+                knownEnd = std::max(knownEnd, sg.t1);
+    if (knownEnd <= 0 && sampleRate > 0.0)
+        knownEnd = static_cast<std::int64_t>(capturedExtentS * sampleRate); // ② 采集覆盖兜底
+    return knownEnd;
+}
+
+// ③ 最小非零宽度(样本):一个特征 hop;sr 非法时 1。空工程下哨兵段各自退到
+//    「自己的 t0 + 这个宽度」,宽度虽小但非零,UI 仍可点可切。
+inline std::int64_t minOpenEndedSpanSamples(double hopSeconds, double sampleRate)
+{
+    return sampleRate > 0.0 ? std::max<std::int64_t>(1, static_cast<std::int64_t>(hopSeconds * sampleRate)) : 1;
+}
+
+// 有效右端:非哨兵段原样;openEnded 段 = max(①②, t0 + ③) —— **严格大于 t0**,
+// 坍缩成零宽的段在波形页上点不中、切不开(v5.3 R4)。真末端由前端按 openEnded 自行延伸。
+inline std::int64_t effectiveT1Samples(std::int64_t t0, std::int64_t t1, std::int64_t knownEndSamples,
+                                       std::int64_t minSpanSamples)
+{
+    if (t1 < kOpenEndedT1)
+        return t1;
+    return std::max(knownEndSamples, t0 + std::max<std::int64_t>(1, minSpanSamples));
+}
+
+// 样本→秒安全换算:sampleRate<=0 返回 0.0 哨兵,绝不把 NaN/inf 进 JSON(PR#55 第6轮缺陷1)。
+//
+// **这里不做值域裁剪。** 曾经试过在这里把超大采样数夹成 0.0 来挡 P0-A,那是错的:
+// 它把「无末端哨兵」也一并夹成 0,于是手动/冻结段的 t1S=0 < t0S —— 段在波形页上直接消失、
+// 点不中、切不开。哨兵是**语义**问题,必须在**产生它的地方**按语义降级(emitSegments 把
+// t1S 降级成已知时间线末端),而不是在一个通用换算函数里按数值大小一刀切。
+// P0-A 的止血也不靠这条:求交 + 跨度闸 + 前端 MAX_DURATION_S 三层已经够。
+inline double samplesToSeconds(std::int64_t samples, double sampleRate)
+{
+    return sampleRate > 0.0 ? static_cast<double>(samples) / sampleRate : 0.0;
+}
+
+// --- [SL-199] scvb.params 的隐藏期吞帧 ---------------------------------------------
+//
+// `emitParams` 有**两层**基线,而只有一层挡住了隐藏期丢帧:
+//   ① `lastParamsJson_` —— 由 `emitIfChanged` 维护,**不可见时不推进**(那段注释已写明理由),
+//      所以恢复可见后同一份 json 会自然重发;
+//   ② `lastParamsValues_` —— 由 `emitParams` 自己维护,**在构建载荷时就推进了**,与这一帧
+//      究竟有没有发出去无关。
+// 于是:隐藏期某个 id 变了 → ② 已经等于新值 → 这一帧被 `emitEventIfBrowserIsVisible` 丢掉 →
+// 下一拍 `changed == false`、`values` 为空、`any == false` **提前 return**,载荷压根不再构建,
+// ① 那层保护也就无从生效。这个变化**永远不会重发**。
+//
+// [J85] 之后冻结维度的读回值**只**在参数面上(段表那条后路没了),所以这条洞的后果是:
+// 隐藏/折叠面板期间被宿主自动化或手动写入改掉的冻结值,恢复可见后旋钮一直显示旧值,
+// 直到该参数再变一次。`firstFrame_` 是 editor 生命周期级的 —— 宿主只是隐藏而不销毁 editor 时,
+// `emitParams(true)` 不会重来。
+//
+// 修法(SL-199):**不可见→可见置一个闩锁位,强制全量,直到真的发出去才清**(scvb.segments 同款,
+// 见 segmentsResendNeeded)。比「按 key
+// 回滚基线」简单可靠 —— 它覆盖隐藏期被吞的**所有** id,不需要知道具体吞了哪几个;代价是每次重新打开面板多发一帧 63 个 id
+// 的全量,可忽略。(Input 侧对同类问题用的是「发出去了才推进基线」,见 `InputBridgeLogic.h` 的 `advanceEmitCache` /
+// `advanceConfigSeq`;两种口径都成立, 这里取前者是因为 `lastParamsValues_` 是 63 个 key 的 map,回滚要多存一份候选集。)
+//
+// 纯函数,可离线断言:`wasVisible` / `pendingFull` 由调用方持有(OutputEditor 成员)。
+//
+// **闩锁,不是一次性边沿**(#119 复审重要):边沿版把「补发」压在 `isVisible()` 刚翻真的那一拍,
+// 而那一拍恰好是最不确定的时刻 —— `Component::isVisible()`(我们的判据)与 JUCE
+// `emitEventIfBrowserIsVisible` 内部的判据不保证逐帧一致(WebView2 侧刚被重新显示、页面刚恢复)。
+// 边沿一旦消费掉就没有第二次机会,那一帧丢了 SL-199 原样复现。
+// 闩锁语义 = 「**直到真的发出去为止一直补**」,与 Input 侧 `advanceEmitCache` / `advanceConfigSeq` /
+// `claimEdgeConsumed` 的幂等口径统一:没发出去基线就不动,下一拍自然重试,不依赖抓住某一拍。
+//
+// ⚠ 能力边界(如实记):这里的「发出去了」是 **C++ 侧观察得到的**那一层(`emitIfChanged` /
+// `emitSegments` 的返回值 = 可见且确实调了 `emitEventIfBrowserIsVisible`)。JUCE 内部若在那之后
+// 再丢一次,C++ 侧没有任何回执可查 —— 要闭合到「JS 真收到」需要 JS 侧 ack,那是另一条卡。
+// 即便如此,闩锁仍严格优于边沿:整个不可见期与任何「这一拍没发成」的拍都会继续补。
+inline void raiseResendLatch(bool visibleNow, bool& wasVisible, bool& pendingFull) noexcept
+{
+    if (visibleNow && !wasVisible)
+    {
+        pendingFull = true; // 不可见 → 可见:置位
+    }
+    wasVisible = visibleNow; // 记账无条件跟到当前态
+}
+
+// 这一帧的处置:`sent` = 上面那层「已下发」的观察值。只有确实发出去了才清位;
+// 没发出去(不可见 / 被丢)就保持,下一拍继续补。
+inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
+{
+    if (sent)
+    {
+        pendingFull = false;
+    }
+}
+
+// --- [SL-400] 值没变、但 `hostEcho` 翻转:这一帧**也得发** ------------------------------
+//
+// 病根(用户 A23 实测):Cubase 起播会 chase 一遍自动化。宿主写进去的值与当前**相同** ⇒
+// `selectParamForEmit` 逐 id 全判「没变」⇒ `any == false` ⇒ 老写法在构载荷**之前**就
+// `return true` ⇒ 这一帧连载荷都不建 ⇒ 页面永远收不到 `hostEcho:true` ⇒ 播放期那把闩锁
+// 永不武装。用户看到的是「正常播放时『宿主自动化正在写』那个小图标不出现,停止那一下才亮
+// 1 秒」(停止时宿主写入的值**变了**,走的是「有变化」那条路)。
+//
+// 判据:`hostEcho` 也是载荷的一部分(§2.2),它翻转 = 载荷变了 = 依 §0.4「值未变不发」该发。
+// 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次)⇒ 一次播放最多多两帧,
+// 不会在 25Hz 上刷屏。
+//
+// ⚠ **边沿触发的边界**(claude 复审② 点名;措辞按代码实情,数取自 `AutomationPrinter.h` 的
+// `kHostEchoFreshMs = 600` 与 `web/shared/host-echo.js` 的 `HOST_ECHO_RELEASE_STOPPED_MS = 900`):
+// 「一次播放最多多两帧」的前提是**回声位在这段播放里真的翻过一次**。它有一个够得着的反例 ——
+// 宿主在**停走态**就连续写(每笔间隔 < 600ms)⇒ `hostEchoActive()` 一直为真、**一次都不翻转**;
+// 若用户在这之后才按播放,本函数不会发任何帧 ⇒ 页面手上 `store.params.hostEchoAt` 还停在
+// 那笔早到的写上(比如 `playbackStartedAt - 1500`)。而 `hostEchoVisible()` 的闩锁①要的是
+// `hostEchoAt >= playbackStartedAt - 900`,接不住;②③又只剩 900ms 窗口 ⇒ **徽标在播放中灭掉**,
+// 而宿主一直在写。这与 A23 是同一族(触发前提换成「回声位在起播前就已经亮着」)。
+// 硬化办法(把走带上升沿也算一条发帧理由,`planParamsFrame` 多收一个走带入参)已另立
+// **SL-409**;本卡只如实记账,不在这里扩签名。
+// 另:`smoke-output-dist-page.mjs` 的 ⑫ 那一格**量不到这一支** —— 它的夹具是
+// `setPlaying(false); sleep(400)` 之后才起播,等于**构造**出一个落在播放期内的干净上升沿。
+// 那一格证明的是「干净上升沿这一支」,不是「起播时徽标一定亮」。
+//
+// ⚠ **「值」的口径**(deepseek 复审④ 点名,留在头注里而不动契约文本):本卡的「值」= **整个
+// `scvb.params` 载荷**,含 §2.2 的 `hostEcho`。§0.4 那句「值未变不发」说的是**载荷**没内容
+// 就不发,不是「`values` 这个对象必须非空」。由此有一条**有意的形状**:只翻回声位的那一帧
+// `values` 是**空对象 `{}`**(稀疏 diff = 「本帧没有 id 变化」,不是非法帧)。
+// 下游逐条核过:`web/output/app.js` 在 `full` 为假那一路做
+// `{...store.params.values, ...(p && p.values)}` —— 展开空对象**不覆盖任何键**,是 no-op;
+// `hostEchoAt` 的写入只看 `p.hostEcho`、不看 `values` 是否非空 —— 所以闩锁确实会被这一帧武装。
+// **谁把空 `values` 当异常帧过滤掉,这条链就断在那里**(页面再也收不到起播 chase)。
+// 契约文本一字未动(字段不增不减、不改名、不改既有字段语义,不触发 §9 的变更流程);
+// 要把它写进 §2.2 的文字,归下一次真的契约变更一起走。
+//
+// 单拎成纯函数:`OutputEditor` 需要真 WebView2,gates 里只在 gate 8 的 pluginval 里编
+// (tests/CMakeLists.txt 头注写着这条边界),所以这条判据落在纯函数上 + 页面级 E3 收用户
+// 可见的那半 —— 与 `selectParamForEmit` / `settleResendLatch` 同一条路。
+//
+// ⚠ 记账语义与 `lastParamsValues_` **同一条口径**:基线跟到**这一帧构出来的载荷**,
+// 不看它最终有没有下发(那一层由 `lastParamsJson_` + resend 闩锁兜,见上)。混用两套口径
+// 会让「隐藏期翻转的回声」永远补不回来 —— 与 [SL-199] 那个洞同形。
+struct ParamsFramePlan
+{
+    bool emit = false; // 要不要构载荷并尝试下发
+    bool hostEcho = false; // 载荷里 `hostEcho` 写什么(= 这一帧的实时值)
+    bool nextBaseline = false; // 记账:下一拍拿它比。
+    // [SL-399 R25] 默认值取 **false** = 「这一拍没发过 true 帧」,与真基线
+    // `OutputEditor::lastHostEchoSent_` 的初值(`false`)同向。下面两条 return 都显式赋了值,
+    // 所以今天它到不了;取 false 是为了**将来的提前返回**:若有人插一条不赋值的早退,
+    // 默认 `true` 会把「没发过」记成「发过」,静默吃掉下一次上升沿。
+};
+
+inline ParamsFramePlan planParamsFrame(bool anyValueChanged, bool forceFull, bool echoNow, bool lastEchoSent) noexcept
+{
+    ParamsFramePlan p;
+    p.hostEcho = echoNow;
+    p.nextBaseline = lastEchoSent;
+    if (!anyValueChanged && !forceFull && echoNow == lastEchoSent)
+    {
+        return p; // 一个 id 没变、回声位也没翻转:这一帧没内容(去重仍在)
+    }
+    p.emit = true;
+    p.nextBaseline = echoNow;
+    return p;
+}
+
+// scvb.segments 的重发判定(`emitTick` 里那个 if 就是它)。
+//
+// 它与 params 是**同一个洞**:三个触发基线(`lastSegmentsSampleRate_` / `lastCrvsRevision_` /
+// `lastStaleMask_`)在 if 体里、调 `emitSegments` **之前**就推进了,与这一帧发没发出去无关。
+// 隐藏期段表变了(分析完成 / 加载工程 / stale 位翻转)→ 这一帧被丢掉 → 基线已经跟上 →
+// 恢复可见后条件恒假,段表陈旧到下一次段编辑 / undo / 切版本才刷新。
+// 而且它比 params **更依赖**「那一帧真的发出去了」:params 那路还有 `lastParamsJson_` 兜半层,
+// segments 这路直接 `emitEventIfBrowserIsVisible`,一层保护都没有 —— 所以 `pendingFull` 必须是
+// **闩锁位**(见 raiseResendLatch),补发帧自己被吞的话下一拍还补。
+//
+// 恢复可见时补一帧 `reason:"snapshot"` 的全量段表是**正确行为**(统筹裁定 2026-08-27):
+// 重开面板本就该看到新鲜段表。web 侧 `applySegmentsEvent` 对 snapshot 是整表替换、
+// `segmentsEventApplies` 的版本闸对当前激活版本恒放行 —— 中途到达的 snapshot 帧照常生效,
+// 不是只有首帧才认。
+inline bool segmentsResendNeeded(bool firstFrame, bool pendingFull, bool analyzed, bool sampleRateChanged,
+                                 bool crvsRevisionChanged, bool staleMaskChanged) noexcept
+{
+    return firstFrame || pendingFull || analyzed || sampleRateChanged || crvsRevisionChanged || staleMaskChanged;
+}
+
+// scvb.params 稀疏 diff 的选择 + 基线推进(`emitParams` 的循环体就是它)。
+// 返回 true = 该 id 本帧要下发;同时把基线推进到新值。
+// **基线在这里无条件推进** —— 这正是上面说的洞,由 `raiseResendLatch` 的闩锁兜住;
+// 抽出来是为了让「隐藏期改值 → 恢复可见 → 必达且值正确」这条链能离线断言(生产与用例同源)。
+inline bool selectParamForEmit(std::map<juce::String, float>& baseline, const juce::String& id, float value,
+                               bool forceFull)
+{
+    // ⚠ 口径说明(#119 复审):两个入参都是 float,加宽到 double 后 `approximatelyEqual<double>` 的
+    // 默认容差是 double 量级(|v|≈80 时约 1.8e-14),而**相邻两个 float 在 80 附近就差 7.6e-6**
+    // —— 差了八个数量级。所以这里**等价于逐位精确比较**:任意两个不同的 float 一定判「变了」。
+    // 这是安全的那一侧(宁可多发一帧,绝不吞掉变化),故维持现状不动行为;要清的只是
+    // 「这里有容差」这个说法 —— 它不存在。(double 加宽是 PR#55 就有的写法,非本卡引入。)
+    const auto it = baseline.find(id);
+    const bool changed =
+        it == baseline.end() || !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));
+    if (!forceFull && !changed)
+        return false;
+    baseline[id] = value;
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-412] `scvb.error` 的 `newerState` 一档:这一拍发不发、发哪一态。
+//
+// **正题**:CLAUDE.md §7.3 / STATE_SCHEMA 的「读到高版本 → **拒载并提示升级**」里,
+// 「拒载」那一半一直是好的(`OutputProcessor::setStateInformation` 的 `RejectedNewer`
+// 分支置 `stateAbiMismatch_` + `preservedStateBlob_` 原样回写),**「提示」那一半没接线**:
+// `hasStateAbiMismatch()` / `stateAbiSeen()` 零调用方,`scvb.error` 的 `newerState` 码
+// **没有生产者**,而消费端(`web/output/app.js` 的横幅④)与 mock 夹具早就就绪。
+// 旧构建打开一份更高 abi 的工程,只落一行 `DBG` —— 而 `DBG` 在 Release 里是空语句,
+// 用户看到的是一份「段表/曲线/组号全默认」的空工程,没有任何解释。
+//
+// **为什么抽成纯函数**:`OutputEditor` 要真 WebView2,编不进任何 C++ 测试目标
+// (tests/CMakeLists.txt 的 `scvb_monitor_tests` 头注写着这条边界:三个 Editor「留待 gate 8
+// 的真机 GUI pluginval」)。所以判定落在这里离线断言,调用点由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的源码钉子锁住 —— 与 `planParamsFrame`
+// ([SL-400])、`selectParamForEmit` / `settleResendLatch`([SL-199])同一条路,不新开门禁面。
+//
+// **形态是「边沿 + 撤销」,不是「逐拍比对」**(§2.9 频率列 = **即时**,§5.1 降级纪律②:
+// 持续性条件横幅不可手动关闭,**条件消失(`active:false`)才撤下**):
+//   · 条件成立且屏上还没这一条 ⇒ 发 `active:true`(带 `{localAbi, projectAbi}`);
+//   · 条件成立、屏上已有、且**工程 abi 没变** ⇒ 不发 —— 拒载态会一直挂在 processor 上
+//     到下一次成功载入,逐拍比 json 会把它发 25 次/秒;
+//   · 条件成立但**换了一份不同 abi 的工程** ⇒ 再发一次:横幅上那两个数是**读给用户看的**,
+//     停在旧数字上就是一句假话;
+//   · 条件**解除**(宿主随后载入了一份本机读得懂的工程,`setStateInformation` 会清
+//     `stateAbiMismatch_`)⇒ 发 `active:false` 把横幅撤下。
+struct NewerStateEmitPlan
+{
+    bool send = false; // 这一拍要不要调 emitError
+    bool active = true; // 载荷的 active 位(true = 条件成立;false = 条件解除,撤横幅)
+    // 记账:下一拍拿它比。**只在 `send` 为真时**才允许推进 —— 见下面 !visibleNow 那一支。
+    bool nextShown = false;
+    std::uint32_t nextShownAbi = 0;
+};
+
+// `visibleNow` 传 `webView().isVisible()`(`emitEventIfBrowserIsVisible` 在不可见时**丢弃**载荷)。
+// ⚠ 不可见时**一律不发、也不推进记账** —— 推进了就等于把这一份变化永久吞掉:恢复可见后
+// 条件与记账相等,横幅再也不会出现。这与 `emitIfChanged` / `raiseResendLatch` 是同一条口径
+// (`BridgeArgs.h:117` 那一段写着它的来处)。
+//
+// ⚠ **不变量**:`mismatch == true` ⇒ `projectAbi >= 1`。`RejectedNewer` 只在
+// `StateMigration.cpp:56` 的 `hdr.abi > kCurrentAbi` 分支产生,而那一行**前面**已经过
+// `parseHeader` 成功 + magic 校验,所以 `OutputProcessor` 里那句
+// `parseHeader(...) ? hdr.abi : 0u` 的 `0u` 兜底在这一支到不了。故这里不必为 0 单开一档。
+inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projectAbi, bool visibleNow,
+                                             bool alreadyShown, std::uint32_t shownAbi) noexcept
+{
+    NewerStateEmitPlan p;
+    p.nextShown = alreadyShown;
+    p.nextShownAbi = shownAbi;
+
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账(改了记账就等于把这一份变化吞掉)
+
+    if (!mismatch)
+    {
+        // 条件解除:只有屏上真的挂着那一条时才需要发撤销帧(§5.1 降级纪律②)。
+        if (!alreadyShown)
+            return p;
+        p.send = true;
+        p.active = false;
+        p.nextShown = false;
+        p.nextShownAbi = 0;
+        return p;
+    }
+
+    if (alreadyShown && shownAbi == projectAbi)
+        return p; // 同一份拒载态:屏上已经是这个数,不重复发
+
+    p.send = true;
+    p.active = true;
+    p.nextShown = true;
+    p.nextShownAbi = projectAbi;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-478] `scvb.error` 的 `noTimeline` 一档:这一拍发不发、发哪一态。
+//
+// **正题**:契约 §5.1 的 `noTimeline`(琥珀横幅⑥ + 输出开关 disabled、采集开关只挡「打开」[J107])**没有生产者**。
+// 生产侧的判据一直在(`OutputProcessor::timerCallback` 里「连续无时间线 ≥0.5s → 清注入
+// mask」那一段),但结论只落一行 `DBG`,从不进桥;而 web 侧的消费者(`app.js` 的
+// `err.has("noTimeline")`、`tab-master.js` 的开关闸)早就就绪 ⇒ 恒 false。
+//
+// 形态与上面的 `planNewerStateEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),只少了
+// 「换了一份工程 abi 要重发」那一维 —— `noTimeline` 的 `detail` 是 `{}`,屏上没有要跟着
+// 变的数。**为什么不直接复用 `planNewerStateEmit`(传 abi=0)**:那条函数的不变量写着
+// 「mismatch ⇒ projectAbi ≥ 1」,拿 0 去喂等于把它的前提当成可以随手违反的东西。
+//
+//   · 条件成立且屏上还没这一条 ⇒ 发 `active:true`;
+//   · 条件成立、屏上已有 ⇒ 不发(条件是持续态,逐拍比会发 25 次/秒);
+//   · 条件解除且屏上挂着 ⇒ 发 `active:false` 撤横幅(§5.1 降级纪律②);
+//   · 条件解除且屏上本来就没有 ⇒ 不发空撤销帧;
+//   · 不可见 ⇒ 一律不发**且不推进记账**(理由同 `planNewerStateEmit` 的 `!visibleNow` 支)。
+//
+// **去抖不在这里**:`condition` 传的已经是去抖后的 `hostTimelineMissing()`(0.5s 判据,
+// 见 `OutputProcessor.h` 该访问器头注)。本函数只管「上桥的边沿」,不管「条件怎么判」。
+struct ConditionErrorEmitPlan
+{
+    bool send = false; // 这一拍要不要调 emitError
+    bool active = true; // 载荷的 active 位(false = 撤横幅)
+    bool nextShown = false; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline ConditionErrorEmitPlan planConditionErrorEmit(bool condition, bool visibleNow, bool alreadyShown) noexcept
+{
+    ConditionErrorEmitPlan p;
+    p.nextShown = alreadyShown;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (condition == alreadyShown)
+        return p; // 屏上已是这一态(含「解除且本来就没有」)
+    p.send = true;
+    p.active = condition;
+    p.nextShown = condition;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
+// [rc-misc a] `scvb.error` 的 `srMismatch` 一档(契约 §5.1 红横幅③「轨 N 采样率不一致,已禁用」)。
+//
+// **正题**:这一码此前在 Output 侧**没有生产者** —— `emitError` 只有 `newerState` / `noTimeline`
+// 两处调用,而 web 的横幅③只看 `scvb.error` 填的 errors map,于是采样率不一致时该轨被静默禁用,
+// 用户只在 Tab2 行灯上看到一个小红点(读的是 `scvb.conn.channels[].srMismatch`)。
+//
+// 形态与 `planConditionErrorEmit` 同一条纪律(边沿 + 撤销 + 不可见不记账),多出来的一维是
+// **轨号与 inputSr**:这是轨级错误(§5.1 该行 `ch` 必填、`detail = {inputSr, outputSr}`),
+// 而 web 的 errors map 按**裸 code** 存(同 code 后一帧覆盖前一帧,横幅③一次只显示一个轨号,
+// 见 `web/output/app.js` store.errors 头注)。所以这里只挂**一条**:
+//   · 目标 = 编号最小的不一致轨(`firstSrMismatchOf`);没有 ⇒ ch = 0;
+//   · 目标与屏上一致(同轨同 inputSr)⇒ 不发;
+//   · 目标变了且非 0 ⇒ 发 `active:true`(带新轨号,覆盖旧的那条);
+//   · 目标变成 0 且屏上挂着 ⇒ 发 `active:false` 撤横幅(ch 取屏上那一轨);
+//   · 不可见 ⇒ 一律不发、不推进记账。
+// **为什么不逐轨发 active:true/false**:web 按裸 code 删,撤掉轨 3 那一帧会把仍不一致的轨 5
+// 的横幅一起撤掉。
+// 横幅③ 的「一条」由三个数确定:哪一轨、该轨 Input 的 SR、Output 的 SR(后两个是 §5.1 的
+// `detail`)。三者任一变了都要重发 —— 否则不一致一直持续、只是某一端换了采样率时,屏上
+// `detail` 会停在旧值(#315 第 1 轮复审【建议】2)。同一个结构既当「目标」也当「屏上记账」。
+struct SrMismatchTarget
+{
+    int ch = 0; // 1..15;0 = 当前没有不一致的轨
+    std::uint32_t inputSr = 0;
+    std::uint32_t outputSr = 0;
+};
+
+inline bool sameSrMismatch(const SrMismatchTarget& a, const SrMismatchTarget& b) noexcept
+{
+    if (a.ch != b.ch)
+        return false;
+    return a.ch == 0 || (a.inputSr == b.inputSr && a.outputSr == b.outputSr);
+}
+
+// 15 轨连接实况 → 编号最小的不一致轨。模板化只为不把 `OutputSession.h` 拖进本头文件
+// (元素需有 `srMismatch` 与 `inputSampleRate` 两个成员,即 `ChannelConnInfo`)。
+// `outputSr` = 本 Output 当前采样率(调用方传入;没有不一致的轨时不写进结果)。
+template<typename Channels>
+inline SrMismatchTarget firstSrMismatchOf(const Channels& channels, std::uint32_t outputSr) noexcept
+{
+    SrMismatchTarget t;
+    int ch = 0;
+    for (const auto& info : channels)
+    {
+        ++ch;
+        if (info.srMismatch)
+        {
+            t.ch = ch;
+            t.inputSr = info.inputSampleRate;
+            t.outputSr = outputSr;
+            return t;
+        }
+    }
+    return t;
+}
+
+struct SrMismatchEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    SrMismatchTarget payload; // 载荷的 ch / detail(撤销帧取屏上那一条)
+    SrMismatchTarget nextShown; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline SrMismatchEmitPlan planSrMismatchEmit(const SrMismatchTarget& target, bool visibleNow,
+                                             const SrMismatchTarget& shown) noexcept
+{
+    SrMismatchEmitPlan p;
+    p.nextShown = shown;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (sameSrMismatch(target, shown))
+        return p; // 屏上已是这一态(含「没有且本来就没有」)
+    p.send = true;
+    p.active = target.ch != 0;
+    p.payload = p.active ? target : shown;
+    p.nextShown = p.active ? target : SrMismatchTarget{};
+    return p;
+}
+
+// [SL-218] `scvb.error` 的 `stateNotFullyRestored` 一档:这一拍发不发、发哪一态。
+//
+// 条件源 = `ScvbOutputAudioProcessor::stateNotRestoredMask()`(位定义见 StateRestoreDiag.h;
+// 写入点与清零时机见 `stateNotRestoredMask_` 的声明处)。形态与 `planNewerStateEmit` 同一条纪律
+// (边沿 + 撤销 + 不可见不记账),记账记的是「屏上那一条对应的位图」而不是单个 bool:
+// detail 里的 `missing` / `rejected` 是**读给用户 / 诊断看的**,换了一份缺的节不同的工程
+// 却停在旧的那两张表上,是一句关于当前工程的假话。
+//   · mask ≠ 0 且与屏上那一条不同(含屏上没有)⇒ 发 `active:true`,记下 mask;
+//   · mask ≠ 0 且与屏上相同 ⇒ 不发(持续态,逐拍比会发 25 次/秒);
+//   · mask = 0 且屏上有 ⇒ 发 `active:false` 撤横幅,记 0;
+//   · mask = 0 且屏上没有 ⇒ 不发空撤销帧;
+//   · 不可见 ⇒ 一律不发**且不推进记账**(理由同 `planNewerStateEmit` 的 `!visibleNow` 支)。
+// `shownMask == 0` 就是「屏上没有这一条」—— mask 为 0 从来不会作为 active:true 发出去,
+// 所以这里不需要另一个 bool。
+struct MaskErrorEmitPlan
+{
+    bool send = false;
+    bool active = true;
+    std::uint8_t nextShownMask = 0; // 记账:只在 send 为真时才会与入参不同
+};
+
+inline MaskErrorEmitPlan planStateNotRestoredEmit(std::uint8_t mask, bool visibleNow, std::uint8_t shownMask) noexcept
+{
+    MaskErrorEmitPlan p;
+    p.nextShownMask = shownMask;
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账
+    if (mask == shownMask)
+        return p; // 屏上已是这一态(含「全部恢复且本来就没有」)
+    p.send = true;
+    p.active = mask != 0;
+    p.nextShownMask = mask;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-509] §1.2 `setCaptureEnabled` 的 `noTimeline` 拒绝支:**只挡「打开」**([J107],用户
+// 2026-09-26 裁定「允许关、拒绝开」)。
+//
+// 缺陷:[SL-478] 接上的这一支原先不分方向,`on` 取 true / false 一律回 `noTimeline`。采集开着时
+// 宿主丢了时间线,用户就关不掉采集 —— 而关采集根本不需要时间线。
+//
+// 判序(契约 §1.2 拒绝态行):`observer` → `noTimeline`(仅 `on=true`)→ `badArg`。所以只有
+// **严格布尔且为真**才落这一支;`on` 不是严格布尔时这里回 false,交给后面的 badArg 判。
+// §1.3 `setOutputEnabled` **不走本函数**,输出开关在 noTimeline 下仍两向都拒([J107] 只裁了
+// 采集开关)。
+//
+// 抽成纯函数:`OutputEditor.cpp` 只编进插件目标、链不进任何测试可执行文件,判据落在这里才能被
+// `tests/core/test_bridge_args.cpp` 离线断言;handler 真的在用它,由 smoke-tab2-interactions.mjs 钉源码形态。
+inline bool noTimelineRejectsCaptureSwitch(bool timelineMissing, const juce::var& onArg)
+{
+    bool on = false;
+    return timelineMissing && strictBool(onArg, on) && on;
+}
+
+// -----------------------------------------------------------------------------
+// [J166] §1.3 `setOutputEnabled(on, opts?)` 的参数形态。
+//   · on:严格布尔(同改前);
+//   · opts:缺席 / undefined / null ⇒ 全取默认(老调用形态逐字不变);否则必须是对象,
+//     `requireConfirm` 缺席 ⇒ false,在席则必须是严格布尔。
+// 其余一律 badArg —— 这一位决定「点开始之前写不写宿主自动化」,传歪了宁可整次拒掉让 UI 看见,
+// 也不按「没要确认」照开(那个方向会直接写)。
+// 抽成纯函数的理由同上面那格:handler 编不进测试目标,判据落在这里才能离线断言;
+// handler 真的在用它,由 smoke-tab2-interactions.mjs 钉源码形态。
+struct SetOutputEnabledArgs
+{
+    bool ok = false;
+    bool on = false;
+    bool requireConfirm = false;
+};
+inline SetOutputEnabledArgs parseSetOutputEnabledArgs(const juce::Array<juce::var>& a)
+{
+    SetOutputEnabledArgs r;
+    if (a.size() < 1 || !strictBool(a[0], r.on))
+        return r;
+    if (a.size() > 1 && !(a[1].isVoid() || a[1].isUndefined()))
+    {
+        if (!a[1].isObject())
+            return r;
+        const juce::var rc = a[1].getProperty("requireConfirm", juce::var());
+        if (!(rc.isVoid() || rc.isUndefined()) && !strictBool(rc, r.requireConfirm))
+            return r;
+    }
+    r.ok = true;
+    return r;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-412] `newerState.detail` 里那两个 abi 数**落 JSON 的口径**。
+//
+// 病灶:`stateAbiSeen_` 直接来自**工程文件里的不可信字节**(`OutputProcessor.cpp` 里那句
+// `parseHeader(...) ? hdr.abi : 0u`,`hdr.abi` 是 u32),而它**没有任何上界校验** ——
+// 一份手改过的 / 来自未来版本的工程可以让它是 `0xFFFFFFFF`。`static_cast<int>(u32)`
+// 在 C++17 下当值超 `INT_MAX` 时是**实现定义行为**(MSVC 上回绕成负数),于是横幅④ 会
+// 对着用户显示一个**负数 abi**,而那句话是读给他看的。
+//
+// 口径:**换成容得下的类型,不夹取** —— 与 `OutputEditor.cpp` 里三处既有先例逐字同款
+// (`:877` 的 `featureBytes` / `:925` 的 `heartbeatAgeMs` / `:948` 的 `generation`,
+// 都是 `static_cast<juce::int64>`)。`juce::int64` 精确装下 u32 全域,而且**显示的是真值**;
+// 夹取会把「工程 abi 4294967295」悄悄改写成「2147483647」—— 那是一句关于当前工程的假话,
+// 比不显示更坏。JSON 侧只有一个 number 类型,故这不改 §5.1 载荷字段的语义(仍是
+// 非负整数,仍在 u32 域内)。
+//
+// 抽成纯函数是为了**能被离线断言**:`emitNewerStateError` 那一跳要真 WebView2,
+// 编不进任何 C++ 测试目标(见上面 `planNewerStateEmit` 那段同一笔账)。
+inline juce::int64 abiForJson(std::uint32_t abi) noexcept
+{
+    return static_cast<juce::int64>(abi);
+}
+
+// -----------------------------------------------------------------------------
+// [J157] pan 曲线点表的桥面解析 —— `setPanCurve(points)`(§1.17)与 `previewPanCurve(v, points)`
+// (§1.37)**共用这一份**。
+//
+// 此前这段写在 `OutputEditor::handleSetPanCurve` 里,而 `OutputEditor.cpp` 链不进任何测试目标,
+// 那道坏点守卫因此没有机检覆盖;第二个 handler 再抄一份又必漂 —— 抽到这里一次解决两件事,
+// 由 `tests/core/test_bridge_args.cpp` 离线断言。**行为与抽出前逐字相同**:
+//   · 非数组 / 超过 16 点 / 元素不是对象 / shape 不在三值内 / side 不在三值内 ⇒ false;
+//   · 点不可用(`isPanCurvePointUsable`:非有限、angle 越界、q ≤ 0)⇒ false。原先桥面那三条
+//     范围比较**挡不住 NaN**(`NaN <= 0`、`NaN < -100`、`NaN > 100` 全为 false),[SL-442 第2轮]
+//     起换成共用守卫 —— 曲线进了实时链,漏过去的就是母线上的 NaN;
+//   · 缺省:angle / gain_db 缺省 0、q 缺省 1.5、side 缺省 "out";**shape 不缺省**(缺了即 false)。
+// 空数组 = 合法(整表替换为空 = 显式清空,不是缺参)。
+inline bool parsePanCurvePointsArg(const juce::var& arg, std::vector<scvb::PanCurvePoint>& out)
+{
+    out.clear();
+    if (!arg.isArray())
+        return false;
+    const auto* arr = arg.getArray();
+    if (arr == nullptr || arr->size() > 16)
+        return false;
+    for (const auto& item : *arr)
+    {
+        if (!item.isObject())
+            return false;
+        scvb::PanCurvePoint p;
+        p.angle = static_cast<float>(item.getProperty("angle", 0.0));
+        p.gainDb = static_cast<float>(item.getProperty("gain_db", 0.0));
+        p.q = static_cast<float>(item.getProperty("q", 1.5));
+        const juce::String shape = item.getProperty("shape", juce::String()).toString();
+        const juce::String side = item.getProperty("side", juce::String("out")).toString();
+        if (shape == "shelf")
+            p.shape = scvb::PanCurveShape::shelf;
+        else if (shape == "cut")
+            p.shape = scvb::PanCurveShape::cut;
+        else if (shape != "bell")
+            return false;
+        if (side == "left")
+            p.side = scvb::PanCurveSide::left;
+        else if (side == "right")
+            p.side = scvb::PanCurveSide::right;
+        else if (side != "out")
+            return false;
+        if (!scvb::isPanCurvePointUsable(p))
+            return false;
+        out.push_back(p);
+    }
+    return true;
+}
+
+// [J157] `previewPanCurve(v, points)`(§1.37)的参数形态。
+//   · v:版本号 1..kNumVersions —— UI 传的是**点表捕获时**的那一版(整数;非整数 / 越界 / 缺参 ⇒ bad);
+//   · points:点表(同 setPanCurve,解析失败 ⇒ bad)或 `null`(⇒ clear:撤掉预览、回到已提交曲线)。
+// clear 也要求 v 合法:参数形态只留一种写法,省得「clear 时 v 可以乱填」成了第二种。
+// (handler 对 clear **不比** v 与当前版本 —— 回到已提交曲线永远是安全方向。)
+enum class PanCurvePreviewArgKind
+{
+    bad,
+    points,
+    clear
+};
+struct PanCurvePreviewArgs
+{
+    PanCurvePreviewArgKind kind = PanCurvePreviewArgKind::bad;
+    int version = 0;
+    std::vector<scvb::PanCurvePoint> points;
+};
+inline PanCurvePreviewArgs parsePanCurvePreviewArgs(const juce::Array<juce::var>& a)
+{
+    PanCurvePreviewArgs r;
+    if (a.size() < 2)
+        return r;
+    const juce::var& v = a[0];
+    if (!(v.isInt() || v.isInt64() || v.isDouble()))
+        return r;
+    const double dv = static_cast<double>(v);
+    if (!std::isfinite(dv) || dv != std::floor(dv) || dv < 1.0 || dv > static_cast<double>(scvb::state::kNumVersions))
+        return r;
+    const int version = static_cast<int>(dv);
+    if (a[1].isVoid() || a[1].isUndefined())
+    {
+        r.kind = PanCurvePreviewArgKind::clear;
+        r.version = version;
+        return r;
+    }
+    if (!parsePanCurvePointsArg(a[1], r.points))
+        return r;
+    r.kind = PanCurvePreviewArgKind::points;
+    r.version = version;
+    return r;
+}
+
+} // namespace scvb::output

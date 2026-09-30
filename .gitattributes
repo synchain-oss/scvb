@@ -1,6 +1,6 @@
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.vst3 binary
-web/fonts/* binary
+web/fonts/*.woff2 binary
 *.md linguist-documentation
 web/js/juce/* linguist-vendored

@@ -1,0 +1,369 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "InputEditor.h"
+
+#include "InputBridgeApi.h"
+#include "InputBridgeLogic.h"
+#include "InputProcessor.h"
+
+#include "BridgeBase.h"
+#include "UiDefaultsStore.h" // 系统级 UI 全局默认(语言;归 plugin-common,两插件共用)
+
+#include <ScvbInputWebData.h> // juce_add_binary_data 生成:嵌入的 web/input UI 资源
+
+#include <utility>
+
+namespace scvb::input
+{
+namespace
+{
+using WBC = juce::WebBrowserComponent;
+} // namespace
+
+InputEditor::InputEditor(ScvbInputAudioProcessor& processor)
+    : WebViewHost(processor,
+                  [&processor, this]() {
+                      scvb::webview::WebViewHost::Config c;
+                      c.role = "input";
+                      c.userDataFolderName = "SCVBInputWV2";
+                      c.version = JucePlugin_VersionString;
+                      c.lang = processor.bridgeUiLanguage();
+                      c.uiScale = static_cast<float>(processor.bridgeUiScalePercent()) / 100.0f;
+                      c.channelLimit = 15;
+                      // 嵌入的 web/input UI 资源(cmake/ScvbWebAssets.cmake -> SCVBInputWebAssets)。
+                      // 传空 Source 会让 resource provider 恒 nullopt = 空白窗口 + 看门狗超时。
+                      c.resourceSource = {ScvbInputWebData::namedResourceListSize, ScvbInputWebData::originalFilenames,
+                                          ScvbInputWebData::namedResourceList, &ScvbInputWebData::getNamedResource};
+                      c.augmentOptions = [this](juce::WebBrowserComponent::Options& options) {
+                          registerNativeFunctions(options);
+                      };
+                      return c;
+                  }()),
+      processor_(processor), pluginVersion_(JucePlugin_VersionString)
+{
+}
+
+void InputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& options)
+{
+    options = options
+                  .withNativeFunction(juce::Identifier(bridge::kFnSetChannelId),
+                                      [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
+                                          handleSetChannelId(a, std::move(c));
+                                      })
+                  .withNativeFunction(juce::Identifier(bridge::kFnSetGroupId),
+                                      [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
+                                          handleSetGroupId(a, std::move(c));
+                                      })
+                  .withNativeFunction(juce::Identifier(bridge::kFnRemoteSetPriority),
+                                      [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
+                                          handleRemoteSetPriority(a, std::move(c));
+                                      })
+                  // [SL-258] §3.8 setGuideSeen —— 常量、契约 §7 manifest.input、web 调用方
+                  // (tour-in.js 首启链完成与 Skip)一直都在,唯独这一行注册从来没写过,
+                  // 于是真宿主上桥面根本没有这个名字。与 [SL-256] 的 exportSuggestions 同族。
+                  .withNativeFunction(juce::Identifier(bridge::kFnSetGuideSeen),
+                                      [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
+                                          handleSetGuideSeen(a, std::move(c));
+                                      });
+}
+
+juce::var InputEditor::buildSnapshot()
+{
+    const auto snap = processor_.bridgeTickSnapshot();
+    const bool srMis = bridge::srMismatch(snap.claimState, snap.globalInfo.output_sample_rate,
+                                          static_cast<scvb::u32>(snap.sampleRate));
+    const juce::String claim = bridge::claimValue(snap.claimState, snap.conn.maskBit, srMis);
+
+    // 每次 requestInitialState(含 WebView 导航/重载后的二次调用)都重置全部 diff 基线:
+    // 否则重载后的新页面因缓存残留旧 JSON 而首帧拿不到 scvb.state / scvb.groups —— claim 的
+    // 唯一事件通道就是 scvb.state(§3.1 快照不含 claim)。T28 P0 教训的镜像:「就绪门控期不得
+    // 更新 lastSent 缓存」;此处反向操作 —— 快照回执时清空缓存 + 复位节流基线,下一个 emitTick
+    // 重发各事件首帧(§0.4 状态类首帧各必发一次)。
+    lastStateJson_.clear();
+    lastConnJson_.clear();
+    lastConfigJson_.clear();
+    lastGroupsJson_.clear();
+    lastErrorJson_.clear();
+    lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
+    // error 只发迁移边沿;启动即异常态一般由 scvb.state.claim 承载(§4.5)。例外是 conflict:
+    // [SL-462] 基线置空,下一拍补发一次 channelConflict(理由见 initialClaimErrorBaseline 头注)。
+    lastClaim_ = bridge::initialClaimErrorBaseline(claim);
+    // [SL-446 第 2 轮补充] 边沿键的 channel 分量走 configuredChannelId(配置/请求值),不是
+    // channelId(实际持有)——与 emitTick() 里那次判据同源,理由见 BridgeTickSnapshot 头注。
+    lastErrorChannelId_ = snap.configuredChannelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
+    lastErrorGroupId_ = snap.groupId; // error 边沿键的 group 分量(同基线)
+    lastErrorInputSr_ = juce::roundToInt(snap.sampleRate); // error 边沿键的 inputSr 分量(同基线)
+    lastErrorOutputSr_ = static_cast<int>(snap.globalInfo.output_sample_rate); // error 边沿键的 outputSr 分量(同基线)
+    lastConnMs_ = 0; // 复位 4Hz 折半 → 首 tick 必发 scvb.conn
+    lastGroupsMs_ = 0; // 复位 1Hz 折半 → 首 tick 必发 scvb.groups(关闭 ≤1s 空态窗口)
+
+    scvb::input::InputConnSnapshot conn = snap.conn;
+    conn.passthrough = snap.passthrough;
+    conn.passthroughPending = !snap.healthy && !snap.passthrough;
+
+    bridge::ConfigSnapshot cfg;
+    cfg.sourceChannels = snap.sourceChannels;
+    cfg.configSeq = snap.configSeq;
+    cfg.broadcastValid = snap.broadcastValid; // §4.3 数据源:ctrl 广播区实况
+    // cfg.channelId(嵌套在 scvb.config 里,给 buildConfigPayload() 索引广播数组用)必须仍是
+    // 实际持有——见 InputBridgeLogic.cpp buildConfigPayload() 头注,别为了"统一"改成配置值。
+    cfg.channelId = snap.channelId;
+    cfg.broadcast = snap.broadcast;
+
+    // [合并前独立复核 🚩] 顶层 channel_id(WebView 首帧/reload 时发的完整快照,与 emitTick() 里
+    // scvb.state 的 channel_id 是同一件事、同一个消费者类别)此前也用 snap.channelId(实际
+    // 持有)。releaseResources() 之后 boundChannel()==0 但配置(channelId_/savedChannelId_)
+    // 原样留着——若这里不跟着改,会出现"首帧快照报未分配,下一次 emitTick() 的增量事件又报回
+    // 配置号"的自相矛盾;界面短暂显示未分配、卡片状态闪烁。
+    // ⚠ 不能无条件改成 configuredChannelId——kConflict(首次绑定、点了一个被占通道,没有旧
+    // 通道可回滚)这一态下 configuredChannelId 停在被拒的请求号、channelId(=boundChannel())
+    // 如实是 0,无条件用配置值会把被拒的通道显示成"已选中",重新打开 SL-19/SL-446 本身要堵
+    // 的洞。displayChannelId() 按 claimState 分流,见 InputBridgeLogic.h 声明处头注(含
+    // CHANGELOG.md 里那句已发版承诺的出处)。
+    return bridge::buildInputSnapshot(
+        bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId), snap.groupId, conn, cfg,
+        uiScale(), lang(), processor_.bridgeUiGuideSeen(), scvb::uidefaults::guideSeenGlobalInput(), pluginVersion_,
+        snap.localAbi);
+}
+
+void InputEditor::emitTick()
+{
+    const auto now = scvb::steadyNowMs();
+    const auto snap = processor_.bridgeTickSnapshot();
+
+    const bool srMis = bridge::srMismatch(snap.claimState, snap.globalInfo.output_sample_rate,
+                                          static_cast<scvb::u32>(snap.sampleRate));
+    const juce::String claim = bridge::claimValue(snap.claimState, snap.conn.maskBit, srMis);
+
+    // scvb.state:变化即发(首帧必发;§4.1)。
+    // [合并前独立复核 🚩 用户可见回归,base 没有] channel_id 此前用 snap.channelId(实际持有=
+    // session_.boundChannel())。releaseResources()(换音频设备/改缓冲区/冻结或禁用轨道都会
+    // 触发)会把 boundChannel() 清成 0,但配置(channelId_/savedChannelId_)原样留着——界面
+    // 因此会在这些常见操作之后误报"未分配":卡片 aria-pressed 掉、首启空态引导重新弹出、
+    // 优先级滑杆被禁,而工程实际配置根本没变。
+    // ⚠ 不能无条件改成 configuredChannelId(与上面 buildSnapshot() 同一个坑)——kConflict
+    // (首次绑定、点了一个被占通道)这一态下 configuredChannelId 停在被拒的请求号、channelId
+    // (=boundChannel())如实是 0,无条件用配置值会把被拒的通道显示成"已选中",重新打开
+    // SL-19/SL-446 本身要堵的洞。displayChannelId() 按 claimState 分流,哪几态走哪个值见
+    // InputBridgeLogic.h 声明处头注(含 CHANGELOG.md 里那句已发版承诺的出处)。
+    // ⚠ 别碰下面 scvb.config 的 cfg.channelId——那处索引广播数组仍必须用实际持有,理由见
+    // InputBridgeLogic.cpp buildConfigPayload() 头注。
+    juce::Optional<scvb::u32> abiRemote;
+    if (claim == "abiMismatch" && snap.remoteAbi != 0)
+    {
+        abiRemote = snap.remoteAbi; // 探测不到 → 字段不存在(§4.1 字段纪律)
+    }
+    emitIfChanged(bridge::kEvState,
+                  bridge::buildStatePayload(
+                      bridge::displayChannelId(snap.claimState, snap.channelId, snap.configuredChannelId), snap.groupId,
+                      claim, snap.localAbi, abiRemote, uiScale(), lang(), processor_.bridgeUiGuideSeen()),
+                  lastStateJson_);
+
+    // scvb.conn:~4Hz diff-then-emit(§4.2;滞回窗口 = 不健康且目标仍为静音,J32)。
+    if (now - lastConnMs_ >= scvb::kHeartbeatIntervalMs)
+    {
+        lastConnMs_ = now;
+        scvb::input::InputConnSnapshot conn = snap.conn;
+        conn.passthrough = snap.passthrough;
+        conn.passthroughPending = !snap.healthy && !snap.passthrough;
+        emitIfChanged(bridge::kEvConn, bridge::buildConnPayload(conn), lastConnJson_);
+    }
+
+    // scvb.config:25Hz 轮询,config_seq 变化才发(§4.3)。
+    if (snap.configSeq != lastConfigSeq_)
+    {
+        bridge::ConfigSnapshot cfg;
+        cfg.sourceChannels = snap.sourceChannels;
+        cfg.configSeq = snap.configSeq;
+        cfg.broadcastValid = snap.broadcastValid; // §4.3 数据源:ctrl 广播区实况
+        cfg.channelId = snap.channelId;
+        cfg.broadcast = snap.broadcast;
+        // 基线仅在事件实际发出(可见)后推进:否则隐藏时事件被丢弃但 seq 已推进,恢复可见后
+        // configSeq 不再变化 → config 长期陈旧(PR#54 R7,与 R4/R5 口径一致)。
+        bridge::advanceConfigSeq(snap.configSeq,
+                                 emitIfChanged(bridge::kEvConfig, bridge::buildConfigPayload(cfg), lastConfigJson_),
+                                 lastConfigSeq_);
+    }
+
+    // scvb.groups:1Hz diff-then-emit(§4.4)。
+    if (now - lastGroupsMs_ >= 1000)
+    {
+        lastGroupsMs_ = now;
+        emitIfChanged(bridge::kEvGroups, bridge::buildGroupsPayload(processor_.bridgeGroupsOnline()), lastGroupsJson_);
+    }
+
+    // scvb.error:claim 态迁移边沿(§4.5;conflict/srMismatch 进出,abi 不占 error code)。
+    // 边沿键 = (claim, channelId, groupId, inputSr, outputSr):任一变化即重发 —— claim/channel 变
+    // (PR#54 R3)、同 claim 换组(conflict 的 detail.groupId 陈旧)、srMismatch 的 SR 变化
+    // (inputSr/outputSr 陈旧)都须刷新(PR#54 R6)。
+    // 基线仅在边沿已消费(emitClaimError 返回 true)后推进:编辑器隐藏时 error 事件被丢弃,基线
+    // 保持旧值,恢复可见后下一 tick 因边沿仍成立而重发(PR#54 R5,与 advanceEmitCache 同口径)。
+    // [SL-446 第 2 轮补充] 边沿键与 payload 的 channel 分量都用 configuredChannelId(配置/请求
+    // 值),不是上面 scvb.state 用的那个 channelId(实际持有)——两者本 PR 之前恒等,现在会分叉
+    // (硬冲突时 channelId 是 0)。若这里错用 channelId:① payload 的 ch 会报成 0 而不是用户
+    // 真正请求的号;② 更隐蔽的是边沿键会退化成"同一冲突态下连续两次不同请求号"分辨不出来
+    // (键的五元组一模一样,第二次请求被判成"没变化"而漏发)。见 BridgeTickSnapshot 头注与
+    // test_input_bridge.cpp 里"连续两次请求不同冲突通道"那格判据。
+    const int inputSr = juce::roundToInt(snap.sampleRate);
+    const int outputSr = static_cast<int>(snap.globalInfo.output_sample_rate);
+    if (bridge::claimErrorEdgeChanged(claim, snap.configuredChannelId, snap.groupId, inputSr, outputSr, lastClaim_,
+                                      lastErrorChannelId_, lastErrorGroupId_, lastErrorInputSr_, lastErrorOutputSr_))
+    {
+        const juce::String prev = lastClaim_;
+        if (emitClaimError(claim, prev, snap.configuredChannelId, snap.groupId, inputSr, outputSr))
+        {
+            lastClaim_ = claim;
+            lastErrorChannelId_ = snap.configuredChannelId;
+            lastErrorGroupId_ = snap.groupId;
+            lastErrorInputSr_ = inputSr;
+            lastErrorOutputSr_ = outputSr;
+        }
+    }
+
+    // [SL-462] 载入工程时撞车、回滚到旧通道仍活着:claim 是 active,上面的边沿检测看不到;
+    // 载入路径也没有 RPC 返回值可挂。处理器记下了被拒的号,这里补发一次 channelConflict
+    // (契约 §5.1 触发条件「claim CAS 失败且占用方心跳新鲜」本来就成立,不是新事件、新字段)。
+    // 不经 emitIfChanged:它按 JSON 去重,与上一条同号同组的冲突事件会被判成「没变化」而一直
+    // 发不出去、也就一直 ack 不掉。隐藏时不发、不 ack,等可见后下一拍再发。
+    // 发之前再核一次仍然成立(占用方可能早已释放),不成立就直接确认掉、不发。
+    if (snap.loadConflictChannelId != 0 &&
+        !bridge::loadConflictStillHolds(snap.loadConflictChannelId, snap.loadConflictGroupId, snap.groupId,
+                                        snap.channelId, snap.conn.occupiedMask))
+    {
+        processor_.bridgeAckLoadConflict(snap.loadConflictSerial);
+    }
+    else if (snap.loadConflictChannelId != 0 && webView().isVisible())
+    {
+        auto* detail = new juce::DynamicObject();
+        detail->setProperty("groupId", snap.loadConflictGroupId);
+        const juce::var payload =
+            bridge::buildErrorPayload("channelConflict", snap.loadConflictChannelId, juce::var(detail), true);
+        webView().emitEventIfBrowserIsVisible(juce::Identifier(bridge::kEvError), payload);
+        lastErrorJson_ = juce::JSON::toString(payload);
+        processor_.bridgeAckLoadConflict(snap.loadConflictSerial);
+    }
+}
+
+void InputEditor::handleSetLang(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
+    processor_.bridgeSetUiLanguage(lang()); // §3.5:落 Input state(实际生效值经 scvb.state 回推)
+    // 与 Output 同一份系统级全局默认:选过的语言跨工程、跨插件生效。Input 此前完全没接这套,
+    // 于是移除插件再加载恒回英文(v5 实测 P1-6)。
+    scvb::uidefaults::setLangChosenGlobal(true);
+    scvb::uidefaults::setLangGlobal(lang());
+}
+
+void InputEditor::persistUiScaleAsDefault()
+{
+    // §3.5:commitUiScale 防呆确认后落 Input state(uiScale 百分数,params-v0 §三)。
+    processor_.bridgeSetUiScalePercent(juce::roundToInt(uiScale() * 100.0f));
+}
+
+void InputEditor::handleSetChannelId(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    const juce::Optional<int> n = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(0=释放是合法业务值,不夹取)
+    if (!n.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto st = processor_.setChannelId(*n); // 内部 clamp 0..15;n=0 = 释放
+    // §3.2 返回并集([J156]):conflict / abiMismatch / unavailable 各回各的失败形状,只有成功才回 {ok:true}。
+    // 映射表与「为什么认返回值不认 state()」见 InputBridgeLogic.h claimRequestResponse() 头注。
+    complete(bridge::claimRequestResponse(st));
+}
+
+void InputEditor::handleSetGuideSeen(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    // §3.8「签名与语义逐字照 Output 侧 §1.32」—— 实现也逐字照 OutputEditor::handleSetGuideSeen,
+    // 连 badArg 的判法都同一份 `scvb::bridge::strictBool`(两侧共用,不再各写一份)。
+    bool seen = false;
+    if (args.size() < 1 || !scvb::bridge::strictBool(args[0], seen))
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    // alsoGlobal 缺省 true:勾了「不再显示」才写系统级全局默认,承诺跨工程成立。
+    // **两个参数都校验完才落任何值** —— badArg 回执与已生效的副作用不能并存(Output 侧同款注释)。
+    bool alsoGlobal = true;
+    if (args.size() >= 2 && !scvb::bridge::strictBool(args[1], alsoGlobal))
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    processor_.bridgeSetGuideSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
+    if (alsoGlobal)
+    {
+        // **Input 侧的全局位**,与 Output 各存一份(契约 §3.1 语义行;UiDefaultsStore 分键)。
+        scvb::uidefaults::setGuideSeenGlobalInput(seen);
+    }
+    complete(scvb::bridge::okResponse());
+}
+
+void InputEditor::handleSetGroupId(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    const juce::Optional<int> g = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(不静默改回组 1)
+    if (!g.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto st = processor_.setGroupId(*g); // 内部 clamp 1..8;同组 = no-op
+    complete(bridge::claimRequestResponse(st)); // §3.3 返回并集([J156]),与 handleSetChannelId 同一张映射表
+}
+
+void InputEditor::handleRemoteSetPriority(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    const juce::Optional<int> n = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(0 是合法优先级,不夹取)
+    if (!n.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto r = processor_.bridgeRemoteSetPriority(*n); // 内部 clamp 0..10
+    complete(bridge::buildPriorityResponse(r.queued, r.reason));
+}
+
+bool InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson)
+{
+    const juce::String json = juce::JSON::toString(payload);
+    // diff-then-emit:缓存只在事件真正发出(编辑器可见)后才推进。隐藏(关闭/最小化)时
+    // emitEventIfBrowserIsVisible 会丢弃事件,若先推进缓存则隐藏期变化被吞、恢复可见后不再
+    // 重发 → UI 陈旧(PR#54 R4)。不可见时保持旧缓存,恢复可见后下一 tick 因 json != lastJson 重发。
+    if (!bridge::advanceEmitCache(json, lastJson, webView().isVisible()))
+    {
+        return false;
+    }
+    webView().emitEventIfBrowserIsVisible(juce::Identifier(name), payload);
+    return true;
+}
+
+bool InputEditor::emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,
+                                 int localSr, int outputSr)
+{
+    const bool visible = webView().isVisible();
+    bool needsError = false;
+    if (claim == "conflict" || prevClaim == "conflict")
+    {
+        needsError = true;
+        auto* detail = new juce::DynamicObject();
+        detail->setProperty("groupId", groupId);
+        emitIfChanged(bridge::kEvError,
+                      bridge::buildErrorPayload("channelConflict", channelId, juce::var(detail), claim == "conflict"),
+                      lastErrorJson_);
+    }
+    if (claim == "srMismatch" || prevClaim == "srMismatch")
+    {
+        needsError = true;
+        auto* detail = new juce::DynamicObject();
+        detail->setProperty("inputSr", localSr);
+        detail->setProperty("outputSr", outputSr);
+        emitIfChanged(bridge::kEvError,
+                      bridge::buildErrorPayload("srMismatch", channelId, juce::var(detail), claim == "srMismatch"),
+                      lastErrorJson_);
+    }
+    // 边沿消费:无 error 边沿恒消费;有 error 边沿仅当可见(已实际发出)才消费(PR#54 R5)。
+    return bridge::claimEdgeConsumed(needsError, visible);
+}
+
+} // namespace scvb::input

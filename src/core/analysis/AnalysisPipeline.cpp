@@ -1,0 +1,504 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "analysis/AnalysisPipeline.h"
+
+#include "analysis/BalanceBasis.h"
+#include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径 // meanKw 真身 + 平衡归一化基准 z(ADR-009 v2.2)
+
+#include <algorithm>
+#include <cmath>
+
+namespace scvb::analysis
+{
+
+namespace
+{
+
+bool cancelled(const PipelineCancelFn& fn)
+{
+    return fn && fn();
+}
+
+void report(const PipelineProgressFn& fn, float p)
+{
+    if (fn)
+    {
+        fn(p < 0.0f ? 0.0f : (p > 1.0f ? 1.0f : p));
+    }
+}
+
+void addWarningOnce(std::vector<std::string>& out, const std::string& w)
+{
+    if (w.empty())
+    {
+        return;
+    }
+    if (std::find(out.begin(), out.end(), w) == out.end())
+    {
+        out.push_back(w);
+    }
+}
+
+// [SL-570 / J167] 主唱切换点的停顿候选(`snapLeadSwitches` 的第二档):全局区间 `gi` 里,它的活跃轨**合起来**的
+// 能量谷。ℓ 按谷切分的口径现算:逐 hop 把活跃轨的 kw 相加,再 `frameLoudnessDb`(ℓ 的唯一口径,见 EnergyVad.h);
+// 谷用 J145 边界拖拽吸附的那一份 `detectSnapValleys`(平滑、谷底判定与 S1 候选谷同一条 minDepth 门槛,
+// 带噪间隙也认得出来,见它的头注)。为什么是活跃轨合起来:切换点处每条活跃轨的 pan 都可能变,
+// 大家一起换气的地方换得最不显眼;单看某一轨,那一轨歇着而别人还在唱,那里并不是停顿。
+// 只留离区间两端都 >= minPiece 的谷:切在离边界更近的地方,切出来的那一小截比最短主唱片段还短。
+// 返回样本位置,升序(detectSnapValleys 按 hop 升序)。只在有切换点需要它时才算(见调用处的缓存)。
+std::vector<std::int64_t> leadPausesIn(const GlobalInterval& gi,
+                                       const std::array<PipelineTrackFeatures, kPipelineTracks>& features,
+                                       const SegmentationParams& seg, std::int64_t firstHop, std::int64_t hopSamples,
+                                       std::int64_t minPiece)
+{
+    std::vector<std::int64_t> out;
+    const std::int64_t b = gi.t0 / hopSamples - firstHop;
+    const std::int64_t e = gi.t1 / hopSamples - firstHop;
+    if (gi.tracks.empty() || b < 0 || e <= b)
+    {
+        return out;
+    }
+    std::vector<float> env(static_cast<std::size_t>(e - b));
+    for (std::int64_t h = b; h < e; ++h)
+    {
+        double sum = 0.0;
+        for (const int t : gi.tracks)
+        {
+            if (t < 0 || t >= kPipelineTracks)
+            {
+                continue;
+            }
+            const auto& kw = features[static_cast<std::size_t>(t)].kwMs;
+            if (static_cast<std::size_t>(h) < kw.size())
+            {
+                sum += static_cast<double>(kw[static_cast<std::size_t>(h)]);
+            }
+        }
+        env[static_cast<std::size_t>(h - b)] = frameLoudnessDb(sum);
+    }
+    for (const SnapValley& v : detectSnapValleys(env.data(), 0, e - b, seg))
+    {
+        const std::int64_t at = gi.t0 + v.hop * hopSamples;
+        if (at - gi.t0 >= minPiece && gi.t1 - at >= minPiece)
+        {
+            out.push_back(at);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::vector<LeadSubInterval> splitIntervalsAtLeadSwitches(const std::vector<GlobalInterval>& intervals,
+                                                          const std::vector<LeadPiece>& pieces, int fallback)
+{
+    std::vector<LeadSubInterval> out;
+    out.reserve(intervals.size() + pieces.size());
+    std::size_t pi = 0;
+    for (std::size_t i = 0; i < intervals.size(); ++i)
+    {
+        const GlobalInterval& gi = intervals[i];
+        std::int64_t cur = gi.t0;
+        while (cur < gi.t1)
+        {
+            while (pi < pieces.size() && pieces[pi].t1 <= cur)
+            {
+                ++pi;
+            }
+            // 片段没盖到的那一截(调用方违约 —— 管线给的片段首尾相接、盖满窗口,不会出现)按 fallback,
+            // 只到下一个片段的起点为止;后面被片段盖到的部分照常按片段切。
+            const bool covered = pi < pieces.size() && pieces[pi].t0 <= cur;
+            const std::int64_t end = covered ? std::min(gi.t1, pieces[pi].t1)
+                                             : (pi < pieces.size() ? std::min(gi.t1, pieces[pi].t0) : gi.t1);
+            out.push_back(LeadSubInterval{i, cur, end, covered ? pieces[pi].lead : fallback});
+            cur = end;
+        }
+    }
+    return out;
+}
+
+// K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
+// [SL-257] 从匿名命名空间移出:§2.8 `loudnessLufs` 的上桥值要在 emit 时按 FEAT 重算,
+// 换算必须与流水线**共用同一份**——各写一份就是下一个「两侧口径漂移」。
+double lufsFromMeanKw(double m)
+{
+    return m > 0.0 ? (10.0 * std::log10(m) - 0.691) : -120.0;
+}
+
+void envelopeDbInto(const float* kwMs, std::size_t n, std::vector<float>& out)
+{
+    out.clear();
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        out.push_back(frameLoudnessDb(static_cast<double>(kwMs[i])));
+    }
+}
+
+std::vector<VadSegment> splitLongVadSegments(const std::vector<VadSegment>& vadSegs, std::int64_t firstHop,
+                                             const SegmentationParams& seg, double hopSec, const float* kwMs,
+                                             std::size_t n, std::vector<float>& envDb, bool* noNaturalCut)
+{
+    const std::int64_t maxHops = static_cast<std::int64_t>(std::llround(seg.maxSegmentS / hopSec));
+    // [SL-382] **ℓ 必须是 dB** —— `splitValleys` / `detectValleys` 的入参契约
+    // (`Segmentation.h` 逐字「l 指向 ℓ[0..N)(dB…)」)与 02 §3.2 的输入定义都是 ℓ[k],
+    // 而 `kwMs`(流水线的 `f.kwMs`)是**线性** K 加权均方。此前流水线直接传 `f.kwMs.data()`,后果不是「钝」:
+    //   `detectValleys` 的 `depth = min(左侧峰,右侧峰) − bottom` 是**裸差值**,喂线性能量
+    //   时 depth 落在 1e-2 量级,而 `minDepth = 6·2^((50−s)/50)` 的值域是 [3,12]
+    //   ⇒ `v.depthDb <= minDepth` 对**任意 s ∈ 0..100 恒真** ⇒ 候选谷永远为空
+    //   ⇒ `noNaturalCut` 恒成立、S1 一次都没切过、灵敏度整个量程零效果
+    //   (用户 v5.6.11 实测 B14 的**灵敏度那一半**;同条报告里的「最短段长」是好的 ——
+    //    它走 VAD 后处理 P1,与本行无关,判据见 `test_analysis_pipeline.cpp` 的 [SL382])。
+    // 换算走 `frameLoudnessDb`(`EnergyVad.h`,ℓ 的唯一口径)—— **不是** `lufsFromMeanKw`。
+    // [#251 bot 复审采纳] 两者只差一个**能量下限**,而那个下限恰恰是本处的要害:
+    //   `lufsFromMeanKw` 对 m<=0 回 −120、对极小正数不设下限(10·log10(1e−30) = −300)。
+    //   任一种落进 §3.2 第 1 步的 `movingAverage(ℓ, 5 hop)`,**单个 kw==0 的 hop** 就会被
+    //   摊成 (−120 − 平台)/5 ≈ 20 dB 的假谷 —— 越过任何 minDepth(值域 [3,12])⇒ 凭空
+    //   切一刀,而且与 VAD 自己那份 ℓ 的下限口径不一致(它一直是先夹 1e−12 再取对数)。
+    // 用例:`test_analysis_pipeline.cpp` 的
+    //   ·「[SL382] 谷切分的 ℓ 带 1e-12 能量下限(上报口径不带,故不得复用)」
+    //   ·「[SL382] 已知缺口:单个零 hop 仍会造出一个 50ms 宽的假谷,两条 dB 口径都拦不住」
+    // ⚠ 下限**没有**把上面那一刀消掉,别读成「换了口径就不切了」:实测夹后 depth
+    //   **21.398 dB**、夹前 21.260 dB,只差 0.14,而 minDepth 值域只有 [3,12] ⇒ 照切。
+    //   下限做到的是**把最坏情况从无界收敛到 21.4 dB**(不夹时 kw=1e−30 给 57 dB)
+    //   并与 VAD 对齐口径。要真正不切得加**最小谷宽门槛**(假谷宽恒 = 平滑窗
+    //   5 hop = 50 ms,而 §3.3 认为真实换气谷在 [80,600] ms)—— 行为改动,
+    //   已记 **SL-388**,不在本卡。
+    // ⚠ **修好本行之后用户仍然看不到任何变化**:S1 切出来的边界被 02 §3.4 步骤 4
+    //   「相邻同活跃集合合并」原样合回去,`PipelineResult::warnings` 又没有生产侧消费者
+    //   (`grep -rn warnings src/output/` 只命中一条注释)。本行是前置修复,不是终点 ——
+    //   「段表按区间成形」那一层要单独裁定,别看到这段注释就以为灵敏度已经能用了。
+    // ⚠ 这里**不做** §2.2 第 1 步那种 2-hop 预平滑:那是 VAD 状态机自己的口径;
+    //   §3.2 第 1 步的平滑是 `movingAverage(ℓ, 5 hop)`,已在 `smoothEnvelope` 里做过。
+    // 惰性构建:只有真出现超长段时才转一遍(典型乐句 1–4s,大多数轨一次都不进这个分支)。
+    // [J146] `envDb` 由调用方持有:流水线传空的(按上面那条惰性口径现建),拖动档预览传它缓存好的那一份
+    // (同一个 `envelopeDbInto` 建的,逐位相同)—— 这样预览每次调用不必再做 n 次 log10。
+    std::vector<VadSegment> hopSegs;
+    for (const auto& vs : vadSegs)
+    {
+        if (maxHops > 0 && (vs.endHop - vs.startHop) > maxHops)
+        {
+            if (envDb.empty())
+            {
+                if (kwMs == nullptr)
+                {
+                    hopSegs.push_back(vs); // 既没缓存也没原始 kw:无从切,原样保留(不读空指针)
+                    continue;
+                }
+                envelopeDbInto(kwMs, n, envDb);
+            }
+            const ValleySplitResult split =
+                splitValleys(envDb.data(), vs.startHop - firstHop, vs.endHop - firstHop, seg);
+            if (!split.segments.empty())
+            {
+                for (const auto& sub : split.segments)
+                {
+                    hopSegs.push_back(VadSegment{sub.startHop + firstHop, sub.endHop + firstHop});
+                }
+                if (split.noNaturalCut && noNaturalCut != nullptr)
+                {
+                    *noNaturalCut = true;
+                }
+                continue;
+            }
+        }
+        hopSegs.push_back(vs);
+    }
+    return hopSegs;
+}
+
+PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipelineTracks>& features,
+                                   const PipelineConfig& cfg, const PipelineProgressFn& onProgress,
+                                   const PipelineCancelFn& shouldCancel)
+{
+    PipelineResult result;
+
+    const double sr = cfg.sampleRate > 0.0 ? cfg.sampleRate : 48000.0;
+    const int hopMs = cfg.hopMs > 0 ? cfg.hopMs : 10;
+    const double hopSec = static_cast<double>(hopMs) / 1000.0;
+    // [SL-262] 与上报路径共用同一份换算(`analysis/HopMath.h`)—— 此前这条式子在这里和
+    // `OutputProcessor::segmentLoudnessLufs` 各写了一遍。
+    const std::int64_t hopSamples = hopSamplesFor(hopSec, sr);
+    if (hopSamples <= 0 || cfg.rangeEndSample <= cfg.rangeStartSample)
+    {
+        return result;
+    }
+
+    const std::int64_t firstHop = cfg.rangeStartSample / hopSamples;
+    result.firstHop = firstHop; // [SL-206] 后验写回 FrameStore 要按绝对 hop 定位
+
+    // ---- S1:逐轨 VAD → 超长段谷切分 → 样本域段 --------------------------------------
+    std::vector<std::vector<AnalysisSegment>> trackSegments(static_cast<std::size_t>(kPipelineTracks));
+
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        report(onProgress, 0.05f + 0.45f * (static_cast<float>(t) / static_cast<float>(kPipelineTracks)));
+        if (cancelled(shouldCancel))
+        {
+            result.cancelled = true;
+            return result;
+        }
+
+        const auto& f = features[static_cast<std::size_t>(t)];
+        const auto& tc = cfg.tracks[static_cast<std::size_t>(t)];
+        // 关掉的轨、没有采集数据的轨:不产生段(§1 布防口径 {enabled 轨})。
+        if (!tc.enabled || !f.anyCovered || f.kwMs.empty())
+        {
+            continue;
+        }
+
+        // [SL-206] 后验必须**带出去**:它是泳道绿线(§1.27 瓦片的 vad 列)唯一的数据源,
+        // 此前这里传 nullptr,算完就地扔掉,于是 FrameStore 的 vadP 全仓没有生产者。
+        auto& posterior = result.vadPosterior[static_cast<std::size_t>(t)];
+        posterior.assign(f.kwMs.size(), 0.0f);
+        const VadResult vad = runEnergyVad(f.kwMs.data(), f.kwMs.size(), firstHop, cfg.vad, posterior.data());
+        addWarningOnce(result.warnings, vad.warningMessage() != nullptr ? vad.warningMessage() : std::string{});
+
+        // 超长段按谷切分(§3.2):只对超过 maxSegment 的段做,短段原样保留。
+        // [J146] 这一步收成 `splitLongVadSegments`(本文件上方),拖动档预览走同一份;
+        // ℓ 口径([SL-382])与惰性构建的理由随实现搬到那里,别在这里再抄一份。
+        std::vector<float> envDb;
+        bool noNaturalCut = false;
+        const std::vector<VadSegment> hopSegs = splitLongVadSegments(
+            vad.segments, firstHop, cfg.segmentation, hopSec, f.kwMs.data(), f.kwMs.size(), envDb, &noNaturalCut);
+        if (noNaturalCut)
+        {
+            addWarningOnce(result.warnings, "segmentation.noNaturalCut");
+        }
+
+        auto& out = trackSegments[static_cast<std::size_t>(t)];
+        out.reserve(hopSegs.size());
+        for (const auto& hs : hopSegs)
+        {
+            if (hs.endHop <= hs.startHop)
+            {
+                continue;
+            }
+            AnalysisSegment as;
+            as.t0Samples = hs.startHop * hopSamples;
+            as.t1Samples = hs.endHop * hopSamples;
+            as.origin = Origin::Auto;
+            const double m = meanKw(f.kwMs, hs.startHop - firstHop, hs.endHop - firstHop);
+            as.energyLinear = m;
+            as.loudnessLufs = lufsFromMeanKw(m);
+            out.push_back(as);
+        }
+        if (!out.empty())
+        {
+            ++result.tracksTouched;
+        }
+    }
+
+    report(onProgress, 0.55f);
+    if (cancelled(shouldCancel))
+    {
+        result.cancelled = true;
+        return result;
+    }
+
+    // ---- S2:全局区间(§3.4)-----------------------------------------------------------
+    const std::vector<GlobalInterval> intervals =
+        buildGlobalIntervals(trackSegments, static_cast<int>(std::llround(sr)));
+    result.intervals = static_cast<int>(intervals.size());
+    if (intervals.empty())
+    {
+        return result;
+    }
+
+    // ---- S3/S4:逐区间指派 + 平衡,回写每轨段 ------------------------------------------
+    // 上一(子)区间的解用于连续性项(w_cont):按轨记住 pan。
+    std::array<double, kPipelineTracks> prevPan{};
+    std::array<bool, kPipelineTracks> hasPrev{};
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        prevPan[static_cast<std::size_t>(t)] = cfg.tracks[static_cast<std::size_t>(t)].currentPan;
+    }
+
+    std::array<std::vector<AnalysisSegment>, kPipelineTracks> assigned;
+
+    // [SL-570 / J167] 主唱切换点:有效主唱 E(t) → 切换点吸附 → 按切换点把全局区间切成子区间。
+    // E:宿主写进来的 lead_select 记录盖到的地方取记录值,盖不到的地方取点分析那一刻的值(cfg.leadFallback;
+    // [SL-545 / J143b] 判据与理由见 AnalysisPipeline.h `leadFallback`)。窗里一条宿主记录都没有 ⇒ E 整窗是回落值。
+    // E 全程一个值 ⇒ 一个片段、没有切换点 ⇒ 吸附什么都不做、每个全局区间原样成为一个子区间、主唱 = 那个值
+    // ⇒ 下面的循环与 J167 之前逐位相同(那时每个区间的多数值也恰是这个值)。所以不另设「有没有切换点」的分支 ——
+    // 它与这几句结果恒同,删了也不会有用例变红。
+    // 吸附(规则见 LeadTimeline.h `snapLeadSwitches`):±1 s 内有全局区间边界(某轨段边界)⇒ 吸到最近的那个;
+    // 没有 ⇒ ±1 s 内的停顿(`leadPausesIn`);还没有 ⇒ 原位(取整到 hop)。两个常数换成本次分析的样本、取整到 hop。
+    // 代价:片段数、区间数各线性一遍,每个切换点在边界表上二分一次;停顿只在有切换点落进某区间时才算那一个区间,
+    // 每个区间至多算一次。都在分析线程上(本函数的调用方就是后台作业),不碰音频线程。
+    const std::int64_t leadRadius = std::llround(kLeadSnapRadiusS / hopSec) * hopSamples;
+    const std::int64_t leadMinPiece = std::llround(kLeadMinPieceS / hopSec) * hopSamples;
+    std::vector<std::int64_t> intervalBounds;
+    intervalBounds.reserve(intervals.size() * 2);
+    for (const GlobalInterval& gi : intervals)
+    {
+        intervalBounds.push_back(gi.t0);
+        intervalBounds.push_back(gi.t1);
+    }
+    intervalBounds.erase(std::unique(intervalBounds.begin(), intervalBounds.end()), intervalBounds.end());
+    std::vector<std::vector<std::int64_t>> pauseCache(intervals.size());
+    std::vector<bool> pauseCached(intervals.size(), false);
+    const LeadPauseLookup pausesNear = [&](std::int64_t at) -> std::vector<std::int64_t> {
+        // `at` 所在的全局区间 = t0 <= at 的最后一个(区间按 t0 升序、首尾相接)。
+        const auto it = std::upper_bound(intervals.begin(), intervals.end(), at,
+                                         [](std::int64_t v, const GlobalInterval& g) { return v < g.t0; });
+        if (it == intervals.begin())
+        {
+            return {};
+        }
+        const auto idx = static_cast<std::size_t>(std::distance(intervals.begin(), it) - 1);
+        if (!pauseCached[idx])
+        {
+            pauseCache[idx] =
+                leadPausesIn(intervals[idx], features, cfg.segmentation, firstHop, hopSamples, leadMinPiece);
+            pauseCached[idx] = true;
+        }
+        return pauseCache[idx];
+    };
+    const std::vector<LeadPiece> leadPieces =
+        snapLeadSwitches(effectiveLeadPieces(automatedLeadRuns(cfg.leadRuns), intervals.front().t0, intervals.back().t1,
+                                             cfg.leadFallback),
+                         intervalBounds, pausesNear, LeadSnapParams{leadRadius, hopSamples, leadMinPiece});
+    const std::vector<LeadSubInterval> work = splitIntervalsAtLeadSwitches(intervals, leadPieces, cfg.leadFallback);
+
+    for (std::size_t wi = 0; wi < work.size(); ++wi)
+    {
+        report(onProgress, 0.55f + 0.4f * (static_cast<float>(wi) / static_cast<float>(work.size())));
+        if (cancelled(shouldCancel))
+        {
+            result.cancelled = true;
+            return result;
+        }
+
+        // [SL-570] 子区间:时间取子区间的,活跃轨集合取它所在的全局区间的。其余逻辑(连续性 prevPan、配对、
+        // 冻结 / 手动 / 锁定的优先级、中心槽策略、平衡)与普通区间是同一段代码,不另造分支。
+        const LeadSubInterval& sub = work[wi];
+        const GlobalInterval& gi = intervals[sub.interval];
+        if (gi.tracks.empty() || sub.t1 <= sub.t0)
+        {
+            continue;
+        }
+
+        // [SL-216 / J136] 本子区间的主唱(0 = 无)。
+        // 选中的那一轨在本子区间并入集合 C —— 与 lead_lock 同一条路径(AutoAssign 的 fixed 分支:
+        // 恒 P=0、不占槽;lead_exclusive 档据此剔除中心),其余声部按剩下的轨数排槽,平衡把它当
+        // 居中那一轨算。不另造一条「主唱」分支:C 的语义(02 §5.2/§5.6)原样适用,包括
+        // 「pair 成员被锁 → pair 忽略」「冻结 pan 也让位」这两条既有优先级。
+        const int intervalLead = sub.lead;
+
+        // 本子区间的活跃轨 → TrackMeta(z 取该子区间内的平均能量)。
+        std::vector<TrackMeta> metas;
+        metas.reserve(gi.tracks.size());
+        for (const int t : gi.tracks)
+        {
+            if (t < 0 || t >= kPipelineTracks)
+            {
+                continue;
+            }
+            const auto& tc = cfg.tracks[static_cast<std::size_t>(t)];
+            const auto& f = features[static_cast<std::size_t>(t)];
+
+            TrackMeta m;
+            // ε 平局扰动与 pair「低序取左」都拿 channelIndex 定序(02 §5.3)。不填 → 15 轨全是 0,
+            // 平局退化成「按 metas 出现次序」,同一素材换个活跃轨集合就换一套解。
+            m.channelIndex = t;
+            m.priority = tc.priority;
+            m.pairId = tc.pairId;
+            m.leadLock = tc.leadLock || intervalLead == t + 1;
+            m.leadVolExempt = tc.leadVolExempt;
+            m.freeze = tc.freeze;
+            m.participateInAutoPan = tc.participateInAutoPan;
+            m.source = tc.source;
+            m.currentPan = tc.currentPan;
+            m.hasPrev = hasPrev[static_cast<std::size_t>(t)];
+            m.prevPan = prevPan[static_cast<std::size_t>(t)];
+
+            const std::int64_t b = sub.t0 / hopSamples - firstHop;
+            const std::int64_t e = sub.t1 / hopSamples - firstHop;
+            // [SL-252 / J95②a] 归一化基准按 `analysis.loudness_mode` 选档(ADR-009 v2.2 澄清 ②)。
+            // 默认档 `kw_integrated` 仍是同一个 `meanKw`,**逐位不变**;另两档同为线性能量量,
+            // 故正文第三条「所有平衡计算在线性能量域做」继续完整适用。
+            // 注意**只有这里**按档走:上面 `as.energyLinear` / `as.loudnessLufs` 是**上报口径**
+            // L_seg(澄清 ①),不随 mode 变化。
+            const double z = balanceBasisZ(cfg.balance.loudnessMode, f.kwMs, f.peak, b, e);
+            m.z = z;
+            if (tc.source == SourceChannels::Stereo)
+            {
+                m.zL = z * 0.5; // 未分通道测量 → 等分(AutoAssign 的默认口径)
+                m.zR = z * 0.5;
+            }
+            else
+            {
+                m.zL = z;
+                m.zR = 0.0;
+            }
+            metas.push_back(m);
+        }
+        if (metas.empty())
+        {
+            continue;
+        }
+
+        const BalanceResult br = solveBalanceWithFallback(metas, cfg.assign, cfg.balance);
+        for (const auto& w : br.warnings)
+        {
+            addWarningOnce(result.warnings, w);
+        }
+        // [SL-284] 逐区间取**最坏**级带出去(口径与判据逐字见 `PipelineResult::maxFallbackLevel`)。
+        // 放在 warnings 之后、回写之前:与 `br` 的生命周期同段,后面 `br` 只被读不被改。
+        result.maxFallbackLevel = std::max(result.maxFallbackLevel, br.fallbackLevel);
+
+        // 回写:子区间 × 活跃轨 → 一段常值(pan 来自指派,volDb 来自平衡修正 u)。
+        std::size_t k = 0;
+        for (const int t : gi.tracks)
+        {
+            if (t < 0 || t >= kPipelineTracks)
+            {
+                continue;
+            }
+            const double pan = k < br.pans.size() ? br.pans[k] : 0.0;
+            const double u = k < br.u.size() ? br.u[k] : 0.0;
+            ++k;
+
+            AnalysisSegment as;
+            as.t0Samples = sub.t0;
+            as.t1Samples = sub.t1;
+            as.pan = pan;
+            as.volDb = u;
+            as.origin = Origin::Auto;
+            assigned[static_cast<std::size_t>(t)].push_back(as);
+
+            prevPan[static_cast<std::size_t>(t)] = pan;
+            hasPrev[static_cast<std::size_t>(t)] = true;
+        }
+    }
+
+    // 相邻同值段合并(纯瘦身:段数直接影响 CRVS 体积与 UI 段表长度)。
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        const auto& src = assigned[static_cast<std::size_t>(t)];
+        auto& dst = result.segments[static_cast<std::size_t>(t)];
+        for (const auto& s : src)
+        {
+            if (!dst.empty() && dst.back().t1Samples == s.t0Samples && std::abs(dst.back().pan - s.pan) < 1e-6 &&
+                std::abs(dst.back().volDb - s.volDb) < 1e-6)
+            {
+                dst.back().t1Samples = s.t1Samples;
+                continue;
+            }
+            dst.push_back(s);
+        }
+    }
+
+    // [SL-414] 段表兜底**不在管线里**:落点定在 OutputProcessor::applyAnalysisSegments
+    // (masterPlan 02 §3.4 步骤 5,commit 8829bf4)——对新段做完与既有用户段/锁定段/窗外段
+    // 的 clash 过滤之后、写回窗裁剪之前,对该轨幸存新段跑 mergeShortAutoSegments。
+    // 为什么不在管线:并入后的长段可能与既有用户段 clash,在管线里并、到 applyAnalysisSegments
+    // 再过滤,会从「丢 210ms 那条」升级成「丢并出来的整条」(#261 首轮 Claude-A【重要】②);
+    // 在 clash 过滤**之后**并,被丢段留下的空档由「相接」判据兜住,用户段天然是屏障。
+    // 管线输出因此保持区间产物原样 —— result.intervals / §5 指派的输入一个字节没动。
+
+    report(onProgress, 1.0f);
+    return result;
+}
+
+} // namespace scvb::analysis

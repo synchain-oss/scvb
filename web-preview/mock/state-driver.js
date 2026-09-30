@@ -1,0 +1,1365 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+// SCVB web-preview —— 场景/fixture 驱动(T28 交付)
+// =============================================================================
+// 职责三件:
+//   ① **组装 fixture 初始状态**(六个 fixture,数据一律经 web/shared/mock-data.js
+//      的生成器 + overrides 产出,本文件不自造载荷形状);
+//   ② **解析 `?fixture=` / `?scenario=` / `?loop=` / `?role=` / `?play=` / `?tempo=`**,
+//      未实现的 05 §2.5 场景名一律回落 `fifteen-tracks` + console.warn(**不假装支持**);
+//   ③ **驱动周期性事件**:meters 30Hz / playhead 30Hz / params 25Hz / conn 4Hz /
+//      config 4Hz(变化才发)/ captureProgress 播放中 2Hz / groups 1Hz —— 频率照契约 §2/§4。
+//      captureProgress 另有 [J152] 的两个全量例外帧(首帧 / clearCoverage 后),不看走带、不走这个节拍。
+//
+// 壳页(web-preview/output.html、input.html)的唯一入口:
+//
+//   import { createPreviewSession } from "./mock/state-driver.js";
+//   const session = createPreviewSession({ role: "output", params: location.search });
+//   targetWindow.__SCVB_MOCK__ = session.mock;   // 必须在真源页面的 app.js 求值之前
+//   session.start();                             // 起周期事件
+//   // session.info = { fixture, scenario, loop, warnings[] } —— 供导航页/角标展示
+//
+// 本模块**没有 import 副作用**:不自动挂 window、不自动起定时器。挂载时机由壳页掌握
+// (灰模 app.js 在模块顶层就读 `window.__SCVB_MOCK__`,晚一步就接不上)。
+// 想要「当前窗口一把梭」的写法,用下面的 `installMock()`。
+//
+// 依赖方向:web-preview/ → web/(单向,06 §6.2)。本文件不碰 DOM 结构、不复制任何 UI 代码。
+// =============================================================================
+
+import { paramIdOf } from "../../web/shared/param-id.js";
+import {
+    createMockBackend,
+    makeDefaultParams,
+    maskOfChannels,
+} from "./juce-bridge-mock.js";
+import {
+    CHANNEL_COUNT,
+    CHART_MODES,
+    DEMO_DURATION_S,
+    DEMO_GROUPS_ONLINE,
+    DEMO_LABELS,
+    DEMO_STEREO_CHANNELS,
+    FIFTEEN_TRACKS,
+    METER_FLOOR_DB,
+    makeCaptureProgress,
+    makeError,
+    makeGroups,
+    makeInputSnapshot,
+    makeMeters,
+    makeOutputSnapshot,
+    makeParams,
+    makePlayhead,
+    makeSegments,
+    makeTourDemoSegments,
+    makeTourDemoSnapshot,
+} from "../../web/shared/mock-data.js";
+
+// -----------------------------------------------------------------------------
+// 0. 常量
+// -----------------------------------------------------------------------------
+
+/**
+ * 六个 fixture(任务卡硬约束 3)。
+ * 注意:J59 废除的那个 **10 轨口径的旧 fixture 名**不得在本仓任何位置出现 —— 连注释、
+ * 连「已废除」这样的说明文字都算命中,因为任务卡的验收是一条 `grep -rn` 全仓零命中断言,
+ * 把它写出来解释它自己就会把断言打红。要指代它,一律说「10 轨口径的旧 fixture 名」。
+ */
+export const FIXTURES = Object.freeze([
+    "empty",
+    "fifteen-tracks",
+    "misaligned",
+    "channel-conflict",
+    "second-output",
+    "stereo-mixed",
+]);
+
+export const DEFAULT_FIXTURE = "fifteen-tracks";
+
+/**
+ * `?scenario=`(05 §2.5 / §3 的场景名)→ 本卡 fixture 的**已实现**映射。
+ * 表外的场景名一律回落 `fifteen-tracks` 并 warn「待 T31-T36 接线」——
+ * 那些场景要的是 UI 侧的横幅/overlay/tour,本卡的 mock 后端给不出可验收的东西,
+ * 假装支持只会让后续 agent 以为已经有了。
+ */
+export const SCENARIO_MAP = Object.freeze({
+    empty: "empty",
+    connected: "fifteen-tracks",
+    misaligned: "misaligned",
+    conflict: "channel-conflict",
+    occupied: "channel-conflict",
+    "group-switch": "second-output",
+    "no-output": "fifteen-tracks",
+    // T36 接线五档(Input 七态中的 no-output / passthrough / abi-mismatch /
+    // sr-mismatch / group-mismatch):落在健康满配世界上,由 buildWorld 的场景覆写改 Input 快照初值。
+    passthrough: "fifteen-tracks",
+    "abi-mismatch": "fifteen-tracks",
+    "sr-mismatch": "fifteen-tracks",
+    "group-mismatch": "fifteen-tracks",
+    // [SL-463 / J156] Input 认领的**非冲突**失败(契约 §3.2/§3.3 `{ok:false, reason}`):
+    // 点卡 / 切组的回执是失败,界面要抖卡 + 弹说明 toast。开箱态由 buildWorld 的场景覆写给。
+    "claim-unavailable": "fifteen-tracks",
+    "claim-abi-mismatch": "fifteen-tracks",
+    // T31 接线两档:落在健康满配世界上,由 buildWorld 的场景覆写改快照初值
+    // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
+    "print-guard": "fifteen-tracks",
+    "first-run": "fifteen-tracks",
+    // T33 接线:布防态落在健康满配世界上,由 buildWorld 场景覆写改快照初值
+    // (state.recapture 按契约 §9.2 形状回读,Tab3 三处 badge 的数据源)
+    "recapture-armed": "fifteen-tracks",
+    // T36b 首启交互式引导:完整首启链(语言卡 → 红字九条 → 询问步 → tour 43 步);见 buildWorld 覆写
+    "first-run-tour": "fifteen-tracks",
+    // T48([J80])Input 首启轻量引导:语言卡 → mini tour。落在健康满配世界上,
+    // 于是 group / channel / pill 三个锚点都有真内容可讲(第 ④ 步讲的正是「已接管」这一态)。
+    "input-first-run": "fifteen-tracks",
+    // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
+    "curve-editor": "fifteen-tracks",
+    // T43([J75] A)轨迹图演示:开箱就落在轨迹档,且段表带一段跨轨对齐的缺口 ——
+    // 「无分段覆盖的区间不画线」在这个场景里一眼可见、可截图、可断言。
+    "chart-trajectory": "fifteen-tracks",
+    // SL-177(04 §4.5 fingerprint watchdog):几条轨的上游音频与已采集特征对不上
+    // (典型 = 用户在 Input 前面插了 EQ 并改了参数)。落在健康满配世界上,由 buildWorld
+    // 的场景覆写把 §2.8 的 stale 位摆开 —— 横幅 ⑧ / tab 导航琥珀点 / 泳道 ⚠ 三处提示
+    // 在浏览器里才可达、可截图、可断言(此前 shell.js 白名单里有名字,SCENARIO_MAP 里没接线)。
+    stale: "fifteen-tracks",
+    // [SL-247] 宿主不给时间线(§5.1 `noTimeline`)。`shell.js` 的白名单里一直有这个名字,
+    // 但 SCENARIO_MAP 从没接过线 —— 与 SL-177 之前的 `stale` 同一种「有名无实」。
+    // 落在健康满配世界上(**要有段表**),横幅 ⑥ 与 ⑨ 的取舍才有得测:
+    // ⑥ 说真因(没有时间线),⑨ 必须让位 —— 否则它会把停摆归因到采集开关上;用户照做关掉采集
+    // ([SL-509] 起无时间线只挡「打开」,开着的采集仍能关),没有时间线可播,⚠ 照样回不来。
+    "no-timeline": "fifteen-tracks",
+    // [SL-276 复审] 工程存的响度口径**不是**出厂默认(用户用过 rms 并按 rms 分析过)。
+    // 这一档专治一个测试盲区:六个 fixture 的 analysis.loudness_mode 全是默认档
+    // (mock-data.js),于是「初始不弹」那条断言只覆盖到「stale 为假时不弹」,
+    // 覆盖不到真正危险的那条 ——「stale 一上来就为真(基线在 state 到达前快照的),
+    // 用户什么都没做,框却弹了」。有了本档,那条误报路径在冒烟里才可达。
+    "loudness-nondefault": "fifteen-tracks",
+    // [SL-279] 「改了档、没重分析就存盘」——工程存 rms 而 applied 仍是 kw_integrated。
+    // 这是 stale **真的**在加载时为真的那一档(用户什么都没做、提示该亮),
+    // 与上面那档正好相反:上面那档是 SL-279 修掉的**误报**(存 rms 且按 rms 分析过 ⇒ 不该亮)。
+    // 两档一起才钉得住「徽标读的是 applied 而不是本地快照」:少了本档,把判据改成
+    // 「恒不亮」也能全绿。
+    "loudness-stale-on-load": "fifteen-tracks",
+    // [SL-279 复审第 6 轮] 范围档(§1.8 manual)下装载。用来钉设置页那枚「重新分析」:
+    // 范围档下它拿到 ok:true,却**不**前移 applied.*(契约 §1.21)⇒ 徽标不灭。所以框不能关,
+    // 且要把范围提示摆出来。没有本场景,那条链在冒烟里根本不可达(默认档恒 follow)。
+    "range-manual": "fifteen-tracks",
+    // [SL-354] 真桥时序:`setAnalysisConfig` 的回执先到、`scvb.state` 后到一拍。
+    // 用来复现用户 v5.6.7 报的「第一下只出横幅、第二次切换才出弹窗」——默认同步的 mock
+    // 里那条链根本不存在(回执到时 state 已经是新值了)。
+    "slow-state-echo": "fifteen-tracks",
+    // [SL-354] 写落地之后补一帧**不带 `analysis.applied`** 的全量快照(全量帧在 UI 侧是
+    // 整体替换,于是 store 里的 applied 被抹掉)。用来钉「回落值只许渲染、不许做破坏性
+    // 判断」:UI 派生基线时缺 applied 会回落到当前值 ⇒ stale 假装归假。与 slow-state-echo
+    // **有意分成两个场景**:那边验的是时序,这边验的是缺字段,两条路各自单独可红。
+    "applied-echo-drop": "fifteen-tracks",
+    // [SL-357 补] 同步回声逃生口。**这一行不改变任何 fixture 的选择结果** ——
+    // 本表映射的目标就是 `DEFAULT_FIXTURE`,而 `caps.syncStateEcho` 由 `buildWorld`
+    // 按 `opts.scenario` 直接置(见下面那处),不经本表,逃生口此前一直是通的。
+    // 收益只有两条,别高估:① 消掉 `parsePreviewQuery` 那条「待 T31-T36 接线」的
+    // 伪警告(#242 合入树上实测有);② 让「场景名两张表都要在」这条纪律在本名字上
+    // 成立 —— 不在本表里,`smoke-mock` 那格双向对拍就够不着它。
+    "sync-state-echo": "fifteen-tracks",
+    // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
+    // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在
+    // preview 里三个月都没露过面 —— mock 数据恰好避开了缺陷区间。本场景把若干轨顶到
+    // **0 dB 及以上**,让「不同 vol ⇒ 不同柱高」在 unity 附近可断言。
+    // 有意**不动 DEMO_TRACKS**:那张表是设计稿 1382-1397 行的转写,改数字等于偏离转写口径。
+    "hot-levels": "fifteen-tracks",
+    // [SL-247 / J92a] 布防还在、采集却已关 —— 横幅 ⑩ 的世界。
+    // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
+    // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
+    "recapture-voided": "fifteen-tracks",
+    // [SL-274] diff 摘要顶到 `changed[]` 封顶(200)的那一帧。常态素材只出 29 条,于是
+    // `tab-wave.js` 里「顶到封顶就把计数渲染成 `N+`」那个**用户可见**分支一条用例都到不了
+    // (#179 复审【重要】)。本场景把 `makeSegments` 的 `diffFillToCap` 打开(接线见
+    // juce-bridge-mock 的 recompute),页面级冒烟据此断「印的是 200+ 而不是 200」。
+    // 落在健康满配世界上 —— 要有 15 轨五百多条 auto 段,才抽得满 200 条。
+    "diff-flood": "fifteen-tracks",
+    // [J152] 重开一个「采过、还没分析」的工程,走带停着:覆盖齐全、段表全空、播放头在 0。
+    // 修复前 Tab1 在这一态一直是「当前范围内无采集数据」(覆盖率只在播放中推,段表又是空的);
+    // 页面级冒烟据此断「就绪首帧那一次全量到了 ⇒ 覆盖率行有数、原因句收起」。
+    "captured-unanalyzed": "fifteen-tracks",
+});
+
+/** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
+const STALE_DEMO_CHANNELS = Object.freeze([2, 5, 11]);
+
+/** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
+const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
+
+/**
+ * [J147] 宿主报的速度与拍号(`scvb.playhead` 的 bpm / timeSigNum / timeSigDen / ppq 的来源)。
+ * 默认 = 常见宿主的样子(120 BPM、4/4,恒速);`?tempo=none` = 宿主不报(页面按秒显示),
+ * `?tempo=<bpm>/<分子>/<分母>`(如 `90/3/4`)= 换一个速度与拍号;`?tempo=var` = 变速工程
+ * (30 s 之前 120 BPM、之后 100 BPM,4/4)。
+ */
+const HOST_TEMPO = Object.freeze({ bpm: 120, num: 4, den: 4 });
+const HOST_TEMPO_VAR = Object.freeze({
+    bpm: 100,
+    num: 4,
+    den: 4,
+    pre: Object.freeze({ untilS: 30, bpm: 120 }),
+});
+
+/** `?tempo=` 的解析:合法 ⇒ {bpm,num,den[,pre]};`none` ⇒ "none";非法 ⇒ undefined。 */
+function parseTempoQuery(raw) {
+    if (raw === "none") return "none";
+    if (raw === "var")
+        return { ...HOST_TEMPO_VAR, pre: { ...HOST_TEMPO_VAR.pre } };
+    const m = /^(\d+(?:\.\d+)?)\/(\d+)\/(\d+)$/.exec(String(raw));
+    if (!m) return undefined;
+    const bpm = Number(m[1]);
+    const num = Number(m[2]);
+    const den = Number(m[3]);
+    if (!(bpm > 0) || !(num >= 1) || !(den >= 1)) return undefined;
+    return { bpm, num, den };
+}
+
+/** `stereo-mixed` 的手动区间(第三个枚举值 `manual` 的代表档)。 */
+const MANUAL_RANGE = Object.freeze({ startS: 12, endS: 96 });
+
+/** `recapture-armed` 的布防面(轨 3/4/7/12 × 选区 78-114s;autoStop 默认 false)。 */
+const RECAPTURE_DEMO = Object.freeze({
+    channels: Object.freeze([3, 4, 7, 12]),
+    startS: 78,
+    endS: 114,
+});
+
+/** `misaligned` 的失准轨与计数(琥珀横幅① + Tab2 该轨 ⚠ 计数的数据源)。 */
+const MISALIGN_COUNTS = Object.freeze({ 3: 4, 7: 1, 11: 9 });
+
+/** `channel-conflict` 里被别的实例占住、用户又点了的通道号。 */
+const CONFLICT_CHANNEL = 4;
+
+/** 全 15 通道占用位图(u16,bit0=ch1 … bit14=ch15)。 */
+const ALL_CHANNELS_MASK = maskOfChannels(
+    Array.from({ length: CHANNEL_COUNT }, (_, i) => i + 1),
+);
+
+/** 事件周期(契约 §2/§4 逐类标注;ms)。 */
+const PERIOD = Object.freeze({
+    frame30Hz: 33, // scvb.meters / scvb.playhead
+    params25Hz: 40, // scvb.params
+    conn4Hz: 250, // scvb.conn / scvb.config
+    capture2Hz: 500, // scvb.captureProgress 周期帧(仅播放中;[J152] 例外帧不走这个节拍)
+    groups1Hz: 1000, // scvb.groups
+});
+
+/**
+ * 兜底代调 `requestInitialState()` 的等待时长(ms)。
+ * T27b 灰模把 `requestInitialState()` 留成 `[T31]` 注释桩,页面自己不会调 ——
+ * 而契约 §0.6 规定调用前一个事件都不许推,于是预览页会静默停在空态。
+ * driver 等这么久还没等到,就自己代调一次并留一条 console.info(**只在预览侧兜底,
+ * 绝不改 web/**)。T31 接线后页面会先调,这条兜底自然不触发。
+ */
+const AUTO_REQUEST_INITIAL_STATE_MS = 1500;
+
+/**
+ * [J150] `?host=` 的合法值 = 契约 §1.1 快照 `host` 的闭集(native 侧 src/output/HostId.h)。
+ * 预览里只有它决定宿主专属提示(横幅 ⑪⑫⑬)出不出,见 web/output/host-hints.js。
+ */
+export const HOST_VALUES = Object.freeze(["reaper", "live", "cubase", "other"]);
+
+// -----------------------------------------------------------------------------
+// 1. 查询参数解析
+// -----------------------------------------------------------------------------
+
+/**
+ * 自有键判定 —— 查询串是外部输入,`SCENARIO_MAP[q.get("scenario")]` 这种写法会让
+ * `?scenario=constructor` 从原型链上取到一个真值,当场把它当成「已实现的场景名」。
+ */
+function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function toSearchParams(params) {
+    if (params instanceof URLSearchParams) return params;
+    if (typeof params === "string") return new URLSearchParams(params);
+    if (params && typeof params === "object") {
+        return new URLSearchParams(
+            Object.entries(params).map(([k, v]) => [k, String(v)]),
+        );
+    }
+    return new URLSearchParams("");
+}
+
+/**
+ * 解析预览参数。
+ * @returns {{fixture:string, scenario:string|null, loop:"host"|"none"|null,
+ *            play:boolean|null, host:string|null, role:string|null, warnings:string[]}}
+ */
+export function parsePreviewQuery(params) {
+    const q = toSearchParams(params);
+    const warnings = [];
+
+    const rawFixture = q.get("fixture");
+    const rawScenario = q.get("scenario");
+    const fixtureOk = !!rawFixture && FIXTURES.includes(rawFixture);
+    const scenarioFixture =
+        rawScenario && hasOwn(SCENARIO_MAP, rawScenario)
+            ? SCENARIO_MAP[rawScenario]
+            : null;
+
+    // 优先级:合法 fixture > 已实现 scenario 的映射 > 默认档。
+    // 非法 fixture **不**吃掉同时给出的 scenario —— 拼错一个参数就把另一个参数
+    // 一起丢进默认档,拿到的是「看起来像但不是你要的那档」,比直接回默认档更难发现。
+    let fixture = DEFAULT_FIXTURE;
+    if (fixtureOk) fixture = rawFixture;
+    else if (scenarioFixture) fixture = scenarioFixture;
+
+    if (rawFixture && !fixtureOk) {
+        warnings.push(
+            `fixture ${rawFixture} 不存在(六个:${FIXTURES.join(" / ")}),已回落 ${fixture}`,
+        );
+    }
+    if (rawScenario && !scenarioFixture) {
+        warnings.push(`场景 ${rawScenario} 待 T31-T36 接线`);
+    }
+
+    const rawLoop = q.get("loop");
+    let loop = null;
+    if (rawLoop === "none" || rawLoop === "host") {
+        loop = rawLoop;
+    } else if (rawLoop) {
+        warnings.push(
+            `loop=${rawLoop} 未知(只认 host / none),已按 fixture 默认档`,
+        );
+    }
+
+    // [SL-357] 过期全量帧的注入节奏,可从 URL 覆写(判据格用 `=1` 取确定性,
+    // 删除式用 `=0` 证明这一档确实是它在造)。非法值**出警告**不静默吞:
+    // 拼错一个数就悄悄跑在默认档上,拿到的是「看起来像但不是你要的那档」。
+    const rawStale = q.get("staleFullEvery");
+    let staleFullEvery = null;
+    if (rawStale !== null) {
+        const v = Number(rawStale);
+        if (Number.isFinite(v) && v >= 0) staleFullEvery = Math.floor(v);
+        else
+            warnings.push(
+                `staleFullEvery=${rawStale} 非法(要 >=0 的数),已按默认档`,
+            );
+    }
+
+    const rawPlay = q.get("play");
+    const play =
+        rawPlay === null ? null : rawPlay !== "0" && rawPlay !== "false";
+
+    // [J147] 宿主速度:缺省 = null(buildWorld 用默认 120/4/4);非法值出警告不静默吞。
+    const rawTempo = q.get("tempo");
+    let tempo = null;
+    if (rawTempo !== null) {
+        const v = parseTempoQuery(rawTempo);
+        if (v === undefined)
+            warnings.push(
+                `tempo=${rawTempo} 非法(要 none / var 或 <bpm>/<分子>/<分母>,如 90/3/4),已按默认档`,
+            );
+        else tempo = v;
+    }
+
+    // [J150] 宿主标识(§1.1 快照 `host`,闭集 = HOST_VALUES)。缺省 = 快照生成器的默认 "other"。
+    // 非法值**出警告**不静默吞(同 staleFullEvery):拼错一个字就悄悄跑在 "other" 上,
+    // 拿到的是「提示怎么没出」而不是「参数写错了」。
+    const rawHost = q.get("host");
+    let host = null;
+    if (rawHost !== null) {
+        if (HOST_VALUES.includes(rawHost)) host = rawHost;
+        else
+            warnings.push(
+                `host=${rawHost} 未知(只认 ${HOST_VALUES.join(" / ")}),已按默认 other`,
+            );
+    }
+
+    return {
+        fixture,
+        scenario: rawScenario,
+        loop,
+        play,
+        staleFullEvery,
+        tempo,
+        host,
+        role: q.get("role"),
+        warnings,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 2. fixture —— 六个初始世界(数据一律 mock-data 生成器 + overrides)
+// -----------------------------------------------------------------------------
+
+/**
+ * Input 侧「已连上、正常工作」的一份快照。
+ * **claim 不进快照**:§3.1 的字段集里没有它(它只在 §4.1 `scvb.state` 出现),
+ * 所以 claim 由 `world.input.claim` 单独给,mock 侧也单独存 —— 混进快照就会让
+ * `requestInitialState()` 多回一个契约没登记的键。
+ * @param {number} ch 本实例占的通道号
+ */
+function connectedInputSnapshot(ch, extraConfig = {}) {
+    // 远程只读摘要的 lead/pair/priority 取 FIFTEEN_TRACKS 该轨画像(主唱=lead+pair1),
+    // 否则远程摘要行永远无内容,连「有内容时正常显示」都验证不到。
+    const profile = FIFTEEN_TRACKS.snapshot.channels[ch - 1] || {};
+    return makeInputSnapshot({
+        channel_id: ch,
+        group_id: 1,
+        conn: {
+            outputOnline: true,
+            maskBit: true,
+            capturing: true,
+            passthrough: false, // 已接管:本轨静音转发(J12/J32)
+            passthroughPending: false,
+            occupiedMask: ALL_CHANNELS_MASK,
+        },
+        config: {
+            label: DEMO_LABELS[ch - 1],
+            priority: profile.priority ?? 5,
+            lead_lock: !!profile.lead_lock,
+            pair_id: profile.pair_id ?? 0,
+            config_seq: 42,
+            channelLabels: DEMO_LABELS.slice(),
+            ...extraConfig,
+        },
+        ui: { scale: 1, language: "zh" },
+    });
+}
+
+/** 空段表:容器与元素形状照生成器,只把每轨的 segments 清空(空工程没有分析产物)。 */
+function emptySegmentsFrame(version = 1) {
+    const base = makeSegments(version, "snapshot");
+    return {
+        ...base,
+        channels: base.channels.map((entry) => ({ ...entry, segments: [] })),
+        diff: { kept: 0, changed: [], added: 0, removed: 0 },
+    };
+}
+
+/**
+ * 每轨覆盖率基准(供 `clearCoverage` 按「清掉多少」往下扣)。
+ * 直接取 FIFTEEN_TRACKS 的首帧覆盖(生成器口径),不另算一份;
+ * `empty` fixture 没采过任何东西,基准一律 0 —— 否则清除操作会从 84-92% 往下扣,
+ * 而页面上那 15 条覆盖条本来就是空的,数字与画面对不上。
+ */
+function demoCoverage(fixture) {
+    return FIFTEEN_TRACKS.captureProgress.channels.map((c) => ({
+        ch: c.ch,
+        coveragePct: fixture === "empty" ? 0 : c.coveragePct,
+    }));
+}
+
+/**
+ * 组装一个 fixture 的初始世界。
+ * @param {{role:string, fixture:string, loop:"host"|"none"|null, play:boolean|null,
+ *          scenario?:string|null}} opts
+ */
+export function buildWorld(opts = {}) {
+    const fixture = FIXTURES.includes(opts.fixture)
+        ? opts.fixture
+        : DEFAULT_FIXTURE;
+
+    // ---- 默认值(健康满配 15 轨)-------------------------------------------------
+    const caps = {
+        readOnly: false,
+        // [SL-381] **哪个组已经有主 Output**(0 = 一个都没有)。`readOnly` 只说本实例
+        // 当下是不是观察者,说不出「改到别的组之后还是不是」—— 而 §1.4 的判据恰恰在
+        // 目标组。两个 cap 各管一件事:这一个是世界的事实,`readOnly` 是本实例的当下态,
+        // 由 `setGroupId` 按目标组重算(见 juce-bridge-mock.js §1.4)。
+        occupiedOutputGroup: 0,
+        loopAvailable: true,
+        loop: { ...HOST_LOOP },
+        occupiedMask: ALL_CHANNELS_MASK,
+        groupConflict: false,
+        // [SL-463 / J156] Input 认领的非冲突失败:null | "unavailable" | "abiMismatch"
+        // (由 claim-unavailable / claim-abi-mismatch 两个场景置,语义见 juce-bridge-mock.js §3.2/§3.3)。
+        claimFailure: null,
+        ringFull: false,
+        noTimeline: false,
+        // [J147] 宿主报的速度与拍号(null = 不报);`?tempo=` 覆写,见下面「查询参数覆写」。
+        hostTempo: { ...HOST_TEMPO },
+        // [SL-354] 「状态回声延后一拍」—— 只有开了它,mock 的时序才与真桥同形。
+        //
+        // 默认 mock 的 `patchState` 是**同步** emit `scvb.state` 的:`setAnalysisConfig`
+        // 还没返回,UI 的 store 就已经是新值了。真桥不是 —— 写要过 WebView 桥、状态由
+        // 后续的 `scvb.state` 帧带回来,所以 UI 在收到写回执的**那一刻读到的仍是旧值**。
+        // 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」整条链就活在这个时间差里,
+        // 而 preview 永远看不到它。
+        //
+        // [SL-357] **默认翻成 `true`** —— SL-354 留下的那处「登记在案的时序口径分叉」
+        // (默认同步 ≠ 真桥)本身就是缺陷的藏身处:凡是「写完立刻读 store」的产品代码,
+        // 在同步 mock 上永远绿,到真桥上才炸。用户 v5.6.7 报的「第一下只出横幅、
+        // 第二下才弹窗」就活在那个差里,而当时**没有任何一套冒烟拦得住**。
+        //
+        // 现在默认异步,于是:**冒烟套里凡是依赖「桥函数返回时 store 已是新值」的断言
+        // 都会红** —— 那正是本卡要照出来的东西。逐套的判定见下面 `syncStateEcho`。
+        // (SL-354 的 `slowStateEcho` 已在 SL-357 删除:默认翻成异步之后**没有任何代码
+        //  再读它**,留着就是一个谁都不看却像在起作用的开关 —— 反向删除式当场照出来:
+        //  把它翻回 false,判据一格都不红。异步与否现在**只由下面这一个 cap 决定**。)
+        // [SL-357] **同步回声逃生口**。给「确实需要旧行为」的套用:`scenario=sync-state-echo`,
+        // 或 driver 内部构造时显式传。**它不是「让红的用例变绿」的通用开关** ——
+        // 用它之前必须先判清那一格红的是哪一类:
+        //   ① 判据本来就靠同步撑着(断言写完立刻读)⇒ 改判据去等那一帧,**不要**开这个开关;
+        //   ② 那一格测的就是「同步语义本身」(极少)⇒ 才开这个开关,并在格旁写明为什么。
+        // 分不清就别开:开关一开,这一套就退回「preview 看不见真桥时序」的老状态。
+        syncStateEcho: false,
+        // [SL-354] 「写落地之后补一帧缺 `analysis.applied` 的全量快照」。同样默认 **false**
+        // (真桥恒发那两个字段,这是**兜底闸**的夹具,不是真桥形态),由
+        // `scenario=applied-echo-drop` 打开。与上面那个开关**互不启用**:一个造时序、
+        // 一个造缺字段,两条路各自单独可红,合在一个场景里就分不清是哪一刀在拦。
+        dropAppliedEcho: false,
+        // [SL-357] **过期全量帧的注入节奏**:每 N 次写插一帧(0 = 关掉,1 = 每次都插)。
+        // 真桥上「内容在写落地之前组装、送达在之后」的那一帧是**偶发**的 —— 写死成每次都插
+        // 会让冒烟去适应一个比真桥更严苛的节奏,写成 0 又等于这一档不存在。
+        // ⚠ 用**计数**不用随机数:driver 里没有确定性随机源(我查过,没有 `rngUnit` 那类东西),
+        //   拿 `Math.random()` 会让冒烟变成随机红 —— 那比这一档不存在更糟。
+        //   默认 4:第 4、8、12… 次写各插一帧,可复现、可数。
+        staleFullEchoEvery: 4,
+    };
+    const errors = { output: [], input: [] };
+    let transport = { timeS: 42, isPlaying: true };
+    let groupsOnline = DEMO_GROUPS_ONLINE;
+    let outputSnapshot = null;
+    let outputParams = null;
+    let outputSegments = null;
+    let inputSnapshot = null;
+    let inputClaim = "active"; // §5.2 六态;不属 §3.1 快照字段集,单独给
+    let inputAbiRemote; // §4.1 abi_remote;探测不到对端 = undefined(字段不存在)
+
+    if (fixture === "empty") {
+        // 0 轨连接、无 coverage、guide_seen=true(不弹引导)、range 默认 follow。
+        outputSnapshot = makeOutputSnapshot({
+            ui: { guide_seen: true },
+            guide_seen_global: true,
+        });
+        outputParams = makeDefaultParams(1);
+        outputSegments = emptySegmentsFrame(1);
+        inputSnapshot = makeInputSnapshot(); // channel_id=0(未分配)/ Output 离线 / 直通
+        inputClaim = "unassigned"; // 引导态,非错误(§5.2)
+        caps.loopAvailable = false; // 没有时间线内容,宿主循环区也无从谈起
+        caps.occupiedMask = 0;
+        transport = { timeS: 0, isPlaying: false };
+        groupsOnline = makeGroups(0b00000001).groups_online; // 只有本组 A 在线
+    } else if (fixture === "misaligned") {
+        // fifteen-tracks 基础上给 2-3 轨注入 misalignCount>0。
+        // 失准**没有独立 error code** —— 琥珀横幅①由 UI 直接按 conn 渲染(05 §2.0),
+        // 所以这里只改 conn,不发 scvb.error。
+        const base = makeTourDemoSnapshot();
+        const channels = base.conn.channels.map((c, i) => {
+            const n = MISALIGN_COUNTS[i + 1];
+            return n ? { ...c, misalignCount: n } : c;
+        });
+        outputSnapshot = makeTourDemoSnapshot({
+            global: { range: { mode: "follow" } },
+            conn: { channels },
+        });
+        outputParams = makeParams({ versionActive: 1 });
+        outputSegments = makeTourDemoSegments(1, "snapshot");
+        inputSnapshot = connectedInputSnapshot(1);
+    } else if (fixture === "channel-conflict") {
+        // Input 侧场景:claim=conflict + channelConflict error + occupiedMask 含目标位。
+        // Output 侧**不受影响**(照 fifteen-tracks 健康档)。
+        outputSnapshot = makeTourDemoSnapshot({
+            global: { range: { mode: "follow" } },
+        });
+        outputParams = makeParams({ versionActive: 1 });
+        outputSegments = makeTourDemoSegments(1, "snapshot");
+        inputClaim = "conflict";
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 0, // CAS 失败 ⇒ 没占住任何 slot
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true, // 拒连不影响音频直通
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: {
+                config_seq: 42,
+                channelLabels: DEMO_LABELS.slice(),
+            },
+        });
+        errors.input.push(
+            makeError("channelConflict", {
+                ch: CONFLICT_CHANNEL,
+                detail: { groupId: 1 },
+            }),
+        );
+    } else if (fixture === "second-output") {
+        // 只读观察 + secondOutput 横幅②;range 取 daw_loop(宿主提供 loop)= daw_loop 代表档。
+        outputSnapshot = makeTourDemoSnapshot({
+            global: {
+                range: {
+                    mode: "daw_loop",
+                    start_s: HOST_LOOP.startS,
+                    end_s: HOST_LOOP.endS,
+                },
+            },
+            conn: { outputReadOnly: true },
+        });
+        outputParams = makeParams({ versionActive: 1 });
+        outputSegments = makeTourDemoSegments(1, "snapshot");
+        inputSnapshot = connectedInputSnapshot(1); // Input 视角正常
+        caps.readOnly = true;
+        // [SL-381] 占着主 Output 的是**组 1**(= 本 fixture 的 group_id,也是下面
+        // secondOutput 错误 detail 里那个组号)。改到别的组 ⇒ 接管为主实例、只读解除;
+        // 改回组 1 ⇒ 重新进只读观察。这一格是 B22「两者互不干扰」的预览面真源。
+        caps.occupiedOutputGroup = 1;
+        errors.output.push(
+            makeError("secondOutput", { detail: { groupId: 1 } }),
+        );
+    } else if (fixture === "stereo-mixed") {
+        // mono+stereo 混存:四条 stereo 轨(生成器口径 DEMO_STEREO_CHANNELS)带 ST 标、
+        // 每轨 width 旋钮可用;range 取 manual
+        // (与 empty/fifteen-tracks 的 follow、second-output 的 daw_loop 一起凑满三值枚举)。
+        outputSnapshot = makeTourDemoSnapshot({
+            global: {
+                range: {
+                    mode: "manual",
+                    start_s: MANUAL_RANGE.startS,
+                    end_s: MANUAL_RANGE.endS,
+                },
+            },
+        });
+        outputParams = makeParams({ versionActive: 1 });
+        outputSegments = makeTourDemoSegments(1, "snapshot");
+        // 该轨**显式**关掉参与([J83] 起默认是 true)—— 本 fixture 要的是「用户手动把某轨
+        // 排除」那一面的渲染(轨道页开关的关闭态 + Input 远程只读摘要行的关闭态),不是默认档。
+        //
+        // 两侧必须一起写:契约 §4.3 说 Input 的 `scvb.config` 是**本组 ctrl 广播区中本 channel
+        // 的只读快照**,真源在 Output(ADR-004)。只改 Input 那一侧,预览里就会出现真机上
+        // 不可能出现的组合(Output 说参与、Input 镜像说不参与),而这正是靠预览截图核对
+        // 两页一致性的人最容易被骗的地方。
+        const stereoCh = DEMO_STEREO_CHANNELS[0];
+        outputSnapshot.channels[stereoCh - 1].participate_in_auto_pan = false;
+        inputSnapshot = connectedInputSnapshot(stereoCh, {
+            source_channels: 2,
+            participate_in_auto_pan: false,
+        });
+    } else {
+        // fifteen-tracks:15 轨全连、4 stereo、覆盖/段表齐全;**range.mode=follow 默认档代表**。
+        outputSnapshot = makeTourDemoSnapshot({
+            global: { range: { mode: "follow" } },
+        });
+        outputParams = makeParams({ versionActive: 1 });
+        outputSegments = makeTourDemoSegments(1, "snapshot");
+        inputSnapshot = connectedInputSnapshot(1);
+    }
+
+    // ---- 场景覆写(SCENARIO_MAP 已把这两个名字映射到 fifteen-tracks)-----------
+    // 只改快照初值,不动周期事件与函数语义;字段形状照 mock-data 生成器原样。
+    if (opts.scenario === "print-guard" && outputSnapshot) {
+        // 05 §2.0 横幅⑦:工程刚加载、上次退出时输出仍为 ON ⇒ 守卫待确认。
+        // 走带停在 0(守卫场景=刚打开工程,确认前只允许 ARMED)。
+        outputSnapshot = {
+            ...outputSnapshot,
+            // reason 与真桥同形(契约 §2.1:恢复出 ON 的那种来由是 "restore")。
+            print_guard: {
+                ...outputSnapshot.print_guard,
+                pending: true,
+                reason: "restore",
+            },
+        };
+        transport = { timeS: 0, isPlaying: false };
+    }
+    if (opts.scenario === "recapture-armed" && outputSnapshot) {
+        // 05 §2.3「重采集选区」行:armed 后三处 badge + footer 警告的可验收世界。
+        // 快照直接带 armed 态(= 用户在上一拍点过布防;切 tab/重开面板靠
+        // scvb.state.recapture 恢复显示,契约 §9.2:只读回读**无 reason**)。
+        // **输出开关同时 ON**:B-04 的 footer 警告判据是「输出开关 ON 或布防期
+        // 被打开」—— 基线 output_enabled:false 时这条警告按判据就**不该**挂,
+        // 场景开箱跑不通验收锚④(对抗校验 minor)。故本场景连输出一起摆开。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, output_enabled: true },
+            recapture: {
+                armed: true,
+                tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),
+                startS: RECAPTURE_DEMO.startS,
+                endS: RECAPTURE_DEMO.endS,
+                autoStop: false,
+            },
+        };
+    }
+    if (opts.scenario === "loudness-nondefault" && outputSnapshot) {
+        // 工程存的口径不是出厂默认(用户用过 rms **并按 rms 分析过**)。
+        // [SL-279] `applied` 跟着一起是 rms —— 这一档的语义从头就是「按它存的档分析过」,
+        // 段表也是按 rms 出来的。此前 UI 拿 mount 快照当基线,加载完就误报「需重新分析」;
+        // 换成 state 的 applied.* 之后**不该再报**,而这一档正是那条误报路径的可达用例:
+        // 谁把基线改回本地快照,`smoke-ui-layout-page` 的「初始不弹」当场红。
+        outputSnapshot = {
+            ...outputSnapshot,
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "rms",
+                },
+            },
+        };
+    }
+    if (opts.scenario === "loudness-stale-on-load" && outputSnapshot) {
+        // [SL-279] 当前档 rms、上次分析用的还是 kw_integrated ⇒ stale 为真且**不是用户改的**。
+        // 段表照旧(它是按 kw_integrated 出来的),与「结果其实是旧的」对得上。
+        outputSnapshot = {
+            ...outputSnapshot,
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "kw_integrated",
+                },
+            },
+        };
+    }
+    if (opts.scenario === "range-manual" && outputSnapshot) {
+        // [SL-279 复审第 6 轮] manual 档 + 一段有效范围;同时把档改成 rms 而 applied 留
+        // kw_integrated ⇒ 一上来就 stale(徽标亮、框可被用户点开),这样「点了主钮之后
+        // 徽标**仍**亮」才是一条可断言的状态,而不是「本来就没亮」。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: {
+                ...outputSnapshot.global,
+                range: { mode: "manual", start_s: 5, end_s: 9 },
+            },
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "kw_integrated",
+                },
+            },
+        };
+    }
+    if (opts.scenario === "first-run" && outputSnapshot) {
+        // 05 §2.5 first-run:两级 guide_seen 全 false ⇒ 引导页 overlay 弹出。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: false },
+            guide_seen_global: false,
+        };
+    }
+    if (opts.scenario === "first-run-tour" && outputSnapshot) {
+        // 05 §2.6 首启顺序固定 = 语言卡 → 红字九条页 → 询问步 → tour;场景必须复现完整链条,
+        // 故两级 guide_seen 与 tour_seen 全 false(与 first-run 同款 + 显式 tour 位):
+        // 语言卡弹出 → 选语言 → 红字页「开始使用」→ 询问步「开始引导」→ 43 步 → 完成落设置页。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: false, tour_seen: false },
+            guide_seen_global: false,
+            tour_seen_global: false,
+        };
+    }
+    if (opts.scenario === "hot-levels" && outputSnapshot) {
+        // [SL-293] 本场景是**出包截图/肉眼核对**用的,首启引导浮层会给整页盖一层背景模糊,
+        // 把「柱高是否分层」这类判断削弱成猜 —— 而本仓刚栽过一次工具伪证据(SL-290)。
+        // 四个位全部置真 ⇒ 引导页(shouldShowGuide)与 tour 询问步(shouldShowTourAsk)都不弹。
+        //
+        // 别把这四行读成等价的四颗钉:`makeTourDemoSnapshot`(mock-data.js:1200-1206)的基线
+        // 已经是 guide_seen / guide_seen_global **真**、tour_seen / tour_seen_global **假**
+        // ——「tour 还没走完」正是 demo 的前提。所以在那条基线上,**真正改变行为的是 tour 两位**,
+        // guide 两位是防回归钉。四位仍全部显式写出:本场景是 scenario 层、叠在**任一** fixture
+        // 的快照上,不同 fixture 的基线不一样,不能依赖某一条。
+        //
+        // `tour_seen`(工程位)是复审补上的:`shouldShowTourAsk` 现在要求工程位与全局位**同时**
+        // 为假才弹,只置全局位今天够用;但判据一旦收窄成只看工程位,询问步就会静默回来 ——
+        // 而回归形态恰好是「出包截图上又蒙了一层」。first-run-tour 分支两级都写,这里对齐它。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: true, tour_seen: true },
+            guide_seen_global: true,
+            tour_seen_global: true,
+        };
+    }
+    if (opts.scenario === "hot-levels" && outputParams) {
+        // [SL-280] 只覆写 vol 参数面初值,不动段表、不动周期事件语义。
+        // 取值有意跨过 0 dB 两侧且**两两不等**:旧公式下 ch1..ch4 会全部画成 88%(饱和),
+        // 新公式下四根柱高度两两不同 —— 页面级用例断的就是这个差。
+        const HOT = { 1: 12, 2: 6, 3: 0, 4: -6 };
+        const hot = { ...outputParams.values };
+        const v =
+            outputSnapshot && outputSnapshot.global
+                ? outputSnapshot.global.version_active || 1
+                : 1;
+        // ParamID 走 `paramIdOf`,不在这里再拼一份 `v{v}_t{tt}_vol` —— 格式只此一处真源。
+        for (const [ch, db] of Object.entries(HOT)) {
+            hot[paramIdOf(v, Number(ch), "vol")] = db;
+        }
+        outputParams = { ...outputParams, values: hot };
+    }
+    if (opts.scenario === "curve-editor" && outputParams) {
+        // T34:MS 等效增益叠加线演示 —— 非零 ms_balance 使 g_eq 曲线偏离 0 dB 可见。
+        outputParams = {
+            ...outputParams,
+            values: { ...outputParams.values, ms_balance: 42 },
+        };
+    }
+    if (opts.scenario === "chart-trajectory" && outputSnapshot) {
+        // T43([J75] A):快照直接带轨迹档(= 用户上一拍切过视图,重开面板靠
+        // state.ui.master_chart_mode 恢复 —— 这正是「切换态持久化」的回读半边);
+        // 段表挖 TRAJECTORY_GAP 窗口,几条轨在同一处齐断,断线肉眼可查。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, master_chart_mode: CHART_MODES[1] },
+        };
+        outputSegments = makeTourDemoSegments(1, "snapshot", {
+            trajectoryGap: true,
+        });
+    }
+    if (opts.scenario === "recapture-voided" && outputSnapshot) {
+        // [SL-247] 布防位保留、采集已关。**采集必须是 OFF**:这一态的定义就是这两位的组合,
+        // 把采集摆成 ON 就成了普通布防态(那是 `recapture-armed` 场景),⑩ 也就不该出。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: false },
+            recapture: {
+                armed: true,
+                tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),
+                startS: RECAPTURE_DEMO.startS,
+                endS: RECAPTURE_DEMO.endS,
+                autoStop: false,
+            },
+        };
+    }
+    if (opts.scenario === "no-timeline" && outputSnapshot) {
+        // [SL-247] 两件都要:`caps.noTimeline` 决定桥函数的拒绝分支与写控件闸,
+        // `scvb.error` 的 noTimeline 码才是横幅 ⑥ / `vs.noTimeline` 的数据源(app.js 读 err)。
+        // 只给其中一件,页面上就会出现真机上不可能的半态。
+        caps.noTimeline = true;
+        errors.output.push(makeError("noTimeline"));
+        // 采集**开着**且段表已在 —— 这正是 ⑨ 的其余四项判据全部满足、只差 noTimeline
+        // 这一项的那一格;⑨ 若不让位,这一档就会红。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: true },
+        };
+    }
+    if (opts.scenario === "stale" && outputSegments) {
+        // SL-177 / 04 §4.5:把 §2.8 的 stale 位摆到三条轨上。**只改 stale**,段表其余
+        // 一律不动 —— 提示是「素材变了」,不是「段没了」,fingerprint watchdog 明文
+        // 「只提示,不自动失效、不阻断任何操作」。
+        outputSegments = {
+            ...outputSegments,
+            channels: outputSegments.channels.map((entry) =>
+                STALE_DEMO_CHANNELS.includes(entry.ch)
+                    ? { ...entry, stale: true }
+                    : entry,
+            ),
+        };
+        // [SL-239] `capture_enabled` **刻意保持基础世界的 true**,别把它改成 false。
+        //
+        // 初版这里强行改成了 false,注释还写着「stale ∧ 采集 ON 是真机上不可能的组合」——
+        // 那句话是错的,#158 三个 bot 各自独立指出。`stale` 是**闩住**的:撤销它的唯一路径是
+        // `FingerprintWatch::resetChannel`(拉到新特征 / 打洞 / 换组),而 `setCaptureEnabled`
+        // 只写一个布尔位、不碰它。于是「看到 ⚠ → 打开采集准备重采 → 还没按播放」这一拍,
+        // stale 仍为真而采集已经 ON —— 组合真机可达,而且正是 ⑧ 闭环的必经入口。
+        //
+        // 改成 false 等于把这个**唯一有争议**的组合从冒烟里永久排除掉,把缝糊在预览世界里。
+        // 保留 true,本场景就成了横幅 ⑨ 判据里 `staleTracks === 0` 那一项的真反向:
+        // 采集开着、段表也在,但 ⚠ 已经挂着 ⇒ ⑨ 必须让位,只留 ⑧。
+    }
+    if (opts.scenario === "captured-unanalyzed" && outputSnapshot) {
+        // [J152] 覆盖沿用 fifteen-tracks 的画像(buildWorld 返回处按 fixture 给),只清段表、停走带。
+        // 采集开关按 [J91] 口径是关的(采集态不随工程走,重开一律为关)。
+        outputSegments = emptySegmentsFrame(1);
+        transport = { timeS: 0, isPlaying: false };
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: false },
+        };
+    }
+
+    // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----
+    // 字段形状照 mock-data 生成器原样;claim/abi_remote 不属 §3.1 快照字段集,单独给。
+    if (opts.scenario === "no-output") {
+        // 灰「Output 未运行」:通道已选但本组 Output 离线;groups_online 全 0 也不报错(J70)。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 1, // 本实例占 ch1
+            },
+            // Output 离线 → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
+        });
+        inputClaim = "idle";
+        groupsOnline = 0;
+        caps.occupiedMask = 0; // 本组无其它 Input,只有本实例占 ch1
+    } else if (opts.scenario === "passthrough") {
+        // 直通副文案:Output 在线但本 channel 未被健康读取 → 等待 Output + 直通中。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                passthroughPending: false,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "idle";
+    } else if (opts.scenario === "abi-mismatch") {
+        // 红 pill「版本不匹配」+ banner.abiMismatch(两端 abi 数字)+ 直通副文案照常。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "abiMismatch";
+        inputAbiRemote = 2; // 对端 Output abi(本机 = LOCAL_ABI = 1)
+    } else if (opts.scenario === "sr-mismatch") {
+        // 红 pill「采样率不一致」+ 直通副文案照常。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "srMismatch";
+        errors.input.push(
+            makeError("srMismatch", {
+                ch: 1,
+                detail: { inputSr: 44100, outputSr: 48000 },
+            }),
+        );
+    } else if (opts.scenario === "group-mismatch") {
+        // 本组(B)无 Output 但异组(A)在线 → pill「等待 Output · 组 B」+ group.noOutput。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 2, // 非默认组 B
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 1, // 本实例占 ch1
+            },
+            // 本组无 Output → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
+        });
+        inputClaim = "idle";
+        groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output
+        caps.occupiedMask = 0; // 本组(B)无其它 Input
+    } else if (opts.scenario === "claim-unavailable") {
+        // [SL-463 / J156] 开箱已接管 ch2(组 A);之后点别的卡 / 切组,建段都失败 ⇒ 回执
+        // {ok:false, reason:"unavailable"}。本组没有别的 Input(不让冲突先截走这次点击)。
+        const connected = connectedInputSnapshot(2);
+        inputSnapshot = {
+            ...connected,
+            conn: { ...connected.conn, occupiedMask: 1 << 1 }, // 只有本实例占 ch2
+        };
+        inputClaim = "active";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "unavailable";
+    } else if (opts.scenario === "claim-abi-mismatch") {
+        // [SL-463 / J156] 开箱未分配;本组 registry 由另一 abi 的 SCVB 建 ⇒ 第一次点卡回执
+        // {ok:false, reason:"abiMismatch"},claim 随之变 abiMismatch(红 pill + 横幅)。
+        // 开箱的 claim 还是 unassigned:真桥在打开 registry 之前探测不到对端 abi。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 0,
+            group_id: 1,
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 0,
+            },
+            config: { config_seq: 42 },
+        });
+        inputClaim = "unassigned";
+        caps.occupiedMask = 0;
+        caps.claimFailure = "abiMismatch";
+    }
+
+    // ---- Input 首启链的开箱位([J80] T48)---------------------------------------
+    // 与 Output 侧 first-run / first-run-tour 同款处置:**只有** input-first-run 场景
+    // 把两级 guide_seen 摆成 false(语言卡 + mini tour 开箱即弹);其余场景一律按「已看过」
+    // 渲染 —— 否则每个 Input 预览档一开就被语言卡挡住,七态一个都验不了。
+    if (inputSnapshot) {
+        const inputFirstRun = opts.scenario === "input-first-run";
+        inputSnapshot = {
+            ...inputSnapshot,
+            ui: { ...inputSnapshot.ui, guide_seen: !inputFirstRun },
+            guide_seen_global: !inputFirstRun,
+        };
+    }
+
+    // ---- 查询参数覆写 ----------------------------------------------------------
+    // [SL-354→SL-357] `scenario=slow-state-echo` 保留为**显式写法**(既有套子用着、
+    // 读 URL 就知道这一套在测时序),但它现在是**默认行为**,所以不需要置任何 cap ——
+    // 置一个没人读的 cap 才是上一版的毛病。
+    // [SL-357] 同步回声逃生口 —— 用法与禁忌见 caps 里 `syncStateEcho` 那段。
+    if (opts.scenario === "sync-state-echo") caps.syncStateEcho = true;
+    // [SL-357] 过期全量帧节奏可从 URL 覆写:`staleFullEvery=0`(关掉)/ `=1`(每次都插)。
+    // 判据格用 `=1` 取确定性,删除式用 `=0` 证明这一档确实是它在造。
+    if (opts.staleFullEvery !== undefined && opts.staleFullEvery !== null) {
+        const v = Number(opts.staleFullEvery);
+        if (Number.isFinite(v) && v >= 0)
+            caps.staleFullEchoEvery = Math.floor(v);
+    }
+    // [SL-354] 缺 applied 的全量帧场景(兜底闸的夹具)。
+    if (opts.scenario === "applied-echo-drop") caps.dropAppliedEcho = true;
+    if (opts.loop === "none") caps.loopAvailable = false;
+    if (opts.loop === "host") caps.loopAvailable = true;
+    // [J147] `?tempo=none` ⇒ 宿主不报速度;`?tempo=90/3/4` ⇒ 换一组。
+    if (opts.tempo === "none") caps.hostTempo = null;
+    else if (opts.tempo && typeof opts.tempo === "object")
+        caps.hostTempo = { ...opts.tempo };
+    if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
+    // [J150] `?host=`:只改 Output 快照的 `host`(§1.1 快照专属键),其余一个字节不动。
+    // 非法值在 parsePreviewQuery 已经出过警告并落成 null ⇒ 这里不再判。
+    if (outputSnapshot && HOST_VALUES.includes(opts.host)) {
+        outputSnapshot = { ...outputSnapshot, host: opts.host };
+    }
+
+    // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
+    // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
+    if (inputSnapshot && inputSnapshot.channel_id >= 1) {
+        caps.occupiedMask &= ~(1 << (inputSnapshot.channel_id - 1));
+    }
+
+    return {
+        fixture,
+        // [SL-274] 场景名随 world 一起往下走。此前只有 buildWorld 自己在用 `opts.scenario`
+        // 做初值覆写,后端拿不到 —— 而 diff-flood 要改的是**重算时怎么造 changed[]**,
+        // 那件事发生在 juce-bridge-mock 的 recompute 里,不在任何初值上。
+        scenario: opts.scenario ?? null,
+        durationS: DEMO_DURATION_S,
+        caps,
+        transport,
+        groupsOnline,
+        errors,
+        output: {
+            snapshot: outputSnapshot,
+            params: outputParams,
+            segments: outputSegments,
+            coverage: demoCoverage(fixture),
+        },
+        input: {
+            snapshot: inputSnapshot,
+            claim: inputClaim,
+            abiRemote: inputAbiRemote,
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 3. 周期事件驱动
+// -----------------------------------------------------------------------------
+
+function allChannels() {
+    return Array.from({ length: CHANNEL_COUNT }, (_, i) => i + 1);
+}
+
+/** 全轨静音的一帧 meters(未连接/停止播放:契约 §2.5 地板 -60 dB)。 */
+function floorMeters(tS) {
+    const floor = { db: METER_FLOOR_DB, peakDb: METER_FLOOR_DB };
+    return makeMeters(tS, {
+        tracks: allChannels().map(() => ({ ...floor })),
+        bus: { l: { ...floor }, r: { ...floor } },
+    });
+}
+
+function makeDriver(ctl, world) {
+    const timers = [];
+    const frameLoops = [];
+    let running = false;
+    let autoReqId = null;
+    let tS = world.transport.timeS;
+
+    /**
+     * 30Hz 档专用的帧循环。
+     * **为什么不用 `setInterval(33)`**:Windows 的默认定时器分辨率是 ~15.6ms,
+     * `setInterval(33)` 会被向上取整到 ~46ms —— 实测(node 22 / Win11)只有 21.4Hz,
+     * 契约 §2.5/§2.6 的 30Hz 直接不达标。浏览器前台页面有 rAF(通常 60Hz vsync),
+     * 用「rAF + 时间累加器」既能稳稳落在 30Hz,又能在标签页隐藏时自动停(省电,
+     * 且隐藏期间本来也没人看电平)。node 无 rAF 时回落 setInterval,精度受平台限制。
+     */
+    function startFrameLoop(periodMs, fn) {
+        if (typeof requestAnimationFrame === "function") {
+            let last = 0;
+            let handle = 0;
+            let alive = true;
+            const step = (now) => {
+                if (!alive) return;
+                handle = requestAnimationFrame(step);
+                if (now - last < periodMs) return;
+                last = now;
+                fn();
+            };
+            handle = requestAnimationFrame(step);
+            frameLoops.push(() => {
+                alive = false;
+                if (typeof cancelAnimationFrame === "function") {
+                    cancelAnimationFrame(handle);
+                }
+            });
+            return;
+        }
+        const id = setInterval(fn, periodMs);
+        timers.push(id);
+    }
+
+    function everyOutput() {
+        // 30Hz:走带 + meters + playhead
+        startFrameLoop(PERIOD.frame30Hz, () => {
+            const playing = ctl.model.transport.isPlaying;
+            if (playing) {
+                tS += PERIOD.frame30Hz / 1000;
+                if (tS >= world.durationS) tS -= world.durationS;
+            }
+            ctl.setTransport({ timeS: tS, isPlaying: playing });
+            const connected = ctl.connectedChannels();
+            ctl.emit(
+                "scvb.meters",
+                playing && connected.length > 0
+                    ? makeMeters(tS)
+                    : floorMeters(tS),
+            );
+            ctl.emit(
+                "scvb.playhead",
+                makePlayhead(tS, {
+                    isPlaying: playing,
+                    ...ctl.playheadOverrides(tS),
+                }),
+            );
+        });
+
+        // 25Hz:params —— 只有 PRINT 态的引擎打印头会动值,且**值未变不发**(§0.4/§0.5)
+        timers.push(
+            setInterval(() => {
+                const diff = ctl.printedParamsDiff();
+                if (diff) ctl.emit("scvb.params", diff);
+            }, PERIOD.params25Hz),
+        );
+
+        // ~4Hz:conn(diff-then-emit)
+        timers.push(
+            setInterval(() => {
+                ctl.emitIfChanged("scvb.conn", ctl.connPayload());
+            }, PERIOD.conn4Hz),
+        );
+
+        // 播放中 2Hz:captureProgress 周期帧(非播放不发;本帧无新增覆盖的轨不进 channels)。
+        // [J152] 的两个全量例外帧不在这里:首帧见 firstFrames,清除后见 mock 的 clearCoverage。
+        timers.push(
+            setInterval(() => {
+                const s = ctl.model;
+                if (!s.transport.isPlaying) return;
+                if (!s.snapshot.global.capture_enabled) return;
+                const connected = ctl.connectedChannels();
+                if (connected.length === 0) return;
+                const frame = makeCaptureProgress(tS, connected);
+                if (frame.channels.length === 0) return;
+                ctl.emit("scvb.captureProgress", frame);
+            }, PERIOD.capture2Hz),
+        );
+
+        // 1Hz:groups(变化才发)
+        timers.push(
+            setInterval(() => {
+                ctl.emitIfChanged("scvb.groups", ctl.groupsPayload());
+            }, PERIOD.groups1Hz),
+        );
+    }
+
+    function everyInput() {
+        // ~4Hz:conn + config(config 契约写 25Hz 轮询、节流到变化才发,
+        // mock 侧以 4Hz 轮询做同一件事 —— 变化才发的行为等价,少烧 21 次/秒空转)
+        timers.push(
+            setInterval(() => {
+                ctl.emitIfChanged("scvb.conn", ctl.connPayload());
+                ctl.emitIfChanged("scvb.config", ctl.configPayload());
+            }, PERIOD.conn4Hz),
+        );
+        timers.push(
+            setInterval(() => {
+                ctl.emitIfChanged("scvb.groups", ctl.groupsPayload());
+            }, PERIOD.groups1Hz),
+        );
+    }
+
+    /**
+     * §0.4 第 3 条:mBridgeReady 后状态类各必发一次;条件类只在条件成立时发;
+     * 采集类([J152] 例外①)不看走带补发一次 15 轨全量 —— 顺序与 native `emitTick` 首拍一致
+     * (playhead 之后、segments 之前)。
+     */
+    function firstFrames() {
+        ctl.emit("scvb.state", ctl.fullStatePayload());
+        if (ctl.role === "output") {
+            ctl.emitIfChanged("scvb.params", ctl.paramsFullPayload());
+            ctl.emitIfChanged("scvb.conn", ctl.connPayload());
+            ctl.emitIfChanged("scvb.groups", ctl.groupsPayload());
+            ctl.emit("scvb.meters", floorMeters(tS));
+            ctl.emit(
+                "scvb.playhead",
+                makePlayhead(tS, {
+                    isPlaying: ctl.model.transport.isPlaying,
+                    ...ctl.playheadOverrides(tS),
+                }),
+            );
+            ctl.emit("scvb.captureProgress", ctl.fullCaptureProgressPayload());
+            ctl.emit(
+                "scvb.segments",
+                ctl.segmentsPayload("snapshot", allChannels()),
+            );
+        } else {
+            ctl.emitIfChanged("scvb.conn", ctl.connPayload());
+            ctl.emitIfChanged("scvb.config", ctl.configPayload());
+            ctl.emitIfChanged("scvb.groups", ctl.groupsPayload());
+        }
+        for (const err of ctl.pendingErrors()) ctl.emit("scvb.error", err);
+    }
+
+    return {
+        get timeS() {
+            return tS;
+        },
+        start(backend) {
+            if (running) return;
+            running = true;
+            ctl.onReady(firstFrames);
+            if (ctl.role === "output") everyOutput();
+            else everyInput();
+            // 兜底代调 requestInitialState()(见常量处注释)
+            autoReqId = setTimeout(() => {
+                autoReqId = null;
+                if (ctl.isReady()) return;
+                console.info(
+                    "SCVB web-preview:页面未调用 requestInitialState()" +
+                        "(T27b 灰模把它留成注释桩,属正常),driver 代调一次以开启事件流。",
+                );
+                backend.requestInitialState();
+            }, AUTO_REQUEST_INITIAL_STATE_MS);
+        },
+        stop() {
+            running = false;
+            for (const cancel of frameLoops) cancel();
+            frameLoops.length = 0;
+            for (const id of timers) clearInterval(id);
+            timers.length = 0;
+            if (autoReqId !== null) clearTimeout(autoReqId);
+            autoReqId = null;
+            ctl.dispose();
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 4. 对外入口
+// -----------------------------------------------------------------------------
+
+/** 壳页没显式给 role 时的兜底嗅探(顺序:URL ?role= → <html data-scvb-role> → 文件名)。 */
+function sniffRole(parsed) {
+    if (parsed.role === "output" || parsed.role === "input") return parsed.role;
+    if (typeof document !== "undefined" && document.documentElement) {
+        const attr = document.documentElement.getAttribute("data-scvb-role");
+        if (attr === "output" || attr === "input") return attr;
+    }
+    if (typeof location !== "undefined" && /input/i.test(location.pathname)) {
+        return "input";
+    }
+    return "output";
+}
+
+/**
+ * 造一次预览会话 —— **壳页的唯一入口**。
+ *
+ * @param {{role?:"output"|"input", params?:string|URLSearchParams|object,
+ *          fixture?:string, loop?:"host"|"none", play?:boolean}} opts
+ * @returns {{mock:object, ctl:object, world:object, start:Function, stop:Function,
+ *            info:{role:string, fixture:string, scenario:string|null,
+ *                  loop:"host"|"none", warnings:string[]}}}
+ *   `mock` = 直接挂到目标窗口的 `window.__SCVB_MOCK__`(= createBridge 的 mockBackend)。
+ */
+export function createPreviewSession(opts = {}) {
+    const parsed = parsePreviewQuery(
+        opts.params !== undefined
+            ? opts.params
+            : typeof location !== "undefined"
+              ? location.search
+              : "",
+    );
+    const role =
+        opts.role === "output" || opts.role === "input"
+            ? opts.role
+            : sniffRole(parsed);
+
+    const warnings = parsed.warnings.slice();
+    let fixture = parsed.fixture;
+    if (opts.fixture) {
+        if (FIXTURES.includes(opts.fixture)) fixture = opts.fixture;
+        else warnings.push(`fixture ${opts.fixture} 不存在,已回落 ${fixture}`);
+    }
+    const loop = opts.loop ?? parsed.loop;
+    const play = typeof opts.play === "boolean" ? opts.play : parsed.play;
+
+    const world = buildWorld({
+        role,
+        fixture,
+        loop,
+        play,
+        scenario: parsed.scenario,
+        // [SL-357] ⚠ 这一行是**接线**,不是装饰:`buildWorld` 只读它收到的字段,
+        // 上一版在 caps 里写了覆写逻辑却没往下传,那段代码一次都没执行过 ——
+        // 加参数时**同一个 commit 里就要有一格跑在非默认值上**,否则看不出没接上。
+        staleFullEvery: parsed.staleFullEvery,
+        // [J147] 同上一行的纪律:加了参数就要真往下传(页面级 smoke-range-bars-page 跑在
+        // `?tempo=none` 上,这一行断了那一格会红)。
+        tempo: parsed.tempo,
+        // [J150] 同上一条的接线纪律:`?host=` 只有经这一行才到得了 buildWorld。
+        // 非默认值那一格 = smoke-host-hints.mjs 的 mock 段(host=reaper 必须落进快照)。
+        host: parsed.host,
+    });
+    const { backend, ctl } = createMockBackend({ role, world });
+    const driver = makeDriver(ctl, world);
+
+    for (const w of warnings) console.warn(`SCVB web-preview:${w}`);
+
+    return {
+        mock: backend,
+        ctl,
+        world,
+        info: {
+            role,
+            fixture,
+            scenario: parsed.scenario,
+            // "host" = 宿主提供循环区(常态)/ "none" = 不提供(`?loop=none` 或 empty 空态)。
+            // 两个值都在壳页工具条的白名单里(shell.js `LOOP_VALUES`),不会显示成 unknown。
+            loop: world.caps.loopAvailable ? "host" : "none",
+            warnings,
+        },
+        start: () => driver.start(backend),
+        stop: () => driver.stop(),
+    };
+}
+
+/**
+ * 便捷版:造会话 + 挂 `window.__SCVB_MOCK__` + 起周期事件。
+ * 同源 iframe 场景传 `targetWindow`(真源页面所在的那个 window)。
+ */
+export function installMock(opts = {}) {
+    const session = createPreviewSession(opts);
+    const win =
+        opts.targetWindow || (typeof window !== "undefined" ? window : null);
+    if (!win) {
+        throw new Error(
+            "installMock:没有可挂载的 window(node 环境请直接用 createPreviewSession)",
+        );
+    }
+    win.__SCVB_MOCK__ = session.mock;
+    session.start();
+    return session;
+}

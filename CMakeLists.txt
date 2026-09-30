@@ -5,7 +5,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-project(SCVB VERSION 0.1.0)
+project(SCVB VERSION 0.9.0)
 
 # ------------------------------------------------------------------
 # JUCE 8 本地检出(版本单一真源 = 仓库根 .juce-version)
@@ -58,14 +58,27 @@ endif()
 # ------------------------------------------------------------------
 option(SCVB_BUILD_TESTS "Build Catch2 unit tests (scvb_tests)" ON)
 option(SCVB_BUILD_IPC_TESTS "Build L1 IPC contract tests (scvb_ipc_tests, Windows only)" ON)
+option(SCVB_BUILD_TOOLS "Build validation console tools (tests/tools: scvb_nulltest)" ON)
+option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libebur128 (needs network)" OFF)
 
 # ------------------------------------------------------------------
-# 目标(ADR-001/012:scvb_core + 两个插件 + 测试)
+# 目标(ADR-001/012:scvb_core + 三个插件 + 测试;第三主目标 SCVBMonitor 由 [J75] 授权)
 # ------------------------------------------------------------------
 include(CTest)               # enable_testing() 于顶层,让根 CTestTestfile.cmake 生成并 subdirs() 进 tests/
+# web/ 的 UI 资源 -> BinaryData:resource provider 的唯一供给面,缺了就是空白窗口 + 看门狗超时
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScvbWebAssets.cmake)
 add_subdirectory(src/core)     # scvb_core
+# T26:两插件共用的 WebView2 装配层(WebViewHost/PlatformWebView/ResourceProvider/FallbackPanel/BridgeBase)
+add_subdirectory(src/plugin-common)  # scvb_plugin_common(INTERFACE,源编入各插件)
+# T01:src/input + src/output 正式插件(T06 的 PR 恢复;S1 spike 核心已移植回 src/core/ipc/)
 add_subdirectory(src/input)    # SCVBInput
 add_subdirectory(src/output)   # SCVBOutput
+# T45 [J75]:第三主目标 —— 只读监视器(0 自动化参数 / 音频直通 / 只读 attach viz 段)
+add_subdirectory(src/monitor)  # SCVBMonitor
+
 if(SCVB_BUILD_TESTS)
   add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests
+endif()
+if(SCVB_BUILD_TOOLS)
+  add_subdirectory(tests/tools) # scvb_nulltest + scvb_diag(10-validation §4.2)
 endif()

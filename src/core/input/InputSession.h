@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// InputSession —— Input 实例的 IPC 会话(claim/接管/心跳/段创建/改组/健康判定,01 §4.1)。
+// JUCE-free,可离线单测(用 SegmentBackendInProcess 模拟多实例;跨进程真实行为归 T07b)。
+//
+// channel_id==0 → I6 UNASSIGNED:不 claim、不创建 audio.chN/feat.chN、不发心跳(01 §4 I5/I6;
+// 03 §7.2)。这正是 [J01] 要消除的「十五个 Input 齐插连环 CAS 冲突」场景的兜底。
+// 健康判定(ipc v1 [J12 联动])= 本实例 I4 ACTIVE ∧ 本组 OutputSlot 心跳新鲜(2000ms 口径)
+//   ∧ connected_mask 含本 channel。改组(J66)= 释放旧组 slot → Unmap 旧组段 → 新组重走 claim。
+//
+// 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调,01 §3.1 R1)。
+//
+// 音频线程同步模型(PR#51 红旗修复,T16 Snapshot 同款):
+//   音频线程每 block 调 acquireBlock() —— acquire-load 一次不可变绑定快照(AudioRing/FeatRing 的
+//   atomic<const Binding*>)+ 取 registry/audio/feat 三段 SegmentHandle 租约(引用计数,持有期内
+//   [M] release() 不解映射),整 block 复用同一份视图;旧绑定由 AudioRing/FeatRing 内部 owned_ 保活
+//   (进程寿命),绑定内裸指针指向的段由租约保证块内有效。音频线程绝不直接触碰 registry_/audioHandle_/
+//   featHandle_ 的可变成员,也不读 claimedChannel_(经块视图 channel 快照)。
+
+#include <atomic>
+#include <cstdint>
+#include <vector>
+
+#include "ipc/AudioRing.h"
+#include "ipc/FeatRing.h"
+#include "ipc/ISegmentBackend.h"
+#include "ipc/Registry.h"
+
+namespace scvb::input
+{
+
+// [J66] group_id 默认 1(UI 显示 A)。
+inline constexpr u32 kInputDefaultGroup = 1;
+
+// Input 实例的 IPC 状态(01 §4.1 状态机)。
+enum class InputClaimState
+{
+    kUnassigned, // I6:不 claim/不建段/不发心跳;⚠ 不蕴含配置号为 0(release() 之后配置号原样留着)
+    kActive, // I4:claim 成功
+    kConflict, // I2:被活跃实例占用(不满足接管双条件)
+    kAbiMismatch, // I1:registry abi 不符(拒连,J40)
+    kUnavailable // I0:注册表或段不可用、未持有 slot;赋值点全在 openAndClaim(),分支以那里为准
+};
+
+// 音频线程每 block acquire 一次的不可变视图:绑定快照 + 段租约(持有期内段不解映射)。
+struct InputSessionBlockView
+{
+    const AudioRingBinding* audio = nullptr; // 音频环绑定(可为 null → 不写环)
+    u32 channel = 0; // claimed channel 快照(0 = 未绑定)
+    InputSlot* registrySlot = nullptr; // 经 registryLease 基址 + 冻结偏移快照(PR#51 第3轮红旗)
+    // [SL-254] 同一条租约下的 OutputSlot(只读):非实时下 [A] 逐块读 connected_mask 判静音。
+    const OutputSlot* outputSlot = nullptr;
+    SegmentHandle::Lease registryLease; // registry 段租约
+    SegmentHandle::Lease audioLease; // audio 段租约
+    SegmentHandle::Lease featLease; // feat 段租约
+};
+
+// T30 桥 scvb.conn 六字段快照([M] 采集;契约 §4.2)。IPC 可推的四字段由 connSnapshot 填,
+// passthrough/passthroughPending 由输出级仲裁方(InputProcessor 的 StageSwitchStateMachine)回填。
+struct InputConnSnapshot
+{
+    bool outputOnline = false; // 本组 OutputSlot 活跃且心跳 ≤2000ms(J66 本组语义)
+    bool maskBit = false; // 本组 connected_mask 中本 channel 位
+    bool capturing = false; // 本实例 InputSlot.flags bit0
+    bool passthrough = true; // 当前音频路径:true=直通,false=静音转发(已接管)
+    bool passthroughPending = false; // 「静音→直通」5s 滞回窗口内(J32)
+    std::uint16_t occupiedMask = 0; // 本组 15 个 InputSlot 心跳新鲜占用位图(bit0=ch1;含本实例)
+};
+
+class InputSession
+{
+public:
+    InputSession(ISegmentBackend& backend, u32 pid);
+    ~InputSession();
+
+    InputSession(const InputSession&) = delete;
+    InputSession& operator=(const InputSession&) = delete;
+
+    void setChannelId(u32 ch) noexcept { channelId_ = (ch <= kMaxChannels) ? ch : 0; }
+    u32 channelId() const noexcept { return channelId_; }
+    void setGroupId(u32 g) noexcept { groupId_ = (g >= 1 && g <= kMaxGroups) ? g : kInputDefaultGroup; }
+    u32 groupId() const noexcept { return groupId_; }
+    u32 pid() const noexcept { return pid_; }
+
+    // prepare(消息线程/生命周期回调,持 lifecycleMutex):依 channel_id/group_id 走 claim 或 I6。
+    // channels=1|2([J57],由宿主布局判定)。返回 claim 态。
+    // 已 active 且同 channel+group → 仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
+    // ⚠ [SL-19 复发] 换 channel 时若新槽 CAS 失败,会**补偿式回滚**:尝试把刚释放的旧槽抢回来,
+    // 让会话继续在旧 channel 上正常工作(`boundChannel()` 与 `state()` 都会显示"仍然活跃在旧
+    // channel",不是"未分配")——但**返回值仍报这次请求本身的失败原因**(调用方仍应据此提示
+    // 冲突)。回滚不是保证:它本身也是一次 CAS,竞态窗口内仍可能失败;失败时 `state_` 如实退化
+    // 成 `openAndClaim()` 报出的那个具体失败码(`kConflict`/`kAbiMismatch`/`kUnavailable`,不是
+    // 恒为 `kUnassigned`——只有真正"没有 channel 可配"才是这个码,复审 4057653400 指出这里
+    // 原先写错)。这条**只覆盖"纯换 channel、组不变"**——组同时也变时不补偿,按原样处理
+    // (改组走 `changeGroup()` 那条独立路径,行为由它自己的测试钉着,未受影响)。
+    // ⚠ [SL-446 第 2 轮补充] 回滚**不是无损还原**:重新抢回旧槽走的还是 `openAndClaim()`,
+    // `createSegments()` 里 `allowOverwrite=true` ⇒ `write_head_samples` 清零、`epoch.fetch_add(1)`
+    // ——下游(01 §4.1)据 epoch 变化判定"这是一份新数据、旧代数据作废",回滚成功那一刻会有一次
+    // 可观测的 epoch 跳变,不是"什么都没发生过"。复审 4057661696。
+    // 返回值到桥面回执的映射(冲突 / abi 不符 / 段不可用各有失败形状,契约 §3.2/§3.3,[SL-463] J156)
+    // 见 src/input/InputBridgeLogic.h 的 claimRequestResponse()。
+    InputClaimState prepare(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
+
+    // [M] 4Hz 心跳(kActive 才写)。
+    void heartbeat(u64 nowMs);
+
+    // [M] muted 确认位(C19,J32):静音 ramp 完成置位、切直通前清位(fetch_or/fetch_and,[J48])。
+    void setMuted(bool muted);
+
+    // [A] capturing 位(C17):采集门控,一律 fetch_or/fetch_and([J48],禁 load-modify-store)。
+    // slot 来自 acquireBlock() 的块视图快照(经 registry 租约基址 + 冻结偏移寻址,音频线程
+    // 绝不裸读 registry_ 可变 header_,PR#51 第3轮红旗);调用方须持块视图租约(段保活)。
+    void setCapturing(InputSlot* slot, bool capturing);
+
+    // [M] 25Hz 健康判定([J12]):见文件头。claim 未就绪/OutputSlot 空 → false(直通)。
+    bool isHealthy(u64 nowMs) const;
+
+    // [M] Output 在场判定([J12] 的「无 Output」那一半):state 活 ∧ 心跳新鲜。
+    // isHealthy 与 connSnapshot 都以它为前提,单一真源 —— 两处各写一遍正是 SL-254 复审红旗
+    // 的成因(非实时逐块路径漏掉了它)。心跳新鲜度需要时钟,故只能在 [M] 求值。
+    bool outputOnline(u64 nowMs) const;
+
+    // [M] **只在正面观测到「自称活着但心跳已死」时为真**(Output 崩了却没走释放路径)。
+    // 语义刻意是「已确认死」而不是「尚未确认活」—— 非实时逐块路径拿它当**否决位**:
+    // 默认 false ⇒ Output 一置 mask,Input 当块就能静音,不会因为 [M] 还没跑而晚静音
+    // (晚静音 = Output 已注入而 Input 还直通 = 本卡明令要防的**双路叠加**;用「在场位」
+    // 做前提时实测就是这样红的:注入@304 而静音@320)。
+    // 「Output 优雅退场」不归它管:那条 state 会变 kSlotFree,由音频线程**逐块**读 state 判。
+    bool outputClaimedButStale(u64 nowMs) const;
+
+    // [M] 25Hz 延迟释放回收([M] 心跳/轮询周期调用):registry + audio/feat 段句柄。
+    void reap(u64 nowMs);
+    std::size_t pendingReleaseCount() const { return registry_.pendingReleaseCount() + pendingSegments_.size(); }
+
+    // 改组(J66):释放旧组 slot → Unmap 旧组段 → 新组 registry 重走 claim。返回新组 claim 态;
+    // 期间输出走直通档(由调用方经 StageSwitchStateMachine::forcePassthrough 保证)。
+    InputClaimState changeGroup(u32 newGroup, u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
+
+    // 释放(析构/releaseResources,消息线程):释放 slot + Unmap 段。registry 段保持映射(进程寿命内复用)。
+    void release(u64 nowMs);
+
+    // 音频线程每 block 调用:acquire 绑定快照 + 取段租约(见文件头同步模型)。
+    InputSessionBlockView acquireBlock() const;
+
+    // 音频线程访问(仅 active 后非空/非绑定)。
+    AudioRing& audioRing() noexcept { return audioRing_; }
+    FeatRing& featRing() noexcept { return featRing_; }
+    u32 boundChannel() const noexcept { return claimedChannel_.load(std::memory_order_acquire); }
+    InputClaimState state() const noexcept { return state_; }
+
+    // --- T30 桥只读快照入口([M],持 lifecycleMutex;只读共享内存原子,绝不触碰音频线程成员)---
+    u32 localAbi() const noexcept { return kScvbAbi; } // 本机 SCVB abi(= RegistryHeader.abi 同源)
+    u32 remoteAbi() const noexcept { return registry_.remoteAbi(); } // abi 不符时探测到的对端 abi
+    u32 configSeq() const { return registry_.configSeq(); } // 本组 OutputSlot.config_seq(§4.3 变化检测)
+    InputConnSnapshot connSnapshot(u64 nowMs) const; // §4.2 的 IPC 四字段 + occupiedMask
+    // [J150] 本实例**实际持有**的那个 slot 此刻的 InputSlot.heartbeat_ms(ctrl 段轨道名区的归属判据,
+    // 见 CtrlPlane.h 的 CtrlTrackName)。未持有 slot / registry 未映射 → 0。
+    u64 ownSlotHeartbeatMs() const;
+    std::uint8_t groupsOnline(u64 nowMs) const; // 本组位(OutputSlot 心跳)+ 跨组只读探测(01 §4.5/J70)
+
+private:
+    bool openAndClaim(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
+    bool createSegments(u32 sampleRate, u32 channels);
+    void rebuildAudioGeometry(u32 sampleRate, u32 channels);
+    void releaseSegments();
+    void releaseHandle(SegmentHandle& handle);
+    void releaseSlot();
+
+    ISegmentBackend& backend_;
+    u32 pid_;
+    u32 channelId_ = 0;
+    u32 groupId_ = kInputDefaultGroup;
+    std::atomic<u32> claimedChannel_{0}; // [M] 写 / [A] 经块视图 acquire-load
+    InputClaimState state_ = InputClaimState::kUnassigned;
+
+    // 上次 prepare 的几何(用于判断 re-prepare 是否真发生 SR/布局变化)。
+    u32 lastSampleRate_ = 0;
+    u32 lastChannels_ = 0;
+
+    Registry registry_;
+    AudioRing audioRing_;
+    FeatRing featRing_;
+    SegmentHandle audioHandle_;
+    SegmentHandle featHandle_;
+    std::vector<SegmentHandle> pendingSegments_; // 延迟释放(租约在途/宽限期未满)的段句柄,[M] reap 回收
+};
+
+} // namespace scvb::input

@@ -3,17 +3,25 @@ name: Review Dispatch
 # 维护者在 PR 上评论 `/review` → 显式触发一次 AI 审查(12 §6.2 方案 D)。
 # 这是 fork PR 唯一的 AI 审查通道:claude-review.yml 的 same-repo 条件(J31)让 fork PR 不跑 bot,
 # 而 [J20] 永久禁用向 fork PR 供密的事件触发,所以只能由维护者显式发起。
+#
+# [SL-517] 本 job 带着 secrets 跑,所以全程不签出 PR 的代码:工作区是 PR 的目标分支(本仓分支,
+# 只有维护者能写),PR 的改动只以 `gh pr diff` 的文本交给模型当数据读。
+# 注意:issue_comment 事件用的永远是默认分支上的这份文件,改这里要合到默认分支才生效。
 on:
   issue_comment:
     types: [created]
 
+# 只有「会真的跑审查」的评论共用一个组;其它评论(bot 回帖、普通讨论)每条各占一个组。
+# 若所有评论共用一个组,审查跑着的时候 PR 上任何一条新评论都会把它取消 ——
+# 被 if 跳过的 run 一样占组、一样触发 cancel-in-progress。
 concurrency:
-  group: review-dispatch-${{ github.event.issue.number }}
+  group: review-dispatch-${{ github.event.issue.number }}-${{ (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) && 'review' || github.event.comment.id }}
   cancel-in-progress: true
 
 permissions:
-  contents: read # 仅够 checkout
-  pull-requests: write # 回帖审查结论
+  contents: read # 仅够 checkout 目标分支
+  pull-requests: write # inline comment
+  issues: write # gh pr comment 走 issue comments 接口;与 claude-review.yml 同配
   # 其余一律 none —— 不给 actions/packages/id-token
 
 jobs:
@@ -24,6 +32,7 @@ jobs:
     #   3. 评论者必须是维护者身份:OWNER / MEMBER / COLLABORATOR
     #      **显式排除 CONTRIBUTOR** —— 它表示「曾有提交被合入」,fork PR 的作者第二次提 PR 时就是 CONTRIBUTOR,
     #      放行等于把这条通道交给外部人自助触发
+    # 上面 concurrency 的组名里抄了同一组条件,改这里要一起改。
     if: >
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/review') &&
@@ -31,35 +40,137 @@ jobs:
     runs-on: ubuntu-latest # V-4 确认前一律 latest(§4.2 口径注)
     timeout-minutes: 20
     steps:
+      # 回帖的 id 留给后面「核对有没有发出审查总结」那一步:只数这条之后的评论。
       - name: Ack
-        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-        run: gh pr comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" --body "已收到 /review,开始审查。"
-
-      # 先 checkout 基仓的 workflow 定义(不是 PR 代码)——后续步骤用的是这一份
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.x.y —— 必须 pin SHA(§8.4)
-        with: { persist-credentials: false }
-
-      # 供密前的硬断言:PR 的 diff 一旦触及 .github/workflows/,立即中止。
-      # 没有这一步,外部 PR 可以改掉 workflow 本身,在维护者敲 /review 的那一刻拿到 secrets。
-      - name: Assert PR does not touch workflows
-        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        id: ack
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
         run: |
-          files=$(gh pr diff "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" --name-only)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="已收到 /review,开始审查。" -q .id)
+          case "$id" in '' | *[!0-9]*) echo "::error::unexpected ack comment id: '$id'"; exit 1 ;; esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      # PR 的 diff 一旦触及 .github/workflows/,立即中止,改由维护者本地人工审。
+      # 本 job 不签出 PR 代码,PR 里改过的 workflow 在这里不会被执行;这一步是纵深防御:
+      # 改 workflow 的 PR 不该只凭一次 AI 审查放行。
+      # 回帖成功后留一个标记文件,末尾的「失败回帖」见到它就不再重复回一条。
+      - name: Assert PR does not touch workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          files=$(gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only)
           echo "$files"
           if echo "$files" | grep -qE '^\.github/workflows/'; then
-            gh pr comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
-              --body "该 PR 修改了 .github/workflows/,按安全策略不能通过 /review 审查;请维护者本地拉分支人工审。"
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+              --body "该 PR 修改了 .github/workflows/,按安全策略不能通过 /review 审查;请维护者本地拉分支人工审。" &&
+              touch "$RUNNER_TEMP/review-dispatch-reported"
             exit 1
           fi
 
-      - name: Checkout PR head
-        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-        run: gh pr checkout "${{ github.event.issue.number }}"
+      # 取 PR 的目标分支名,下一步签出它(不是 PR head)。baseRefName 一定是本仓的分支。
+      - name: Resolve PR base branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          base=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json baseRefName -q .baseRefName)
+          [ -n "$base" ] || { echo "::error::cannot resolve base branch of PR #$PR"; exit 1; }
+          echo "base=$base" >> "$GITHUB_OUTPUT"
 
-      # prompt 与 allowedTools 与 §3.4 claude-review.yml 完全共用同一份(唯一真源 = §3.4),
-      # 末尾必带 §3.4 的「不可信数据声明」防注入结尾(§8.4 第五条)。
-      - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.pr.outputs.base }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # prompt 与 claude_args(--model / --allowedTools)的唯一真源是 claude-review.yml:
+      # 这里从刚签出的目标分支上那份文件里原样取出,不另抄一份。
+      # 取不到、或取到的内容缺下面任何一项断言,一律判红,不带着残缺的 prompt 去跑。
+      - name: Load prompt and claude_args from claude-review.yml
+        id: cfg
+        env:
+          PR: ${{ github.event.issue.number }}
+          BASE: ${{ steps.pr.outputs.base }}
+        run: |
+          set -euo pipefail
+          src=.github/workflows/claude-review.yml
+          command -v yq >/dev/null || { echo "::error::yq not found on runner"; exit 1; }
+          sel='.jobs["claude-pr-review"].steps[] | select(.uses != null and (.uses | test("^anthropics/claude-code-action@")))'
+          n=$(yq "[${sel}] | length" "$src")
+          [ "$n" = "1" ] || { echo "::error::expected exactly 1 claude-code-action step in $src, got $n"; exit 1; }
+          prompt=$(yq "${sel} | .with.prompt" "$src")
+          args=$(yq "${sel} | .with.claude_args" "$src")
+          # claude-review.yml 的 prompt 里只有 REPO 与 PR NUMBER 两处表达式,换成本次的值。
+          # 表达式的开头三个字符拼出来写:原样写进 run 块会被 Actions 当成表达式先求值掉。
+          o='$''{{'
+          prompt=${prompt//"$o github.repository }}"/$GITHUB_REPOSITORY}
+          prompt=${prompt//"$o github.event.pull_request.number }}"/$PR}
+          fail=0
+          case "$prompt" in *"$o"*) echo "::error::unresolved expression left in prompt"; fail=1 ;; esac
+          case "$prompt" in *"PR NUMBER: $PR"*) ;; *) echo "::error::prompt lacks 'PR NUMBER: $PR'"; fail=1 ;; esac
+          case "$prompt" in *'不可信数据声明'*) ;; *) echo "::error::prompt lacks the untrusted-data section"; fail=1 ;; esac
+          case "$args" in *'--model '*) ;; *) echo "::error::claude_args lacks --model"; fail=1 ;; esac
+          case "$args" in *'--allowedTools '*) ;; *) echo "::error::claude_args lacks --allowedTools"; fail=1 ;; esac
+          [ "$fail" = 0 ] || exit 1
+          pre="## 本次运行的前提(维护者 /review 手动触发)
+          工作区签出的是 PR 的目标分支 ${BASE},不是 PR 的代码 —— 这条通道出于安全考虑不签出 PR 代码。
+          PR 的改动一律用 \`gh pr diff ${PR}\` 读;Read / Glob / Grep 读到的是目标分支上的文件(契约文档、改动前的上下文),
+          不要把工作区里的文件当成 PR 改动后的样子。
+          inline comment 的行号以 \`gh pr diff\` 里改动后那一侧的行号为准;Read 读到的是改动前的文件,行号对不上。
+          本次没有进度评论,你的最终输出不会出现在 PR 上:审查总结(含最后的结论)必须用 \`gh pr comment ${PR}\` 发一条到 PR 上。
+          下面是常规审查说明。"
+          d="EOF_$(openssl rand -hex 16)"
+          {
+            echo "prompt<<$d"; printf '%s\n\n%s\n' "$pre" "$prompt"; echo "$d"
+            echo "args<<$d"; printf '%s\n' "$args"; echo "$d"
+          } >> "$GITHUB_OUTPUT"
+          echo "claude_args:"; printf '%s\n' "$args"
+
+      # 不开 track_progress:在 issue_comment 上它会把 action 切到 tag 模式,
+      # 而 tag 模式会自己 fetch 并签出 PR head,还会追加改文件与 git commit/push 的工具,正是这里要避开的。
+      # 给了 prompt 就是 agent 模式:不切分支,工具只有 claude_args 里 --allowedTools 列出的那些。
+      # base_branch:agent 模式下 action 从这个分支恢复 .claude/、CLAUDE.md 等配置路径,不传就取默认分支,
+      # 会和上面签出的目标分支对不上(CLAUDE.md 是 prompt 要求先读的文件之一)。
+      # 这一步自己的超时比 job 的 20 分钟短:超时按这一步失败处理,job 还剩时间跑末尾的失败回帖。
+      - uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # main, Claude Code 2.1.280
+        timeout-minutes: 17
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
-          # prompt / allowedTools:逐字取 §3.4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch: ${{ steps.pr.outputs.base }}
+          prompt: ${{ steps.cfg.outputs.prompt }}
+          claude_args: ${{ steps.cfg.outputs.args }}
+
+      # 没有进度评论,模型的最终输出不会自动出现在 PR 上;模型跑完却没发总结时,
+      # PR 上只剩 Ack 那一句,看起来和「审过、没问题」一样。这里核一次:Ack 之后
+      # 至少要有一条 github-actions[bot] 的 issue 评论,且不是本 workflow 的固定回帖。
+      # 只防「一条总结都没发」:同一时间窗里别的 workflow 也以这个身份发了评论时,这一步会放行。
+      - name: Assert a review summary was posted
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          ACK_ID: ${{ steps.ack.outputs.id }}
+        run: |
+          case "$ACK_ID" in '' | *[!0-9]*) echo "::error::missing ack comment id: '$ACK_ID'"; exit 1 ;; esac
+          q='.[] | select(.user.login == "github-actions[bot]" and .id > '"$ACK_ID"')'
+          q="$q"' | select((.body | startswith("已收到 /review")) or (.body | startswith("/review 未完成")) | not) | .id'
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q "$q")
+          [ -n "$ids" ] || { echo "::error::review finished without posting a summary comment on PR #$PR"; exit 1; }
+          echo "summary comment id(s):"; echo "$ids"
+
+      # 任何一步红了(含上面审查那一步超时)或 job 被取消(包括被新的 /review 顶掉),PR 上都要有下文 ——
+      # 否则 Ack 之后再无动静,与「审过、没问题」无从区分。
+      # 「PR 改了 workflows」那一步回过帖时会留标记文件,这里见到就不再重复。
+      - name: Report failure on the PR
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ ! -e "$RUNNER_TEMP/review-dispatch-reported" ] || exit 0
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+            --body "/review 未完成:本次审查失败、超时或被取消(例如又发了一次 /review),PR 上没有审查结论不代表没有问题。日志:$RUN_URL"

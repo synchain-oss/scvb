@@ -1,0 +1,167 @@
+# SCVB IPC 段布局冻结 golden(ipc-contract-v0 v1.5 + 01 §4.4-a)。T06:逐字节冻进 abi=1;布局改动必须 abi+1 且段名 v2。
+abi 1
+magic 0x42564353
+max_channels 15
+max_groups 8
+default_ring_frames 524288
+feat_capacity_hops 131072
+budget_registry_bytes 4096
+budget_ctrl_bytes 16384
+name g1 registry SynchainSCVB.v1.g1.registry
+name g1 audio.ch1 SynchainSCVB.v1.g1.audio.ch1
+name g1 feat.ch1 SynchainSCVB.v1.g1.feat.ch1
+name g1 ctrl SynchainSCVB.v1.g1.ctrl
+name g8 registry SynchainSCVB.v1.g8.registry
+name g8 audio.ch15 SynchainSCVB.v1.g8.audio.ch15
+name g8 feat.ch15 SynchainSCVB.v1.g8.feat.ch15
+name g8 ctrl SynchainSCVB.v1.g8.ctrl
+struct RegistryHeader size 64 align 64
+field RegistryHeader.magic offset 0
+field RegistryHeader.abi offset 4
+field RegistryHeader.generation offset 8
+field RegistryHeader._pad offset 12
+field RegistryHeader._reserved offset 16
+struct InputSlot size 64 align 64
+field InputSlot.state offset 0
+field InputSlot.pid offset 4
+field InputSlot.sample_rate offset 8
+field InputSlot.max_block offset 12
+field InputSlot.heartbeat_ms offset 16
+field InputSlot.capture_write_pos offset 24
+field InputSlot.flags offset 32
+field InputSlot._pad offset 36
+struct OutputSlot size 64 align 64
+field OutputSlot.state offset 0
+field OutputSlot.pid offset 4
+field OutputSlot.heartbeat_ms offset 8
+field OutputSlot.connected_mask offset 16
+field OutputSlot.config_seq offset 20
+field OutputSlot._pad offset 24
+struct AudioRingHeader size 40 align 8
+field AudioRingHeader.magic offset 0
+field AudioRingHeader.abi offset 4
+field AudioRingHeader.sample_rate offset 8
+field AudioRingHeader.ring_frames offset 12
+field AudioRingHeader.channels offset 16
+field AudioRingHeader._pad offset 20
+field AudioRingHeader.write_head_samples offset 24
+field AudioRingHeader.epoch offset 32
+struct FeatHeader size 32 align 8
+field FeatHeader.magic offset 0
+field FeatHeader.abi offset 4
+field FeatHeader.hop_ms offset 8
+field FeatHeader.capacity_hops offset 12
+field FeatHeader.base_hop offset 16
+field FeatHeader.write_hop offset 24
+struct FeatFrame size 8 align 4
+field FeatFrame.kw_ms offset 0
+field FeatFrame.peak offset 4
+struct OutputGlobalInfo size 256 align 64
+field OutputGlobalInfo.capture_enabled offset 0
+field OutputGlobalInfo.output_sample_rate offset 4
+field OutputGlobalInfo.flags offset 8
+field OutputGlobalInfo._pad offset 12
+field OutputGlobalInfo.gap_count offset 16
+field OutputGlobalInfo.overlap_count offset 76
+field OutputGlobalInfo.epoch_summary offset 136
+struct CtrlRecord size 24 align 8
+field CtrlRecord.seq offset 0
+field CtrlRecord.channel offset 4
+field CtrlRecord.op offset 8
+field CtrlRecord.value offset 16
+struct CtrlHeader size 64 align 64
+field CtrlHeader.magic offset 0
+field CtrlHeader.abi offset 4
+field CtrlHeader.generation offset 8
+field CtrlHeader._pad offset 12
+field CtrlHeader._reserved offset 16
+struct CtrlChannelConfig size 32 align 4
+field CtrlChannelConfig.priority offset 0
+field CtrlChannelConfig.flags offset 4
+field CtrlChannelConfig.pair_id offset 8
+field CtrlChannelConfig.freeze offset 12
+field CtrlChannelConfig.source_channels offset 16
+field CtrlChannelConfig._reserved offset 20
+struct CtrlBroadcast size 2048 align 64
+field CtrlBroadcast.seq offset 0
+field CtrlBroadcast.config_seq offset 4
+field CtrlBroadcast.lead_select offset 8
+field CtrlBroadcast._pad offset 12
+field CtrlBroadcast._reserved offset 16
+field CtrlBroadcast.channels offset 64
+field CtrlBroadcast.labels offset 544
+field CtrlBroadcast._tail offset 2044
+# [J150] ctrl 段轨道名区(Input→Output,每轨一条):紧跟 CtrlBroadcast、仍在广播区预算内。不升 abi:不移动、不改写任何既有结构体(与 J81 广播区同一论证)。
+struct CtrlTrackName size 128 align 64
+field CtrlTrackName.seq offset 0
+field CtrlTrackName._pad offset 4
+field CtrlTrackName.owner_heartbeat_ms offset 8
+field CtrlTrackName.utf8 offset 16
+field CtrlTrackName._tail offset 116
+offset ctrl_track_names 2112
+struct CtrlRing size 448 align 64
+field CtrlRing.write_pos offset 0
+field CtrlRing.read_pos offset 4
+field CtrlRing.overflow_count offset 8
+field CtrlRing._pad offset 12
+field CtrlRing._reserved offset 16
+field CtrlRing.records offset 64
+# [T44/J75] viz 段(SynchainSCVB.v1.g{G}.viz):Output [M] 4Hz 只写、Monitor 只读。挂总 abi(不 +1:新增段不改任何既有段布局)。
+viz_columns 1024
+viz_coverage_words 32
+viz_pan_scale 100
+viz_pan_none -32768
+budget_viz_bytes 65536
+name g1 viz SynchainSCVB.v1.g1.viz
+name g8 viz SynchainSCVB.v1.g8.viz
+struct VizHeader size 64 align 64
+field VizHeader.magic offset 0
+field VizHeader.abi offset 4
+field VizHeader.generation offset 8
+field VizHeader.column_count offset 12
+field VizHeader.track_count offset 16
+field VizHeader.pan_scale offset 20
+field VizHeader._reserved offset 24
+struct VizFrame size 128 align 64
+field VizFrame.seq offset 0
+field VizFrame.playhead_flags offset 4
+field VizFrame.publish_ms offset 8
+field VizFrame.window_start_samples offset 16
+field VizFrame.window_span_samples offset 24
+field VizFrame.playhead_samples offset 32
+field VizFrame.loop_start_samples offset 40
+field VizFrame.loop_end_samples offset 48
+field VizFrame.sample_rate offset 56
+field VizFrame.version_active offset 60
+field VizFrame.playhead_epoch offset 64
+field VizFrame.track_online_mask offset 68
+field VizFrame.track_covered_mask offset 72
+field VizFrame.track_stereo_mask offset 76
+field VizFrame.lane_revision offset 80
+field VizFrame.track_lead_mask offset 84
+field VizFrame.global_width_plus_one offset 88
+field VizFrame._reserved offset 92
+struct VizTrackColors size 64 align 64
+field VizTrackColors.index offset 0
+field VizTrackColors._pad offset 60
+struct VizCoverage size 1920 align 64
+field VizCoverage.bits offset 0
+struct VizLanes size 30720 align 64
+field VizLanes.pan offset 0
+offset viz_header 0
+offset viz_frame 64
+offset viz_colors 192
+offset viz_coverage 256
+offset viz_lanes 2176
+viz_label_words 8
+viz_label_bytes 32
+struct VizTrackState size 128 align 64
+field VizTrackState.panNow offset 0
+field VizTrackState.volDb offset 32
+field VizTrackState.widthPct offset 64
+field VizTrackState._reserved offset 96
+struct VizTrackLabels size 512 align 64
+field VizTrackLabels.utf8 offset 0
+field VizTrackLabels._pad offset 480
+offset viz_track_state 32896
+offset viz_labels 33024

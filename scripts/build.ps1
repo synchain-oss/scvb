@@ -6,7 +6,9 @@
 #>
 param(
   [ValidateSet('Release','Debug','RelWithDebInfo')][string]$Config = 'Release',
-  [ValidateSet('All','Input','Output','Core','Tests')][string]$Target = 'All',
+  # 注:$Target 目前是**装饰参数** —— 下面一律全量 cmake --build(见 §构建)。
+  # 加 'Monitor' 只为让命令行不因未知值报错;真要按 target 构建请直接用 cmake --build --target。
+  [ValidateSet('All','Input','Output','Monitor','Core','Tests')][string]$Target = 'All',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
   [switch]$Install,
@@ -51,7 +53,7 @@ if ($juceTag -and ($juceTag.Trim() -ne $juceVersion)) {
 }
 Write-Host ("JUCE         {0}(要求 {1})" -f $JucePath, $juceVersion)
 
-$freeGB = [math]::Round((Get-PSDrive -Name (Split-Path -Qualifier $RepoRoot)).Free / 1GB, 1)
+$freeGB = [math]::Round((Get-PSDrive -Name ((Split-Path -Qualifier $RepoRoot).TrimEnd(':'))).Free / 1GB, 1)
 if ($freeGB -lt 5) { Fail ("磁盘空间不足(剩余 {0} GB,需 >= 5 GB)" -f $freeGB) }
 Write-Host ("磁盘空间     {0} GB 可用" -f $freeGB)
 Write-Host ("pluginval    要求 {0}" -f $pluginvalVersion)
@@ -82,7 +84,7 @@ if (-not $SkipTests) {
   }
 }
 
-# ---- 定位两个 .vst3 ----
+# ---- 定位三个 .vst3([J75] 增 SCVB Monitor) ----
 $bundles = Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Sort-Object Name
 $sw.Stop()
 
@@ -96,7 +98,7 @@ else {
     Write-Host ("  {0}" -f $b.FullName)
   }
 }
-$projLine = (Select-String -Path CMakeLists.txt -Pattern 'VERSION' | Select-Object -First 1).Line
+$projLine = (Select-String -Path CMakeLists.txt -Pattern 'project\(SCVB VERSION' | Select-Object -First 1).Line
 $projVer = (($projLine -split 'VERSION')[1]).Trim().TrimEnd(')')
 Write-Host ("版本: {0}" -f $projVer)
 Write-Host ("构建耗时: {0:N1} 秒" -f $sw.Elapsed.TotalSeconds)

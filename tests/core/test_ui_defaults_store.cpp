@@ -1,0 +1,257 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// test_ui_defaults_store —— 系统级 UI 全局默认的真实落盘往返(T37 真机 bug A-3 的全局那一层)
+//                            + 首启已读位在 PRMS ValueTree 上的双向兼容。
+//
+// 为什么要真跑文件:契约 §1.32/§1.33 的「不再显示」是**跨工程**承诺,此前 §1.1 快照里的
+// guide_seen_global / tour_seen_global 是硬编码 false、persistUiScaleAsDefault 是空实现 ——
+// 用户勾了「不再显示」,下个工程照旧弹。本测试写一次、另开一份 PropertiesFile 读回来,
+// 等价于「换一个插件实例 / 换一个工程」再读全局位。
+//
+// 落盘目录经 setStorageDirForTesting 指到临时目录:单测绝不碰真实用户设置
+// (崩溃即残留会让开发机的引导页永久不弹,并行 worktree 之间也会串扰)。
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "OutputUiState.h"
+#include "UiDefaultsStore.h"
+
+namespace ud = scvb::uidefaults;
+
+namespace
+{
+// 每个 TEST_CASE 独享一个临时目录,结束即整个删掉(含异常路径)。
+struct TempStore
+{
+    juce::File dir =
+        juce::File::createTempFile("scvb-uidefaults-test")
+            .getSiblingFile("scvb-uidefaults-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+    TempStore()
+    {
+        dir.createDirectory();
+        ud::setStorageDirForTesting(dir);
+    }
+    ~TempStore()
+    {
+        ud::setStorageDirForTesting({}); // 恢复生产位置
+        dir.deleteRecursively();
+    }
+};
+} // namespace
+
+TEST_CASE("[SL258] guide_seen 全局位按侧分键 —— Output 与 Input 各存一份、互不串扰", "[uidefaults][SL258]")
+{
+    TempStore store;
+
+    // 为什么必须分键(契约 §3.1 语义行逐字):两侧引导讲的是两个界面、两套内容。
+    // 共用一个位的话,先装 Output 的用户在 Output 里勾过「不再显示」之后,**永远看不到
+    // Input 的引导** —— 而那正是 J80 立 T48 的全部理由。本用例就是钉这一条。
+    REQUIRE_FALSE(ud::guideSeenGlobal());
+    REQUIRE_FALSE(ud::guideSeenGlobalInput());
+
+    // ① Output 勾了「不再显示」⇒ **不得**连带把 Input 的位也置上。
+    ud::setGuideSeenGlobal(true);
+    CHECK(ud::guideSeenGlobal());
+    CHECK_FALSE(ud::guideSeenGlobalInput()); // 反向:合并成一个键时这里必红
+
+    // ② 反过来同理:Input 置位不影响 Output(且两位可各自独立取值)。
+    ud::setGuideSeenGlobalInput(true);
+    ud::setGuideSeenGlobal(false);
+    CHECK(ud::guideSeenGlobalInput());
+    CHECK_FALSE(ud::guideSeenGlobal());
+
+    // ③ 清位后仍可再置。**注意断言强度**(复审【建议】):`set(false)` 后 `CHECK_FALSE` 与
+    //    `readBool` 的默认值同值,写侧**空实现**也能过——那条证明不了任何事。真正证明
+    //    「换实例/换工程也读得回」的是上面 ② (写 true 再读回 true,每次调用现开一份
+    //    PropertiesFile);这里补一次「清完再置」,写侧空实现在这一行必红。
+    ud::setGuideSeenGlobalInput(false);
+    CHECK_FALSE(ud::guideSeenGlobalInput());
+    ud::setGuideSeenGlobalInput(true);
+    CHECK(ud::guideSeenGlobalInput());
+}
+
+TEST_CASE("UiDefaultsStore:全局默认写一次、换实例读得回(T37 A-3)", "[output][uidefaults][t37]")
+{
+    TempStore store;
+
+    // 干净起点:从没写过 ⇒ 两位 false、缩放档 0(= 未设置,调用方沿用自己的 100)。
+    REQUIRE_FALSE(ud::guideSeenGlobal());
+    REQUIRE_FALSE(ud::tourSeenGlobal());
+    REQUIRE(ud::uiScalePercent() == 0);
+
+    ud::setGuideSeenGlobal(true);
+    ud::setTourSeenGlobal(true);
+    // 每次调用都现开一份 PropertiesFile —— 读到 true 即证明值真的过了磁盘,
+    // 而不是活在某个进程内单例里(换插件实例/换工程同样读得到)。
+    REQUIRE(ud::guideSeenGlobal());
+    REQUIRE(ud::tourSeenGlobal());
+
+    ud::setGuideSeenGlobal(false);
+    REQUIRE_FALSE(ud::guideSeenGlobal());
+    REQUIRE(ud::tourSeenGlobal()); // 两位互不干扰
+
+    ud::setUiScalePercent(125);
+    REQUIRE(ud::uiScalePercent() == 125);
+
+    // 档位越界 = 不可信值:既不写入,也不当作「已设置」读出。
+    ud::setUiScalePercent(5000);
+    REQUIRE(ud::uiScalePercent() == 125);
+    ud::setUiScalePercent(1);
+    REQUIRE(ud::uiScalePercent() == 125);
+}
+
+TEST_CASE("UiDefaultsStore:语言值全局镜像覆盖 §1.30 归一集 {zh,en,fr}", "[output][uidefaults][v5]")
+{
+    TempStore store;
+
+    // 干净起点:从没选过 ⇒ 布尔 false、语言空串(= 未设置,调用方沿用自己的默认)。
+    REQUIRE_FALSE(ud::langChosenGlobal());
+    REQUIRE(ud::langGlobal().isEmpty());
+
+    // **三种语言逐一往返**。fr 这一条是必须的:白名单漏掉它时,法文用户的写入会静默
+    // return,而 setLangChosenGlobal(true) 照写不误 —— 移除插件重加载后语言回落 en,
+    // 语言起始卡又被 lang_chosen_global 挡住,P1-6 在 fr 上原样复现。
+    for (const juce::String lang : {juce::String("zh"), juce::String("en"), juce::String("fr")})
+    {
+        ud::setLangGlobal(lang);
+        REQUIRE(ud::langGlobal() == lang); // 每次调用现开一份 PropertiesFile → 真的过了磁盘
+    }
+
+    // 归一集之外的值:既不写入,也不覆盖上一次的有效值(磁盘上的 XML 用户可编辑)。
+    ud::setLangGlobal("de");
+    REQUIRE(ud::langGlobal() == "fr");
+    ud::setLangGlobal("");
+    REQUIRE(ud::langGlobal() == "fr");
+    ud::setLangGlobal("ZH"); // 大小写不做兜底:归一化是 §1.30 桥层的职责,本层只复核
+    REQUIRE(ud::langGlobal() == "fr");
+
+    // 布尔与语言值是两件事,互不代替(只写布尔不写值 = 卡被挡住却回英文,正是 v5 P1-6)。
+    ud::setLangChosenGlobal(true);
+    REQUIRE(ud::langChosenGlobal());
+    REQUIRE(ud::langGlobal() == "fr");
+}
+
+TEST_CASE("PRMS ui 首启已读位:往返 + 新旧构建双向兼容(T37 A-3)", "[output][state][t37]")
+{
+    using namespace scvb::output;
+
+    // 参数树的形状按 APVTS 的实际样子搭:根节点 + 若干参数子节点。两位挂根节点属性面。
+    juce::ValueTree tree("PARAMETERS");
+    juce::ValueTree p("PARAM");
+    p.setProperty("id", "out_width", nullptr);
+    p.setProperty("value", 0.5f, nullptr);
+    tree.appendChild(p, nullptr);
+
+    // ① 老工程(从没落过这两位)⇒ 读回 false,该走首启。
+    const auto fresh = readUiFlags(tree);
+    REQUIRE_FALSE(fresh.guideSeen);
+    REQUIRE_FALSE(fresh.tourSeen);
+
+    // ② 写入 → XML 往返(= getStateInformation / setStateInformation 走的那条路)。
+    writeUiFlags(tree, {true, false});
+    const std::unique_ptr<juce::XmlElement> xml(tree.createXml());
+    REQUIRE(xml != nullptr);
+    const juce::ValueTree reloaded = juce::ValueTree::fromXml(*xml);
+    const auto flags = readUiFlags(reloaded);
+    REQUIRE(flags.guideSeen);
+    REQUIRE_FALSE(flags.tourSeen);
+    // 参数子节点未被这两位挤掉。
+    REQUIRE(reloaded.getNumChildren() == 1);
+    REQUIRE(reloaded.getChild(0).getProperty("id").toString() == "out_width");
+
+    // ③ **正向兼容**(这是本设计相对「CFGS 尾部追加」的关键收益):旧构建不认识这两个属性,
+    //    照旧只读它认识的参数 —— 属性多了不影响解析,工程不会被静默打回默认值。
+    //    这里用「删掉两个属性」模拟旧构建的视角,验证其余内容原封不动。
+    juce::ValueTree asOldBuildSees = reloaded.createCopy();
+    asOldBuildSees.removeProperty(kUiGuideSeenProp, nullptr);
+    asOldBuildSees.removeProperty(kUiTourSeenProp, nullptr);
+    REQUIRE(asOldBuildSees.getNumChildren() == 1);
+    REQUIRE(static_cast<float>(asOldBuildSees.getChild(0).getProperty("value")) == 0.5f);
+
+    // ④ 无效树不崩、按默认返回。
+    const juce::ValueTree invalid;
+    REQUIRE_FALSE(readUiFlags(invalid).guideSeen);
+    juce::ValueTree stillInvalid;
+    writeUiFlags(stillInvalid, {true, true}); // no-op,不构造节点
+    REQUIRE_FALSE(stillInvalid.isValid());
+}
+
+TEST_CASE("[rc-misc c] 缩放全局默认按角色分键 —— Output 与 Monitor 各存一份", "[uidefaults][rcmisc]")
+{
+    TempStore store;
+
+    REQUIRE(ud::uiScalePercentMonitor() == 0); // 从没「保持」过
+
+    ud::setUiScalePercentMonitor(150);
+    CHECK(ud::uiScalePercentMonitor() == 150);
+    CHECK(ud::uiScalePercent() == 0); // 没串到 Output 那一份
+
+    ud::setUiScalePercent(200);
+    CHECK(ud::uiScalePercentMonitor() == 150); // 反向也不串
+
+    // 越界 = 不可信值:不写入、也不当作已设置
+    ud::setUiScalePercentMonitor(5000);
+    CHECK(ud::uiScalePercentMonitor() == 150);
+}
+
+// [J148] ui.active_tab 在 PRMS 根节点上的读写。宿主级往返(真 Processor 的 get/setStateInformation)
+// 在 tests/host/test_host_harness.cpp 的 J148 那一格;这里钉编码本身:名字表、缺失/非法回落、格式。
+// 各断言彼此独立,用 CHECK —— REQUIRE 一红就掐断整格,「另一条仍绿」与「压根没跑」输出同形。
+TEST_CASE("PRMS ui.active_tab:四值往返 + 缺失/非法回落 master + 落盘写名字(J148)", "[output][state][j148]")
+{
+    using namespace scvb::output;
+
+    // ① 四值逐个往返(名字 ⇄ 序号是同一张表的两个方向,各值都要走一遍,不能只测一个)。
+    const OutputActiveTab all[] = {OutputActiveTab::kMaster, OutputActiveTab::kTracks, OutputActiveTab::kWave,
+                                   OutputActiveTab::kSettings};
+    const char* names[] = {"master", "tracks", "wave", "settings"};
+    for (int i = 0; i < 4; ++i)
+    {
+        juce::ValueTree tree("PARAMETERS");
+        writeActiveTab(tree, all[i]);
+        // 格式锁:工程里存的是 §1.31 的枚举**字面量**,不是序号(序号重排不许影响已存工程)。
+        CHECK(tree.getProperty(kUiActiveTabProp).toString() == juce::String(names[i]));
+        CHECK(tree.getProperty(kUiActiveTabProp).isString());
+        const std::unique_ptr<juce::XmlElement> xml(tree.createXml());
+        REQUIRE(xml != nullptr);
+        CHECK(readActiveTab(juce::ValueTree::fromXml(*xml)) == all[i]);
+
+        OutputActiveTab parsed = OutputActiveTab::kMaster;
+        CHECK(parseActiveTab(juce::String(names[i]), parsed));
+        CHECK(parsed == all[i]);
+        CHECK(juce::String(activeTabName(all[i])) == juce::String(names[i]));
+    }
+
+    // ② 属性缺失(本版之前存的工程)⇒ master。
+    juce::ValueTree old("PARAMETERS");
+    CHECK(readActiveTab(old) == OutputActiveTab::kMaster);
+
+    // ③ 取值不在四值里(手改工程 / 不可信字节 / 未来版本多出来的 tab / 大小写不同 / 旧式序号)⇒ master,
+    //    且 parseActiveTab 报 false、不动出参 —— 桥面据此回 badArg。
+    for (const char* bad : {"suggest", "Wave", "", " wave", "2"})
+    {
+        juce::ValueTree t("PARAMETERS");
+        t.setProperty(kUiActiveTabProp, juce::String(bad), nullptr);
+        CHECK(readActiveTab(t) == OutputActiveTab::kMaster);
+        OutputActiveTab untouched = OutputActiveTab::kSettings;
+        CHECK_FALSE(parseActiveTab(juce::String(bad), untouched));
+        CHECK(untouched == OutputActiveTab::kSettings);
+    }
+    // 非字符串类型的属性值(整数)同样回落,不当序号解释。
+    juce::ValueTree numeric("PARAMETERS");
+    numeric.setProperty(kUiActiveTabProp, 2, nullptr);
+    CHECK(readActiveTab(numeric) == OutputActiveTab::kMaster);
+
+    // ④ 与首启已读位共存:写 tab 不挤掉那三位,写那三位也不挤掉 tab(同一个根节点属性面)。
+    juce::ValueTree both("PARAMETERS");
+    writeUiFlags(both, {true, true, true});
+    writeActiveTab(both, OutputActiveTab::kWave);
+    CHECK(readUiFlags(both).guideSeen);
+    CHECK(readUiFlags(both).langChosen);
+    CHECK(readActiveTab(both) == OutputActiveTab::kWave);
+
+    // ⑤ 无效树:读按默认、写是 no-op。
+    CHECK(readActiveTab(juce::ValueTree()) == OutputActiveTab::kMaster);
+    juce::ValueTree invalid;
+    writeActiveTab(invalid, OutputActiveTab::kWave);
+    CHECK_FALSE(invalid.isValid());
+}
