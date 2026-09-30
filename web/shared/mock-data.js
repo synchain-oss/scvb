@@ -1010,7 +1010,8 @@ export function makeInputState(overrides = {}) {
             claim: "unassigned", // §5.2 六态
             abi: LOCAL_ABI,
             // guide_seen = [J80] T48 的 Input 首启轻量引导已读位(契约变更文档
-            // docs/contract-changes/20260825-input-guide-seen.md;native 未落地)。
+            // docs/contract-changes/20260825-input-guide-seen.md;native 由 [SL-258] 接上;
+            // 只在本次会话内有效、不随工程保存,[J177])。
             // 默认 false = 真实首装值 —— 预览里除 input-first-run 外一律由 state-driver
             // 覆写为 true,免得每个场景都被语言卡挡住(与 Output 侧 first-run 同款处置)。
             ui: { scale: 1, language: "zh", guide_seen: false },

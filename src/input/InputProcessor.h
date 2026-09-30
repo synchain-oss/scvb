@@ -128,9 +128,9 @@ public:
     void bridgeSetUiScalePercent(int percent); // commitUiScale 落 state(clamp 33..300)
     int bridgeUiScalePercent() const;
     juce::String bridgeUiLanguage() const;
-    // [SL-258] setGuideSeen(§3.8)落 state `ui.guide_seen`。**当前只是会话内运行时态** ——
-    // 随工程持久化要等 [SL-238]:`InputStateCodec` 严格等长、无尾扩机制,STATE_SCHEMA 虽已登记
-    // Input 侧 `uiGuideSeen` 但 codec 从没编码它。那一层不在本卡范围内,故重开工程会回 false;
+    // [SL-258] setGuideSeen(§3.8)落 state `ui.guide_seen`。**它只是会话内运行时态,不随工程保存**
+    // —— 这是契约口径,不是待补的缺口:[J177](卡 SL-238)从 STATE_SCHEMA 撤回了原先登记的
+    // 「InputStateCodec 尾部追加一个 u32」落点,codec 不编码它,重开工程回 false。
     // 跨工程的「不再显示」承诺由 `uidefaults::guideSeenGlobalInput()`(真落盘)兜住。
     void bridgeSetGuideSeen(bool seen);
     bool bridgeUiGuideSeen() const;
@@ -225,7 +225,7 @@ private:
     int savedGroupId_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
-    bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态(持久化待 SL-238)
+    bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态,不随工程保存([J177])
     // [J150] 宿主给的 DAW 轨道名(UTF-8;空 = 宿主没给)。**不进 state**:轨道名的真源在宿主工程里,
     // 由宿主经 updateTrackProperties 告知(何时调、调不调由宿主决定);自存一份只会与宿主不同步。
     // 消息线程读写,持 lifecycleMutex_。

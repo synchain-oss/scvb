@@ -14,7 +14,8 @@
 //
 // 为什么存在:此前 §1.1 快照里的 guide_seen_global / tour_seen_global 是**硬编码 false**、
 // WebViewHost::persistUiScaleAsDefault 是**空实现** —— 「不再显示」的跨工程承诺从未兑现
-// (T37 真机 bug A-3)。工程内的 guide_seen / tour_seen 归 CFGS chunk,与本存储互补。
+// (T37 真机 bug A-3)。工程内的位与本存储互补:Output 的 guide_seen / tour_seen 随工程存在 PRMS
+// (src/output/OutputUiState.h);Input 的 guide_seen 不随工程保存、只在本次会话内有效([J177])。
 //
 // 落盘位置:`%APPDATA%\Synchain\SCVB\ui-defaults.settings`(app data 根逐字照
 // STATE_SCHEMA §4.3,与 sidecar 同根;不另起第二棵目录树)。

@@ -901,6 +901,51 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
             "[J132] SCVB_CONTRACT 写明 tour_seen_global 只有 Output 一个键",
         );
     }
+    // [SL-238 / J177] Input 的 `ui.guide_seen` **不随工程保存**。冻结文档原先给它登记了
+    // 「InputStateCodec 的 payload 尾部追加一个 u32」,实现从没做过,J177 按实现撤回。
+    // 两侧各钉一半:实现里确实没有这一位、载入工程 state 时确实清零;契约确实写成
+    // 「不随工程保存」、不再出现被撤回的写法。哪天真要让它随工程走,这几格会红 ——
+    // 那是该走契约变更流程的信号,不是把断言改掉的信号。
+    {
+        // 剥 C++ 注释同上一段的做法:已核过这两个文件没有字符字面量 / raw string
+        // (扫不下去会抛错,不会静默返回半份)。不是通则。
+        const codecH = stripComments(src("src/core/state/InputStateCodec.h"));
+        const inputProc = stripComments(src("src/input/InputProcessor.cpp"));
+        const schema = src("docs/STATE_SCHEMA.md");
+        const contract = src("docs/SCVB_CONTRACT.md");
+        const inputStateBody = /struct\s+InputState\s*\{([^}]*)\}/.exec(codecH);
+        check(
+            inputStateBody !== null && !/guide/i.test(inputStateBody[1]),
+            "[J177] InputState 里没有已读位字段(Input 的 guide_seen 不进 state chunk)",
+        );
+        const setState =
+            /ScvbInputAudioProcessor::setStateInformation\([\s\S]*?\n\}\n/.exec(
+                inputProc,
+            );
+        check(
+            setState !== null &&
+                /decodeInputState\([\s\S]*\buiGuideSeen_\s*=\s*false\s*;/.test(
+                    setState[0],
+                ),
+            "[J177] setStateInformation 解码成功之后把 Input 已读位清零(契约:每成功载入一份就清零)",
+        );
+        const schemaInputGuide =
+            /### `ui\.guide_seen`\(Input[\s\S]*?(?=\n### )/.exec(schema);
+        check(
+            schemaInputGuide !== null &&
+                /\|\s*持久化\s*\|\s*(\*\*)?否/.test(schemaInputGuide[0]),
+            "[J177] STATE_SCHEMA §二 Input ui.guide_seen 的「持久化」一行写「否」",
+        );
+        check(
+            !/uiGuideSeen/.test(schema),
+            "[J177] STATE_SCHEMA 不再登记 Input 的 uiGuideSeen 尾扩落点(§二 编码落点 / §三 Input 容器)",
+        );
+        check(
+            /Input 首启轻量引导已读位[^;;]{0,40}不随工程保存/.test(contract) &&
+                !contract.includes("Input 首启轻量引导已读位,随工程持久化"),
+            "[J177] SCVB_CONTRACT §3.1 把 Input ui.guide_seen 写成「不随工程保存」,旧写法零残留",
+        );
+    }
 
     // B:桥面 conn 必须来自 registry 实况,不得再有 T29 的占位常量。UI 的连接数口径是
     // 「slotState=2 ∧ heartbeatFresh」,heartbeatFresh 恒 false 则连接数恒 0 ——

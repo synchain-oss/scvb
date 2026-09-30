@@ -7,13 +7,13 @@
 // 为什么放 PRMS 而不是 CFGS:**STATE_SCHEMA §三 的 chunk 表把本模块经手的这几位只登记在
 // PRMS 名下** —— `ui.guide_seen` / `ui.tour_seen` / `ui.lang_chosen`([J81]) / `ui.active_tab`,
 // 外加下面那个 `session_guid`([SL-215])。这条不依赖任何版本假设,是本模块的真正依据。
-// (限 Output 侧:Input 的 `ui.guide_seen` 是**另一个**位 —— 契约上归 Input state 的 CFGS 尾扩
-// (STATE_SCHEMA §三 Input 条,[J81]/J80),但**编码落点尚未落地**:当前 `InputStateCodec` 的
+// (限 Output 侧:Input 的 `ui.guide_seen` 是**另一个**位,而且**不随工程保存** —— STATE_SCHEMA
+// 原先把它登记为 Input state 的 CFGS 尾扩,实现从没做过,[J177] 已撤回那条落点:`InputStateCodec` 的
 // payload 只到语言字节为止(4×u32 头 + langBytes),且是 `kHeaderBytes + langBytes != size` 的
 // 严格等长、连尾部都不容忍。[SL-411 R5] 顺手核过:该断言在 `InputStateCodec.cpp` 的
 // `decodeInputState` 里逐字成立(那一行今天仍在),**本 PR 把容器 abi 推到 4 之后它也没变** ——
 // Input 侧没有新的 CFGS 尾档,别把「共用容器 abi」与「两边布局同形」混成一件事。
-// 别拿那一行来推翻这里,也别照它去 InputStateCodec 里找字段。)
+// 别拿 Input 那边来推这里,也别去 InputStateCodec 里找这一位。)
 // 别拿 `ui.scale` / `ui.language` 举证:那两个在 PRMS 与 CFGS 两行**都**登记着,证不出该放哪边。
 //
 // 当年(T37)还有一条机制上的理由,今天只剩一半,别再照旧口径记:那时 CFGS 的
