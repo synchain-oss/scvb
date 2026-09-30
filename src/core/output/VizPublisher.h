@@ -103,8 +103,9 @@ struct VizPublishInput
     // 读回链拿它分「引擎按曲线驱动 ⇒ 显示段值」与「跟随宿主 ⇒ 显示参数面」两档;
     // 手动常值段那一档**不看它**(理由见 DistReadback.h 的优先级链)。
     //
-    // 默认 `true`,与 `ScvbOutputAudioProcessor::outputEnabled_` 的默认同款 —— 不填它的调用方
-    // (`scvb_ipc_peer` / 各 harness)因此仍走「按段值显示」那一档,而不是齐刷刷退到参数面。
+    // 默认 `true` —— 不填它的调用方(`scvb_ipc_peer` / 各 harness)因此仍走「按段值显示」那一档,
+    // 而不是齐刷刷退到参数面。它**不是** `ScvbOutputAudioProcessor::outputEnabled_` 的镜像:[J169] 起
+    // 新插实例的输出初值是关,而 `publishVizFrame` 每帧都显式填这一项,不吃这个默认。
     bool outputEnabled = true;
     // [SL-363] 每轨 `v{v}_t{tt}_freeze` 的**参数原值**(engineering 0..3;句柄未就绪填 0)。
     // 发布器用 `scvb::engine::freezeBitsOf` 解码 —— 那是全仓唯一的解码口径(FreezeBits.h 头注)。

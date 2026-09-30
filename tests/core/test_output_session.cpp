@@ -212,7 +212,7 @@ TEST_CASE("OutputStateCodec:默认 group_id=1 且 save/load 往返 + 越界拒�
 {
     scvb::state::OutputState s;
     REQUIRE(s.groupId == 1); // [J66] 默认 1
-    REQUIRE(s.outputEnabled == 1); // 输出开关默认 on
+    REQUIRE(s.outputEnabled == 1); // 值对象的缺省;新插实例的初值不在这里([J169] 为关,见 OutputProcessor.h)
 
     s.groupId = 5;
     s.captureEnabled = 1;
