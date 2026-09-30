@@ -80,6 +80,11 @@
 - CI:`dev` 上的依赖升级合进主支线 —— `build-vst3` 的 `actions/cache` 从 v4.3.0 升到 v6.1.0,DeepSeek 复审用的
   `claude-code-action` 从 1.0.191 升到 1.0.210,都钉 40 位 commit SHA;`branch-gate.yml` 头注里的预发布分支名
   改成 `staging`。插件本身没有变化(#339)
+- CI:CHANGELOG 机检(docs-truth 的「Changelog drafts not stranded」)在 `dev` 上也认得 `feature/v1` 上合并过的
+  PR 号了。把 `feature/v1` 压成一个提交合进 `dev` 之后,`dev` 的历史里没有那些合并提交的标题,这一步此前会把
+  正文里两百多处 PR 号判成「没合并过」。现在里程碑提交说明的最后一段带一行 `Landed-PRs: #… #…`(由
+  `node scripts/check-changelog-drafts.mjs --landed-trailer <ref>` 从本地 git 历史生成),机检把提交正文末段这类
+  尾注列出的号也算已合并;`docs/RELEASE.md`「里程碑合并」一节补上生成、核对与合后回读的命令。插件本身没有变化(#346)
 
 ### 修复
 
@@ -134,6 +139,8 @@
    (标题**尾部**的 `(#<号>)`,或老式 `Merge pull request #<号> from`)、裁定号 `J<号>`;块里
    任何 `pending #SL<号>` / `pending #<号>` / `pending #J<号>` 落进对应集合就判红。PR 号只认
    落地位、不认标题里的引用 —— 否则一句「见 #83」就会把一个从未合并的 PR 判成已上线。
+   PR 号另认 base 历史里提交正文末段的 `Landed-PRs:` 尾注(里程碑把 `feature/v1` 压成一个提交
+   合进 `dev` 时写进去,见 docs/RELEASE.md「里程碑合并」);卡号与裁定号不经尾注。
    它查得出「**合了却没搬**」,查不出「**搬了但内容不对**」—— 后者只能人工逐条比对合并提交
    (SL-295 那 37 条就是这么核的)。它判错了(标题只是顺带提了一句,那个号其实没有交付)走
    下面的「门禁放行」,**不要靠删条目躲开**。
