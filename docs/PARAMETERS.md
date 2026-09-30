@@ -111,7 +111,7 @@ group_id: 1..8                  # 观察哪一组(默认 1)
 ui: {scale, language}           # 随工程落盘
 ```
 
-编码复用 Input 的 state 布局(`channel_id` 恒写 0、载入时不读);与 Output / Input 在兼容处理上的差别见 STATE_SCHEMA.md §二「Monitor state」。
+编码复用 Input 的 state 布局(`channel_id` 恒写 0;载入时只做范围校验(≤15,越界整块拒载),不使用其值);与 Output / Input 在兼容处理上的差别见 STATE_SCHEMA.md §二「Monitor state」。
 
 ## 四、命名与兼容规则
 

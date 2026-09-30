@@ -110,7 +110,7 @@ abi: 6                       # 与 Output / Input 共用容器 abi(同 §二)
 group_id: 1..8               # 观察哪一组(默认 1)
 ui: {scale, language}        # 随工程保存
 ```
-Monitor 是只读观察器,state 只有这三项;不认领任何 channel,编码复用 Input 的 state 布局(`channel_id` 恒写 0、载入时不读),没有新字段、没有新 fourcc。编码细则与它和 Output / Input 在兼容处理上的差别见仓内 `STATE_SCHEMA.md` §二 Monitor 节。
+Monitor 是只读观察器,state 只有这三项;不认领任何 channel,编码复用 Input 的 state 布局(`channel_id` 恒写 0;载入时只做范围校验(≤15,越界整块拒载),不使用其值),没有新字段、没有新 fourcc。编码细则与它和 Output / Input 在兼容处理上的差别见仓内 `STATE_SCHEMA.md` §二 Monitor 节。
 
 ## 四、命名与兼容规则
 
@@ -196,7 +196,7 @@ Monitor 是只读观察器,state 只有这三项;不认领任何 channel,编码�
 
 - **起因**:[J182] 交叉验证的文档面在 dev `b813f52d`(v0.9.0-rc.1 里程碑)上发现本文件的 state 登记与已冻结的实现不一致。[J183] 裁:rc tag 前修宪(07 §6:tag 之前是唯一的修宪窗口),一律向已冻结的实现与 `tests/golden/` 对齐。
 - **§二 / §三 `abi`:2 → 6**。v2.3(J81)写 2 时是对的;其后 [SL-279] / [SL-411] / [SL-416] / [SL-472] 四次 CFGS 尾扩各升一级,每次都只改了仓内 `STATE_SCHEMA.md`,没回写本文件。现写 v2.6 登记时的值 6,并写明往后的值以 `STATE_SCHEMA.md` §三 为准 —— 本文件只登记存在与语义,不追每一次升级。实现:`src/core/state/StateCodec.h` 的 `kCurrentAbi = 6u`;golden `tests/golden/state/abi6.bin` 头部的 abi 字段为 6。
-- **§二 撤回 `global.range`**:[J102](2026-09-22,用户裁「契约撤回」)已把它移出仓内 `STATE_SCHEMA.md` / `PARAMETERS.md` 的 state 树 —— 实现有意不存它(载入带 CFGS 的工程时复位到默认 follow,理由见 J102),本文件当时漏改。改为一行注释说明它不在本树;[J04] 的三值枚举与默认 follow 作为运行期语义保留(v1 修订节的 [J04] 条是历史,不改)。
+- **§二 撤回 `global.range`**:用户 2026-09-22 裁「契约撤回」([J102]),已把它移出仓内 `STATE_SCHEMA.md` / `PARAMETERS.md` 的 state 树 —— 实现有意不存它(载入带 CFGS 的工程时复位到默认 follow,理由见 J102),本文件当时漏改。改为一行注释说明它不在本树;[J04] 的三值枚举与默认 follow 作为运行期语义保留(v1 修订节的 [J04] 条是历史,不改)。
 - **§二 补登**(实现早已落盘、仓内 `STATE_SCHEMA.md` 早已登记、本文件没有):
   - `analysis.applied{loudness_mode, center_slot_policy}`([SL-279],CFGS 尾扩,abi 2→3);
   - `channels[].auto_label`([J150],`PRMS` 根节点属性 `channels_auto_label`,不动 abi);
