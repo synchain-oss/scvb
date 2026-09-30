@@ -1,7 +1,7 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 架构决策记录(ADR)——P1 宪法,起草文档不得与之矛盾
 
-状态:**v2.2**(2026-08-31,J95 修宪:ADR-009 澄清「上报段响度」与「平衡归一化基准」是两件事,正文一字未动、只追加修订节;**本状态行当时漏升,2026-09-28 补升**,见文末 v2.2 修订节后的补记;v2.1 = 2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
+状态:**v2.3**(2026-09-30,J183 修宪:ADR-001a 表「0 自动化参数」一格的 bypass 一句订正 —— JUCE wrapper 合成的 bypass 宿主可以自动化,它不占的是 123 的预算、不是「自动化位」;三条铁律与断言一字未动,见文末 v2.3 修订节;v2.2 = 2026-08-31,J95 修宪:ADR-009 澄清「上报段响度」与「平衡归一化基准」是两件事,正文一字未动、只追加修订节;**本状态行当时漏升,2026-09-28 补升**,见文末 v2.2 修订节后的补记;v2.1 = 2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
 
 依据:masterPlan/decisions.md(D1-D8)+ research/01~10 报告。
 
@@ -20,7 +20,7 @@
 
 | 铁律 | 落实 | 断言 |
 |---|---|---|
-| **0 自动化参数** | 无 `AudioProcessorValueTreeState`,不调 `createParameterLayout`;宿主自带 bypass 由 JUCE wrapper 提供,不占自动化位 | `getParameters().isEmpty()` + `getBypassParameter()==nullptr` |
+| **0 自动化参数** | 无 `AudioProcessorValueTreeState`,不调 `createParameterLayout`;宿主自带 bypass 由 JUCE wrapper 合成,不占 123 的预算(它在 VST3 里带 `kCanAutomate` 与 `kIsBypass` 两个标志,宿主照样能自动化它;v2.3 / [J183] 订正原句「不占自动化位」) | `getParameters().isEmpty()` + `getBypassParameter()==nullptr` |
 | **音频直通(逐样本按位相等)** | `processBlock` 对 buffer **什么都不做**;`isBusesLayoutSupported` 只接受进出一致的 mono/stereo,故无需补清尾声道 | `memcmp` **按位**比对(非近似):mono/stereo × {1,64,512} 块长 × 含 0/−0/非规格化/极值的样本,外加连续 200 块无累积 |
 | **对任何共享段零写入** | registry 只经 `openExistingReadOnly` 探测;viz 只经 `VizPlane::attachReadOnly()`;**不 claim InputSlot/OutputSlot、不碰 ctrl 段** | 段不存在时 Monitor 跑完一轮**段仍不存在**(只读方绝不建段);写方发布一帧后 Monitor 跑 50 块音频 + 12 拍 [M],段内容 `memcmp` 一字未变,写方 `foreignThreadWrites()` 恒 0 |
 
@@ -194,3 +194,17 @@ scvb/
   用户 2026-08-31 拍板走 A 案(切档→重分析→pan/volDb 真变;默认档逐位不变)。
 
 > **状态行补记(2026-09-28)**:J95 修宪([J95②a] 定为「只加不改」)时追加了上面这一节,文首状态行却仍停在 v2.1,与「修宪流程」第 4 条 ①「改原文并升版本号」不符。本次只把状态行补升为 v2.2 并补上 J95 的摘要(v2.1 的原描述整句保留);**各 ADR 正文与各修订节一字未动**,不另升版本号。仓内变更文档 `docs/contract-changes/20260928-adr-status-line-v2.2.md`。
+
+# v2.3 修订(2026-09-30,J183 修宪)
+
+- **[J183→ADR-001a 措辞订正]** 三铁律表「0 自动化参数」一格的「落实」列原写「宿主自带 bypass 由 JUCE wrapper 提供,不占自动化位」,
+  改为「由 JUCE wrapper 合成,不占 123 的预算」,并注明宿主照样能自动化它。依据 JUCE 8.0.8(仓内 `.juce-version`)的 VST3 wrapper 源码
+  `modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp`:插件的 `getBypassParameter()` 为 `nullptr` 时,wrapper 自建一个
+  `AudioParameterBool`(ID `byps`)并追加到导出的参数表末尾(VST3 要求 bypass 必须导出);它的参数信息带 `kCanAutomate`
+  (`AudioParameterBool` 默认可自动化)与 `kIsBypass`。所以宿主能自动化它,「不占自动化位」不对;它不占的是插件自己声明的参数的预算
+  (Output 的 123 个 —— params-v0 §一「宿主可见 124」本来就把它算在内)。
+- **零变动面**:本文件在本节之外只改两处 —— 状态行、ADR-001a 表这一格的「落实」列;三条铁律本身、这一格「落实」列的其余内容、
+  「断言」列(`getParameters().isEmpty()` + `getBypassParameter()==nullptr`)、其余两格、表后推论与各历史修订节一字未动;Monitor 实现零改动。
+- **[J183 记录]** 同批升 `params-v0.md` v2.5 → **v2.6**(state 登记向实现对齐;其 §一 [J81] 块 Monitor 一条是同一句,同批订正)。
+  仓内 `tests/core/test_monitor_processor.cpp`「Monitor:0 自动化参数」用例的注释是同一说法,rc tag 前 `tests/` 不动,留给 tag 之后的注释订正卡。
+  仓内变更文档 `docs/contract-changes/20260930-j183-params-v0-v2.6-state-register.md`。

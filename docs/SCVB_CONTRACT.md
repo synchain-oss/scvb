@@ -2,7 +2,7 @@
 
 > **版本**:1.0(已冻结)
 > **状态**:已冻结(2026-08-16;DeepSeek native 可实现性评审通过 + 用户批准);此后任何改动按 §9 走「只增不改」变更流程
-> **真源**:函数名/签名形态/事件名 = `masterPlan/plan/05-ui-spec.md` §1.4(含 §2.3a payload、§2.0/§2.1/§2.3/§2.4/§3 组件表、§6.2/§6.3 数据面);载荷字段语义与线程/节流/防回环细则 = `masterPlan/plan/01-architecture.md` §6.1/§6.4(ctrl 段 §4.4、跨组探测 §4.5);参数面/state 字段 = `docs/constitution/params-v0.md`(**v2.3**);IPC 段与枚举 = `docs/constitution/ipc-contract-v0.md`(**v1.6**);裁定规则 = `masterPlan/plan/07-execution-plan.md` T25
+> **真源**:函数名/签名形态/事件名 = `masterPlan/plan/05-ui-spec.md` §1.4(含 §2.3a payload、§2.0/§2.1/§2.3/§2.4/§3 组件表、§6.2/§6.3 数据面);载荷字段语义与线程/节流/防回环细则 = `masterPlan/plan/01-architecture.md` §6.1/§6.4(ctrl 段 §4.4、跨组探测 §4.5);参数面/state 字段 = `docs/constitution/params-v0.md`(**v2.6**;[J183] 由 v2.3 改,v2.4 / v2.5 两次修宪当时没回写本行);IPC 段与枚举 = `docs/constitution/ipc-contract-v0.md`(**v1.6**);裁定规则 = `masterPlan/plan/07-execution-plan.md` T25
 
 ---
 
