@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-09-29
+> 最后更新:2026-09-30
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -73,10 +73,10 @@ semver 语义(音频插件特化):
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。v1 这一次按 J142(2026-09-28):维护者本机长期可用内存不够跑整套 `gates.ps1`,本地全量门禁由 PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿代替;CI 的 pluginval 带 `--skip-gui-tests`,GUI pluginval 那一半由出包前在本机的自测补(见发版验证清单 B6)。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
-6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。
+6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**`v0.9.0-rc.1` 这一次例外(J180)**:`dev` 上的 `build-vst3` 绿了之后、打 tag 之前,先把 `staging` 快进到这个提交并对 `staging` dispatch 一次 `build-vst3` 全绿,再把 `prod` 快进到同一个提交,然后才在这个提交上打 tag —— 顺序与命令见下方「`staging` 与 `prod` 两个分支」里的「`v0.9.0-rc.1` 这一次的顺序」。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(两个分支都开着保护,前移时由仓库管理员临时允许绕过、推完恢复,J172;命令见该节;都不加 `--force`)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 不前移 `prod`(J163),所以**首个正式版之前,rc 构建里的这些链接是 404**(已接受,rc 的发布说明必须写明,见下)。**首个正式版这次**前移 `prod` 之后,这件事就不成立了:同一次把 [KNOWN_ISSUES](KNOWN_ISSUES.md) 的 KI-7 删掉,并删掉下方发布说明模板里「本版是预发布(rc)……404」那一句和注释里对它的说明。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(两个分支都开着保护,前移时由仓库管理员临时允许绕过、推完恢复,J172;命令见该节;都不加 `--force`)。**`v0.9.0-rc.1` 例外(J180)**:这一次 `staging` 与 `prod` 在推 tag 之前就已前移到 tag 所在的提交,发布后不再前移,只回读两个分支仍等于 tag 提交(见该节「`v0.9.0-rc.1` 这一次的顺序」第 5 步)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 一般不前移 `prod`(J163),所以之后的 rc 构建里这些链接打开的是 `prod` 最近一次前移时那一版的手册,不是 rc 自己的(发布说明模板里 rc 那一条写明这一点)。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
 ## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
 
@@ -155,15 +155,15 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 然后开 PR 到 `feature/v1`,它的 Files changed 应当是 0(不是 0 就停下),用「Create a merge commit」合并(`gh pr merge --merge`)。第二条命令不是 0(`dev` 上已经有了别的新提交)就**不要**用 `-s ours` —— 它会把那些提交的改动一起丢掉;改走上面「前置」那条正常合并。那时 `dev` 上的里程碑提交会与 `$FV1` 之后 `feature/v1` 改过的每一处冲突,要逐个文件对照 `$FV1` 解,量可能很大 —— 这正是要「一合完就做」的原因。
 
-## `staging` 与 `prod` 两个分支(J163 / J163a / J172)
+## `staging` 与 `prod` 两个分支(J163 / J163a / J172 / J180)
 
 | 分支 | 指向 | 什么时候前移 |
 |---|---|---|
-| `staging` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算) |
-| `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 一律不动 `prod` |
+| `staging` | 最新一个**已发布**的版本,**含预发布** | 每次在 Releases 页点了发布之后(`vX.Y.Z-rc.N` 与 `vX.Y.Z` 都算);`v0.9.0-rc.1` 这一次在推 tag 之前(J180) |
+| `prod` | 最新一个**正式版** | 只在正式版 `vX.Y.Z` 发布之后;rc 不动 `prod` —— 例外:`v0.9.0-rc.1` 这一次也前移,在推 tag 之前(J180) |
 
 - rc 发布后前移 `staging`;正式版发布后先前移 `staging`,再前移 `prod`。两个分支都要指向**这次 tag 指向的那个提交本身**(快进),所以不走 PR —— GitHub 的 PR 合并不做快进,会多出一个合并提交,分支就不等于 tag 提交了。
-- **两个分支都开着保护,直推会被拒**:保护要求走 PR,而且「管理员也不能绕过」(`enforce_admins`)是开着的。按 J172,前移时**由用户(仓库管理员)临时允许管理员绕过,直推快进,推完立刻恢复**;也可以临时整条放开该分支的保护,推完原样恢复。每次只动正在前移的那一个分支。**push 不管成败,都先执行恢复那一行再排查** —— 别让保护开着口子等排查;下面把 push 的退出码先存下来,恢复之后再看。以 rc 前移 `staging` 为例(正式版把 tag 换成 `vX.Y.Z`;前移 `prod` 时把命令里的 `staging` 全部换成 `prod`,整组再走一遍):
+- **两个分支都开着保护,直推会被拒**:保护要求走 PR,而且「管理员也不能绕过」(`enforce_admins`)是开着的。按 J172,前移时**由仓库管理员临时允许管理员绕过,直推快进,推完立刻恢复**(v1 这一轮按 J179 交统筹执行,每步做完即回读);也可以临时整条放开该分支的保护,推完原样恢复。每次只动正在前移的那一个分支。**push 不管成败,都先执行恢复那一行再排查** —— 别让保护开着口子等排查;下面把 push 的退出码先存下来,恢复之后再看。以 rc 前移 `staging` 为例(正式版把 tag 换成 `vX.Y.Z`;前移 `prod` 时把命令里的 `staging` 全部换成 `prod`,整组再走一遍):
 
   ```bash
   gh api -X DELETE repos/synchain-oss/scvb/branches/staging/protection/enforce_admins     # 临时允许管理员绕过
@@ -176,13 +176,23 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
   ```
 
 - 都**不加 `--force`**。推不上时先看报错:带 `GH006` / `protected branch` 的是保护还在生效(第一条命令没执行或没生效),与祖先关系无关;报 `non-fast-forward` / `fetch first` 的才是目标分支不是这次 tag 的祖先,先查清再动。
-- 前移发生在「点了发布」之后,不在推 tag 时:tag 推上去只建草稿,草稿不算已发布。演练 tag(`v0.0.0-test*`)从不发布,两个分支都不动。
-- 预发布分支用仓库里**已有的** `staging`,不另建新分支(J163a)。`staging` 与 `prod` 截至 2026-09-28 都停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表);它是之后所有提交的祖先,所以首个 rc(`v0.9.0-rc.1`)那次前移 `staging`、首个正式版那次前移 `prod`,都是快进。
+- 前移发生在「点了发布」之后,不在推 tag 时:tag 推上去只建草稿,草稿不算已发布(`v0.9.0-rc.1` 例外,见下「`v0.9.0-rc.1` 这一次的顺序」)。演练 tag(`v0.0.0-test*`)从不发布,两个分支都不动。
+- 预发布分支用仓库里**已有的** `staging`,不另建新分支(J163a)。`staging` 与 `prod` 截至 2026-09-28 都停在仓库首个提交 `ae61f5f`(骨架,里面没有用户手册与 DAW 兼容表);它是之后所有提交的祖先,所以 `v0.9.0-rc.1` 那次把 `staging` 与 `prod` 前移到 rc.1 的提交(J180),都是快进。
+
+### `v0.9.0-rc.1` 这一次的顺序(J180)
+
+用户 2026-09-30 裁定:这一次先合进 `dev`,再把 `dev` 提到 `staging`,`staging` 上的全量 CI 过了之后直接推到 `prod` —— `prod` 也前移到 rc.1(J163 原定 `prod` 只放正式版,这一次由用户改)。tag 打在同一个提交上,Release 勾 pre-release。按 J179,下面每一步由统筹执行,做完即回读。
+
+1. **里程碑合并**:按上方「里程碑合并:`feature/v1` → `dev`」把 `feature/v1` 压成一个提交合进 `dev`,等 push→`dev` 触发的那次 `build-vst3` 全绿(发版清单第 6 步前半)。记下这个提交:`git fetch origin && M=$(git rev-parse origin/dev)`。
+2. **`staging` 快进到 `$M`**:用上面那组命令,把其中的 `vX.Y.Z-rc.N^{commit}` 换成 `$M`。
+3. **对 `staging` 跑一次全量 CI**:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref staging -f ref=staging`(`--ref` 与 `-f ref=` 同值),然后 `gh run list --workflow build-vst3.yml -L 1` 看结果,要全绿。push→`staging` 不触发任何 workflow,这一次 dispatch 就是 `staging` 上的全量 CI;`format` / `compliance` 已在 push→`dev` 时对同一个提交跑过。
+4. **`prod` 快进到同一个 `$M`**:同一组命令,把 `staging` 全部换成 `prod`。**这一步没做成就不要发布**:[KNOWN_ISSUES](KNOWN_ISSUES.md) 已按「rc.1 发布时 `prod` 已前移」删掉了 KI-7(rc 里文档链接 404),本版的发布说明也不再写这一条。
+5. **打 tag 并发布**:在 `$M` 上打 `v0.9.0-rc.1` 并推送(发版清单第 6 步后半;`$M` 与第 6 步写的 `origin/dev` 是同一个提交,打之前照样确认),然后照第 7、8 步核对产物、填说明。**点发布之前**回读一次:`git fetch origin && git ls-remote origin refs/heads/staging refs/heads/prod` 两行的 sha 都等于 `git rev-parse v0.9.0-rc.1^{commit}`(也就是 `$M`);不等就停在草稿,先查第 2 / 4 步。相等再点发布,发布后同一条命令再回读一次。
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
 
 - **插件里的文档链接一律指向 `prod` 分支上的固定路径**(用户裁定 J149:`prod` 是稳定正式版分支,`dev` 是研发分支)。设置页「使用说明」一栏的「文档」按钮打开 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.zh-CN.md`(中文界面)或 `https://github.com/synchain-oss/scvb/blob/prod/docs/USER_GUIDE.md`(英文、法文界面);九条使用规则里 DAW 兼容表的地址是 `https://github.com/synchain-oss/scvb/blob/prod/docs/DAW_COMPATIBILITY.md`。这些地址**不随插件版本号变,也不 pin 到 tag** —— 此前「按插件版本号 pin 到同号 tag」的做法(SL-220 / #298)已由 J149 取代,不要改回去。代价照实写:旧版插件打开的是最新正式版的手册,不是它自己那一版的。
-- **rc 期间这些链接打开是 404,已接受(J163)。** `prod` 只跟正式版,首个正式版发布之前 `prod` 上没有这三个文件,所以 `v0.9.0-rc.N` 这批 rc 构建里设置页的「文档」按钮与九条规则里的 DAW 兼容表地址都打不开。首个正式版发布、`prod` 前移之后,**同一批 rc 构建里的链接也随之恢复**(地址没变,变的是 `prod` 上的内容),插件不用更新。首个正式版之后再发的 rc,这些链接打开的是上一个正式版的手册。**首个正式版之前的每个 rc,发布说明都必须写明这一点**(模板「升级须知」里有对应一句),并在 [KNOWN_ISSUES](KNOWN_ISSUES.md) KI-7 登记。
+- **rc 构建里这些链接打开的是 `prod` 最近一次前移时那一版的手册。** `prod` 一般只跟正式版(J163),rc 不前移它,所以 rc 构建打开的不是 rc 自己那一版的手册;每个 rc 的发布说明都写明这一点(模板「升级须知」里 rc 那一条;rc.1 除外,见下一句)。`v0.9.0-rc.1` 是例外(J180):发布之前 `prod` 就已前移到 rc.1 的提交,所以 rc.1 一发布,插件里的这些链接就打得开,打开的就是 rc.1 的手册与兼容表。J163 当初接受的「首个正式版之前,rc 里这些链接是 404」因此不会出现,[KNOWN_ISSUES](KNOWN_ISSUES.md) 原先登记它的 KI-7 已删。
 - 地址写在 `web/output/tab-settings.js` 的 `docsUrl()` 与红字真源 `docs/USER_GUIDE.zh-CN.md#硬约束` 里(后者经 `scripts/gen-hard-rules.mjs` 生成到插件词条);`web-preview/tests/smoke-tab4-settings.mjs` 扫 `web/` 下的仓库 `blob/` 链接,指向 `prod` 以外的分支或 tag 即红。
 - **插件一旦发出去,里面的地址就改不了了。** 所以 `docs/USER_GUIDE.md`、`docs/USER_GUIDE.zh-CN.md`、`docs/DAW_COMPATIBILITY.md` 在 `prod` 上不要改名、不要挪位置 —— 改了,已经发出去的每一版插件里的这几个链接都会一起失效。
 - **发布说明(GitHub Release 正文)里的链接仍固定在本次的 tag 上**(见下方模板与模板后的说明):那是这一版自己的记录,不跟着 `prod` 走。
@@ -219,14 +229,14 @@ U2 裁定**不附** `LICENSE-EXCEPTION.md`(依赖 GPLv3 系统库例外的默认
 > SCVB 是一对配套插件(Input + Output),**必须同时安装、成对使用**;zip 里的第三个插件 SCVB Monitor 是**可选**的只读旁观窗口。
 
 ## ⚠️ 升级须知
-<!-- 「三个插件一起升级」与「文档链接」两条每次都留;「rc 期间 404」那条首个正式版之前的 rc 必留、之后删;其余有则填,无则删 -->
+<!-- 「三个插件一起升级」与「文档链接」两条每次都留;「本版是预发布(rc)」那条 rc 留、正式版删(v0.9.0-rc.1 例外,见该条注释);其余有则填,无则删 -->
 - **Input、Output、Monitor 三个一起升级,不要混装。** IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然能连上,但新 Output 配旧 Input 做离线渲染,两侧的交接方式不同,人声可能被**双路叠加**(不升 IPC abi 的有意取舍,见 `docs/contract-changes/` 相应变更文档)—— 所以升级一律三个一起换。
 - state abi:{旧}→{新},旧工程{可自动迁移 / 需手动重新分析}。**用本版保存的工程,拿到 state abi 更低的旧版本(含此前的内部测试包)里打开时会被拒载**:Output 显示「工程来自较新版本」横幅,Input 以默认值运行(没有横幅)。建议不要在旧版本里打开并保存这类工程。
   <!-- 首个公开版本填写时:当前 state abi = 6(abi 5→6 来自 SL-472 的 channels 配置落盘,J114 批准,变更文档 docs/contract-changes/20260927-sl472-channel-config-persist.md);发版前以 src/core/state/StateCodec.h 的 kCurrentAbi 为准 -->
 - IPC abi:{旧}→{新},**必须同时升级 Input 与 Output**,混装会互不识别
 - DSP 可闻变化:{有/无};有则说明旧工程重渲染会有什么差异
-- 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是最新正式版的手册。
-- **本版是预发布(rc):插件里的这些文档链接在 rc 期间打开是 404,正式版发布后恢复**,插件不用更新(`prod` 分支只跟正式版,首个正式版之前上面还没有这些文件)。在那之前请用本说明里的链接,或 zip 里 `INSTALL.txt` 的手册链接(同样固定在 `v{X.Y.Z}` 上)。
+- 本说明里的文档链接固定在 `v{X.Y.Z}` 这个 tag 上,是这一版的手册;插件里的文档链接(设置页「文档」按钮、九条使用规则里的 DAW 兼容表地址)固定指向 `prod` 分支,打开的是 `prod` 上的手册(一般是最新正式版的)。
+- **本版是预发布(rc)**:`prod` 分支一般只在正式版发布时前移,所以插件里的这些链接打开的可能不是本版的手册;要看本版的,请用本说明里的链接,或 zip 里 `INSTALL.txt` 的手册链接(同样固定在 `v{X.Y.Z}` 上)。<!-- v0.9.0-rc.1 这一次 prod 随本版前移(J180),插件里的链接打开的就是本版的手册:填这一版时删掉这一条 -->
 
 ## 如遇问题如何回退
 <!-- 每次都留。首个公开版本之前没有公开版本可回:第 2 步改成「装回你之前在用的版本(例如内部测试包)」,或只留第 1、3 步 -->

@@ -289,3 +289,87 @@
 - 判据只是「en / fr 与 zh 说的是不是同一件事」加可读性。zh 本身过时、三语跟着一起错的那一类核不出来(与 J127 轮同样的限制)。
 - 界面长度:改动的 5 个键都放在会折行的容器里(导览气泡、Tab2 图例段落、横幅、确认条),没有单行截断的位置;本轮没有逐语言跑页面级排版测量。
 - 这是经授权的 AI 核对,不是法语母语者的人工审校。
+
+## 第 3 轮 —— #344 Input 导览渲染警告步(2026-09-30,SL-582)
+
+### 范围与数法
+
+- 基线:`ff1861a7`(#341 合并,第 2 轮的改动已在其中)对 `4a003021`(#347 合并;开这一轮时 `feature/v1` 的头)。这一段里改过
+  `web/shared/i18n.js` 的只有 #344(`git log ff1861a7..4a003021 -- web/shared/i18n.js` 只列出 `17037be4`)。
+- 数法同第 2 轮:分别 import 两个提交的 `web/shared/i18n.js`,逐键比较导出字典 `T`。三种语言结果相同:新增 2 个键
+  (`tour-in.step6.title` / `tour-in.step6.body`)、改动 2 个键(`tour-in.step5.title` / `tour-in.step5.body`),没有删键;
+  键总数 577 → 579。
+- 新的 step6 两键是原 step5(「完整控制在 Output」)改名顺延而来:三种语言的值都与 `ff1861a7` 上的 step5 逐字相同(脚本比对)。
+  它们在第 1 轮(J127,全字典)核过,这里仍列出、只核「挪到末步之后说法还对不对」。
+- 合计 4 个键 × en / fr = 8 个值。zh 以 #344 的值为准,一个字没改。
+
+### 判据
+
+- 同第 2 轮:en / fr 与 zh 说的是不是同一件事(意思、前提、要用户做的动作、引到的宿主功能名),en / fr 本身是否自然。
+- 第 ⑤ 步是会让用户丢原素材的警告,另逐项对了四件事:① 前提「连接成功后」;② 哪几种做法得到静音文件(单独渲染 / 单轨导出、
+  冻结、就地渲染);③ 选了替换原音频会把原素材换成静音;④ 正确做法(对人声总线整体导出;要单轨素材先 Bypass 或移除本轨的
+  SCVB Input 再渲染)。这四件与 `docs/KNOWN_ISSUES.md` KI-4、两份用户手册「导出与渲染」一节同口径。
+- fr 标点按本仓惯例(`;` `:` `!` `?` 前与 `« »` 内侧用普通空格):8 个值用脚本逐字符查过,都合;不换行空格 0 处;占位符三语都为空集。
+- 界面长度:第 ⑤ 步是居中卡,正文会折行。字符数 zh 166、en 416、fr 478(标题 8 / 34 / 43)。在 `4a003021` 上跑
+  `node web-preview/tests/smoke-ui-layout-page.mjs`,E4 三语走到第 ⑤ 步:标题与正文逐字等于词条、说明框整体在卡内,全绿;
+  `node web-preview/tests/smoke-input-tour.mjs` 全绿。
+
+### 结果
+
+8 个值实核结论都为一致,没有改。web 零改动。
+
+### 逐条
+
+#### 1. `tour-in.step5.title`(改动,#344)
+
+- zh:别单独渲染这条轨
+- en(核前):Don’t render this track on its own
+- fr(核前):Ne faites pas le rendu de cette piste seule
+- 结论:一致,未改。「单独」en 作 on its own、fr 作 seule —— `seule` 是阴性单数,只能修饰 `piste`(「单独这条轨」),不会读成
+  「您一个人别做渲染」。fr「faire le rendu」是宿主里渲染的通行说法,与正文同一个词。
+- 改后:无
+
+#### 2. `tour-in.step5.body`(改动,#344)
+
+- zh:连接成功后，本轨的声音改由总线上的 SCVB Output 输出，所以单独渲染、冻结（Freeze）或就地渲染（Render in Place）这条轨，得到的是静音文件；若选了「替换原音频」，原素材会被换成静音。要导出请对人声总线整体导出；确实需要单轨素材，先对本轨的 SCVB Input 开启 Bypass 或将其移除，再渲染。
+- en(核前):Once connected, this track’s sound comes out of the SCVB Output on the bus, so rendering this track on its own — a single-track export, Freeze or Render in Place — gives you a silent file; if you choose to replace the original audio, the original is replaced with that silence. Export the vocal bus as a whole; if you really need a file of this track alone, bypass or remove this track’s SCVB Input before rendering.
+- fr(核前):Une fois la connexion établie, le son de cette piste sort par le SCVB Output du bus : faire le rendu de cette piste seule — export de piste isolée, Freeze ou Render in Place — donne donc un fichier silencieux ; si vous choisissez de remplacer l’audio d’origine, l’original est remplacé par ce silence. Exportez le bus de voix dans son ensemble ; s’il vous faut vraiment un fichier de cette seule piste, contournez (bypass) ou retirez le SCVB Input de cette piste avant le rendu.
+- 结论:一致,未改。按判据的四件逐项对:
+  ① 前提:Once connected / Une fois la connexion établie,与 zh「连接成功后」同;
+  ② 做法:zh 并列「单独渲染、冻结、就地渲染」三项,en / fr 把「单独渲染这条轨」作总称、破折号里列单轨导出 / Freeze /
+  Render in Place 三种形态,覆盖面相同;Freeze 与 Render in Place 三语都保留宿主里的英文功能名;
+  ③ 替换:zh 的「替换原音频」加了引号,但各宿主的选项名不同,en / fr 按动作意译(choose to replace the original audio /
+  choisissez de remplacer l’audio d’origine),「原素材会被换成静音」译作 the original is replaced with that silence /
+  l’original est remplacé par ce silence,后果没有弱化;
+  ④ 做法:对人声总线整体导出(vocal bus as a whole / bus de voix dans son ensemble);要单轨素材先 Bypass 或移除本轨的
+  SCVB Input 再渲染 —— en 用动词 bypass,fr 用 contournez 并括注 bypass,与 fr 字典里已有的两处(`guide.rule1` 的
+  「ne contournez pas le bus」、`tour.step26.body` 冻结开关说明里的「contournent le moteur」)同一个词。
+- 改后:无
+
+#### 3. `tour-in.step6.title`(新增键,值与原 step5 相同,#344)
+
+- zh:完整控制在 Output
+- en(核前):Full control lives in Output
+- fr(核前):Le contrôle complet est dans Output
+- 结论:一致,未改。挪到第 ⑥ 步没改变它的意思。
+- 改后:无
+
+#### 4. `tour-in.step6.body`(新增键,值与原 step5 相同,#344)
+
+- zh:分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。
+- en(核前):Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.
+- fr(核前):L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.
+- 结论:一致,未改。它仍是末步、仍指向右下角「?」(`smoke-input-tour.mjs` 断言末步正文含「?」,`smoke-ui-layout-page.mjs`
+  E 段断末步指得准),「这个「？」」的自指没有因为挪步而落空。
+- 改后:无
+
+### 未改的疑点(不在本轮范围,另报)
+
+1. fr 字典里撇号两种写法并存:579 个值里 124 个用直撇号 `'`、9 个用弯撇号 `’`(`tour-in.*` 全用弯撇号,另有 `set.*`、`wave.*`
+   各有几条)。只是排印,不影响意思;要统一就得动本轮范围以外、已核过的词条,本轮不动。
+
+### 这一轮不验什么
+
+- 同第 2 轮:zh 本身过时、三语跟着一起错的那一类核不出来;这是经授权的 AI 核对,不是法语母语者的人工审校。
+- 「单轨渲染得静音文件」这件事本身(KI-4)是否在每个宿主上都成立,不在词条核对的范围里;本轮只核三语说的是同一件事。
+- 界面长度只看了 web-preview 页面冒烟里的那一种窗口尺寸,没有逐宿主、逐缩放档测量。
