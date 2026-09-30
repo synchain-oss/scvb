@@ -1,7 +1,7 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
-状态:**v2.5**(2026-09-29,J177 修订:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点 —— 该位不随工程保存、只在本次会话内有效,实现从没编码过它;同段不再写 Input 导览的步数(J177a);**字段 / 类型 / 默认值 / 首启判据 / 容器 abi / 自动化参数面全部零变动**;v2.4 = 2026-09-28 J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
+状态:**v2.6**(2026-09-30,J183 修订:state 登记向已冻结的实现与 `tests/golden/` 对齐 —— §二 / §三 YAML 的 `abi` 由 2 改为当前值 6(此后四次升 abi 都没回写本文件);§二 撤回 `global.range` 的 state 登记([J102]);§二 补登实现早已落盘的 `analysis.applied`、`channels[].auto_label`、`lead_timeline[]`、`versions[].meta`、`segments[].manual_pan` / `manual_vol`、`curves_per_track[].excluded_ranges[]`,并给 `capture_enabled` / `source_channels` / `features.embedded` 补注实际的落盘口径;§三 补登 Monitor state;§四 补这些字段的编码落点;§一 订正 wrapper 合成 bypass 的说法;**字段 / 类型 / 默认值 / 编码字节 / 容器 abi / 自动化参数面全部零变动** —— 只把实现已有的东西登记进来,详见文末 v2.6 修订节;v2.5 = 2026-09-29,J177 修订:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点 —— 该位不随工程保存、只在本次会话内有效,实现从没编码过它;同段不再写 Input 导览的步数(J177a);**字段 / 类型 / 默认值 / 首启判据 / 容器 abi / 自动化参数面全部零变动**;v2.4 = 2026-09-28 J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
 
 ## 一、Output 插件:自动化参数(共 **123** 个,全部 versionHint=1)[J59/J65]
 
@@ -28,7 +28,7 @@ index 公式:`3 + (v-1)*60 + (t-1)*4 + k`,k∈{0=pan,1=vol,2=width,3=freeze}。
 - 引擎 write 打印面不变:仍仅 30 条(15 轨×pan/vol,J63);freeze 由用户驱动,引擎不打印
 - **[J81] 自动化参数面零变动的显式声明**:本次修宪(J81)并批的 9 份契约变更文档**没有一份**增删/改名/改序/改值域任何自动化参数。逐项核对:
   - viz 段(#89)、ctrl 广播区(#87)= IPC 面,不进参数面
-  - SCVB Monitor(#94)= **0 自动化参数**(无 `AudioProcessorValueTreeState`,`getParameters()` 恒为空,`getBypassParameter()` 为 `nullptr`;宿主自带 bypass 由 JUCE wrapper 提供,不占自动化位)
+  - SCVB Monitor(#94)= **0 自动化参数**(无 `AudioProcessorValueTreeState`,`getParameters()` 恒为空,`getBypassParameter()` 为 `nullptr`;宿主自带 bypass 由 JUCE wrapper 合成,不占 123 的预算 —— 它在 VST3 里带 `kCanAutomate | kIsBypass`,宿主照样能自动化它;[J183] 订正原句「不占自动化位」)
   - `master_chart_mode`(#77/#80)、Input `guide_seen`(#84)、`lang_chosen`(#87)、`loudness_mode`/`center_slot_policy`(#81)= 全部走 state,非自动化
   - 建议表 CSV 导出(#91)**只读** `v{v}_t{tt}_width` 等既有参数,零 gesture、零写入
   - `setTrackManual`(#87)**改的是写入面而非参数集合**:它开始向当前激活版本的 `v{v}_t{tt}_pan|_vol` 落值(带 gesture),但 123 个参数的 ParamID / index / 值域 / 默认值一字未动,`tests/golden/params_v0.tsv` 不受影响
@@ -39,37 +39,42 @@ index 公式:`3 + (v-1)*60 + (t-1)*4 + k`,k∈{0=pan,1=vol,2=width,3=freeze}。
 分组与字段(YAML 视图,实际为版本化二进制/JSON chunk,04 文档定编码):
 
 ```yaml
-abi: 2                         # [J81/#81] state 容器 abi(kCurrentAbi=2);migrate_1_to_2(no-op)承接 abi=1;与 IPC abi 独立计数
+abi: 6                         # state 容器 abi,v2.6 登记时的值(= kCurrentAbi);[J81/#81] 1→2,其后 [SL-279] / [SL-411] / [SL-416] / [SL-472] 各升一级,migrate_1_to_2 … migrate_5_to_6 均 no-op;往后的值与逐级沿革以仓内 STATE_SCHEMA §三 为准;与 IPC abi 独立计数
 session_guid: <自生成>
 group_id: 1..8               # [J66] 本 Output 所属组(默认 1,UI 显示 A-H);组=独立总线域
 global:
-  capture_enabled: bool        # 采集开关(默认 off)
+  capture_enabled: bool        # 采集开关(默认 off);[J91] 布局里保留、恒写 off,载入一律为 off —— 采集态不随工程走
   output_enabled: bool         # 输出开关:on=引擎驱动参数(write),off=follow host
   version_active: 1..2         # 当前版本(非自动化,防 write 自录;J59 4→2)
-  range: {mode: follow|daw_loop|manual, start_s, end_s}   # 作用区间(J04:默认 follow)
+  # range{mode, start_s, end_s} 不在本树:[J102] 运行期状态,不随工程走(v2.6 撤回登记;[J04] 的三值与默认 follow 仍是运行期语义)
 analysis:
   vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # 默认宁多勿少(J23 拆分,默认 120/200)
   segmentation: {mode, sensitivity, min_segment_ms}
   transition_ramp_ms: 80
   loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"                     # [J69/U24① → J81 登记] 第二响度指标口径,默认 "kw_integrated"
   center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"  # [J69/U24④ → J81 登记] 中心槽策略,默认 "priority_queue"
+  applied: {loudness_mode, center_slot_policy}   # [SL-279 → J183 登记] 上次全量分析所用的那一档(取值域同上两行);当前 ≠ applied 即该项「需重新分析」,两项分开判
 channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10→15
   enabled: bool
   label: string                # UI 显示名
-  source_channels: 1|2         # [J57] 自动检测:mono/stereo 源
+  auto_label: string           # [J150 → J183 登记] 最近一次自动填进 label 的 DAW 轨道名;label 为空或等于它 ⇒ 跟随轨道名,否则 ⇒ 用户命名(不再被轨道名覆盖)
+  source_channels: 1|2         # [J57] 自动检测:mono/stereo 源;不落盘(运行期每拍重测)
   participate_in_auto_pan: bool # [J83 修订 J60] 未显式设置一律默认 true(参与);排除权=轨道页逐轨开关(J60 的检测前提=总线布局非素材声道,不成立);参与时以中心点入槽位分配
   priority: 0..10              # 宽度优先级,高→角度大
   lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58)
   lead_vol_exempt: bool        # 音量豁免——独立选项,不与任何 lead 机制强制关联(J58 用户澄清)
   pair_id: 0|1..7              # 成对关联(0=无;15 轨最多 7 对)
   # auto_pan/auto_vol 已删除(J65):被每轨 freeze 自动化参数取代
+lead_timeline[]:               # [J136/SL-216 → J183 登记] lead_select 的播放记录 {t0_samples, t1_samples, lead: 0..15, automated: bool},按 t0 升序、互不重叠;automated = [J143b] 这段值是宿主写进来的;分析的输入
 versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");复制语义不变
+  meta: {copied_from: 0|1..2, copied_at_ms}   # [J183 登记;03 §5.3] 最近一次「复制版本」的来源版本号与复制时刻(epoch 毫秒);0 = 没被复制过
   curves_per_track[15]:        # 分析产物:分段时间线曲线(真身,ADR-005);[J59] 10→15
-    segments[]: {t0_samples, t1_samples, pan, vol_db, origin: auto|user_edited|user_created, locked: bool}   # J34
+    segments[]: {t0_samples, t1_samples, pan, vol_db, origin: auto|user_edited|user_created, locked: bool, manual_pan: bool, manual_vol: bool}   # J34;manual_* = [J162 → J183 登记] 手动接管固定了这一段的哪一维
+    excluded_ranges[]: {t0_samples, t1_samples}   # [J183 登记;02 §3.5 / 03 §6.1] 删段防复活记录(设计:重分析候选与其中任一区间重叠过半即丢弃);v1 没有产生它的编辑操作、分析也不读它,随工程原样往返
   pan_curve:                   # pan 角度域增益曲线(EQ 式)
     points[]: {angle: -100..100, gain_db, shape: bell|shelf|cut, q, side: out|left|right}   # J07
 features:                      # 采集特征(ADR-007)
-  embedded: bool               # 超 8MB 转 sidecar
+  embedded: bool               # 超 8MB 转 sidecar;v1 自动切换关闭,写出恒内嵌(仓内 STATE_SCHEMA §4.2)
   per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
 ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang_chosen}   # J50/J62/J75/J81
 ```
@@ -89,7 +94,7 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang
 ## 三、Input 插件:state(无自动化参数)
 
 ```yaml
-abi: 2                       # [J81/#81] Input 与 Output 共用容器 abi(kCurrentAbi=2)
+abi: 6                       # Input 与 Output 共用容器 abi(同 §二,v2.6 登记时 = 6);Input 自己的 state 布局从 T23 起没变过
 group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
 channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
 ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局镜像位 guide_seen_global 按侧独立;[J177] guide_seen 不随工程保存(只在本次会话内有效)
@@ -98,17 +103,27 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 
 **[J81] Input `ui.guide_seen`**:Input 首启轻量引导([J80]:独立语言卡 + mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准)的**已读位**,bool,默认 `false`(首装 = 没看过)。拼写**逐字沿用 Output 侧的 `guide_seen`**,不新造 `input_guide_seen` 之类的名字 —— 两侧表达的是同一件事(只是引导内容不同),同一语义两个落点正是命名纪律要禁的;判据代码因此可两侧共用(`shouldShowLangStart` 就是一件共用的)。首启判据(两侧同构,J50a):**工程 `ui.guide_seen === false` 且 全局默认 `guide_seen_global === false`** 才弹。header「?」重看入口**不看本位**,已置位也能再开(与 Output 侧 `tour_seen` 的「重看引导」同款)。**不随工程保存**([J177]):本位只在本次会话内有效,每成功载入一份工程 state 就清零;跨工程的「看过了」由全局镜像位承担(Input 的键是 `guide_seen_global_input`,见 §二 末条)。原先登记的编码落点实现从没做过,已撤回,见文末 v2.5 修订节。
 
+**Monitor 插件:state(无自动化参数)**([J81] #94 立项;[J183] 补登记):
+
+```yaml
+abi: 6                       # 与 Output / Input 共用容器 abi(同 §二)
+group_id: 1..8               # 观察哪一组(默认 1)
+ui: {scale, language}        # 随工程保存
+```
+Monitor 是只读观察器,state 只有这三项;不认领任何 channel,编码复用 Input 的 state 布局(`channel_id` 恒写 0;载入时只做范围校验(≤15,越界整块拒载),不使用其值),没有新字段、没有新 fourcc。编码细则与它和 Output / Input 在兼容处理上的差别见仓内 `STATE_SCHEMA.md` §二 Monitor 节。
+
 ## 四、命名与兼容规则
 
 - ParamID 字符串与 index 双冻结;VST3 参数 ID 由 JUCE 从 ParamID hash——**首个 release 后不可改 ParamID**
-- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格
+- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(本条是要求;三个插件各自的接线实况见仓内 `STATE_SCHEMA.md` §三 与 §二 Monitor 节)
 - 显示名可在 UI/i18n 层变化,ParamID/index 不动
 - **[J81] state 字段的编码落点注记**(宪法只登记「字段存在与语义」,编码细则归 04 §5 / 仓内 `STATE_SCHEMA.md`;此处只钉死落点,避免同一字段两处编码):
   - `ui.master_chart_mode` → **独立 fourcc 块 `UICF`**(`kFourccUiConfig`,定长 4 字节 u32:`0`=distribution / `1`=trajectory),**非 CFGS 尾字段**。选独立块的理由:反向兼容(新工程被旧版本读到)因此**零丢失** —— 旧版本不认识的 `UICF` 按容器「未知 fourcc 原样保留、save 原样回写」机制保真回写,只是不显示该偏好;若挂 CFGS 尾字段则会与 CFGS/CRVS 的解析纠缠
   - `ui.lang_chosen` → **`PRMS` 的 ValueTree**(与 `guide_seen`/`tour_seen`/`active_tab` 同处)。**不落 CFGS**:CFGS 是定长解码,追加字段会让旧构建整块拒载;ValueTree 增删字段零成本、老工程读不到即 false
   - Input `ui.guide_seen` → **不落 state chunk**([J177]):只在本次会话内有效,见 §三。`InputStateCodec` 的 payload 是严格等长解码,从来没有编码过这一位
   - `analysis.loudness_mode` / `analysis.center_slot_policy` → **CFGS 尾部追加两个 u32 枚举序号**(#81)。CFGS 已知字段之后若出现未知尾部(未来小版本追加),解码保留、编码原样回写(`unknownTail`),消除下次追加静默丢字段
-- **[J81/#81] state 容器 abi 1 → 2**(与 IPC abi 独立计数):随上一条的两个 analysis 字段进 CFGS 尾部而升;迁移函数 `migrate_1_to_2` 为 **no-op**(abi=1 的 CFGS 无这两个尾字段,解码按「长度回退」回落默认 `kw_integrated` / `priority_queue`,无需重写 payload)。旧版(abi=1)读新(abi=2)blob → `RejectedNewer` → 整块原样回写 + 提示升级,**绝不静默降级**;**Input 与 Output 共用容器 abi**,故两侧 YAML 的 `abi` 同步升 2(Input CFGS 本身未变)。golden 新增 `tests/golden/state/abi2.bin`,**`abi1.bin` 保留**作迁移基线(两份并存,不是替换)
+  - **[J183] v2.6 补登字段的落点**(均为实现现状,不是新编码):`analysis.applied` → CFGS 尾部再追加两个 u32 枚举序号([SL-279],abi 2→3);`channels[].auto_label` → `PRMS` 根节点属性 `channels_auto_label`(15 元 JSON 字符串数组,[J150]);`lead_timeline[]` → 独立 fourcc 块 `LEAD`([J136] / [J143b]);`versions[].meta` → `CRVS` 每版本头(与 `name` 同处);`segments[].manual_pan` / `manual_vol` → `CRVS` 段 `flags` 的 bit3 / bit4([J162],段记录布局与 CRVS minor 不变);`excluded_ranges[]` → `CRVS` 每轨记录(紧跟该轨段表);Monitor state → 容器里一块 `CFGS`,payload 与 Input 同布局
+- **[J81/#81] state 容器 abi 1 → 2**(与 IPC abi 独立计数):随上一条的两个 analysis 字段进 CFGS 尾部而升;迁移函数 `migrate_1_to_2` 为 **no-op**(abi=1 的 CFGS 无这两个尾字段,解码按「长度回退」回落默认 `kw_integrated` / `priority_queue`,无需重写 payload)。旧版(abi=1)读新(abi=2)blob → `RejectedNewer` → 整块原样回写 + 提示升级,**绝不静默降级**;**Input 与 Output 共用容器 abi**,故两侧 YAML 的 `abi` 同步升 2(Input CFGS 本身未变)。golden 新增 `tests/golden/state/abi2.bin`,**`abi1.bin` 保留**作迁移基线(两份并存,不是替换)。**[J183] 后续**:其后四次尾扩各升一级(2→3 [SL-279]、3→4 [SL-411]、4→5 [SL-416]、5→6 [SL-472],迁移函数均 no-op),v2.6 登记时 kCurrentAbi = 6,`abi1.bin` … `abi6.bin` 六份并存、`abi6.bin` 是当前格式锁;本条上文的「升 2」是 J81 当时的事实,不改
 
 ---
 
@@ -176,3 +191,22 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 - **§四 那一条里 Output 侧的半句一并删去**([J177a]):原文说「同批的 Output 侧对应改动是 CFGS 布局尾部追加」guide / tour 两个 `u32`,与紧上一条(`lang_chosen` 条)自述的「与 `guide_seen`/`tour_seen`/`active_tab` 同处」`PRMS` 相矛盾;实现在 `PRMS`(仓内 `src/output/OutputUiState.h`)。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。
 - **[J177a→§三] 导览不再写步数**:§三 括注原写「独立语言卡 + 5 步 mini tour」;[J176] 给 Input 导览加一步(仓内 #344),写死的步数随之过期。改为「mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准」—— 步数是界面内容,不是 state 契约,写在这里每加减一步就得修一次宪。[J80] 立轻量引导时定的 5 步是当时的基线,仓内历史变更文档里的「5 步」照原文保留。
 - **零变动面**:字段名、类型、默认值、首启判据、全局镜像位、state 容器 `abi`、自动化参数面(123 个)与 `tests/golden/` 一律不动;实现侧零行为改动。仓内变更文档 `docs/contract-changes/20260929-j177-withdraw-input-uiguideseen.md`。
+
+## v2.6 修订(2026-09-30,J183 state 登记向实现对齐)
+
+- **起因**:[J182] 交叉验证的文档面在 dev `b813f52d`(v0.9.0-rc.1 里程碑)上发现本文件的 state 登记与已冻结的实现不一致。[J183] 裁:rc tag 前修宪(07 §6:tag 之前是唯一的修宪窗口),一律向已冻结的实现与 `tests/golden/` 对齐。
+- **§二 / §三 `abi`:2 → 6**。v2.3(J81)写 2 时是对的;其后 [SL-279] / [SL-411] / [SL-416] / [SL-472] 四次 CFGS 尾扩各升一级,每次都只改了仓内 `STATE_SCHEMA.md`,没回写本文件。现写 v2.6 登记时的值 6,并写明往后的值以 `STATE_SCHEMA.md` §三 为准 —— 本文件只登记存在与语义,不追每一次升级。实现:`src/core/state/StateCodec.h` 的 `kCurrentAbi = 6u`;golden `tests/golden/state/abi6.bin` 头部的 abi 字段为 6。
+- **§二 撤回 `global.range`**:用户 2026-09-22 裁「契约撤回」([J102]),已把它移出仓内 `STATE_SCHEMA.md` / `PARAMETERS.md` 的 state 树 —— 实现有意不存它(载入带 CFGS 的工程时复位到默认 follow,理由见 J102),本文件当时漏改。改为一行注释说明它不在本树;[J04] 的三值枚举与默认 follow 作为运行期语义保留(v1 修订节的 [J04] 条是历史,不改)。
+- **§二 补登**(实现早已落盘、仓内 `STATE_SCHEMA.md` 早已登记、本文件没有):
+  - `analysis.applied{loudness_mode, center_slot_policy}`([SL-279],CFGS 尾扩,abi 2→3);
+  - `channels[].auto_label`([J150],`PRMS` 根节点属性 `channels_auto_label`,不动 abi);
+  - `lead_timeline[]`([J136] / [SL-216] 的新块 `LEAD`;[J143b] 把块的 minor 升到 2、加了 `automated`;不动 abi);
+  - `segments[].manual_pan` / `manual_vol`([J162] / [SL-548],`CRVS` 段 `flags` 的 bit3 / bit4;段记录布局、CRVS minor、abi 都不动);
+  - `curves_per_track[].excluded_ranges[]`:没有单独的裁定号 —— 计划层审查时把它的唯一编码落点定在 03 §6.1 `CRVS` 每轨记录(02 §3.5 / SEG-6 的删段防复活),T19 起就在 CRVS 布局里。v1 没有产生它的编辑操作(五个段编辑 op 里没有「删除」),分析路径也不读它;登记的是「布局里有、随工程原样往返」,不是「已经在用」;
+  - `versions[].meta{copied_from, copied_at_ms}`:03 §5.3「复制版本」写下的元数据(T18 引入),T19 起在 `CRVS` 每版本头里、与 `name` 同处。这一项不在 J183 点名的清单里,是按「实现往 state 里写了什么」逐块枚举时补出来的,与上面几项同属一类。
+- **§二 补注落盘口径**(字段本身不动,只写明实际口径):`capture_enabled`([J91]:布局里保留、恒写 off,载入一律 off);`source_channels`(不落盘,运行期每拍重测);`features.embedded`(v1 自动切换关闭,写出恒内嵌,[SL-395])。
+- **§三 补登 Monitor state**:[J81] 立项的第三个插件,state = `group_id` + `ui{scale, language}`,复用 Input 的 state 布局。当时的仓内变更文档 `20260825-monitor-target.md` 因此写「STATE_SCHEMA 零新增」—— 布局确实没有新增,但「Monitor 有 state、用的是这个布局」一直没有登记。
+- **§四**:编码落点注记追加一条(上列补登字段的落点);「读到高版本 → 拒载并提示升级」一条补括注(它是要求,各插件的接线实况见仓内 `STATE_SCHEMA.md`);[J81/#81] abi 那一条末尾补「后续」一句,原文不改。
+- **§一 bypass 一句**:「宿主自带 bypass 由 JUCE wrapper 提供,不占自动化位」改为「……合成,不占 123 的预算」。JUCE 8.0.8(仓内 `.juce-version`)的 VST3 wrapper 在插件没有自己的 bypass 参数时自建一个 `AudioParameterBool`(ID `byps`),它的参数信息带 `kCanAutomate | kIsBypass`(`juce_audio_plugin_client_VST3.cpp`)—— 宿主能自动化它,「不占自动化位」这句因此不对(§一 首条 Output「宿主可见 124」本来就把它算在内);它不占的是插件自己声明的参数(Output 的 123 个)的预算。
+- **为什么是「登记对齐」,不是字段 / 布局 / abi 变更**:上面每一条都是先有已冻结的实现(落点与裁定号见各条),本次修宪没有让任何一个字节的编码发生变化 —— 仓内 `src/` / `web/` / `tests/`(含 `tests/golden/`)零改动,`kCurrentAbi` 仍为 6,123 参数表与 `tests/golden/params_v0.tsv` 逐字未改。改的只是本文件对实现的描述。仓内变更文档 `docs/contract-changes/20260930-j183-params-v0-v2.6-state-register.md`。
+- **本文件改动位置**(本节之外):状态行;§一 [J81] 块的 Monitor 一条;§二 YAML(`abi`、`capture_enabled`、`range`、`applied`、`auto_label`、`source_channels`、`lead_timeline[]`、`meta`、`segments[]`、`excluded_ranges[]`、`embedded`);§三 YAML 的 `abi` 与新增的 Monitor 小节;§四 三处。历史修订节一字未动。
