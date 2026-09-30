@@ -131,6 +131,8 @@ The first time you open an Output you get, in order: the language card, then the
 
 The RANGE card on the Overview tab decides which stretch of the timeline capture and the output engine work on. Three modes: **Follow** (default — capture follows wherever you play), **Loop** (follows the DAW loop region) and **Manual** (you set the start and end).
 
+The mode you pick and the Manual start and end are **not saved with the project**: save in Loop or Manual mode, and when you reopen the project the range is back on **Follow** (the whole timeline); pick the mode again when you need it.
+
 In Manual mode:
 
 - The start and end boxes take `minutes:seconds.milliseconds`; the line below also shows the **bar and beat** the range falls on (for example "Bars 33.1 → 49.1"), and **−4 / +4** move the end by **4 bars**.
