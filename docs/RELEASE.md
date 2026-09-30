@@ -187,7 +187,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 2. **`staging` 快进到 `$M`**:用上面那组命令,把其中的 `vX.Y.Z-rc.N^{commit}` 换成 `$M`。
 3. **对 `staging` 跑一次全量 CI**:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref staging -f ref=staging`(`--ref` 与 `-f ref=` 同值),然后 `gh run list --workflow build-vst3.yml -L 1` 看结果,要全绿。push→`staging` 不触发任何 workflow,这一次 dispatch 就是 `staging` 上的全量 CI;`format` / `compliance` 已在 push→`dev` 时对同一个提交跑过。
 4. **`prod` 快进到同一个 `$M`**:同一组命令,把 `staging` 全部换成 `prod`。**这一步没做成就不要发布**:[KNOWN_ISSUES](KNOWN_ISSUES.md) 已按「rc.1 发布时 `prod` 已前移」删掉了 KI-7(rc 里文档链接 404),本版的发布说明也不再写这一条。
-5. **打 tag 并发布**:在 `$M` 上打 `v0.9.0-rc.1` 并推送(发版清单第 6 步后半;`$M` 与第 6 步写的 `origin/dev` 是同一个提交,打之前照样确认),然后照第 7、8 步核对产物、填说明、发布。发布后回读:`git ls-remote origin refs/heads/staging refs/heads/prod` 两行的 sha 都等于 `git rev-parse v0.9.0-rc.1^{commit}`。
+5. **打 tag 并发布**:在 `$M` 上打 `v0.9.0-rc.1` 并推送(发版清单第 6 步后半;`$M` 与第 6 步写的 `origin/dev` 是同一个提交,打之前照样确认),然后照第 7、8 步核对产物、填说明。**点发布之前**回读一次:`git fetch origin && git ls-remote origin refs/heads/staging refs/heads/prod` 两行的 sha 都等于 `git rev-parse v0.9.0-rc.1^{commit}`(也就是 `$M`);不等就停在草稿,先查第 2 / 4 步。相等再点发布,发布后同一条命令再回读一次。
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
 
