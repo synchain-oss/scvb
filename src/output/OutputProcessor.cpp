@@ -85,6 +85,11 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
 {
     setLatencySamples(0); // ADR-002:Output 不报额外 latency(对齐靠时间线,不靠 PDC)
 
+    // [J169 / SL-568] 输出开关有两份:打印器三态求值读 outputEnabled_,音频线程的 DSP 权威读
+    // session_.outputEnabled()。OutputSession 自己的成员缺省是开(核心类的缺省,本卡不动),新插实例的
+    // 初值以 outputEnabled_ 为准 —— 不同步的话界面显示「跟随宿主」,总线却按引擎曲线出声。
+    session_.setOutputEnabled(outputEnabled_);
+
     // 缩放的系统级全局默认(§1.29「保持」落盘的那一档);工程 state 若带 CFGS 会在
     // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
     // 构造期读一次本地小文件(几百字节 XML)是刻意的:此值必须在宿主取首个编辑器尺寸

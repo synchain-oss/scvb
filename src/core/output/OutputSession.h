@@ -317,6 +317,8 @@ private:
 
     // 配置态([M] 写 / [A] 或全局小节读)。
     std::atomic<u32> captureEnabled_{0};
+    // 本类自己的缺省。插件里的初值不看它:ScvbOutputAudioProcessor 构造时按自己的 outputEnabled_ 同步一次
+    // ([J169] 新插实例为关)。
     std::atomic<u32> outputEnabled_{1};
 
     // [M] per-channel 状态。

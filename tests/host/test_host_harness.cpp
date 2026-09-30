@@ -8033,10 +8033,10 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
 
     // **先关输出再挂监听器**,原因有二:
-    //   ① `outputEnabled_` 的**成员初始化值就是 true**(见 ScvbOutputAudioProcessor 的
-    //      `bool outputEnabled_ = true;`),分析一出段表、走带一进
-    //      区间,打印器当场就进 Print 并把 gesture 全开了 —— 不先清干净,下面「重新 begin」
-    //      的计数会因为 gesture 早就开着(begin 是幂等的)而恒为 0;
+    //   ① 让起点不依赖 `outputEnabled_` 的成员初值。[J169] 起新插实例的初值已经是关;这里仍显式
+    //      关一次,是因为初值一旦是开,分析一出段表、走带一进区间,打印器当场就进 Print 并把
+    //      gesture 全开了 —— 不先清干净,下面「重新 begin」的计数会因为 gesture 早就开着
+    //      (begin 是幂等的)而恒为 0;
     //   ② 关输出会走 Follow 分支的 endAllGestures,正好给出一个干净起点。
     r.out.setOutputEnabled(false);
     MonoMultiRig::pump(300);
@@ -8156,8 +8156,9 @@ TEST_CASE("HOST SL-489:releaseResources 后打印器不再开 gesture,prepareToP
     int replaced = 0;
     int locked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
-    // 先关输出再挂监听器(理由同 SL-231 那格的 ①②:outputEnabled_ 初值就是 true,不先关的话
-    // gesture 早已开着,begin 幂等 ⇒ 下面的 begins 恒 0;关输出走 endAllGestures 给出干净起点)。
+    // 先关输出再挂监听器(理由同 SL-231 那格的 ①②:[J169] 起新插实例的输出初值已经是关,仍显式关一次,
+    // 让起点不依赖那个初值 —— 初值若是开,gesture 早已开着,begin 幂等 ⇒ 下面的 begins 恒 0;
+    // 关输出走 endAllGestures 给出干净起点)。
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     r.out.addListener(&spy);
@@ -8292,8 +8293,8 @@ TEST_CASE("HOST 加载守卫:恢复 OFF 不设守卫;关输出解除;开输出�
     }
 
     ScvbOutputAudioProcessor out;
-    // 新建实例的 outputEnabled_ 初值就是 true,但那不是「随工程恢复」—— 不该有守卫。
-    CHECK(out.outputEnabled());
+    // 新建实例:[J169] 起输出初值是关(跟随宿主),也不是「随工程恢复」—— 不该有守卫。
+    CHECK_FALSE(out.outputEnabled());
     CHECK_FALSE(out.printGuardPending());
 
     // 恢复 ON ⇒ 待确认;再载一个 OFF 工程 ⇒ 清掉。
@@ -8362,7 +8363,8 @@ TEST_CASE("HOST 首次开输出(J166):点开始之前播放零写入,点开始�
     int locked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
 
-    // 起点:输出关、无守卫(新建实例的输出初值是开,先关一次让打印器走 endAllGestures 回到干净起点)。
+    // 起点:输出关、无守卫。[J169] 起新建实例的输出初值已经是关;这里仍显式关一次,让起点不依赖那个
+    // 初值(打印器也走一遍 endAllGestures 回到干净起点)。
     r.out.setOutputEnabled(false);
     Rig::pumpMessages(200);
     REQUIRE_FALSE(r.out.printGuardPending());
@@ -8477,6 +8479,229 @@ TEST_CASE("HOST 首次开输出(J166):守卫的置位、解除与来由", "[host
     // 上桥字面量(契约 §2.1 print_guard.reason 的取值域)。
     CHECK(juce::String(scvb::output::printGuardReasonName(PrintGuardReason::Restore)) == "restore");
     CHECK(juce::String(scvb::output::printGuardReasonName(PrintGuardReason::FirstEnable)) == "firstEnable");
+}
+
+// ---------------------------------------------------------------------------
+// [J169 / SL-568] 新插的 Output 实例,输出开关默认「跟随宿主」(关)。
+//
+// 修前:新实例 `outputEnabled_` 初值为开、且不带任何守卫;[J166] 的首次开输出守卫只在桥面 OFF→ON
+// 那一下置位。常规流程里打开 01 采集会经 [J92a] 连带关输出,之后再开就一定出确认条;但**局部重采集**
+// (`armRecapture`)替用户开采集走的是内部那条路、不触发 J92a,于是「新实例 → 先局部重采集 → 分析 →
+// 播放」一路上输出一直是开的,播放一进已分析区间就不经确认写宿主自动化。
+//
+// 两个落点(删除式为本机实测,跑的是 `[sl568],[loadguard],[J166]` 这 9 格):
+//   ① `OutputProcessor.h` 的 `outputEnabled_` 初值 false —— 改回 true ⇒ 5 格 8 条红:下面第一格两条、
+//      第二格(构造函数把 true 同步进 session_)、第三格 ★ 三条、第五格后半,以及上面
+//      「HOST 加载守卫:恢复 OFF 不设守卫…」那格的新实例断言;
+//   ② 构造函数里 `session_.setOutputEnabled(outputEnabled_)` —— 删掉 ⇒ 只有第二格红(DSP 仍按引擎权威
+//      取曲线,改宿主参数听不出来)。①② 缺一不可:打印器三态求值读 `outputEnabled_`,音频线程的 DSP
+//      权威读 `session_` 那一份。
+// 载入路径**不改**(第四、五格钉「行为不变」):CFGS 解得开 ⇒ 按工程里存的值(开 ⇒ 加载守卫 Restore);
+// CFGS 缺失 / 解不开 / 整份拒载 ⇒ 不动开关与守卫(保持实例当前值)。CFGS 里没有「缺这一个字段」的形态:
+// 它是头部定长必备字段,读不到即整块拒载。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 读一份完整 blob 里 CFGS 的 output_enabled(经生产 codec 解,不手搓字节)。
+std::uint32_t cfgsOutputEnabledOf(const juce::MemoryBlock& blob)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const auto* cfgs = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfgs != nullptr);
+    scvb::state::OutputState s;
+    REQUIRE(scvb::state::decodeOutputState(cfgs->payload.data(), cfgs->payload.size(), s));
+    return s.outputEnabled;
+}
+
+// 把一份完整 blob 里 CFGS 的 output_enabled 换成指定值(解→改→编,其余字节照旧)。
+juce::MemoryBlock blobWithOutputEnabled(const juce::MemoryBlock& src, std::uint32_t on)
+{
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const auto* cfgs = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfgs != nullptr);
+    scvb::state::OutputState s;
+    REQUIRE(scvb::state::decodeOutputState(cfgs->payload.data(), cfgs->payload.size(), s));
+    s.outputEnabled = on;
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeOutputState(s, payload));
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return juce::MemoryBlock(out.data(), out.size());
+}
+} // namespace
+
+TEST_CASE("HOST SL-568(J169):新插实例的输出开关默认关(跟随宿主),无守卫,存盘写 0", "[host][sl568][J169]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbOutputAudioProcessor out;
+
+    CHECK_FALSE(out.outputEnabled()); // ← 落点① 改回 true 即红(桥面 §1.1 快照的 global.output_enabled 取的就是它)
+    CHECK(out.printGuardReason() == scvb::output::PrintGuardReason::None);
+
+    // 不碰开关就存盘:工程里记下的是关。
+    juce::MemoryBlock blob;
+    out.getStateInformation(blob);
+    CHECK(cfgsOutputEnabledOf(blob) == 0u);
+}
+
+TEST_CASE("HOST SL-568(J169):新插实例的 DSP 跟随宿主参数(不是引擎曲线)", "[host][sl568][J169][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    // 不碰输出开关:本格测的就是新插实例的初值。对照「HOST P1-D:参数 → DSP 这一跳」那格,
+    // 那格是显式 setOutputEnabled(false) 之后测同一件事。
+    r.runBlocks(60, 0.5f);
+
+    const float loud = busPeakAfter(r, 12);
+    REQUIRE(loud > 0.0f); // 前置:确实有声
+
+    auto& apvts = r.out.getAPVTS();
+    auto* vol = apvts.getParameter(scvb::params::volId(r.out.versionActive(), kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float quiet = busPeakAfter(r, 20);
+    // ← 落点② 删掉即红:session_ 停在 OutputSession 自己的缺省(开),DSP 按引擎权威读曲线
+    //   (这条轨没有曲线 ⇒ 0 dB),把宿主参数压到 −24 dB 听不出来。
+    CHECK(quiet < loud * 0.5f);
+}
+
+TEST_CASE("HOST SL-568(J169):新插实例 → 先局部重采集 → 分析 → 播放,宿主参数零写入", "[host][sl568][J169][print]")
+{
+    HostWriteSpy spy; // 须比 rig 活得久(理由见 SL-231 那格的头注)
+
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.addListener(&spy); // 从布防前挂上:整条路上的宿主参数写入都算
+
+    // 局部重采集:三轨 × 整条时间线。armRecapture 替用户开采集走的是内部那条路,不触发 [J92a] 互斥 ——
+    // 输出开关原样不动。这正是 SL-568 的洞:输出若是开的,这一路不会把它关掉。
+    constexpr std::uint16_t kAllThree = 0x7;
+    r.out.armRecapture(kAllThree, 0.0, 600.0, /*autoStop=*/false);
+    REQUIRE(r.out.captureEnabled());
+    MonoMultiRig::pump(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.5f);
+        r.runBlocks(40, 0.0f);
+    }
+    MonoMultiRig::pump(400);
+    r.out.disarmRecapture();
+
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+
+    // 前提:分析确实产出了非居中的段 —— 否则下面的「零写入」可能只是没东西可写。
+    int pannedCh = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount && pannedCh == 0; ++ch)
+    {
+        if (std::abs(r.firstPan(ch)) > 1.0)
+        {
+            pannedCh = ch;
+        }
+    }
+    REQUIRE(pannedCh != 0);
+
+    // ★ 走带回到已分析区间播放。
+    const auto startSample = static_cast<std::int64_t>(win.startS * kSr);
+    r.ph.timeSamples = startSample;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+    CHECK(spy.begins.load() == 0); // ← 落点① 改回 true 即红(修前的 SL-568)
+    CHECK(spy.writes.load() == 0);
+    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Follow);
+
+    // 对照:同样的条件下把输出打开(不带 requireConfirm = 本窗口已确认过的开法,也就是修前那个默认开的
+    // 状态)⇒ 真的写。证明上面的零写入不是因为区间 / 走带条件本来就不满足。
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = startSample;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+    CHECK(spy.begins.load() > 0);
+    CHECK(spy.writes.load() > 0);
+
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(200);
+    r.out.removeListener(&spy);
+}
+
+TEST_CASE("HOST SL-568(J169):载入工程不受新实例初值影响 —— 存的开恢复成开并进加载守卫,存的关恢复成关",
+          "[host][sl568][J169][loadguard]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    using scvb::output::PrintGuardReason;
+
+    // 夹具两份都显式写那一位,不借新实例的初值(那一位由第一格钉;这里只钉载入路径)。
+    // 1 = 改前构建存下的工程(那时新实例默认开,没人关过就这么存)。
+    juce::MemoryBlock base;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.getStateInformation(base);
+    }
+    const juce::MemoryBlock offBlob = blobWithOutputEnabled(base, 0u);
+    const juce::MemoryBlock onBlob = blobWithOutputEnabled(base, 1u);
+    REQUIRE(cfgsOutputEnabledOf(offBlob) == 0u);
+    REQUIRE(cfgsOutputEnabledOf(onBlob) == 1u);
+
+    // ★ 全新实例载入存着开的工程 ⇒ 开 + 加载守卫(B69,行为不变)。
+    {
+        ScvbOutputAudioProcessor out;
+        out.setStateInformation(onBlob.getData(), static_cast<int>(onBlob.getSize()));
+        CHECK(out.outputEnabled()); // ← 把载入路径改成「一律关」即红
+        CHECK(out.printGuardReason() == PrintGuardReason::Restore);
+    }
+    // 存着关的工程 ⇒ 关、无守卫。输出开着、确认条还挂着的实例载入它也一样:关掉,守卫清掉。
+    {
+        ScvbOutputAudioProcessor out;
+        out.setOutputEnabled(true, /*requireConfirm=*/true);
+        REQUIRE(out.printGuardReason() == PrintGuardReason::FirstEnable);
+        out.setStateInformation(offBlob.getData(), static_cast<int>(offBlob.getSize()));
+        CHECK_FALSE(out.outputEnabled());
+        CHECK(out.printGuardReason() == PrintGuardReason::None);
+    }
+}
+
+TEST_CASE("HOST SL-568(J169):不带 CFGS 的部分状态(只带 PRMS)不动输出开关 —— 开着的仍开,全新实例仍关",
+          "[host][sl568][J169][loadguard]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    using scvb::output::PrintGuardReason;
+
+    juce::MemoryBlock base;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.getStateInformation(base);
+    }
+    const auto preset = blobPrmsOnly(base);
+
+    // 在用的实例:输出开着、已确认(无守卫)—— 载一份只带 PRMS 的预设,开关与守卫都不动(改前改后同一行为)。
+    {
+        ScvbOutputAudioProcessor out;
+        out.setOutputEnabled(true);
+        REQUIRE(out.printGuardReason() == PrintGuardReason::None);
+        out.setStateInformation(preset.data(), static_cast<int>(preset.size()));
+        CHECK(out.outputEnabled()); // ← 在 CFGS 缺失那一支加一句「一律关」即红
+        CHECK(out.printGuardReason() == PrintGuardReason::None);
+    }
+    // 全新实例:「没有信息」不读成「开」—— 停在新实例的初值(关),不出守卫。
+    // 修前这一格是「开且无守卫」:新实例载一份不带 CFGS 的状态,同样能不经确认就写。
+    {
+        ScvbOutputAudioProcessor out;
+        out.setStateInformation(preset.data(), static_cast<int>(preset.size()));
+        CHECK_FALSE(out.outputEnabled()); // ← 落点① 改回 true 即红
+        CHECK(out.printGuardReason() == PrintGuardReason::None);
+    }
 }
 
 // ===========================================================================
