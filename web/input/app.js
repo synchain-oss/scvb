@@ -73,8 +73,8 @@ const store = {
     // [SL-258] 原注释写「setGuideSeen 若因 native 未落地而落空 …… 真宿主里下行也还没有
     // ui.guide_seen / guide_seen_global,这两个标记只是空转」—— **那两句现在都不成立了**:
     // InputEditor 已注册 §3.8 handler,§3.1 快照下行 ui.guide_seen 与顶层 guide_seen_global,
-    // §4.1 scvb.state 也回推 ui.guide_seen。**工程位仍不随工程持久化**(InputStateCodec 缺
-    // 编码落点,见 SL-238),故重开工程会回 false;跨工程的「不再显示」由全局位兜住。
+    // §4.1 scvb.state 也回推 ui.guide_seen。**工程位不随工程保存**(契约口径,[J177] 撤回了
+    // 原先登记的编码落点),故重开工程会回 false;跨工程的「不再显示」由全局位兜住。
     session: {
         guideClosed: false, // 本会话已走过/跳过 mini tour
         langChosen: false, // 本会话已在首启语言卡上选过语言

@@ -23,7 +23,7 @@
 //     docs/contract-changes/20260825-input-guide-seen.md;[SL-258] 起 InputEditor 真的
 //     注册了 handler,下行也有了 `ui.guide_seen`(§3.1 快照 + §4.1 scvb.state)与顶层
 //     `guide_seen_global`,首启链在真宿主里会按「工程位 false 且 全局位 false」正常弹。
-//     **工程位仍不随工程持久化**(InputStateCodec 缺编码落点,见 SL-238):重开工程回 false,
+//     **工程位不随工程保存**(契约口径,[J177] 撤回了原先登记的编码落点):重开工程回 false,
 //     跨工程的「不再显示」承诺由全局位兜住。app.js 的会话标记是与下行无关的会话级闸门。
 //   • **无声音,仅视觉 + 文字**(05 §2.6)。
 //   • 两段导出(与 output/tour.js 同构):纯函数(无 DOM,node 可直接 import 断言)

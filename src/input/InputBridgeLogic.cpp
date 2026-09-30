@@ -338,7 +338,7 @@ juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot
     auto* ui = new juce::DynamicObject();
     ui->setProperty("scale", uiScale);
     ui->setProperty("language", lang);
-    ui->setProperty("guide_seen", guideSeen); // §3.1:随工程走的已读位(持久化待 SL-238)
+    ui->setProperty("guide_seen", guideSeen); // §3.1:会话内的已读位,不随工程保存([J177])
     o->setProperty("ui", juce::var(ui));
     // §3.1 语义行:全局判定位**只读、不属工程 state**,故挂顶层而不进 ui 子树。
     // 首启判据两侧同构:工程 ui.guide_seen === false 且 guide_seen_global === false 才弹。

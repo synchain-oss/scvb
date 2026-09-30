@@ -1,7 +1,7 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
-状态:**v2.4**(2026-09-28,J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
+状态:**v2.5**(2026-09-29,J177 修订:§三 / §四 撤回 Input `ui.guide_seen` 的编码落点 —— 该位不随工程保存、只在本次会话内有效,实现从没编码过它;同段不再写 Input 导览的步数(J177a);**字段 / 类型 / 默认值 / 首启判据 / 容器 abi / 自动化参数面全部零变动**;v2.4 = 2026-09-28 J160 修订:§二 Output `ui` 组「两侧全局位各存一份」一条的说明文字按 J132 改成实现的实际写法,**字段 / 默认值 / 编码落点 / 容器 abi / 自动化参数面全部零变动**;v2.3 = 2026-08-25 J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
 
 ## 一、Output 插件:自动化参数(共 **123** 个,全部 versionHint=1)[J59/J65]
 
@@ -92,11 +92,11 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang
 abi: 2                       # [J81/#81] Input 与 Output 共用容器 abi(kCurrentAbi=2)
 group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
 channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
-ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局镜像位 guide_seen_global 按侧独立
+ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局镜像位 guide_seen_global 按侧独立;[J177] guide_seen 不随工程保存(只在本次会话内有效)
 ```
 其余一切配置从 Output 经控制面 IPC 读写(Input UI 只是远程视图)。
 
-**[J81] Input `ui.guide_seen`**:Input 首启轻量引导([J80]:独立语言卡 + 5 步 mini tour)的**已读位**,bool,默认 `false`(首装 = 没看过)。拼写**逐字沿用 Output 侧的 `guide_seen`**,不新造 `input_guide_seen` 之类的名字 —— 两侧表达的是同一件事(只是引导内容不同),同一语义两个落点正是命名纪律要禁的;判据代码因此可两侧共用(`shouldShowLangStart` 就是一件共用的)。首启判据(两侧同构,J50a):**工程 `ui.guide_seen === false` 且 全局默认 `guide_seen_global === false`** 才弹。header「?」重看入口**不看本位**,已置位也能再开(与 Output 侧 `tour_seen` 的「重看引导」同款)。编码 = `InputStateCodec` 的 `InputState` 尾部追加 `u32 uiGuideSeen`(向后兼容的**追加段**:老工程按旧长度解码、该位取默认 0)。
+**[J81] Input `ui.guide_seen`**:Input 首启轻量引导([J80]:独立语言卡 + mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准)的**已读位**,bool,默认 `false`(首装 = 没看过)。拼写**逐字沿用 Output 侧的 `guide_seen`**,不新造 `input_guide_seen` 之类的名字 —— 两侧表达的是同一件事(只是引导内容不同),同一语义两个落点正是命名纪律要禁的;判据代码因此可两侧共用(`shouldShowLangStart` 就是一件共用的)。首启判据(两侧同构,J50a):**工程 `ui.guide_seen === false` 且 全局默认 `guide_seen_global === false`** 才弹。header「?」重看入口**不看本位**,已置位也能再开(与 Output 侧 `tour_seen` 的「重看引导」同款)。**不随工程保存**([J177]):本位只在本次会话内有效,每成功载入一份工程 state 就清零;跨工程的「看过了」由全局镜像位承担(Input 的键是 `guide_seen_global_input`,见 §二 末条)。原先登记的编码落点实现从没做过,已撤回,见文末 v2.5 修订节。
 
 ## 四、命名与兼容规则
 
@@ -106,7 +106,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 - **[J81] state 字段的编码落点注记**(宪法只登记「字段存在与语义」,编码细则归 04 §5 / 仓内 `STATE_SCHEMA.md`;此处只钉死落点,避免同一字段两处编码):
   - `ui.master_chart_mode` → **独立 fourcc 块 `UICF`**(`kFourccUiConfig`,定长 4 字节 u32:`0`=distribution / `1`=trajectory),**非 CFGS 尾字段**。选独立块的理由:反向兼容(新工程被旧版本读到)因此**零丢失** —— 旧版本不认识的 `UICF` 按容器「未知 fourcc 原样保留、save 原样回写」机制保真回写,只是不显示该偏好;若挂 CFGS 尾字段则会与 CFGS/CRVS 的解析纠缠
   - `ui.lang_chosen` → **`PRMS` 的 ValueTree**(与 `guide_seen`/`tour_seen`/`active_tab` 同处)。**不落 CFGS**:CFGS 是定长解码,追加字段会让旧构建整块拒载;ValueTree 增删字段零成本、老工程读不到即 false
-  - Input `ui.guide_seen` → `InputStateCodec` 的 `InputState` **尾部追加 `u32`**(向后兼容追加段,老工程按旧长度解码取默认 0)。同批的 Output 侧对应改动是 CFGS 布局尾部追加 `u32 uiGuideSeen` / `u32 uiTourSeen`(此前这两位只活在运行时结构里,重开工程即回到「首启」—— T37 真机 bug)
+  - Input `ui.guide_seen` → **不落 state chunk**([J177]):只在本次会话内有效,见 §三。`InputStateCodec` 的 payload 是严格等长解码,从来没有编码过这一位
   - `analysis.loudness_mode` / `analysis.center_slot_policy` → **CFGS 尾部追加两个 u32 枚举序号**(#81)。CFGS 已知字段之后若出现未知尾部(未来小版本追加),解码保留、编码原样回写(`unknownTail`),消除下次追加静默丢字段
 - **[J81/#81] state 容器 abi 1 → 2**(与 IPC abi 独立计数):随上一条的两个 analysis 字段进 CFGS 尾部而升;迁移函数 `migrate_1_to_2` 为 **no-op**(abi=1 的 CFGS 无这两个尾字段,解码按「长度回退」回落默认 `kw_integrated` / `priority_queue`,无需重写 payload)。旧版(abi=1)读新(abi=2)blob → `RejectedNewer` → 整块原样回写 + 提示升级,**绝不静默降级**;**Input 与 Output 共用容器 abi**,故两侧 YAML 的 `abi` 同步升 2(Input CFGS 本身未变)。golden 新增 `tests/golden/state/abi2.bin`,**`abi1.bin` 保留**作迁移基线(两份并存,不是替换)
 
@@ -168,3 +168,11 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 - **[J160→§二 Output `ui` 组「两侧全局位各存一份」条]** 原括注「`input.*` / `output.*` 分键」与原末句「`UiDefaultsStore` 的命名空间本来就按侧分(`scvb::output::uidefaults` / `scvb::input::uidefaults`)」**与实现不符**:实现里没有 `input.*` / `output.*` 这种键,`UiDefaultsStore` 也只有一个命名空间 `scvb::uidefaults`、一个落盘文件。按 **J132** 口径(仓内 `docs/SCVB_CONTRACT.md` §3.1 与 `docs/STATE_SCHEMA.md` §二 已由 #301 改实)改成实现的实际写法:同一个落盘文件 `ui-defaults.settings`,两个键 —— Output `guide_seen_global`、Input `guide_seen_global_input`;`tour_seen_global` 只有 Output 一个键。「各存一份」的**结论不变**,错的只是描述「怎么分」的那半句;括注改为范围限定「指 `guide_seen` 的全局位」(紧上一条同时列了 `lang_chosen_global`,不限定就会被读成三个全局位都按侧分)。
 - **口径说明**:J132 裁定行的备注写「单键口径」,那是 SL-258(#167)给 Input 另起 `guide_seen_global_input` 之前的事实;#301 已按实现写成两个键,本次与之一致(详见仓内 `docs/contract-changes/20260928-j132-guide-seen-global-keys.md` 的 ⚠ 节)。
 - **零变动面**:字段、类型、默认值、编码落点、首启判据、state 容器 `abi`、自动化参数面(123 个)与 `tests/golden/` 一律不动;实现侧零字节(键名真源 `src/plugin-common/UiDefaultsStore.cpp`)。本文件除本节外只改了两处:状态行(v2.3 → v2.4)与 §二 该条的括注和末句。仓内变更文档 `docs/contract-changes/20260928-j160-constitution-guide-keys.md`。
+
+## v2.5 修订(2026-09-29,J177 撤回 Input `ui.guide_seen` 的编码落点)
+
+- **[J177→§三 / §四]** 撤回 v2.3([J81e] / [J81f])给 Input `ui.guide_seen` 登记的编码落点「`InputStateCodec` 的 `InputState` 尾部追加 `u32`」。实现从没做过:`InputStateCodec` 的 payload 是 4 个 `u32` + 语言字节,解码严格等长,容不下尾部多出的字节;这一位只活在 Input 实例的内存里,每成功载入一份工程 state 就清零。用户裁定按实现撤回、不补做 —— 跨工程的「看过了」本来就由全局镜像位(Input 键 `guide_seen_global_input`)承担,首启链里走完或跳过 mini tour 都会连全局位一起写。
+- **本文件改了四处**(本节之外):状态行(v2.4 → v2.5);§三 YAML `ui` 行的行尾注释补一句;§三「[J81] Input `ui.guide_seen`」段:段首括注不再写导览步数(见下),末句(原为编码落点)改为「不随工程保存」;§四 编码落点注记里 Input 那一条改写。
+- **§四 那一条里 Output 侧的半句一并删去**([J177a]):原文说「同批的 Output 侧对应改动是 CFGS 布局尾部追加」guide / tour 两个 `u32`,与紧上一条(`lang_chosen` 条)自述的「与 `guide_seen`/`tour_seen`/`active_tab` 同处」`PRMS` 相矛盾;实现在 `PRMS`(仓内 `src/output/OutputUiState.h`)。删的是一句与本文件自相矛盾的旧描述,Output 侧的落点与行为都不变。
+- **[J177a→§三] 导览不再写步数**:§三 括注原写「独立语言卡 + 5 步 mini tour」;[J176] 给 Input 导览加一步(仓内 #344),写死的步数随之过期。改为「mini tour,步数以仓内 `web/input/tour-in.js` 的 `TOUR_IN_STEPS` 为准」—— 步数是界面内容,不是 state 契约,写在这里每加减一步就得修一次宪。[J80] 立轻量引导时定的 5 步是当时的基线,仓内历史变更文档里的「5 步」照原文保留。
+- **零变动面**:字段名、类型、默认值、首启判据、全局镜像位、state 容器 `abi`、自动化参数面(123 个)与 `tests/golden/` 一律不动;实现侧零行为改动。仓内变更文档 `docs/contract-changes/20260929-j177-withdraw-input-uiguideseen.md`。

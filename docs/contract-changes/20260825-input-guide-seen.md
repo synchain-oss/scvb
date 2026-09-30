@@ -5,6 +5,11 @@
 > 本 PR **只提出**变更、不改任何冻结文档本体;落地(state codec + 桥 setter + C++ 常量表 +
 > 契约 §3/§4/§7)转 **DS 侧(native)**。
 
+> **后续([J177],2026-09-29)**:本文提出的 Input 侧**编码落点**(`InputStateCodec` 的 `InputState`
+> 尾部追加一个 `u32`,见下文「落地参照」第 1 条)实现从没做过,已按 J177 从冻结文档撤回 —— Input 的
+> `ui.guide_seen` 不随工程保存,只在本次会话内有效。见 `20260929-j177-withdraw-input-uiguideseen.md`。
+> 本文其余内容是当时的提案记录,不改。
+
 ## 变更了哪个冻结契约
 
 - [ ] docs/PARAMETERS.md(自动化参数)—— **不动**。本字段是 state,非自动化;123 个参数的 ParamID/index/顺序一字未改。
