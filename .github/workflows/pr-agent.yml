@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 1 }
-      - uses: qodo-ai/pr-agent@8e4d32e5497defd43c023a404f73560c62728961 # v0.39.0 —— pin 到 commit SHA,升级手动改
+      - uses: qodo-ai/pr-agent@1d01f24f455bb879c1d9c557ad7de3d72dcc7975 # v0.39.0 —— pin 到 commit SHA,升级手动改
         env:
           # ANTHROPIC.KEY / ANTHROPIC.API_BASE 是 pr-agent 专属的点号配置项:
           # pr-agent 会显式用自己 settings 里的 api_key 覆盖原始 litellm 环境变量,
