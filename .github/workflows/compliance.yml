@@ -61,7 +61,7 @@ jobs:
         # 放在 compliance 而非 format:同族是本 job 里的 gitleaks(密钥)与 REUSE(合规),
         # gates 侧也挂在 3b(gitleaks)旁,两侧位置对应。与 gates.ps1 gate 3j 同参。
         run: node scripts/check-privacy.mjs
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         # [SL-267] 只为下面两步字体保留名断言。钉版理由同 format.yml 的 docs-truth:
         # runner 自带 python 的版本随镜像漂,而本 job 是 required check。
         # **排在 Design-box 那步之后**:setup-python 会把 3.13 抢到 PATH 最前,而那一步用的是
