@@ -38,8 +38,9 @@ struct MeterShot
 
     // 音频线程每块整体发布一次(零分配零锁)。
     // [B 线 M04] 写侧与 engine::PlayheadShot::publish 同一写法、同一理由(奇数增量 relaxed + release
-    // fence,见那里的注释):release RMW 挡不住后面的 pod 写上浮,arm64 上读方会收下半新半旧的一帧
-    // 电平。本处后果只是电平表一帧撕裂(外观),修法不因此放松。x86 上不多一条指令。
+    // fence,见那里的注释,包括「成立在编译器 / 硬件语义层面、不是标准意义上的同步」那一段):release
+    // RMW 挡不住后面的 pod 写上浮,arm64 上读方会收下半新半旧的一帧电平。本处后果只是电平表一帧撕裂
+    // (外观),修法不因此放松。x86 上不多一条指令。
     void publish(const MeterPod& p) noexcept
     {
         seq.fetch_add(1, std::memory_order_relaxed); // 奇数:进入临界区

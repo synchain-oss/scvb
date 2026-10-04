@@ -296,6 +296,11 @@ u64 steadyNowMs() noexcept;
 //   届满才 backend->unmap + impl_.reset——audio 已读到裸指针的在途块必在宽限期内完成并归还 lease。
 //   T23/T24 接入时 release() 调用点 = releaseResources/宿主挂起(音频已停),宽限期是兜底双保险;
 //   析构若早于宽限期届满,退回「进程退出统一回收」(罕见边界,进程正在卸载)。
+// [B 线 M04] 两道保护各管一段,不是互为冗余:lease() 里「读到裸指针 → leaseCount +1」之间那一小段
+//   只有宽限期保护(那时租约计数还没加上,握手与 leaseCount 复核都看不见它);租约发放之后才归
+//   leaseCount 复核 + 握手管。前一段依赖的前提是「宽限期 500ms > 音频线程在这两步之间可能被挂起的
+//   时长」,这是有意接受、**没有用例覆盖**的设计假设:test_ipc_lifecycle 的并发用例用虚拟时钟,
+//   靠显式静默点代替这 500ms(否则用例自己会踩到已释放的映射块),所以它测的是后一段。
 class SegmentHandle
 {
 public:

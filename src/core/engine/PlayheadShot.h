@@ -53,8 +53,12 @@ struct PlayheadShot
     // release fence。原先奇数增量是 release RMW,release 只约束它**之前**的访问,挡不住后面的 pod 写
     // 被提到奇数 seq 之前可见 —— arm64 上读方可能读到前后两次 seq 都是同一个偶数、pod 却已经半新半旧
     // (消费方是 AutomationPrinter / Monitor / UI,撕裂一帧就是一个错误的时间位置或 epoch)。
-    // fence 之后的 pod 写一旦被读方读到,本 fence 与读方 read() 里的 acquire fence 同步 ⇒ 奇数 seq
-    // 对读方第二次 seq 读可见 ⇒ before != after,撕裂被识别。
+    // 成立的层面要说准:按 fence 的编译器 / 硬件语义(GCC / Clang / MSVC 把它当完整的编译器屏障,
+    // arm64 上再是一条 DMB ISH),奇数 seq 先于其后的 pod 写可见;读方 read() 读到这些 pod 写时,它在
+    // 第二次读 seq 之前的 acquire fence 保证那次读看得到奇数(或更新的)seq ⇒ before != after,撕裂被
+    // 识别。**不是** C++ 标准意义上的同步:[atomics.fences] 的 fence 配对要求 fence 之后 / 之前的是
+    // 原子访问,而 pod 是普通对象,标准下这里仍是数据竞争(见文件头「取舍」,TSan 会报)。要做到标准
+    // 意义上成立,得把 pod 拆成 relaxed 原子字段,不在本卡范围。
     // x86:fetch_add 不论 relaxed / release 都是 lock xadd(本身即全屏障),release fence 只是编译器
     // 屏障、不生成指令,所以 x86 上本来就不会撕裂,这里也不多一条指令。arm64:LDADDL 换成
     // LDADD + DMB ISH,每块一次。
