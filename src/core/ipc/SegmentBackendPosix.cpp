@@ -400,7 +400,7 @@ std::chrono::milliseconds SegmentBackendPosix::lockWait(std::chrono::millisecond
     const long long last = lastLockTimeoutMs_.load(std::memory_order_relaxed);
     if (last >= 0 && steadyMs() - last < kLockBreakerWindow.count())
     {
-        return std::chrono::milliseconds(0);
+        return normal; // [INJECT J1] breaker disabled
     }
     return normal;
 }
