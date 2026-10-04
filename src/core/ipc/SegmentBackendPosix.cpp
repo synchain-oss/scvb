@@ -494,7 +494,13 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
                    "segment exists but is not ours (another user?); not touching it");
             return InitResult::kFailed;
         }
-        // [INJECT I2] orphan shm_unlink before O_EXCL create removed
+        if (::shm_unlink(shm.c_str()) != 0 && errno != ENOENT)
+        {
+            const int err = errno;
+            ::close(lockFd);
+            report(IpcDiagOp::kShmUnlink, err, shm, "cannot remove an orphaned segment before re-creating it");
+            return InitResult::kFailed;
+        }
         shmFd = ::shm_open(shm.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         if (shmFd < 0)
         {
