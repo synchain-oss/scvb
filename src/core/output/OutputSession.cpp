@@ -461,7 +461,7 @@ void OutputSession::consumeCommands(u64 /*nowMs*/)
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
         while (ctrl_.dequeue(ch, rec))
         {
-            switch (rec.op)
+            switch (static_cast<CtrlOp>(rec.op.load()))
             {
             case CtrlOp::kSetPriority:
                 // 同一拍收到多条只留最后一条(值语义,不是增量);越界钳到 0..10。

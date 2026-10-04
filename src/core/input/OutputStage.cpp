@@ -7,11 +7,6 @@
 namespace scvb::input
 {
 
-namespace
-{
-constexpr double kHalfPi = 1.57079632679489661923;
-}
-
 void SilenceStage::render(float* const* ch, int numChannels, int numSamples)
 {
     for (int c = 0; c < numChannels; ++c)

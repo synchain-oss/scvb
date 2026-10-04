@@ -20,7 +20,7 @@ struct AlignedBuffer
     std::size_t size = 0;
 
     explicit AlignedBuffer(std::size_t n)
-        : size(n), data(static_cast<unsigned char*>(::operator new(n, std::align_val_t(64))))
+        : data(static_cast<unsigned char*>(::operator new(n, std::align_val_t(64)))), size(n)
     {
         std::memset(data, 0, n);
     }

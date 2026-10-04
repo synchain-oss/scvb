@@ -29,20 +29,6 @@ std::vector<float> makeSine(double fs, double freq, double amp, int seconds)
     return out;
 }
 
-// 三个正弦叠加的确定性任意素材(非周期相对 hop 长度)。
-std::vector<float> makeMix(double fs, int seconds, double f1, double f2, double f3)
-{
-    const std::size_t n = static_cast<std::size_t>(fs * seconds);
-    std::vector<float> out(n);
-    for (std::size_t i = 0; i < n; ++i)
-    {
-        const double t = static_cast<double>(i) / fs;
-        out[i] = static_cast<float>(0.3 * std::sin(2.0 * kPi * f1 * t) + 0.2 * std::sin(2.0 * kPi * f2 * t) +
-                                    0.1 * std::sin(2.0 * kPi * f3 * t));
-    }
-    return out;
-}
-
 // 以给定块长序列(循环)推流并收集全部帧。lens 须非空;单块推流传 {numSamples}。
 std::vector<scvb::analysis::FeatFrame> runExtractor(scvb::analysis::FeatureExtractor& ex, const float* const* ch,
                                                     int numSamples, const std::vector<int>& lens)

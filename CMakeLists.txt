@@ -5,6 +5,19 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# macOS 目标(必须在 project() 之前:两者参与编译器探测)。非 Apple 平台完全忽略这两个变量,
+# Windows 零影响。project() 之前 APPLE 还没定义,所以用 NOT DEFINED 守卫(命令行 -D 可覆盖)。
+if(NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+  # 只出 Apple Silicon。universal 不做:juceaide 与全部 JUCE 模块编译量翻倍。保留为 cache
+  # 变量,哪天要出 universal 只改这一个参数。
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "macOS target architecture")
+endif()
+if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  # 11.0 = 首个支持 Apple Silicon 的系统(Big Sur),与 Bridge 同下限。不显式设就取构建机
+  # SDK 的版本,产物在老系统上会拒绝加载 —— mac 移植最常见的静默事故。
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
+
 project(SCVB VERSION 0.9.0)
 
 # ------------------------------------------------------------------
