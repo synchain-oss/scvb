@@ -64,8 +64,7 @@ struct PlayheadShot
     // LDADD + DMB ISH,每块一次。
     void publish(const PlayheadPod& p) noexcept
     {
-        seq.fetch_add(1, std::memory_order_relaxed); // 奇数:进入临界区
-        std::atomic_thread_fence(std::memory_order_release); // 挡住后面的 pod 写上浮到奇数 seq 之前
+        seq.fetch_add(1, std::memory_order_release); // [临时实验 E2] 改回 51d1386:奇数 release RMW、无 fence
         pod = p;
         seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成(release:pod 写不下沉到它之后)
     }
