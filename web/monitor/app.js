@@ -486,7 +486,8 @@ function applyScale(f) {
     store.scale = f;
     if (scaleUi.select) scaleUi.select.value = String(f);
     // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1,
-    // 受理后就地记 1 —— 与 previewScale 同一口径(state 回推 1Hz,不等它)。
+    // 回执不是拒绝(`{ok:false}`)就就地记 1 —— 与 previewScale 同一口径(state 回推 1Hz,
+    // 不等它)。桥缺席或抛错时 call() 回 null,同样记 1:目标本来就是 1,记早了无害。
     // 没锁时这一句什么都不做。
     enforceZoomLock(f, (one) =>
         call("setUiScale", one).then((res) => {

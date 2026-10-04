@@ -392,6 +392,7 @@ export function parsePreviewQuery(params) {
 /**
  * [M09] `?scale=` 的解析(Output / Input 与 Monitor 两份 mock 共用这一份,别各写一遍)。
  * 缺省 = null(快照按默认 1 档);非法值**出警告**不静默吞(同 staleFullEvery / host)。
+ * 这里只管「是不是正数」;「在不在该侧档位表内」要知道角色,由 `scaleTableWarning` 判。
  * @param {URLSearchParams} q
  * @param {string[]} warnings
  * @returns {number|null}
@@ -401,8 +402,20 @@ export function parseScaleQuery(q, warnings) {
     if (raw === null) return null;
     const v = Number(raw);
     if (raw.trim() !== "" && Number.isFinite(v) && v > 0) return v;
-    warnings.push(`scale=${raw} 非法(要正数,且在该侧档位表内),已按 1 档`);
+    warnings.push(`scale=${raw} 非法(要正数),已按 1 档`);
     return null;
+}
+
+/**
+ * [M09] 正数但不在该侧档位表内的 `?scale=`:壳页与快照都回落 1 档,这里**出声**,
+ * 不静默吞(拼错一位小数就悄悄跑在 1 档上,拿到的是「看起来像但不是你要的那档」)。
+ * @returns {string|null} 要追加的警告;在表内或没给时为 null
+ */
+export function scaleTableWarning(role, scale) {
+    if (scale === null || scale === undefined) return null;
+    if (openingScaleFor(role, scale) !== null) return null;
+    const presets = (DESIGN[role] && DESIGN[role].presets) || [];
+    return `scale=${scale} 不在 ${role} 的档位表内(${presets.join(" / ")}),已按 1 档`;
 }
 
 /**
@@ -1352,6 +1365,8 @@ export function createPreviewSession(opts = {}) {
             : sniffRole(parsed);
 
     const warnings = parsed.warnings.slice();
+    const scaleWarn = scaleTableWarning(role, parsed.scale);
+    if (scaleWarn) warnings.push(scaleWarn);
     let fixture = parsed.fixture;
     if (opts.fixture) {
         if (FIXTURES.includes(opts.fixture)) fixture = opts.fixture;

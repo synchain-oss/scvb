@@ -45,6 +45,7 @@ import {
     buildWorld,
     openingScaleFor,
     parseScaleQuery,
+    scaleTableWarning,
 } from "./state-driver.js";
 import { curveSegmentAt } from "../../web/shared/readback.js";
 import {
@@ -225,8 +226,12 @@ export function parseMonitorQuery(params) {
     const rawPh = q.get("playhead");
     const playhead = rawPh === null ? true : rawPh !== "off" && rawPh !== "0";
 
-    // [M09] `?scale=` —— 开窗档位,判据与 state-driver / 壳页同一份(见 openingScaleFor)。
-    const scale = openingScaleFor("monitor", parseScaleQuery(q, warnings));
+    // [M09] `?scale=` —— 开窗档位,判据与 state-driver / 壳页同一份(见 openingScaleFor);
+    // 表外的正数同样出警告(scaleTableWarning),不静默回落。
+    const rawScale = parseScaleQuery(q, warnings);
+    const scaleWarn = scaleTableWarning("monitor", rawScale);
+    if (scaleWarn) warnings.push(scaleWarn);
+    const scale = openingScaleFor("monitor", rawScale);
 
     return { scenario, group, play, playhead, globalWidthPct, scale, warnings };
 }
