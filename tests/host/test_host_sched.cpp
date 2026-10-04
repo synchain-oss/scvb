@@ -425,6 +425,10 @@ TEST_CASE("SCHED rig 5: pace=1 keeps the wall clock within 20% of audio time", "
 
     INFO("audio " << audio << " ms, wall " << wall << " ms");
     CHECK(wall >= 0.8 * audio);
+    // 上限是有意保留的判据,不是对 runner 的苛求:pace=1 给墙钟门限类场景用,跟不上实时就意味着
+    // 500ms / 5s 那些门限落在错的音频位置上,场景读数随之失真 —— 那时这里该红。节拍目标是绝对时刻,
+    // 单次派发的过冲会在下一周期扣回、不累积;能让它红的只有「处理持续慢于实时」或「单次派发卡住
+    // 约 400ms 以上」。±20% 是 A-2 验收原文。
     CHECK(wall <= 1.2 * audio);
     CHECK(rig.beats().size() > beat0 + 20); // 实时节拍下 [M] 被持续泵到
 }
@@ -740,7 +744,8 @@ TEST_CASE("SCHED rig 7: transport events, live switches, quirks and stall polici
     }
 
     // (k) 首尾相接的 noRegion 与 silent 区间算连起来:跨接缝的那一帧整帧静音,不是边沿帧。
-    //     (区间放在 100 s,本用例的时间线走不到那里,不影响上面的块日志。)
+    //     (区间放在 100 s,本用例的时间线走不到那里,不影响上面的块日志。这两段区间会一直留在 lane 1
+    //     的配置里 —— 往本用例续写调度步骤时,写在 (k) 之前。)
     {
         const std::int64_t x = sec(100.0);
         rig.noRegion(1, x, x + 500);

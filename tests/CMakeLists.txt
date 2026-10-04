@@ -417,9 +417,15 @@ set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
 #     scvb_host_sched_tests       0.03 0.04 0.04 (s,`Passed` 那一列)
 # 同一份二进制直接跑 `"[sched]"`:2 例全过,三轮墙钟 0.04–0.05s;过滤串换成不存在的标签时
 # 打印 `No tests ran`、退出码 2。
-# 规则沿用上面四套快套件那段的 `max(最慢观测 × 3, 30s)`,今天落在 30s 这一档。
+# **观测**(A-2 落框架自测之后,10 例;本机经构建槽 + with-ipc-lock 手跑 ctest 六轮,CI 一轮):
+#     本机 8.91 8.82 8.88 / 8.98 8.97 8.93 s;CI(build-and-validate)8.46 s。
+# 数字取 120,不按 `max(最慢观测 × 3, 30s)` 落回 30 那一档 —— 这一套**失败的跑比通过的跑慢**
+#(与上面主条目 `HOST L-6b` 同一形态):交接走不完时,每台 rig 的 settle() 要等满 8s 墙钟上限才放弃,
+# ①②③⑥ 四台合计约 35s。30s 会把这种最该被看见的失败改判成 Timeout,超时之后那几台的断言原文
+# 都来不及打出来。
+# 120 = 失败路径约 35s 的 3 倍余量、通过路径约 9s 的 13 倍,仍远低于 ctest 默认的 1500s。
 # ⚠ A-4 落场景后**重新量**并只改这个数 —— 本文件里 A 线的源文件与 ctest 条目由 A-1 一次登记完,
 #   之后不再增删,只改这里的 TIMEOUT 与观测。
 add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
-set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 30)
+set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 120)
 endif()
