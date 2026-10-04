@@ -626,8 +626,7 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
         {
             const int openErr = errno;
             ::close(lockFd);
-            diag.note(IpcDiagOp::kShmOpen, openErr,
-                      openErr == ENOENT ? "segment missing although its lock is held" : "shm_open(attach) failed");
+            report(IpcDiagOp::kShmOpen, openErr, shm, {}, "[INJECT J2] reported while holding lifecycle.lock");
             return InitResult::kFailed;
         }
     }
