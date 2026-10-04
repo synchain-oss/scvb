@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// windows.h 的 min/max 宏会污染 std::numeric_limits<T>::min() 与 std::max;先禁用再包含
-// SegmentBackendWin32.h(其内部 include windows.h 但未定义 NOMINMAX)。
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
@@ -29,7 +23,7 @@
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // 按平台选段后端(Windows 分支自带 NOMINMAX,见该头)
 #include "analysis/AnalysisPipeline.h"
 #include "analysis/VadPreview.h" // [J146] 拖动档预览的计算核(与流水线 S1 同一份实现)
 #include "output/BusXfade.h"
@@ -915,7 +909,7 @@ private:
     juce::CriticalSection lifecycleMutex_; // 串行化 prepare/release/setState/claim/心跳
 
     // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
-    scvb::SegmentBackendWin32 backend_;
+    scvb::PlatformSegmentBackend backend_; // 按平台选定的段后端(见 ipc/PlatformSegmentBackend.h)
     scvb::output::OutputSession session_;
     // [T44/J75] viz 段发布器(Monitor 只读数据面)。只在 [M] 触碰;processBlock 对 viz 段零写入。
     scvb::output::VizPublisher vizPublisher_;

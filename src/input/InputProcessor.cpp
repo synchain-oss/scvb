@@ -29,8 +29,7 @@ ScvbInputAudioProcessor::ScvbInputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
-      ctrl_(backend_, scvb::input::kInputDefaultGroup)
+      session_(backend_, scvb::currentProcessId()), ctrl_(backend_, scvb::input::kInputDefaultGroup)
 {
     setLatencySamples(0); // ADR-002:Input 报告 latency=0
 

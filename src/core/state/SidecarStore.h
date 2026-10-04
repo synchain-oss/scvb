@@ -67,7 +67,8 @@ struct ProcessIdentity
     std::uint64_t processStartEpochMs = 0;
     std::string hostName; // manifest hostName 元数据
 };
-// 当前进程身份(Windows 用 GetCurrentProcessId/GetProcessTimes/GetComputerNameA;非 Windows 退化为 pid=0)。
+// 当前进程身份(Windows 用 GetCurrentProcessId/GetProcessTimes/GetComputerNameA;POSIX 用 getpid/gethostname,
+// 进程起始时刻在 Apple 上取 sysctl(KERN_PROC_PID) 的 p_starttime,其余 POSIX 暂留 0)。
 ProcessIdentity currentProcessIdentity();
 
 // owner.lock(04 §5.5):{pid, processStartTime, heartbeatIso8601}。

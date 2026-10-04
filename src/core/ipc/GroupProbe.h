@@ -2,7 +2,9 @@
 #pragma once
 
 // GroupProbe —— [M] 1Hz 跨组只读探测(01 §4.5 / J70):openExistingReadOnly 本组外各组的
-// registry 段(契约 §2.4 FILE_MAP_READ 最小权限),单次校验 magic/abi 后读 OutputSlot 心跳。
+// registry 段(契约 §2.4 FILE_MAP_READ 最小权限),先校验段尺寸足以容纳 OutputSlot,再单次校验
+// magic/abi 后读 OutputSlot 心跳。Input / Output / Monitor 三个插件的跨组探测都走这一处
+// (B 线 M03 起 Output 不再另走只限 Win32 的 RegistryProbe)。
 // 只读 attach(绝不创建段、绝不覆盖式重初始化);magic 未就绪/段不存在 → 该组判离线(探测失败
 // 是可接受降级:UI 绿点全灭、不报错,05 §3/J70)。
 // 禁止音频线程调用(openExistingReadOnly/unmap 是系统调用;心跳位图仅驱动 1Hz UI 绿点)。

@@ -15,7 +15,7 @@
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
 #include "analysis/WaveValleys.h" // [J145] §1.27 valleys[]:吸附谷点
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
-#include "ipc/RegistryProbe.h"
+#include "ipc/GroupProbe.h" // [B 线 M03] 跨组只读探测(经后端抽象;取代只限 Win32 的 RegistryProbe)
 #include "output/MixMath.h"
 #include "state/FeaturesSnapshot.h" // [SL-226] FrameStore ↔ FEAT 搬运
 #include "state/SidecarStore.h" // [SL-226] >8MB 转外部文件(ADR-007 阈值 + 04 §5.3 回滞)
@@ -79,7 +79,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      session_(backend_, scvb::currentProcessId()),
       vizPublisher_(backend_, 1u), // [T44] 组号随 setGroupId/prepareToPlay 校正
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
@@ -1871,11 +1871,16 @@ std::filesystem::path ScvbOutputAudioProcessor::sidecarBaseDir()
     {
         return testDir; // 仅测试注入;生产恒空
     }
-    // 与 UiDefaultsStore 同根(%APPDATA%\Synchain\SCVB,STATE_SCHEMA §4.3)。
+    // 与 UiDefaultsStore 同根(STATE_SCHEMA §4.3):Windows = %APPDATA%\Synchain\SCVB(逐字不变);
+    // macOS = ~/Library/Application Support/Synchain/SCVB。JUCE 的 userApplicationDataDirectory 在 mac 上
+    // 是 ~/Library,要多拼一层 Application Support 才落到冻结文档写的位置,也才与 UiDefaultsStore 的
+    // osxLibrarySubFolder 同根(B 线 M03)。
     // 注意这里**只接现行 appdata 机制** —— 存储位置的 UI 与策略归 T47([J84] 已裁),不在本卡。
-    const juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                                   .getChildFile("Synchain")
-                                   .getChildFile("SCVB");
+    juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
+#if JUCE_MAC
+    appData = appData.getChildFile("Application Support");
+#endif
+    appData = appData.getChildFile("Synchain").getChildFile("SCVB");
     return std::filesystem::path(appData.getFullPathName().toStdString());
 }
 
@@ -3575,15 +3580,10 @@ std::uint8_t ScvbOutputAudioProcessor::probeGroupsOnline()
     if (ownState == scvb::output::OutputClaimState::kActive || ownState == scvb::output::OutputClaimState::kObserver)
         bitmap |= static_cast<std::uint8_t>(1u << (groupId_ - 1));
 
-    // 异组:只读探测(契约 §2.4;失败=0 位,不重试不报错)。尺寸校验用 VirtualQuery(PR#55 缺陷1)。
-    const scvb::u64 now = scvb::steadyNowMs();
-    for (int g = 1; g <= scvb::kMaxGroups; ++g)
-    {
-        if (g == groupId_)
-            continue; // 本组已判定
-        if (scvb::probeRegistryGroupOnline(static_cast<scvb::u32>(g), now))
-            bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
-    }
+    // 异组:只读探测(契约 §2.4;失败=0 位,不重试不报错)。与 Input / Monitor 同走 GroupProbe
+    // (经 backend_ 的 openExistingReadOnly,尺寸 / magic / abi 校验都在那一处);本组位由上面判定,
+    // 不交给探测(includeOwnGroup 取缺省 false)。
+    bitmap |= scvb::probeGroupsOnline(backend_, static_cast<scvb::u32>(groupId_), scvb::steadyNowMs());
     return bitmap;
 }
 
