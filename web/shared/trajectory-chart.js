@@ -778,6 +778,7 @@ export function createTrajectoryChart(opts) {
         //
         //   滚轮        横向平移(左右滑动)        Ctrl+滚轮   横向缩放(中心跟光标 x)
         //   Shift+滚轮  纵向平移(上下滑动)        Alt+滚轮    纵向缩放(中心跟光标 y)
+        //   (Ctrl 那一路 Cmd 同义,[M09];词条写作「Ctrl 或 Cmd」)
         //
         // 「裸滚轮 = 平移、Ctrl+滚轮 = 缩放」把最常用的动作放在不按键的那一档。
         // [SL-205 2026-08-27] 这里原先记着「本图语义自此与 Tab3 泳道分叉,是否统一留
@@ -797,7 +798,9 @@ export function createTrajectoryChart(opts) {
                 if (d === 0) return;
 
                 // ---- Ctrl+滚轮 = 横向缩放(以光标 x 为锚)
-                if (e.ctrlKey) {
+                // [M09] Cmd(metaKey)同 Ctrl:macOS 上 Ctrl+滚轮常被系统「辅助功能缩放」
+                // 先吃掉,Mac 用户按的是 Cmd。与 Tab3 泳道的 wheelRoute 同一口径。
+                if (e.ctrlKey || e.metaKey) {
                     const vp = timeline.viewport();
                     const anchorT = xToTime(
                         vp,

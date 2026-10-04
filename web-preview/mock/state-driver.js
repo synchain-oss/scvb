@@ -27,6 +27,7 @@
 // =============================================================================
 
 import { paramIdOf } from "../../web/shared/param-id.js";
+import { DESIGN } from "../../web/shared/design-box.js";
 import {
     createMockBackend,
     makeDefaultParams,
@@ -286,7 +287,8 @@ function toSearchParams(params) {
 /**
  * 解析预览参数。
  * @returns {{fixture:string, scenario:string|null, loop:"host"|"none"|null,
- *            play:boolean|null, host:string|null, role:string|null, warnings:string[]}}
+ *            play:boolean|null, host:string|null, scale:number|null,
+ *            role:string|null, warnings:string[]}}
  */
 export function parsePreviewQuery(params) {
     const q = toSearchParams(params);
@@ -369,6 +371,10 @@ export function parsePreviewQuery(params) {
             );
     }
 
+    // [M09] `?scale=` —— 开窗档位(壳页 shell.js 按它定 iframe 尺寸)。这里只解析成有限正数;
+    // 合不合**该侧**档位表由 buildWorld 判(表外与壳页同样回落 1 档)。
+    const scale = parseScaleQuery(q, warnings);
+
     return {
         fixture,
         scenario: rawScenario,
@@ -377,9 +383,51 @@ export function parsePreviewQuery(params) {
         staleFullEvery,
         tempo,
         host,
+        scale,
         role: q.get("role"),
         warnings,
     };
+}
+
+/**
+ * [M09] `?scale=` 的解析(Output / Input 与 Monitor 两份 mock 共用这一份,别各写一遍)。
+ * 缺省 = null(快照按默认 1 档);非法值**出警告**不静默吞(同 staleFullEvery / host)。
+ * 这里只管「是不是正数」;「在不在该侧档位表内」要知道角色,由 `scaleTableWarning` 判。
+ * @param {URLSearchParams} q
+ * @param {string[]} warnings
+ * @returns {number|null}
+ */
+export function parseScaleQuery(q, warnings) {
+    const raw = q.get("scale");
+    if (raw === null) return null;
+    const v = Number(raw);
+    if (raw.trim() !== "" && Number.isFinite(v) && v > 0) return v;
+    warnings.push(`scale=${raw} 非法(要正数),已按 1 档`);
+    return null;
+}
+
+/**
+ * [M09] 正数但不在该侧档位表内的 `?scale=`:壳页与快照都回落 1 档,这里**出声**,
+ * 不静默吞(拼错一位小数就悄悄跑在 1 档上,拿到的是「看起来像但不是你要的那档」)。
+ * @returns {string|null} 要追加的警告;在表内或没给时为 null
+ */
+export function scaleTableWarning(role, scale) {
+    if (scale === null || scale === undefined) return null;
+    if (openingScaleFor(role, scale) !== null) return null;
+    const presets = (DESIGN[role] && DESIGN[role].presets) || [];
+    return `scale=${scale} 不在 ${role} 的档位表内(${presets.join(" / ")}),已按 1 档`;
+}
+
+/**
+ * [M09] 快照的开窗档位:**档位表内**的 `?scale=` 才认,否则 null(= 保持快照原样的 1 档)。
+ * 判据与壳页 `mountPreview` 定 iframe 尺寸的那一句逐条相同 —— 两边必须对同一个 URL
+ * 给出同一个档位,否则又回到「窗口是 1.5 倍、快照说 1」的分家。
+ * @param {"output"|"input"|"monitor"} role
+ * @param {number|null|undefined} scale
+ */
+export function openingScaleFor(role, scale) {
+    const presets = (DESIGN[role] && DESIGN[role].presets) || [];
+    return presets.includes(scale) ? scale : null;
 }
 
 // -----------------------------------------------------------------------------
@@ -1023,6 +1071,25 @@ export function buildWorld(opts = {}) {
     if (outputSnapshot && HOST_VALUES.includes(opts.host)) {
         outputSnapshot = { ...outputSnapshot, host: opts.host };
     }
+    // [M09] `?scale=`:真宿主上「窗口 = 设计盒 × 档位」与快照 `ui.scale` 出自同一个
+    // `uiScale_`(WebViewHost 的 resizeToDesignBox 与 buildSnapshot 读的是同一份),
+    // 壳页早就按 `?scale=` 定 iframe 尺寸了,快照这一侧却恒为 1 —— 「用户存过 1.5、
+    // 宿主按 1.5 开窗」这条真实路径在预览里走不到。只改**本侧**快照的 `ui.scale`,其余不动。
+    const openScale = openingScaleFor(opts.role, opts.scale);
+    if (openScale !== null) {
+        if (opts.role === "output" && outputSnapshot && outputSnapshot.ui) {
+            outputSnapshot = {
+                ...outputSnapshot,
+                ui: { ...outputSnapshot.ui, scale: openScale },
+            };
+        }
+        if (opts.role === "input" && inputSnapshot && inputSnapshot.ui) {
+            inputSnapshot = {
+                ...inputSnapshot,
+                ui: { ...inputSnapshot.ui, scale: openScale },
+            };
+        }
+    }
 
     // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
     // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
@@ -1298,6 +1365,8 @@ export function createPreviewSession(opts = {}) {
             : sniffRole(parsed);
 
     const warnings = parsed.warnings.slice();
+    const scaleWarn = scaleTableWarning(role, parsed.scale);
+    if (scaleWarn) warnings.push(scaleWarn);
     let fixture = parsed.fixture;
     if (opts.fixture) {
         if (FIXTURES.includes(opts.fixture)) fixture = opts.fixture;
@@ -1322,6 +1391,9 @@ export function createPreviewSession(opts = {}) {
         // [J150] 同上一条的接线纪律:`?host=` 只有经这一行才到得了 buildWorld。
         // 非默认值那一格 = smoke-host-hints.mjs 的 mock 段(host=reaper 必须落进快照)。
         host: parsed.host,
+        // [M09] 同上一条的接线纪律:非默认值那一格 = smoke-zoom-legacy-page.mjs 的 (n1)
+        // (三页以 `?scale=1.5` 开窗,页面读数必须是 1.5)。
+        scale: parsed.scale,
     });
     const { backend, ctl } = createMockBackend({ role, world });
     const driver = makeDriver(ctl, world);

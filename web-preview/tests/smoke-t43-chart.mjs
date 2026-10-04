@@ -845,6 +845,34 @@ log("=== ⑥ 词条(chart.* 三语)===");
 }
 
 // =============================================================================
+log("=== ⑥b [M09] 快捷键文案:Ctrl 或 Cmd(三语)===");
+
+// Mac 上 Ctrl+滚轮常被系统「辅助功能缩放」先吃掉、撤销是 Cmd+Z —— 词条把 Cmd 一起写出来,
+// 与代码里的 `ctrlKey || metaKey` 同口径。Cmd 必须是 **ASCII**:字体子集里没有 ⌘ 字形
+// (gate 3h 的 KNOWN_ABSENT_UPSTREAM 名单之外,写进去就是方块)。
+{
+    const KEYS = [
+        "chart.trajCanvasAria", // 轨迹图(Ctrl/Cmd+滚轮 = 横向缩放)
+        "tour.step34.body", // Tab3 泳道滚轮四路
+        "master.copyConfirmWarn", // 「可撤销(Ctrl/Cmd+Z)」
+    ];
+    const OR = { zh: "或", en: "or", fr: "ou" };
+    for (const k of KEYS) {
+        for (const lang of ["zh", "en", "fr"]) {
+            const v = String(T[lang][k] || "");
+            check(
+                v.includes(`Ctrl ${OR[lang]} Cmd`),
+                `${lang}.${k} 写成「Ctrl ${OR[lang]} Cmd」(实得 ${v.slice(0, 80)}…)`,
+            );
+            check(
+                !v.includes("\u2318"),
+                `${lang}.${k} 不用 ⌘(字体子集没有这个字形)`,
+            );
+        }
+    }
+}
+
+// =============================================================================
 log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
 
 {
@@ -1565,6 +1593,22 @@ log("=== ⑪ 滚轮四路映射(2026-08-25 用户 preview 后定稿)===");
         "锚点跟光标 x(压左缘缩放,左缘时刻不动)",
     );
     check(!chart.following(), "Ctrl+滚轮缩放 ⇒ 脱离跟随");
+    // [M09] Cmd(metaKey)同 Ctrl:macOS 上 Ctrl+滚轮常被系统「辅助功能缩放」先吃掉。
+    // 删除式:trajectory-chart.js 那句改回只认 `e.ctrlKey` ⇒ 这两格红(Meta 落到裸滚轮那一路去平移)。
+    reset();
+    const spanM = spanOfVp(vp());
+    wheel({ deltaY: -100, metaKey: true });
+    check(
+        spanOfVp(vp()) < spanM,
+        "Cmd(metaKey)+滚轮向上 ⇒ 横向放大(与 Ctrl 同一路,[M09])",
+    );
+    reset();
+    const leftM = vp().startS;
+    wheel({ deltaY: -100, metaKey: true, clientX: 0 });
+    check(
+        Math.abs(vp().startS - leftM) < 1e-6,
+        "Cmd+滚轮锚点同样跟光标 x(压左缘缩放,左缘时刻不动)",
+    );
 
     // ---- ③ Shift+滚轮 = 纵向平移
     reset();
@@ -1618,6 +1662,7 @@ log("=== ⑪ 滚轮四路映射(2026-08-25 用户 preview 后定稿)===");
     for (const [name, init] of [
         ["裸滚轮(否则连带滚动祖先容器)", { deltaY: 100 }],
         ["Ctrl+滚轮(否则触发浏览器页面缩放)", { deltaY: 100, ctrlKey: true }],
+        ["Cmd+滚轮", { deltaY: 100, metaKey: true }],
         ["Shift+滚轮", { deltaY: 100, shiftKey: true }],
         [
             "Alt+滚轮(部分平台有历史前进/后退默认)",
@@ -1655,6 +1700,7 @@ log("=== ⑪ 滚轮四路映射(2026-08-25 用户 preview 后定稿)===");
     for (const [name, init, stillFollowing] of [
         ["裸滚轮(横向平移)", { deltaY: 100 }, false],
         ["Ctrl+滚轮(横向缩放)", { deltaY: -100, ctrlKey: true }, false],
+        ["Cmd+滚轮(横向缩放)", { deltaY: -100, metaKey: true }, false],
         ["Shift+滚轮(纵向平移)", { deltaY: 100, shiftKey: true }, true],
         ["Alt+滚轮(纵向缩放)", { deltaY: -100, altKey: true }, true],
     ]) {

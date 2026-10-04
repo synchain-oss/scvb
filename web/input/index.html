@@ -696,6 +696,16 @@
                 align-items: center;
                 gap: var(--sp-8);
             }
+            /* [M09] 旧 WebKit 下「缩放锁 100%」的一行提示,夹在 hint 与缩放下拉之间
+               (新语义下恒 hidden)。可缩 + 省略号:窄到放不下时它自己让,不把右侧挤出卡片。 */
+            .ipt-footer__lock {
+                flex: 0 1 auto;
+                margin-left: auto; /* 贴着右侧缩放下拉,不浮在 footer 正中 */
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
 
             /* ---- 一次性 toast(占用冲突反馈 ch.occupied) */
             .ipt-toast-slot {
@@ -1119,6 +1129,15 @@
                     data-gb="input.footer.hint"
                     data-t="in.footer.hint"
                 ></span>
+                <!-- [M09] 旧 WebKit(getBoundingClientRect 不含 CSS zoom)下缩放锁在 100% 的一行提示。
+                     判据见 web/shared/hit.js 的 zoomRectMode;app.js 只在锁定时摘掉 hidden。 -->
+                <span
+                    class="ipt-footer__lock sc-hint"
+                    data-gb="input.footer.scaleLock"
+                    data-t="scale.lockedLegacy"
+                    hidden
+                    >WebKit 低于 26.4,缩放固定为 100%</span
+                >
                 <div class="ipt-footer__right">
                     <select
                         class="sc-select"
