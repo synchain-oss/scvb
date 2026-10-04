@@ -437,7 +437,7 @@ void SegmentBackendPosix::noteLockFailure(int error, const std::string& lockPath
     }
     diag.note(IpcDiagOp::kLifecycleLock, error,
               error == ETIMEDOUT ? "timed out waiting for lifecycle.lock" : "cannot open lifecycle.lock", lockPath);
-    diag.suppressed = suppressedLockFailures_.exchange(0, std::memory_order_relaxed);
+    (void)suppressedLockFailures_.exchange(0, std::memory_order_relaxed); // [INJECT K2] count not attached
 }
 
 void SegmentBackendPosix::track(Mapping* m) noexcept
