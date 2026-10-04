@@ -99,8 +99,6 @@ endif()
 # 下面 `scvb_tests` 那一条 ctest(30s 上界,见 [SL-320] 那段)**不跑**它们;由独立 ctest 条目
 # `scvb_seqlock_stress` 用同一个二进制按标签 `[stress]` 单跑,上界单独给(见紧随的 set_tests_properties)。
 target_sources(scvb_tests PRIVATE core/test_seqlock_stress.cpp)
-# [B 线 M04] PR #366 arm64 临时实验用例(不合入,做完即 revert):同样只在 scvb_seqlock_stress 条目里跑。
-target_sources(scvb_tests PRIVATE core/test_m04_arm64_experiment.cpp)
 
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
@@ -164,7 +162,7 @@ set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
 # 每种 shot × 三种缓存行摆放 = 6 轮,每轮读侧 100ms,设计时长约 0.6s,不随机器快慢伸缩。
 # 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 PR 描述)。
 add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
-set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 240) # [B 线 M04] PR #366 临时实验:循环 ×40 需要更长上界,随实验 revert
+set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
 
 # scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
 # ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。
