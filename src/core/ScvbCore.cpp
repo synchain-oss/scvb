@@ -16,7 +16,6 @@ constexpr const char* kScvbCoreVersion = SCVB_VERSION_STRING;
 
 const char* coreVersion()
 {
-    int m06aInjectedUnused = 0; // INJECTION (temporary): the macOS zero-warning gate must go red
     return kScvbCoreVersion;
 }
 } // namespace scvb
