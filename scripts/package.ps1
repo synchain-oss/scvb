@@ -31,7 +31,7 @@
 .EXAMPLE   pwsh scripts/package.ps1 -Version 0.0.0-dryrun -BuildDir D:\artifacts -OutDir D:\out
 #>
 param(
-  # 缺省 = CMakeLists.txt 的 project(SCVB VERSION x.y.z)。tag 带 -rc.N 时由 release.yml 传整串(不含 v)。
+  # 缺省 = CMakeLists.txt 的 project(SCVB VERSION x.y.z)。tag 带 -rc.N / -beta.N 时由 release.yml 传整串(不含 v)。
   [string]$Version,
   # 缺省 = "v$Version"。INSTALL.txt 的源码 URL 与手册链接都钉在这个 tag 上。
   [string]$Tag,
@@ -40,7 +40,7 @@ param(
   # 缺省 = 仓库 HEAD。只写进 INSTALL.txt / summary 作溯源,不参与判定。
   [string]$SourceCommit,
   # 只给演练 tag(v0.0.0-test)用:THIRD-PARTY-NOTICES 点名的许可证在 LICENSES/ 里缺全文时降为 [WARN]
-  # 并记进 summary,好让流水线演练不被合规缺口卡住。正式版 / rc 不传,缺就红。
+  # 并记进 summary,好让流水线演练不被合规缺口卡住。正式版 / rc / beta 不传,缺就红。
   [switch]$AllowMissingLicenseTexts,
   # 只跑不依赖构建产物的检查就退出(见下方 Preflight 段)。
   [switch]$Preflight

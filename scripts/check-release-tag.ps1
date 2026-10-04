@@ -29,34 +29,55 @@ if ($SelfTest) {
   if ($null -ne $none) { Write-Host "  [FAIL] 非 SCVB 的 project() 不该被认:得到 '$none'" -ForegroundColor Red; $fail++ }
   else { Write-Host '  [ok] 非 SCVB 的 project() 不认' }
 
-  # tag, cmake, 期望 Ok, 期望 Kind, 期望 Version
+  # tag, cmake, 期望 Ok, 期望 Kind, 期望 Version, 期望 Prerelease(放行的格才比对后三项)。
+  # Prerelease 决定 release.yml 建草稿时勾不勾 pre-release,所以每个放行格都钉住它。
   $cases = @(
-    @('v1.2.3', '1.2.3', $true, 'final', '1.2.3'),
-    @('v1.2.3-rc.1', '1.2.3', $true, 'rc', '1.2.3-rc.1'),
-    @('v1.2.3-rc.12', '1.2.3', $true, 'rc', '1.2.3-rc.12'),
-    @('v0.0.0-test', '1.2.3', $true, 'test', '0.0.0-test'),
-    @('v0.0.0-test.2', '1.2.3', $true, 'test', '0.0.0-test.2'),
-    @('v1.2.4', '1.2.3', $false, $null, $null),
-    @('v1.2.3-rc.1', '1.2.4', $false, $null, $null),
-    @('v1.2.3-test', '1.2.3', $false, $null, $null),
-    @('v1.2.3-beta.1', '1.2.3', $false, $null, $null),
-    @('v1.2.3-rc', '1.2.3', $false, $null, $null),
-    @('v0.0.0-beta', '1.2.3', $false, $null, $null),
-    @('v0.0.0-rc.1', '1.2.3', $false, $null, $null),
-    @('1.2.3', '1.2.3', $false, $null, $null),
-    @('v1.2', '1.2', $false, $null, $null),
-    @('v1.2.3 ', '1.2.3', $false, $null, $null),
-    @("v1.2.3`n", '1.2.3', $false, $null, $null),
-    @('v3.22', '3.22', $false, $null, $null)
+    @('v1.2.3', '1.2.3', $true, 'final', '1.2.3', $false),
+    @('v1.2.3-rc.1', '1.2.3', $true, 'rc', '1.2.3-rc.1', $true),
+    @('v1.2.3-rc.12', '1.2.3', $true, 'rc', '1.2.3-rc.12', $true),
+    # beta 与 rc 同一条规则(B 线 M15):X.Y.Z 等于 CMake 版本、勾 pre-release。
+    # 第一格在 M15 之前的期望是「拒」(当时 beta 不是发版通道),这是规格变更,不是放宽判据。
+    @('v1.2.3-beta.1', '1.2.3', $true, 'beta', '1.2.3-beta.1', $true),
+    @('v1.2.3-beta.12', '1.2.3', $true, 'beta', '1.2.3-beta.12', $true),
+    @('v0.10.0-beta.1', '0.10.0', $true, 'beta', '0.10.0-beta.1', $true),
+    @('v0.0.0-test', '1.2.3', $true, 'test', '0.0.0-test', $true),
+    @('v0.0.0-test.2', '1.2.3', $true, 'test', '0.0.0-test.2', $true),
+    @('v1.2.4', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-rc.1', '1.2.4', $false, $null, $null, $null),
+    @('v1.2.3-test', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-rc', '1.2.3', $false, $null, $null, $null),
+    @('v0.0.0-beta', '1.2.3', $false, $null, $null, $null),
+    @('v0.0.0-rc.1', '1.2.3', $false, $null, $null, $null),
+    # beta 反例:版本不一致;0.0.0 不享受演练 tag 的「不比对版本」;序号缺失 / 多段 / 大写 / 别的预发布名。
+    @('v1.2.3-beta.1', '1.2.4', $false, $null, $null, $null),
+    @('v0.10.0-beta.1', '0.9.0', $false, $null, $null, $null),
+    @('v0.0.0-beta.1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta.', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta.1.2', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta.x', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-BETA.1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-Beta.1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-alpha.1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-rc.1-beta.1', '1.2.3', $false, $null, $null, $null),
+    @('v1.2.3-beta.1+build.5', '1.2.3', $false, $null, $null, $null),
+    @("v1.2.3-beta.1`n", '1.2.3', $false, $null, $null, $null),
+    @('1.2.3', '1.2.3', $false, $null, $null, $null),
+    @('v1.2', '1.2', $false, $null, $null, $null),
+    @('v1.2.3 ', '1.2.3', $false, $null, $null, $null),
+    @("v1.2.3`n", '1.2.3', $false, $null, $null, $null),
+    @('v3.22', '3.22', $false, $null, $null, $null)
   )
   foreach ($c in $cases) {
     $r = Test-ScvbReleaseTag $c[0] $c[1]
-    $bad = ($r.Ok -ne $c[2]) -or ($c[2] -and (($r.Kind -ne $c[3]) -or ($r.Version -ne $c[4])))
+    $bad = ($r.Ok -ne $c[2]) -or ($c[2] -and (($r.Kind -ne $c[3]) -or ($r.Version -ne $c[4]) -or ($r.Prerelease -ne $c[5])))
     if ($bad) {
-      Write-Host ("  [FAIL] tag='{0}' cmake={1}: Ok={2} Kind={3} Version={4} ({5})" -f $c[0], $c[1], $r.Ok, $r.Kind, $r.Version, $r.Message) -ForegroundColor Red
+      Write-Host ("  [FAIL] tag='{0}' cmake={1}: Ok={2} Kind={3} Version={4} Prerelease={5} ({6})" -f $c[0], $c[1], $r.Ok, $r.Kind, $r.Version, $r.Prerelease, $r.Message) -ForegroundColor Red
       $fail++
     } else {
-      Write-Host ("  [ok] tag='{0}' cmake={1} -> Ok={2} {3}" -f $c[0], $c[1], $r.Ok, $r.Kind)
+      if ($c[2]) { Write-Host ("  [ok] tag='{0}' cmake={1} -> Ok={2} {3} prerelease={4}" -f $c[0], $c[1], $r.Ok, $r.Kind, $r.Prerelease) }
+      else { Write-Host ("  [ok] tag='{0}' cmake={1} -> Ok={2}" -f $c[0], $c[1], $r.Ok) }
     }
   }
   if ($fail -gt 0) { Write-Host "check-release-tag self-test: $fail 格失败" -ForegroundColor Red; exit 1 }
