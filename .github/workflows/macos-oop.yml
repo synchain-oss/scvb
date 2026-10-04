@@ -1,0 +1,282 @@
+name: macOS OOP spike (reusable)
+
+# ── B 线 M01:AUHostingService 进程外共享内存 spike ───────────────────────────────────────────
+# 回答一个问题:SCVB 的 AU 被宿主以「进程外」方式加载(Logic 的做法:插件跑在 AUHostingService
+# 里)时,POSIX 共享内存 / 真实 home 下的锁文件 / ObjC 运行时会合还能不能用。判定表(A / A′ / B / C /
+# 不定)与退出码的唯一实现是 tests/macos/auhost-spike/spike_judge.h,结论记录在
+# docs/spikes/S5-macos-auhost-oop.md。
+#
+# **触发面**:只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job
+# `macos-oop` 调用,所以跑不跑完全继承 build-vst3.yml 的触发规则(pull_request→dev/feature/**、
+# push→dev、workflow_dispatch);被 release.yml 经 build-vst3.yml 调起时,caller 上的
+# `!startsWith(github.ref, 'refs/tags/')` 让它整个跳过 —— mac 失败绝不挡 Windows 发版。
+# **action**:只用 run: 步骤 + build-vst3.yml 里已经 pin 的三个 GitHub 官方 action
+# (checkout / cache / upload-artifact,同一个 40 位 SHA);org 白名单之外的 action 会让整个 run
+# startup_failure。
+# **JUCE 浅克隆、身份断言、AU 安装与注册轮询**照抄 bridge 仓 ci.yml 的 build-and-validate-macos。
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "要 checkout 的 ref;空 = actions/checkout 的默认(PR 用合并提交,push 用推送的 sha)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  auhost-spike:
+    name: auhost-spike (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-26 只在 workflow_dispatch 时加入。被调用的 workflow 里 `github` 上下文属于调用方,
+        # 所以这里的 event_name 就是 build-vst3.yml 那一次 run 的事件。
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["macos-15","macos-26"]' || '["macos-15"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # 0) 版本单一真源:JUCE tag 只从仓库根 .juce-version 读(CLAUDE.md §6)。
+      - name: Resolve pinned versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          juce=$(tr -d '[:space:]' < .juce-version)
+          if [ -z "$juce" ]; then echo "::error::empty .juce-version"; exit 1; fi
+          built=$(git rev-parse HEAD)
+          echo "JUCE_TAG=$juce" >> "$GITHUB_ENV"
+          echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
+          echo "built sha=$built juce=$juce"
+
+      # 1) 工具链与会话留痕:OOP 实例化起不来时,第一个要排除的就是「runner 没有 GUI 会话」。
+      - name: Record toolchain & session
+        shell: bash
+        run: |
+          set -uo pipefail
+          sw_vers
+          uname -m
+          cmake --version | head -n 1
+          clang --version | head -n 1
+          xcodebuild -version || true
+          echo "HOME=$HOME"
+          if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+            echo "launchd gui/$(id -u) domain: present"
+          else
+            echo "launchd gui/$(id -u) domain: absent"
+          fi
+
+      # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(逻辑逐条照抄 bridge 的 bash 版)。
+      - name: Restore JUCE cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/JUCE
+          key: juce-${{ runner.os }}-${{ env.JUCE_TAG }}
+
+      - name: Clone JUCE (shallow, pinned; skipped on cache hit) & assert tag identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          juce="$GITHUB_WORKSPACE/JUCE"
+          want="${JUCE_TAG#v}"
+          for attempt in 1 2; do
+            cloned=0
+            if [ -f "$juce/CMakeLists.txt" ]; then
+              echo "JUCE $JUCE_TAG restored from cache (attempt $attempt)"
+            else
+              rm -rf "$juce"
+              git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git "$juce"
+              cloned=1
+            fi
+            tags="$(git -C "$juce" tag --points-at HEAD 2>/dev/null || true)"
+            got=""
+            while IFS= read -r t; do
+              if [ -n "$t" ] && [ "${t#v}" = "$want" ]; then got="$t"; break; fi
+            done <<< "$tags"
+            if [ -n "$got" ]; then
+              echo "JUCE identity OK: HEAD is tag '$got' == .juce-version $JUCE_TAG"; exit 0
+            fi
+            if [ "$cloned" = "1" ]; then
+              echo "::error::freshly cloned JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG"; exit 1
+            fi
+            echo "::warning::cached JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG; re-cloning"
+            rm -rf "$juce"
+          done
+          echo "::error::JUCE identity check failed: expected $JUCE_TAG"; exit 1
+
+      - name: Ensure Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+          ninja --version
+
+      # 3) spike 是独立 CMake 工程(不进根工程):两个探针 AU + 宿主 auhost_spike。
+      - name: Configure & build spike
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tests/macos/auhost-spike -B build-spike -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DJUCE_PATH="$GITHUB_WORKSPACE/JUCE"
+          cmake --build build-spike --parallel 2>&1 | tee build-spike.log
+
+      # 4) 定位产物 + 架构断言(arm64 单架构);数量写死「恰好 1 个」,取第一个会静默带走不确定的产物。
+      - name: Locate artefacts & assert arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in SCVBSpikeA SCVBSpikeB; do
+            n=$(find build-spike -type d -name "$name.component" | wc -l | tr -d '[:space:]')
+            if [ "$n" != "1" ]; then echo "::error::expected exactly 1 $name.component, found $n"; exit 1; fi
+          done
+          a=$(find build-spike -type d -name 'SCVBSpikeA.component' -print -quit)
+          b=$(find build-spike -type d -name 'SCVBSpikeB.component' -print -quit)
+          host=$(find build-spike -type f -name 'auhost_spike' -perm -u+x -print -quit)
+          if [ -z "$host" ]; then echo "::error::auhost_spike was not built"; exit 1; fi
+          {
+            echo "SPIKE_AU_A=$GITHUB_WORKSPACE/$a"
+            echo "SPIKE_AU_B=$GITHUB_WORKSPACE/$b"
+            echo "SPIKE_HOST=$GITHUB_WORKSPACE/$host"
+          } >> "$GITHUB_ENV"
+          archs=$(file "$a"/Contents/MacOS/* "$b"/Contents/MacOS/* "$host")
+          printf '%s\n' "$archs"
+          if printf '%s\n' "$archs" | grep -q 'x86_64'; then echo "::error::x86_64 slice present"; exit 1; fi
+          printf '%s\n' "$archs" | grep -q 'arm64' || { echo "::error::mach-o is not arm64"; exit 1; }
+          echo "::group::Info.plist AudioComponents (A)"
+          plutil -p "$a/Contents/Info.plist" || true
+          echo "::endgroup::"
+          codesign -dv "$a" 2>&1 || true
+
+      # 5) 装 AU(必须 ditto;cp -r 会丢符号链接与扩展属性),踢 AudioComponentRegistrar 重扫,
+      #    轮询 auval -a 直到两个三元组都出现。没出现只警告:宿主会报「组件没注册上」=
+      #    负对照不成立 => 判定 inconclusive + 退出码 1,不会被读成任何结论。
+      #    先把 auval -a 落进变量再 grep:`auval -a | grep -q` 会因 SIGPIPE 在 pipefail 下判非零。
+      - name: Install AUs & wait for registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$dest"
+          for au in "$SPIKE_AU_A" "$SPIKE_AU_B"; do
+            ditto "$au" "$dest/$(basename "$au")"
+          done
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          registered=0
+          for _ in $(seq 1 60); do
+            list="$(auval -a 2>/dev/null || true)"
+            if grep -qE '^[[:space:]]*aufx[[:space:]]+Sxsa[[:space:]]+Snch([[:space:]]|$)' <<< "$list" &&
+               grep -qE '^[[:space:]]*aufx[[:space:]]+Sxsb[[:space:]]+Snch([[:space:]]|$)' <<< "$list"; then
+              registered=1; break
+            fi
+            sleep 1
+          done
+          if [ "$registered" = "1" ]; then
+            echo "both spike components are registered"
+          else
+            echo "::warning::spike components not listed by auval -a within 60 s"
+            auval -a 2>/dev/null | grep -i 'Snch' || true
+          fi
+
+      # 6) 判定表先自测(合成输入逐格断言),再实跑:判定表本身被改坏时,这一步先红。
+      - name: Judge self-test (decision table)
+        shell: bash
+        run: '"$SPIKE_HOST" --self-test'
+
+      # 7) 进程内对照。宿主自己不判红(退出码只记录),由 judge 一处决定。
+      - name: Run in-process (flags = 0)
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p spike-out
+          rc=0
+          "$SPIKE_HOST" --mode inproc --out-dir spike-out --raw-paths || rc=$?
+          echo "$rc" > spike-out/inproc.rc
+          echo "inproc host exit=$rc"
+
+      # 8) 进程外。起不来(例如没有 GUI 会话)是合法结论「不定」,所以这一步本身永不染红 job:
+      #    超时也只让 oop.kv 缺席,由 judge 判 inconclusive(退出码 0)。
+      - name: Run out-of-process (kAudioComponentInstantiation_LoadOutOfProcess)
+        timeout-minutes: 6
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          "$SPIKE_HOST" --mode oop --out-dir spike-out --raw-paths || rc=$?
+          echo "$rc" > spike-out/oop.rc
+          echo "oop host exit=$rc"
+
+      # 9) 判定:退出码 1 只给「负对照不成立」(组件没注册上 / 进程内 shm 没成功 / 32 字符名没报
+      #    ENAMETOOLONG);其余结论(A / A′ / B / C / 因 OOP 起不来的不定)都是 0。
+      - name: Judge (G0 decision table)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          "$SPIKE_HOST" --judge --out-dir spike-out || rc=$?
+          if [ -f spike-out/summary.md ]; then cat spike-out/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+          echo "judge exit=$rc"
+          exit "$rc"
+
+      # 10) 反向注入(常驻):宿主按错误的 subtype 找组件,判定必须是 inconclusive 且退出码 1,
+      #     绝不能是任何一种「结论」。这一格红 = 判定会把「根本没测到」读成结果。
+      - name: Reverse injection - wrong subtype must be inconclusive
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p spike-neg
+          "$SPIKE_HOST" --mode inproc --out-dir spike-neg --raw-paths --subtype-a Sxsz || true
+          rc=0
+          "$SPIKE_HOST" --judge --out-dir spike-neg > spike-neg/judge.txt 2>&1 || rc=$?
+          verdict=$(sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p' spike-neg/verdict.json 2>/dev/null || true)
+          echo "wrong-subtype run: verdict=$verdict judge_exit=$rc"
+          if [ "$rc" != "1" ] || [ "$verdict" != "inconclusive" ]; then
+            echo "::error::wrong subtype was judged '$verdict' (exit $rc); it must be 'inconclusive' with exit 1"
+            exit 1
+          fi
+
+      # 11) 只记录、不判定:auval 自己的进程内 / -oop 加载结果,供 OOP 起不来时区分「本宿主的问题」
+      #     还是「runner 的问题」。auval 加载时探针同样会跑(token 0),它写的 JSON 一并收进 artifact。
+      - name: Informational - auval in-process and -oop
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          if auval -h 2>&1 | grep -q -- '-oop'; then echo "auval lists -oop"; else echo "auval -h does not list -oop"; fi
+          auval -v aufx Sxsa Snch > spike-out/auval-inproc.log 2>&1 || true
+          tail -n 3 spike-out/auval-inproc.log
+          auval -oop -v aufx Sxsa Snch > spike-out/auval-oop.log 2>&1 || true
+          tail -n 3 spike-out/auval-oop.log
+
+      - name: Collect plugin-side JSON & build log
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p spike-out/plugin-logs
+          cp -R "$HOME/Library/Logs/Synchain/SCVB-spike/." spike-out/plugin-logs/ 2>/dev/null || true
+          cp build-spike.log spike-out/ 2>/dev/null || true
+          ls -la spike-out spike-out/plugin-logs spike-neg 2>/dev/null || true
+
+      - name: Upload spike results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SCVB-macos-oop-spike-${{ matrix.os }}-${{ env.BUILT_SHA }}
+          path: |
+            spike-out
+            spike-neg
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

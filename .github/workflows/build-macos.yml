@@ -1,0 +1,56 @@
+name: Build macOS (reusable)
+
+# ── B 线 macOS 构建(M01 只放骨架;M06a 起填实)───────────────────────────────────────────────
+# 只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job `macos-build` 调用,
+# 跑不跑完全继承 build-vst3.yml 的触发规则;被 release.yml 经 build-vst3.yml 调起时,caller 的
+# tag 守卫让它跳过(mac 发版另由 release.yml 自己的 build-mac 调本文件,见 M16)。
+# 写者链(严格串行):M01 → M06a → M06b → M08 → M10 → M16。
+# 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action。
+# job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "要 checkout 的 ref;空 = actions/checkout 的默认(PR 用合并提交,push 用推送的 sha)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-validate-macos:
+    name: build-and-validate-macos
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # 骨架:只证明「caller → reusable → macOS arm64 runner」这条链路通、钉版文件可读。
+      # M06a 在这里换成真构建(scvb_core + scvb_tests、clang 零警告门、ctest)。
+      - name: Skeleton - runner identity & pinned versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          arch=$(uname -m)
+          if [ "$arch" != "arm64" ]; then echo "::error::expected an arm64 runner, got $arch"; exit 1; fi
+          cmake --version | head -n 1
+          clang --version | head -n 1
+          for f in .juce-version .pluginval-version; do
+            v=$(tr -d '[:space:]' < "$f")
+            if [ -z "$v" ]; then echo "::error::empty $f"; exit 1; fi
+            echo "$f=$v"
+          done
+          {
+            echo "## build-macos (skeleton)"
+            echo ""
+            echo "- runner: macOS $(sw_vers -productVersion) $arch"
+            echo "- built sha: $(git rev-parse HEAD)"
+            echo "- M01 skeleton only; the real macOS build (scvb_core + scvb_tests, zero-warning gate, ctest) lands with M06a."
+          } >> "$GITHUB_STEP_SUMMARY"

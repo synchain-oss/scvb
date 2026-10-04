@@ -25,6 +25,7 @@
 //   退出码:任一断言失败 = 1,全通过 = 0。
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -92,10 +93,23 @@ if (CHARSET_WHITELIST.test(PATTERN)) {
 // **白名单挡不住危险方向**:`\d` 的两个字符(`\` 与 `d`)都在白名单里。所以真正有牙的是
 // 下面这道 —— 把同一批用例喂给**真的 `grep -E`**,两个引擎的命中集合必须逐条一致。
 function ereHitSet(pattern, paths) {
-    const r = spawnSync("grep", ["-E", pattern], {
-        input: paths.join("\n") + "\n",
-        encoding: "utf8",
-    });
+    // 正则经**文件**交给 grep(`-f`),不走 argv([B 线 M01] 实测):Windows 上 Node 把不含空格的参数
+    // 原样拼进命令行,Git for Windows 自带的 grep(MSYS2 运行时)解析命令行时会吃掉反斜杠 ——
+    // `a\.b` 到了 grep 手里是 `a.b`,`aXb` 也命中。于是本机这一档对拍的其实是「去转义」后的另一条
+    // 正则;此前的用例里没有能区分 `\.` 与 `.` 的近邻反例,所以一直没暴露。文件名用相对路径 + cwd,
+    // 让临时目录的绝对路径(含反斜杠)也不经过 argv。CI(ubuntu)上两种传法等价。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "check-native-paths-"));
+    let r;
+    try {
+        fs.writeFileSync(path.join(dir, "native-re.txt"), pattern + "\n");
+        r = spawnSync("grep", ["-E", "-f", "native-re.txt"], {
+            cwd: dir,
+            input: paths.join("\n") + "\n",
+            encoding: "utf8",
+        });
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
     if (r.error) {
         // **只有「找不到 grep」才允许降级**。原先一句 `if (r.error) return null` 把
         // 权限不足、进程数耗尽这些失败也一律说成「本机没有 grep」—— 错因说窄了,人会
@@ -143,6 +157,12 @@ const HIT = [
     ".sccache-version",
     ".sccache-sha256",
     ".github/workflows/build-vst3.yml",
+    // [B 线 M01] build-vst3.yml 的两个 mac caller 所调的 reusable 配方:改配方要自己跑一遍。
+    ".github/workflows/build-macos.yml",
+    ".github/workflows/macos-oop.yml",
+    // [B 线 M01 预登记,M10 落地] mac 打包脚本,由 build-macos.yml 消费。文件今天还不存在,
+    // 这条正例让删除式验证照样兜住它那条分支;落地时 ④ 的 NON_NATIVE_PINNED 放行它。
+    "scripts/package-macos.sh",
 ];
 // 不命中 = 不进构建,跳过是对的。
 const MISS = [
@@ -160,6 +180,15 @@ const MISS = [
     "screenshots/foo.png",
     "LICENSES/GPL-3.0-or-later.txt",
     ".github/workflows/format.yml", // 别的 workflow 不影响 native 产物
+    ".github/workflows/release.yml", // 发版编排本身不编译(它调 build-vst3.yml,后者命中)
+    // [B 线 M01] 近邻反例:分支尾部的 `$` 与 `\.yml` 转义都要有牙 —— 写漏 `$` 时 `.bak` 会命中,
+    // 写漏转义时 `build-macosXyml` 会命中,扩展名写成 .yaml 则不该命中(仓里只用 .yml)。
+    ".github/workflows/build-macos.yaml",
+    ".github/workflows/build-macosXyml",
+    ".github/workflows/macos-oop.yml.bak",
+    // scripts/ 里只有 package-macos.sh 一个文件进 native 面;Windows 侧的打包脚本与同名备份都不进。
+    "scripts/package.ps1",
+    "scripts/package-macos.sh.orig",
     ".clang-format",
 ];
 
@@ -329,7 +358,8 @@ const NON_NATIVE_TOP = [
     "web-preview/",
 ];
 // **混合**顶层条目:内部既有命中面又有不命中面,所以两张清单哪张都放不下它。
-// 今天只有 `.github/`:`workflows/build-vst3.yml` 命中(改构建配方要自己编一遍),
+// 今天只有 `.github/`:`workflows/build-vst3.yml` 与它调用的两个 mac reusable 配方
+// (`build-macos.yml` / `macos-oop.yml`,B 线 M01)命中(改构建配方要自己编一遍),
 // 同目录的 `format.yml` 等 14 个文件不命中。单列一张,并在下面**断言它真的是混合的** ——
 // 否则「混合」会变成一个万能借口:哪天 `.github/` 整个进了构建,把它挂在这里就能瞒过去。
 const MIXED_TOP = [".github/"];
@@ -339,7 +369,21 @@ const MIXED_TOP = [".github/"];
 // `build-vst3.yml` 消费,`.github/` 仍然「有的命中有的不命中」⇒ 照绿,而新长出来的那棵
 // 子树谁也没分类过。钉死集合之后,`.github/` 内部再长出命中面也必须来登记一笔。
 const MIXED_EXPECT = {
-    ".github/": [".github/workflows/build-vst3.yml"],
+    ".github/": [
+        ".github/workflows/build-macos.yml",
+        ".github/workflows/build-vst3.yml",
+        ".github/workflows/macos-oop.yml",
+    ],
+};
+// **non-native 顶层条目里逐个钉死的 native 例外**([B 线 M01])。`scripts/` 整体仍是 non-native
+// (计划明确不把它挪进 MIXED_TOP:今天它一个命中文件都没有,挪过去会被「MIXED_TOP 里一个都不命中」
+// 那条当场判红),但 M10 会新增 `scripts/package-macos.sh` 并让 build-macos.yml 消费它 ——
+// NATIVE_RE 已在 M01 一次登记好这条分支,这里同步登记「scripts/ 里只允许这一个文件命中」。
+// 判据与 MIXED_EXPECT 同一口径:non-native 条目里**多出**任何一个命中文件照样红;钉了的例外必须
+// 真命中 NATIVE_RE、必须有正例(否则删除式验证管不到它的分支)、key 必须在 NON_NATIVE_TOP 里。
+// 例外文件**允许暂不存在**(预登记),但会打印出来,不静默。
+const NON_NATIVE_PINNED = {
+    "scripts/": ["scripts/package-macos.sh"],
 };
 
 function topLevelOf(file) {
@@ -403,7 +447,7 @@ if (tracked === null) {
 
     const unclassified = [];
     const listRot = [];
-    // 引擎分叉与三张清单**一点关系都没有**(它是「JS 与 grep -E 对同一条正则的理解不一样」)。
+    // 引擎分叉与这几张清单**一点关系都没有**(它是「JS 与 grep -E 对同一条正则的理解不一样」)。
     // 混进 listRot 会让它顶着「清单与仓库现状对不上」的抬头打印,人会先去翻 NON_NATIVE_TOP
     // 找一条根本不存在的错行 —— 错因说不准,正是本卡通篇在治的东西(复审第 2 轮)。
     const engineRot = [];
@@ -454,10 +498,16 @@ if (tracked === null) {
         }
         if (inNon) {
             // 白名单是**判据**不是装饰:被列为 non-native 的目录一旦长出命中面,
-            // 说明它进构建了,清单在替它挡着 —— 必须红。
-            if (hits > 0)
+            // 说明它进构建了,清单在替它挡着 —— 必须红。唯一的放行是 NON_NATIVE_PINNED 里
+            // 逐个钉死的文件([B 线 M01]);钉死之外多出一个照样红。
+            const pinned = NON_NATIVE_PINNED[top] || [];
+            const extra = group.filter(
+                (f) => rx.test(f) && !pinned.includes(f),
+            );
+            if (extra.length > 0)
                 listRot.push(
-                    `${top}:列在 NON_NATIVE_TOP,但里面有 ${hits} 个文件命中 NATIVE_RE —— 它已经进构建了`,
+                    `${top}:列在 NON_NATIVE_TOP,但里面有 ${extra.length} 个文件命中 NATIVE_RE 且不在 NON_NATIVE_PINNED 里` +
+                        `(${extra.join(", ")})—— 它已经进构建了`,
                 );
             continue;
         }
@@ -485,6 +535,33 @@ if (tracked === null) {
             listRot.push(
                 `${t}:在 MIXED_EXPECT 里钉了命中集合,却不在 MIXED_TOP 里 —— 没有任何人会读它(僵尸条目)`,
             );
+
+    // NON_NATIVE_PINNED 是第四张清单([B 线 M01]),同样不许没有判据:
+    //   key 不在 NON_NATIVE_TOP ⇒ 没人读它;路径不在 key 底下 ⇒ 钉错了地方;
+    //   不命中 NATIVE_RE ⇒ 那条分支被改窄 / 删了,「放行」放的是一个永远不会出现的命中;
+    //   不在 HIT 正例里 ⇒ ③ 删除式验证兜不住它那条分支。
+    const pinnedAbsent = [];
+    for (const [t, files] of Object.entries(NON_NATIVE_PINNED)) {
+        if (!NON_NATIVE_TOP.includes(t))
+            listRot.push(
+                `${t}:在 NON_NATIVE_PINNED 里钉了例外,却不在 NON_NATIVE_TOP 里 —— 没有任何人会读它(僵尸条目)`,
+            );
+        for (const f of files) {
+            if (!f.startsWith(t))
+                listRot.push(
+                    `${t}:NON_NATIVE_PINNED 里的 ${f} 不在这个顶层条目底下`,
+                );
+            if (!rx.test(f))
+                listRot.push(
+                    `${t}:NON_NATIVE_PINNED 钉了 ${f},但它不命中 NATIVE_RE(那条分支被改窄或删了?)`,
+                );
+            if (!HIT.includes(f))
+                listRot.push(
+                    `${t}:NON_NATIVE_PINNED 钉了 ${f},但 HIT 正例里没有它 —— 删除式验证兜不住它那条分支`,
+                );
+            if (!tracked.includes(f)) pinnedAbsent.push(f);
+        }
+    }
 
     const present = new Set(byTop.keys());
     for (const t of [...NON_NATIVE_TOP, ...MIXED_TOP])
@@ -535,7 +612,7 @@ if (tracked === null) {
         // 人会照着抬头去翻 NON_NATIVE_TOP 找一条根本不存在的错行,正是这道门要消除的动作。
         // 三个独立 `if`,不是 `else if`(复审第 4 轮):这三类**可以共现** —— 改窄 NATIVE_RE
         // 的某条分支就会一起发生(MIXED_EXPECT 报 gone,同时两个引擎命中面分叉)。写成三选一时,
-        // 抬头会打出「顶层条目一条不缺,是三张清单自己过期了」这种**排他断言**,而下面紧跟着
+        // 抬头会打出「顶层条目一条不缺,是清单自己过期了」这种**排他断言**,而下面紧跟着
         // 还有引擎红 —— 人照抬头去改清单,改完还是红。
         if (unclassified.length) {
             console.error(
@@ -547,14 +624,14 @@ if (tracked === null) {
         }
         if (listRot.length) {
             console.error(
-                "check-native-paths: **清单与仓库现状对不上** —— 这一类里顶层条目一条不缺,是三张清单自己过期了。",
+                "check-native-paths: **清单与仓库现状对不上** —— 这一类里顶层条目一条不缺,是清单(NON_NATIVE_TOP / MIXED_TOP / MIXED_EXPECT / NON_NATIVE_PINNED)自己过期了。",
             );
         }
         if (engineRot.length) {
             console.error(
                 "check-native-paths: **两个引擎对 NATIVE_RE 的理解不一致** —— 这里(JS RegExp)与 CI(grep -E)命中面不同。",
             );
-            console.error("  这一类与三张清单无关,别去翻 NON_NATIVE_TOP。");
+            console.error("  这一类与这几张清单无关,别去翻 NON_NATIVE_TOP。");
         }
         for (const [t, n, h] of unclassified) {
             console.error(
@@ -579,7 +656,7 @@ if (tracked === null) {
                 // ⚠ 这里必须是**双**反斜杠:普通 JS 字符串里 "\d" 是 `d`、"\b" 是 U+0008 BACKSPACE。
                 //    第 2 轮抄 ②b 那句话时漏了一层,于是这条**讲转义陷阱的报错自己踩了转义陷阱** ——
                 //    实测打出来是 「`d` / `s` / `^H`」。失败路径专属,没有任何机器会替你发现(复审第 3 轮)。
-                "         典型成因:`\\d` / `\\s` / `\\b` 这类 JS 认、ERE 当字面量的转义。与三张清单无关。",
+                "         典型成因:`\\d` / `\\s` / `\\b` 这类 JS 认、ERE 当字面量的转义。与这几张清单无关。",
             );
         process.exit(1);
     }
@@ -591,6 +668,11 @@ if (tracked === null) {
             `(${nativeTops} 命中 NATIVE_RE / ${NON_NATIVE_TOP.length} 显式 non-native / ` +
             `${MIXED_TOP.length} 混合)。`,
     );
+    // 预登记的例外**还没入库**时说一声:它今天不受「真实路径」那几档检验,只受 ② ③ 的合成正例检验。
+    if (pinnedAbsent.length)
+        console.log(
+            `  NON_NATIVE_PINNED 预登记(尚未入库,仅由 ②③ 的正例兜着): ${pinnedAbsent.join(", ")}`,
+        );
 }
 
 console.log("check-native-paths 通过。");
