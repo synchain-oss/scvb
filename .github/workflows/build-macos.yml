@@ -190,10 +190,13 @@ jobs:
             exit 1
           fi
 
+      # 以下各步只要求「编出来了」(steps.build 成功),**不**要求上一道门绿:零警告门红的那一轮,
+      # ctest 与 golden 对拍照样跑完,一次往返看到全部结论(job 结论仍是红)。
       # 6) ctest 上界属性门禁:先自测再实扫(与 build-vst3.yml / 本机 gate 5b 同一条命令)。
       #    两步分开写:合进一个块,自测红、实扫绿会让整步变绿。
       #    pwsh 不在镜像里时这两步直接红:「工具缺失」不得计为通过。
       - name: ctest timeout properties - self-test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -201,6 +204,7 @@ jobs:
           pwsh -NoProfile -File scripts/check-ctest-timeouts.ps1 -SelfTest
 
       - name: ctest timeout properties (reads generated CTestTestfile.cmake)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -210,6 +214,8 @@ jobs:
       # 7) 产物身份:scvb_tests 必须是 arm64 单架构,且 Mach-O 的 minos 等于 CMakeCache 里的
       #    部署目标(证明根 CMakeLists.txt 那两段真的进了编译参数,而不只是进了缓存)。
       - name: Assert scvb_tests is arm64-only with the configured minos
+        id: locate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -231,6 +237,7 @@ jobs:
       #    跑了只会报 Not Run);`--no-tests=error` 让正则一旦选空就红,而不是绿着什么都没跑。
       #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
       - name: Unit tests (ctest -R scvb_tests)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -241,6 +248,7 @@ jobs:
       #    golden 里每一条数据行(非空、非 # 注释,与测试里 readLines 同一口径)都至少在一条**通过**的
       #    断言上出现过。这样「逐行通过」是数出来的,而不是从「整套绿」推出来的。
       - name: IPC layout golden - line-by-line on arm64
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
