@@ -34,8 +34,9 @@ jobs:
   build-and-validate-macos:
     name: build-and-validate-macos
     runs-on: macos-15
-    # [M06b] 全量构建(三个插件 × VST3/AU + JUCE 系测试)的冷编时长按实测再收;先给 90。
-    timeout-minutes: 90
+    # [M06b] 实测(macos-15 arm64,JUCE 源码缓存命中、无编译缓存):configure 35 s,全量构建 541 步
+    # 384 s,整个 job 约 8 分钟。45 分钟留约 5 倍余量,只拦挂死,不是性能预算。
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
