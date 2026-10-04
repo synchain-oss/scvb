@@ -85,6 +85,7 @@ target_compile_definitions(SCVBMonitor PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
   # 参数 ID 两个宏(值与理由见根 CMakeLists.txt 的 SCVB_PLUGIN_PARAM_ID_DEFINITIONS);PUBLIC 才能
   # 传到 VST3 / AU 两个 wrapper 目标 —— 真正用它们算参数 ID 的是 wrapper 那几个编译单元。
+  ${SCVB_PLUGIN_PARAM_ID_DEFINITIONS}
 )
 
 # Windows:WebView2 宏(JUCE_WEB_BROWSER 已由 scvb_plugin_common 提供;与 Input/Output 先例一致)。
