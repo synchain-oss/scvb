@@ -96,7 +96,7 @@ message(STATUS "SCVB plugin formats: ${SCVB_PLUGIN_FORMATS}")
 # 并对 123 个 ParamID 现算 AU 参数 ID 与文件内嵌的冻结表逐项对拍。
 set(SCVB_PLUGIN_PARAM_ID_DEFINITIONS
   JUCE_FORCE_USE_LEGACY_PARAM_IDS=0
-  JUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=0
+  JUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=1
 )
 
 # ------------------------------------------------------------------
