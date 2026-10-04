@@ -70,4 +70,5 @@ killall -9 AudioComponentRegistrar; sleep 5
 
 - runner 上的 `AUHostingService` 结果只是近似,不等于 Logic 的行为。
 - 进程外实例化需要用户会话;runner 没有时会落到 `inconclusive`。
+- 宿主按 A1 → A2 → B1 **串行**实例化并初始化,附着方的探针不等待创建方(不重试 `fstat` 尺寸与段头 magic)。若改成几个实例并行初始化,附着方可能先于创建方的 `ftruncate` / 写 magic 读到段,记成 `5`(数据不符);判定会因此落到`inconclusive`(部分 shm 结果),不会被读成 A、B 或 C。
 - 段布局只在本目录有效,与 `docs/IPC_CONTRACT.md` 的冻结布局无关。段名借用冻结前缀,只是为了让名字长度与将来的真实名字同量级。

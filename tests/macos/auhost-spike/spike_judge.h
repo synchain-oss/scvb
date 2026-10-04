@@ -401,6 +401,11 @@ inline int selfTest()
         KV o = go;
         o["host.plugin_seg_open"] = eperm;
         cases.push_back({"shm ok in service but host cannot see it -> inconclusive", gi, o, true, "inconclusive", 0});
+        // 附着方抢在创建方写完段头之前读(并行初始化时的竞态):只能落到「不定」,不能是 A / B / C。
+        KV o1 = go;
+        o1["a2.out.shmPeer"] = "5";
+        cases.push_back(
+            {"attacher raced the creator (magic not yet written) -> inconclusive", gi, o1, true, "inconclusive", 0});
         KV o2 = go;
         o2["a2.out.hostSeg"] = "5";
         cases.push_back({"plugin cannot see host segment -> inconclusive", gi, o2, true, "inconclusive", 0});

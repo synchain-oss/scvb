@@ -98,7 +98,7 @@ SCVB 在 Windows 上靠 `Local\SynchainSCVB.v1.*` 命名共享内存在 Input / 
 |---|---|---|---|
 | 宿主按错误 subtype 找组件(常驻步) | 每次 run 都以 `--subtype-a Sxsz` 再跑一次进程内并判定 | `inconclusive` + 退出码 1 | run `37173401344`、`37173704949`、`37173714999` 的两个 runner 全部 `inconclusive` / 1 |
 | 插件编出错误 subtype(一次性) | 临时分支把 `SPIKE_SUBTYPE_A` 改成 `Sxsy`,run `37173714999`;分支用后已删除 | Judge 步红,`inconclusive` + 退出码 1 | 两个 runner 都红在 Judge 步,`inproc.components_registered = no`,`inconclusive` / 1 |
-| 判定表自测 | `--self-test`,23 格合成输入 | 全过 | 两个 runner 都是 `23 cases, 0 failed` |
+| 判定表自测 | `--self-test`,合成输入逐格断言 | 全过 | run `37173704949` 两个 runner `23 cases, 0 failed`;之后补了「附着方抢跑」一格(共 24 格),本地 g++ 与 PR 上的 macos-15 都是 `24 cases, 0 failed` |
 
 ### 4.2 判定表删除式(本地,g++ 13.1 编 `spike_judge.h` 的自测)
 
@@ -141,4 +141,5 @@ SCVB 在 Windows 上靠 `Local\SynchainSCVB.v1.*` 命名共享内存在 Input / 
 
 - runner 上的 `AUHostingService` 只是近似。Logic 自己的进程外宿主、沙箱配置与 runner 上的不一定相同。
 - 进程外实例化需要用户会话;runner 没有时只能判「不定」。
+- 宿主按 A1 → A2 → B1 **串行**实例化并初始化,附着方的探针不等待创建方(不重试 `fstat` 尺寸与段头 magic)。若改成几个实例并行初始化,附着方可能先于创建方的 `ftruncate` / 写 magic 读到段,记成 `5`(数据不符);判定会因此落到「不定」(部分 shm 结果),不会被读成 A、B 或 C。
 - 段布局只在 spike 目录有效,与 `docs/IPC_CONTRACT.md` 的冻结布局无关;段名借用冻结前缀,只为让名字长度与将来的真实名字同量级。

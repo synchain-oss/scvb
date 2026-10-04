@@ -798,6 +798,8 @@ int runJudge(const Options& opt)
             md += "- " + n + "\n";
     }
     writeFile(opt.outDir + "/verdict.json", j);
+    // 单独一行纯文本给 workflow 读(macos-oop.yml 的反向注入步),免得脚本去解析上面手拼的 JSON 排版。
+    writeFile(opt.outDir + "/verdict.txt", v.verdict + "\n");
     writeFile(opt.outDir + "/summary.md", md);
     std::fputs(md.c_str(), stdout);
     return v.exitCode;

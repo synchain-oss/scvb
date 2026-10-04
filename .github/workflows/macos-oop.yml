@@ -242,7 +242,7 @@ jobs:
           "$SPIKE_HOST" --mode inproc --out-dir spike-neg --raw-paths --subtype-a Sxsz || true
           rc=0
           "$SPIKE_HOST" --judge --out-dir spike-neg > spike-neg/judge.txt 2>&1 || rc=$?
-          verdict=$(sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p' spike-neg/verdict.json 2>/dev/null || true)
+          verdict=$(tr -d '[:space:]' < spike-neg/verdict.txt 2>/dev/null || true)
           echo "wrong-subtype run: verdict=$verdict judge_exit=$rc"
           if [ "$rc" != "1" ] || [ "$verdict" != "inconclusive" ]; then
             echo "::error::wrong subtype was judged '$verdict' (exit $rc); it must be 'inconclusive' with exit 1"

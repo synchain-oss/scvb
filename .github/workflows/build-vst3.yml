@@ -638,6 +638,8 @@ jobs:
   #                                       每个标签多排一轮 mac 构建。想手动再跑一遍用 workflow_dispatch。
   # 必须写成 `if: >` 折叠块:YAML 里行首裸写 `!` 会被当成 tag,整个文件 startup_failure。
   # 两个 job 名都不是 required context,mac 失败不挡任何 PR 的合并按钮。
+  # 出包前那次 dispatch 的 run 里也有它们:run 的整体结论会被 mac 拖红,而 Windows 出包只看
+  # detect-native + build-and-validate 两个 job(CLAUDE.md §4「出包流程硬规」那条的子项)。
   macos-build:
     name: macos-build
     needs: detect-native
