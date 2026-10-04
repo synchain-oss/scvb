@@ -18,7 +18,12 @@ import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
 import { sourceKind } from "../shared/source-kind.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
-import { installShellFit } from "../shared/shell-fit.js";
+import {
+    enforceZoomLock,
+    installShellFit,
+    scalePresets,
+    zoomLocked,
+} from "../shared/shell-fit.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -610,7 +615,8 @@ async function previewScale(f) {
 function buildScaleOptions() {
     if (!scaleUi.select) return;
     scaleUi.select.replaceChildren();
-    for (const f of DESIGN.input.presets) {
+    // [M09] scalePresets:旧 rect 语义下只留 1 档;新语义下原样返回同一张档位表。
+    for (const f of scalePresets(DESIGN.input.presets)) {
         const opt = document.createElement("option");
         opt.value = String(f);
         opt.textContent = Math.round(f * 100) + "%";
@@ -622,6 +628,12 @@ function buildScaleOptions() {
     scaleUi.select.addEventListener("change", () =>
         previewScale(Number(scaleUi.select.value)),
     );
+    // [M09] 旧 rect 语义 ⇒ 缩放锁 100%:footer 里那一行提示摘掉 hidden。
+    // 只在锁定时动它 —— 新语义下这个节点一个属性都不碰(HTML 里默认 hidden)。
+    if (zoomLocked()) {
+        const lockHint = $("input.footer.scaleLock");
+        if (lockHint) lockHint.hidden = false;
+    }
 }
 
 if (scaleUi.keep) {
@@ -1134,6 +1146,8 @@ function syncUiFromState() {
         // [SL-380] 这里**不再**写 shell.style.zoom:画面倍率由 installShellFit 按实际
         // 视口算(宿主 setSize 之后视口就是 460F×560F)。回推只负责把下拉选中项对齐。
         if (scaleUi.select) scaleUi.select.value = String(ui.scale);
+        // [M09] 锁定时宿主若按别的档位开了窗,经 setUiScale 请回 1;没锁时什么都不做。
+        enforceZoomLock(ui.scale, (one) => call("setUiScale", one));
     }
 }
 
