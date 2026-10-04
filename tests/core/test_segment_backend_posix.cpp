@@ -1151,8 +1151,26 @@ TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; 
     REQUIRE(!diag.events().empty());
     CHECK(diag.events().back().op == scvb::IpcDiagOp::kLifecycleLock); // 窗口过期后那次真实等待上报了
 
-    // 锁放开之后:没有持有者的残段由下一个创建者清理重建。
+    // ③ 取锁成功即清零:窗口内再略去一次(上一步的真实超时刚把窗口重新打开),然后锁恢复、这一次取锁
+    //    成功(段没有活持有者 ⇒ 安静 kFailed)。之后的下一条诊断不得再带上恢复之前略去的次数。下一条
+    //    诊断用「lifecycle.lock 打不开(EACCES)」触发:这类失败不看断路窗口、当场上报,不用再睡一个窗口。
+    //    即便调度停顿让这次「略去」变成了真实等待并当场上报,计数也已清零,判据只会更容易绿,不会误红。
+    CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
     ::close(stuck);
+    CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
+    if (::geteuid() != 0) // root 无视文件权限,打不开这一步造不出来
+    {
+        const std::size_t beforeDenied = diag.events().size();
+        REQUIRE(::chmod(lifecyclePath.c_str(), 0) == 0);
+        CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
+        REQUIRE(::chmod(lifecyclePath.c_str(), 0600) == 0);
+        REQUIRE(diag.events().size() == beforeDenied + 1);
+        CHECK(diag.events().back().op == scvb::IpcDiagOp::kLifecycleLock);
+        CHECK(diag.events().back().error == EACCES);
+        CHECK(diag.events().back().suppressed == std::uint32_t{0});
+    }
+
+    // 锁放开之后:没有持有者的残段由下一个创建者清理重建。
     SegmentBackendPosix next;
     SegmentView v;
     REQUIRE(next.createOrOpen(name, kSeg, v) == InitResult::kOk);
