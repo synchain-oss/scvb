@@ -1847,19 +1847,56 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
         outer(0) === 10 && outer(100) === -10,
         "首段之前取首段、末段之后取末段",
     );
+    // 零长段照样进 build:重叠防护把它两侧的边界都压成跳变(引擎同口径)
+    const zero = C([
+        { t0S: 0, t1S: 10, pan: 0 },
+        { t0S: 10, t1S: 10, pan: 50 },
+        { t0S: 10, t1S: 20, pan: 100 },
+    ]);
+    check(
+        zero(9.5) === 0 && zero(10) === 100,
+        "零长段两侧都是跳变(不会把前后两段连成一段渐变)",
+    );
+    const zl = MMOCK.rasterizeTrack(
+        [
+            { t0S: 0, t1S: 10, pan: 0 },
+            { t0S: 10, t1S: 10, pan: 50 },
+            { t0S: 10, t1S: 20, pan: 100 },
+        ],
+        VC.VIZ_COLUMNS,
+        0,
+    );
+    eq(VIZ.panOfFixed(zl.lane[9]), 0, "车道同样不在零长段处画渐变");
     eq(C([])(1), 0, "空表 0");
     eq(C([{ t0S: 0, t1S: 1, pan: 7 }])(50), 7, "单段恒值");
 }
 
 {
     // ---- [SL-591] 演示工程:每条连续折线从头到尾只有一个值
-    // 演示数据里同一轨相邻两段之间都有 ≥1s 的停顿(远大于一列 0.29s),声像在停顿中点就切到
+    // 演示数据里同一轨相邻两段之间都有 ≥0.8s 的停顿(将近三列,一列 0.29s),声像在停顿中点就切到
     // 下一段 —— 折线不该有任何一处竖直台阶。hold 口径下这里会有上百处。
     const s = MMOCK.createPreviewSession({
         params: "?scenario=monitor-online",
     });
     await s.mock.requestInitialState(); // 首帧必带车道
     const f = s.ctl.vizFrame(1, 42, true);
+    // 前提:同轨相邻两段的停顿都大于两列。演示数据哪天出现更短的停顿或首尾相接的段,
+    // 下面的「零台阶」会合理地变红 —— 先在这里把原因说出来,别让它看起来像回归。
+    const chans = (s.world.output.segments || {}).channels || [];
+    let maxEnd = 0;
+    let minGap = Infinity;
+    for (const c of chans) {
+        const segs = (c.segments || []).slice().sort((a, b) => a.t0S - b.t0S);
+        for (let k = 0; k < segs.length; k++) {
+            maxEnd = Math.max(maxEnd, segs[k].t1S);
+            if (k > 0) minGap = Math.min(minGap, segs[k].t0S - segs[k - 1].t1S);
+        }
+    }
+    const colS = MMOCK.windowSpanS(maxEnd, 0) / VC.VIZ_COLUMNS;
+    check(
+        minGap > 2 * colS,
+        `前提:演示工程同轨相邻段的最小停顿 ${minGap.toFixed(2)}s > 两列 ${(2 * colS).toFixed(2)}s(不成立时下面那条红的是夹具,不是回归)`,
+    );
     let runs = 0;
     let stepped = 0;
     for (let t = 0; t < VC.VIZ_TRACKS; t++) {

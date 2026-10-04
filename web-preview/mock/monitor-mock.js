@@ -395,14 +395,23 @@ export function rasterizeTrack(
 ) {
     const lane = new Array(VIZ_COLUMNS).fill(VIZ_PAN_NONE);
     const words = new Array(VIZ_COVERAGE_WORDS).fill(0);
+    const finite = (s) => s && Number.isFinite(s.t0S) && Number.isFinite(s.t1S);
+    const byStart = (a, b) => a.t0S - b.t0S;
+    // 位图只认正长度的段(零长段与任何列区间都没有交集)。
     const segs = (segments || [])
-        .filter((s) => s && Number.isFinite(s.t0S) && s.t1S > s.t0S)
+        .filter((s) => finite(s) && s.t1S > s.t0S)
         .slice()
-        .sort((a, b) => a.t0S - b.t0S);
-    if (segs.length === 0 || !(spanS > 0)) return { lane, words };
+        .sort(byStart);
+    // 车道照引擎拿**完整**段表:零长段照样进 build(它经重叠防护把两侧边界压成跳变),
+    // 只剔除倒挂 / 非数的坏段。
+    const curveSegs = (segments || [])
+        .filter((s) => finite(s) && s.t1S >= s.t0S)
+        .slice()
+        .sort(byStart);
+    if (curveSegs.length === 0 || !(spanS > 0)) return { lane, words };
 
     const colS = spanS / VIZ_COLUMNS;
-    const panAt = transitionCurve(segs, rampMs);
+    const panAt = transitionCurve(curveSegs, rampMs);
     for (let i = 0; i < VIZ_COLUMNS; i++) {
         const c0 = startS + i * colS;
         const c1 = c0 + colS;
@@ -441,9 +450,13 @@ function buildGroup(world, groupId) {
     const segChannels = (world.output.segments || {}).channels || [];
     const cfgChannels = (world.output.snapshot || {}).channels || [];
     // 车道的段间过渡按 Tab1「过渡时间」走(引擎 `TransitionConfig::transitionRampSec` 的来源)。
-    const rampMs = Number(
-        ((world.output.snapshot || {}).analysis || {}).transition_ramp_ms,
-    );
+    // `null` 不能按 `Number(null) === 0` 算成 0 ms —— 读不到就用缺省值。
+    const rampRaw = ((world.output.snapshot || {}).analysis || {})
+        .transition_ramp_ms;
+    const rampMs =
+        typeof rampRaw === "number" && Number.isFinite(rampRaw)
+            ? rampRaw
+            : TRANSITION_RAMP_MS_DEFAULT;
 
     let maxEnd = 0;
     for (const ch of tracks) {
@@ -472,12 +485,7 @@ function buildGroup(world, groupId) {
         }
         const entry = segChannels.find((c) => c.ch === ch);
         const segs = (entry && entry.segments) || [];
-        const { lane, words } = rasterizeTrack(
-            segs,
-            spanS,
-            0,
-            Number.isFinite(rampMs) ? rampMs : TRANSITION_RAMP_MS_DEFAULT,
-        );
+        const { lane, words } = rasterizeTrack(segs, spanS, 0, rampMs);
         lanes.push(lane);
         coverage.push(words);
         if (words.some((w) => w !== 0)) covered.push(ch);
