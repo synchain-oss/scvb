@@ -11,8 +11,10 @@
 //   A-prime      shm 与互见都成立,但锁文件路径被拒,或 HOME/NSHomeDirectory 被容器化
 //   B            OOP 下 shm 被拒(EPERM/EACCES),但三个实例同 pid,且 B 能找到 A 注册的 ObjC 会合类
 //   C            OOP 下 shm 被拒,且实例 pid 不同
-//   inconclusive 进程内对照失败(退出码 1),或 OOP 实例化 / 探针没跑完 / 落在表外组合(退出码 0)
-// 退出码:负对照不成立(组件没注册上、进程内 shm 没成功、32 字符名没报 ENAMETOOLONG、进程内没跑完)= 1;
+//   inconclusive 进程内对照失败(退出码 1),或 OOP 实例化失败 / 实例其实没跑到宿主进程外 / 探针没跑完 /
+//                落在表外组合(退出码 0)
+// 退出码:负对照不成立(组件没注册上、进程内实例不在宿主进程里、进程内 shm 没成功、32 字符名没报
+//         ENAMETOOLONG、进程内没跑完)= 1;
 //         其余结论(含因 OOP 起不来而判 inconclusive)= 0。
 #pragma once
 
