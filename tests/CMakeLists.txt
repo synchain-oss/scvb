@@ -94,6 +94,12 @@ if(APPLE)
   target_sources(scvb_tests PRIVATE core/test_segment_backend_posix.cpp)
 endif()
 
+# [B 线 M04] seqlock 双线程压测(PlayheadShot / MeterShot 的 arm64 内存序)。同样是独立的
+# target_sources 追加块,不碰上面 scvb_tests 的源列表;两平台都编。用例打隐藏标签 [.],所以
+# 下面 `scvb_tests` 那一条 ctest(30s 上界,见 [SL-320] 那段)**不跑**它们;由独立 ctest 条目
+# `scvb_seqlock_stress` 用同一个二进制按标签 `[stress]` 单跑,上界单独给(见紧随的 set_tests_properties)。
+target_sources(scvb_tests PRIVATE core/test_seqlock_stress.cpp)
+
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
 else()
@@ -151,6 +157,12 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 # 任何一侧命令行开关的影响;命令行那个数退化为「新加的、还没写属性的测试」的兜底。
 # ─────────────────────────────────────────────────────────────────────────────
 set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
+
+# [B 线 M04] seqlock 压测的独立条目(源见上面 M04 的 target_sources 块)。用例按墙钟定长:
+# 每种 shot × 三种缓存行摆放 = 6 轮,每轮读侧 100ms,设计时长约 0.6s,不随机器快慢伸缩。
+# 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 PR 描述)。
+add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
+set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
 
 # scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
 # ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。

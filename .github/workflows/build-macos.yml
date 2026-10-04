@@ -4,7 +4,7 @@ name: Build macOS (reusable)
 # 只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job `macos-build` 调用,
 # 跑不跑完全继承 build-vst3.yml 的触发规则;被 release.yml 经 build-vst3.yml 调起时,caller 的
 # tag 守卫让它跳过(mac 发版另由 release.yml 自己的 build-mac 调本文件,见 M16)。
-# 写者链(严格串行):M01 → M06a → M06b → M08 → M10 → M16。
+# 写者链(严格串行):M01 → M06a → M04(只动 ctest 那一步的条目选择)→ M06b → M08 → M10 → M16。
 # 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
 # org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
@@ -258,15 +258,20 @@ jobs:
           fi
           echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
 
-      # 8) ctest。本卡只编了 scvb_tests 一个目标,所以只选它这一条(其余条目的二进制本轮没编,
-      #    跑了只会报 Not Run);`--no-tests=error` 让正则一旦选空就红,而不是绿着什么都没跑。
+      # 8) ctest。本 job 只编了 scvb_tests 一个目标,所以只选用它这个二进制的条目(其余条目的二进制
+      #    本轮没编,跑了只会报 Not Run):`scvb_tests` 本身,以及 [B 线 M04] 的 `scvb_seqlock_stress`
+      #    (同一个二进制按标签 `[stress]` 单跑 seqlock 压测;它是 arm64 内存序的门禁,在 x86 上恒绿,
+      #    所以必须在这里跑)。`--no-tests=error` 让正则一旦选空就红,而不是绿着什么都没跑。
       #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
-      - name: Unit tests (ctest -R scvb_tests)
+      - name: Unit tests (ctest -R scvb_tests|scvb_seqlock_stress)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R '^scvb_tests$'
+          # 正则选中两条里只要还剩一条,`--no-tests=error` 就不红;压测条目若被删 / 改名,这里要当场红。
+          n=$(ctest --test-dir build -N -R '^scvb_seqlock_stress$' | grep -cE 'Test +#[0-9]+: scvb_seqlock_stress$' || true)
+          if [ "$n" != "1" ]; then echo "::error::ctest entry scvb_seqlock_stress not registered (found $n); see tests/CMakeLists.txt"; exit 1; fi
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R '^(scvb_tests|scvb_seqlock_stress)$'
 
       # 9) tests/golden/ipc-layout.txt 在 arm64 上**逐行**对拍的显式证据。上一步 scvb_tests 绿已经
       #    包含这一条;这里单跑 IpcLayoutFreeze 并让每条通过的断言都打印出来(`--success`),再核对:
