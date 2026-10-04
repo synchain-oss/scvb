@@ -1894,6 +1894,10 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     }
     const colS = MMOCK.windowSpanS(maxEnd, 0) / VC.VIZ_COLUMNS;
     check(
+        Number.isFinite(minGap),
+        "前提:演示工程里至少有一轨不止一段(否则下面的「零台阶」没有判别力)",
+    );
+    check(
         minGap > 2 * colS,
         `前提:演示工程同轨相邻段的最小停顿 ${minGap.toFixed(2)}s > 两列 ${(2 * colS).toFixed(2)}s(不成立时下面那条红的是夹具,不是回归)`,
     );
