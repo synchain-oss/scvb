@@ -1692,7 +1692,7 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
 }
 
 {
-    // ---- 栅格化:两条判据刻意不同(位图 = 区间求交,车道 = 列中心点采样 + hold)
+    // ---- 栅格化:两条判据刻意不同(位图 = 区间求交,车道 = 列中心时刻的过渡曲线求值)
     const span = VC.VIZ_COLUMNS; // 每列 1 秒
     const { lane, words } = MMOCK.rasterizeTrack(
         [
@@ -1717,7 +1717,7 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     eq(
         VIZ.panOfFixed(lane[1]),
         30,
-        "第 1 列没有分段,但车道 **hold 上一段**(30)—— 断线只能看位图",
+        "第 1 列没有分段,中心 1.5s 还在停顿 [1, 2.2) 的中点 1.6s 之前 ⇒ 车道**仍是上一段**(30)—— 断线只能看位图",
     );
     eq(VIZ.panOfFixed(lane[3]), -30, "第 3 列车道 = 第二段的 pan");
     // 短于一列的分段不会消失(保守口径的意义)
@@ -1745,6 +1745,139 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
         bad.words.every((w) => w === 0),
         "倒挂段滤掉",
     );
+}
+
+{
+    // ---- [SL-591] 车道按引擎的过渡曲线求值:新段开头不再带上一段的台阶
+    // 此前车道取「列中心之前最近一段」(hold):新段起点落在列中心之后的那一列还停在上一段,
+    // Monitor 轨迹上每段开头一个「┌」「L」。引擎(VizPublisher → CurveEvaluator::panAt)把
+    // 停顿里的过渡放在停顿中点,新段一开口声像已经到位。
+    const span = VC.VIZ_COLUMNS; // 每列 1 秒
+    const { lane, words } = MMOCK.rasterizeTrack(
+        [
+            { t0S: 0, t1S: 1, pan: 30 },
+            { t0S: 3.7, t1S: 6, pan: -30 },
+        ],
+        span,
+        0,
+    );
+    check(
+        VIZ.columnCovered(words, 3),
+        "第 3 列 [3,4) 与第二段 [3.7,6) 有交集 ⇒ 置位",
+    );
+    eq(
+        VIZ.panOfFixed(lane[3]),
+        -30,
+        "第 3 列中心 3.5s 在新段起点 3.7s 之前,但已过停顿中点 2.35s ⇒ 车道已是新段的值(不带上一段的台阶)",
+    );
+    eq(VIZ.panOfFixed(lane[1]), 30, "停顿前半段(1.5s)仍是上一段");
+    eq(VIZ.panOfFixed(lane[2]), -30, "过了停顿中点(2.5s)就是下一段");
+    eq(VIZ.panOfFixed(lane[0]), 30, "首段之前 / 首段内取首段");
+    // 首段之前也有值(引擎:首段之前回填首段值);位图照样为 0
+    const late = MMOCK.rasterizeTrack([{ t0S: 10, t1S: 12, pan: 40 }], span, 0);
+    eq(VIZ.panOfFixed(late.lane[0]), 40, "首段之前的列回填首段值(引擎同口径)");
+    check(!VIZ.columnCovered(late.words, 0), "…但位图为 0,照样断线");
+}
+
+{
+    // ---- [SL-591] 过渡曲线各分支(CurveEvaluator 02 §8.2,常数逐个照引擎)
+    const C = (segs, ms) => MMOCK.transitionCurve(segs, ms);
+    // 停顿:过渡在停顿中点,时长 min(过渡时间, 0.6·停顿)
+    const gap = C([
+        { t0S: 0, t1S: 1, pan: 0 },
+        { t0S: 2, t1S: 3, pan: 50 },
+    ]);
+    eq(gap(1.46), 0, "停顿:过渡窗(80ms,中点 1.5)之前保持前段");
+    near(gap(1.5), 25, 1e-9, "停顿:中点处 smoothstep(0.5) = 一半");
+    eq(gap(1.54), 50, "停顿:过渡窗之后已是后段");
+    const slow = C(
+        [
+            { t0S: 0, t1S: 1, pan: 0 },
+            { t0S: 2, t1S: 3, pan: 50 },
+        ],
+        300,
+    );
+    check(
+        slow(1.4) > 0 && slow(1.6) < 50,
+        "过渡时间 300ms ⇒ 窗口 [1.35, 1.65]",
+    );
+    const tiny = C([
+        { t0S: 0, t1S: 1, pan: 0 },
+        { t0S: 1.01, t1S: 2, pan: 50 },
+    ]);
+    check(tiny(1.0) > 0, "停顿 10ms:0.6·停顿 = 6ms 夹到下限 20ms");
+    // 首尾相接:按限速拉长(1.5 × |Δpan| / 15 = 3s ⇒ [8.5, 11.5])
+    const flat = C([
+        { t0S: 0, t1S: 10, pan: 0 },
+        { t0S: 10, t1S: 20, pan: 30 },
+    ]);
+    eq(flat(8.4), 0, "首尾相接:限速过渡开始之前保持前段");
+    near(flat(10), 15, 1e-9, "首尾相接:边界处走到一半");
+    near(flat(9), (30 * (3 - 1 / 3)) / 36, 1e-9, "首尾相接:smoothstep 形状");
+    eq(flat(11.6), 30, "首尾相接:过渡结束后是后段");
+    const loud = C([
+        { t0S: 0, t1S: 10, pan: 0, volDb: 0 },
+        { t0S: 10, t1S: 20, pan: 6, volDb: 6 },
+    ]);
+    check(loud(8.6) > 0, "音量差同样限速(3 dB/s):Δvol 6 dB ⇒ 3s");
+    const cap = C([
+        { t0S: 0, t1S: 10, pan: -100 },
+        { t0S: 10, t1S: 20, pan: 100 },
+    ]);
+    check(cap(6.9) === -100 && cap(13.1) === 100, "首尾相接上限 6s ⇒ [7, 13]");
+    const guard = C([
+        { t0S: 0, t1S: 1, pan: 0 },
+        { t0S: 1, t1S: 2, pan: 100 },
+    ]);
+    check(
+        guard(0.54) === 0 && guard(0.56) > 0,
+        "重叠防护:两侧各至多占段长 0.45 ⇒ [0.55, 1.45]",
+    );
+    // 微小变化(|Δpan| < 5 且 |Δvol| < 0.5 dB)在边界中点直接跳变
+    const jump = C([
+        { t0S: 0, t1S: 1, pan: 0 },
+        { t0S: 2, t1S: 3, pan: 4 },
+    ]);
+    check(jump(1.49) === 0 && jump(1.5) === 4, "微小变化:停顿中点直接跳变");
+    const outer = C([
+        { t0S: 5, t1S: 6, pan: 10 },
+        { t0S: 8, t1S: 9, pan: -10 },
+    ]);
+    check(
+        outer(0) === 10 && outer(100) === -10,
+        "首段之前取首段、末段之后取末段",
+    );
+    eq(C([])(1), 0, "空表 0");
+    eq(C([{ t0S: 0, t1S: 1, pan: 7 }])(50), 7, "单段恒值");
+}
+
+{
+    // ---- [SL-591] 演示工程:每条连续折线从头到尾只有一个值
+    // 演示数据里同一轨相邻两段之间都有 ≥1s 的停顿(远大于一列 0.29s),声像在停顿中点就切到
+    // 下一段 —— 折线不该有任何一处竖直台阶。hold 口径下这里会有上百处。
+    const s = MMOCK.createPreviewSession({
+        params: "?scenario=monitor-online",
+    });
+    await s.mock.requestInitialState(); // 首帧必带车道
+    const f = s.ctl.vizFrame(1, 42, true);
+    let runs = 0;
+    let stepped = 0;
+    for (let t = 0; t < VC.VIZ_TRACKS; t++) {
+        let prev = null;
+        for (let i = 0; i < VC.VIZ_COLUMNS; i++) {
+            if (!VIZ.columnCovered(f.coverage[t], i)) {
+                prev = null;
+                continue;
+            }
+            const v = f.lanes[t][i];
+            if (prev === null) runs++;
+            else if (v !== prev) stepped++;
+            prev = v;
+        }
+    }
+    check(runs > 100, `演示工程画得出折线(${runs} 条)`);
+    eq(stepped, 0, "演示工程的折线里没有竖直台阶");
+    s.stop();
 }
 
 {
