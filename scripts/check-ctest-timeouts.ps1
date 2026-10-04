@@ -57,6 +57,22 @@ function Test-ScvbThirdPartyPath {
 # 判据本体。**生产路径与 --SelfTest 共用这一个函数** —— 自测若走另一份实现,
 # 它证明的是那一份能用,而不是门禁能用(本仓「测接线不只测零件」那一族)。
 # ─────────────────────────────────────────────────────────────────────────────
+# 生成物里测试名的写法**随 CMake 版本变**,两种都要认 —— 认漏一种,那一种 CMake 下集合就是空的
+# (下面生产路径的「一个 add_test 都没有」判负会当场红,不会静默变绿,但门禁也就用不成了):
+#   · `[=[名]=]`(等号个数随名字里有没有 `]=` 变):CMP0110=NEW 的写法,CMake 3.19 起,到 4.3 都是它;
+#   · `"名"`:CMake 4.4 起,名字里没有 `"` `$` `\` 时改用双引号(cmTestGenerator.cxx 的 TestName ->
+#     cmScriptGenerator::Quote)。[B 线 M06a] macOS runner 镜像上的 cmake 4.4.3 就是这一种,
+#     旧正则只认前一种,于是在 mac 上读了一圈 CTestTestfile 却「一个 add_test 都没有」。
+#   · 裸名(CMP0110=OLD)不认:本仓 cmake_minimum_required 是 3.22,生成不出这种写法;认了反而要
+#     处理「名字里带空格」这一整类歧义。
+$script:ScvbTestNamePattern = '(?:\[(?<eq>=*)\[(?<bn>.+?)\]\k<eq>\]|"(?<qn>[^"]+)")'
+
+function Get-ScvbTestName {
+  param([System.Text.RegularExpressions.Match]$M)
+  if ($M.Groups['bn'].Success) { return $M.Groups['bn'].Value }
+  return $M.Groups['qn'].Value
+}
+
 function Get-CtestTimeoutReport {
   param([string[]]$Contents)
 
@@ -64,11 +80,11 @@ function Get-CtestTimeoutReport {
   $withTimeout = New-Object 'System.Collections.Generic.HashSet[string]'
 
   foreach ($text in $Contents) {
-    foreach ($m in [regex]::Matches($text, 'add_test\(\[=\[([^\]]+)\]=\]')) {
-      [void]$declared.Add($m.Groups[1].Value)
+    foreach ($m in [regex]::Matches($text, ('add_test\(' + $script:ScvbTestNamePattern))) {
+      [void]$declared.Add((Get-ScvbTestName $m))
     }
-    foreach ($m in [regex]::Matches($text, 'set_tests_properties\(\[=\[([^\]]+)\]=\]\s+PROPERTIES\s')) {
-      $name = $m.Groups[1].Value
+    foreach ($m in [regex]::Matches($text, ('set_tests_properties\(' + $script:ScvbTestNamePattern + '\s+PROPERTIES\s'))) {
+      $name = Get-ScvbTestName $m
       # 属性尾巴要**按记号切**,不能拿 `TIMEOUT` 直接在整行上 grep:同一行里
       # `_BACKTRACE_TRIPLES` 的值是一串带引号的路径,路径里出现 `TIMEOUT` 三个字母
       # (某个 agent 的工作目录叫 `…/timeout-repro/…`)就会把一个**没有**上界的测试
@@ -108,6 +124,17 @@ if ($SelfTest) {
   # 第三格钉的是**记号切分**那一条:`TIMEOUT` 只出现在 `_BACKTRACE_TRIPLES` 的**值**里
   # (真实形态 —— 工作目录名里带这几个字母)。按整行 grep 会把它判成「有上界」。
   $fixInValue = (& $mk 'fix_timeout_in_path' ('WILL_FAIL {0}FALSE{0} _BACKTRACE_TRIPLES {0}C:/agents/TIMEOUT-repro/CMakeLists.txt;3;add_test;{0}' -f $q))
+  # [B 线 M06a] CMake 4.4 起的双引号写法(见 Get-CtestTimeoutReport 上方注释),以及名字里带 `]=`
+  # 时 CMake 加长的方括号(`[==[` … `]==]`)。这三格除了看 Missing,还要看 Declared:写法认不出来时
+  # Missing 同样是空的,只看它会把「没认出来」误读成「有属性」。
+  $mkQ = {
+    param([string]$name, [string]$props)
+    ('add_test({1}{0}{1} {1}/x/{0}{1})' -f $name, $q) + "`n" +
+    $(if ($props) { ('set_tests_properties({1}{0}{1} PROPERTIES  {2})' -f $name, $q, $props) + "`n" } else { '' })
+  }
+  $fixQuotedOk      = (& $mkQ 'fix_quoted_timeout' ('TIMEOUT {0}30{0} _BACKTRACE_TRIPLES {0}/x/CMakeLists.txt;4;add_test;{0}' -f $q))
+  $fixQuotedMissing = (& $mkQ 'fix_quoted_no_timeout' ('WILL_FAIL {0}FALSE{0} _BACKTRACE_TRIPLES {0}/x/CMakeLists.txt;5;add_test;{0}' -f $q))
+  $fixLongBracket   = ('add_test([==[fix]=long]==] "C:/x/a.exe")' + "`n" + ('set_tests_properties([==[fix]=long]==] PROPERTIES  TIMEOUT {0}30{0})' -f $q) + "`n")
 
   $failures = @()
   $r1 = Get-CtestTimeoutReport -Contents @($fixOk)
@@ -119,6 +146,12 @@ if ($SelfTest) {
   # 混合一格:两个夹具同时喂进去,只有该红的那个红(避免「一红全红」蒙混过关)。
   $r4 = Get-CtestTimeoutReport -Contents @($fixOk, $fixMissing)
   if (($r4.Missing -join ',') -ne 'fix_no_timeout') { $failures += ('混合夹具的缺失集合不对:[{0}]' -f ($r4.Missing -join ', ')) }
+  $r5 = Get-CtestTimeoutReport -Contents @($fixQuotedOk)
+  if ($r5.Declared -notcontains 'fix_quoted_timeout' -or $r5.Missing.Count -ne 0) { $failures += ('CMake 4.4 双引号写法:有 TIMEOUT 的测试没被认出来或被误判缺失(Declared=[{0}] Missing=[{1}])' -f ($r5.Declared -join ', '), ($r5.Missing -join ', ')) }
+  $r6 = Get-CtestTimeoutReport -Contents @($fixQuotedMissing)
+  if ($r6.Missing -notcontains 'fix_quoted_no_timeout') { $failures += 'CMake 4.4 双引号写法:缺 TIMEOUT 的测试没有被抓到 —— 新写法下判据没有牙' }
+  $r7 = Get-CtestTimeoutReport -Contents @($fixLongBracket)
+  if ($r7.Declared -notcontains 'fix]=long' -or $r7.Missing.Count -ne 0) { $failures += ('加长方括号写法没被认出来(Declared=[{0}] Missing=[{1}])' -f ($r7.Declared -join ', '), ($r7.Missing -join ', ')) }
 
   # ---- 第三方路径排除的四格(#211 复审【重要】:第一版是条死守卫,没有任何自测兜着)----
   # 反斜杠那一格就是当初漏掉的那一格:`-notmatch '[\/]_deps[\/]'` 在它上面恒为真。
@@ -140,7 +173,7 @@ if ($SelfTest) {
     $failures | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host '  check-ctest-timeouts --self-test:8 格全过(有属性不误报 / 缺属性抓得到 / 值里的 TIMEOUT 不算 / 混合只红该红的 / _deps 两种分隔符都排除 / 本仓目录与同名子串都不排除)'
+  Write-Host '  check-ctest-timeouts --self-test:11 格全过(有属性不误报 / 缺属性抓得到 / 值里的 TIMEOUT 不算 / 混合只红该红的 / CMake 4.4 双引号写法两格 / 加长方括号写法 / _deps 两种分隔符都排除 / 本仓目录与同名子串都不排除)'
   exit 0
 }
 
