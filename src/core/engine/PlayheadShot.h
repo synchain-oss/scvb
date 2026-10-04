@@ -79,7 +79,8 @@ struct PlayheadShot
 
         out = pod;
 
-        // [临时实验 E2b] 删掉读侧 acquire fence(补充实验,裁定外)
+        // 保证 pod 的读取不被移到第二次 seq 读之后(seqlock 读边界)。
+        std::atomic_thread_fence(std::memory_order_acquire);
         const uint32_t after = seq.load(std::memory_order_relaxed);
         return after == before; // 读期间被更新 → 撕裂
     }
