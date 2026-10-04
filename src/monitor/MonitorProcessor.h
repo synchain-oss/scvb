@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// windows.h 的 min/max 宏会污染 std::numeric_limits<T>::min() 与 std::max;先禁用再包含
-// SegmentBackendWin32.h(其内部 include windows.h 但未定义 NOMINMAX)。与 Input/Output 同款。
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <cstdint>
 #include <memory>
 
 #include "engine/PlayheadShot.h"
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // 按平台选段后端(Windows 分支自带 NOMINMAX,见该头)
 #include "ipc/VizPlane.h"
 
 // ScvbMonitorAudioProcessor —— SCVB Monitor(T45 / J75)。纯只读监视器,三条铁律:
@@ -131,7 +125,7 @@ private:
     scvb::engine::PlayheadShot playheadShot_;
     double sampleRate_ = 48000.0; // prepareToPlay 写,[A] 只读
 
-    scvb::SegmentBackendWin32 backend_;
+    scvb::PlatformSegmentBackend backend_; // 按平台选定的段后端(见 ipc/PlatformSegmentBackend.h)
     scvb::VizPlane vizPlane_; // 只读 attach;绝不 open()
     std::unique_ptr<scvb::VizSnapshot> viz_; // ≈32KB,堆持有
 

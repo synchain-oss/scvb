@@ -52,7 +52,7 @@
 // 要求 /W4 零 warning(SL-323 实测,归因见 SL-325)。中文只写在注释里。
 
 // windows.h 的 min/max 宏会污染 `std::max` / `std::numeric_limits<T>::min()`;先禁再包含
-//(与 `src/output/OutputProcessor.h`、`src/core/ipc/RegistryProbe.cpp` 同款)。
+//(与 `src/core/ipc/PlatformSegmentBackend.h` 的 Windows 分支同款)。
 //
 // ⚠ **这道 `#ifndef NOMINMAX` 是包含顺序相关的,它兜不住所有情况** ——
 // 同 TU 里只要有**更早**的 `<windows.h>`,宏污染已经既成事实,这里再 define 也来不及。

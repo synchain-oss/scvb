@@ -83,7 +83,7 @@
 - `compliance`(gitleaks + reuse lint + check-privacy + 设计盒真源):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
 - `review-dispatch`:维护者评论 `/review` 显式触发 —— 这是 §0 铁律第 4 条**方案 D** 的实现,也是本仓目前给 fork PR 做 AI 审查的**默认通道**(铁律允许的另一条是方案 C 的 workflow_run 两阶段,本仓未实现)。
-- `release`:push tags `v*` 触发:`verify-tag`(tag ↔ `project(SCVB VERSION)` 一致性门禁,`-rc.N` 对应同一个 X.Y.Z;`v0.0.0-test` 仅作演练)→ 调用 `build-vst3`(构建 / ctest / pluginval)→ `scripts/package.ps1` 把三个 bundle 与合规文件打成 zip + `.sha256` + `package-summary.md` → **草稿** Release(发布由维护者手动)。流程见 `docs/RELEASE.md`。
+- `release`:push tags `v*` 触发:`verify-tag`(tag ↔ `project(SCVB VERSION)` 一致性门禁,`-rc.N` / `-beta.N` 对应同一个 X.Y.Z、草稿都勾 pre-release;`v0.0.0-test` 仅作演练)→ 调用 `build-vst3`(构建 / ctest / pluginval)→ `scripts/package.ps1` 把三个 bundle 与合规文件打成 zip + `.sha256` + `package-summary.md` → **草稿** Release(发布由维护者手动)。流程见 `docs/RELEASE.md`。
 - 成本纪律:runner 就低不就高;按量计费的 review bot 克制使用,不设为 required。
 
 ## 5. 冻结契约变更规范

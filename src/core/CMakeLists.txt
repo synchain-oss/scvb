@@ -51,11 +51,11 @@ add_library(scvb_core STATIC
   ipc/SegmentLayout.h
   ipc/ISegmentBackend.h
   ipc/SegmentBackendWin32.h
+  ipc/PlatformSegmentBackend.h
   ipc/GroupProbe.h
   ipc/GroupProbe.cpp
   ipc/Registry.cpp
   ipc/Registry.h
-  ipc/RegistryProbe.h
   ipc/CtrlPlane.cpp
   ipc/CtrlPlane.h
   ipc/FeatRing.cpp
@@ -101,9 +101,11 @@ add_library(scvb_core STATIC
   export/SuggestionExport.h
 )
 
-# SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
+# SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现由 B 线 M05 落地。
+# 插件侧按平台选哪个后端,见 ipc/PlatformSegmentBackend.h。跨组只读探测统一走 ipc/GroupProbe.cpp
+# (经后端抽象,全平台编译);原先只在这里编的 Win32 专用 RegistryProbe 已于 B 线 M03 退役。
 if(WIN32)
-  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp ipc/RegistryProbe.cpp)
+  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp)
 endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

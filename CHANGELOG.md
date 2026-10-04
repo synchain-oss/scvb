@@ -22,6 +22,12 @@
   发布前复核按执行记录勾上,CHANGELOG 的条数按 tag 上的实数回填;死链检查删掉给本版两条对比链接的临时放行(tag 已
   推上去,两个链接都打得开);代码与测试里几处过期的注释改成与现行实现和文档一致,只改注释。插件本身没有变化(#354)
 
+- **发版通道加 beta**:`release.yml` 的 `verify-tag` 现在也接受 `vX.Y.Z-beta.N`,规则与 `-rc.N` 相同 ——
+  X.Y.Z 必须等于 `CMakeLists.txt` 的 `project(SCVB VERSION)`,流水线建的草稿 Release 同样勾 pre-release;`-beta`(不带
+  序号)、`-beta.1.2`、大写的 `-BETA.1`、`-alpha.1` 等仍被拒,`v0.0.0-beta.N` 也不按演练 tag 放行。判据自测里原先
+  「`v1.2.3-beta.1` 必须被拒」那一格改为放行(规格变更),每个放行格另外比对 pre-release 标志;`docs/RELEASE.md` 的
+  「Tag 规则」同步。插件本身没有变化(#364)
+
 ### 修复
 
 - **macOS(Apple Silicon)上的内存序问题**:播放头与电平快照的写侧、音频环换代之后、共享段租约的握手这几处线程间

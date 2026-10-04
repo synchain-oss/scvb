@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-09-30
+> 最后更新:2026-10-04
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -20,9 +20,10 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 ## Tag 规则
 
-- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc 构建在插件设置页里显示的版本号不带 `-rc.N`(它来自 CMake 版本),区分 rc 几要看 zip 文件名或 Release 页。
+- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`(流水线建的草稿都自动勾 pre-release)。**预发布不改 `CMakeLists.txt`**:`v1.2.3-beta.1`、`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc / beta 构建在插件设置页里显示的版本号不带 `-rc.N` / `-beta.N`(它来自 CMake 版本),区分是第几个预发布要看 zip 文件名或 Release 页。
+- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字(按 semver 不带前导零,写 `beta.1` 不写 `beta.01`;判据与 rc 一样不拦前导零,打 tag 时自己注意);`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。下面发版清单第 9 步与「`staging` 与 `prod` 两个分支」目前只写了 rc 与正式版;beta 发布后这两个分支怎么动尚未定,首次发 beta 之前补进来。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
-- 其他形态(`v1.2.3-beta.1`、`v1.2` 等)一律被拒。
+- 其他形态(`v1.2.3-alpha.1`、`v1.2.3-beta`、`v1.2` 等)一律被拒。
 - tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。v1 的改动都在主支线 `feature/v1` 上,所以发版前先按下方「里程碑合并:`feature/v1` → `dev`」把它压成一个提交合进 `dev`,tag 打在 `dev` 上的这个提交(J170)。
 - tag push 时,`.github/workflows/release.yml` 的 `verify-tag` job 先比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(判据 `scripts/check-release-tag.ps1`,带自测),不一致即 fail,不会进入 20 分钟的构建。
 
@@ -56,7 +57,7 @@ semver 语义(音频插件特化):
 |---|---|---|
 | `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
 | `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
-| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
+| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc、beta 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
 
 - 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
 - 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
@@ -70,10 +71,10 @@ semver 语义(音频插件特化):
 0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `scripts/package.ps1` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。新的对比链接指向第 6 步才推的 tag,推之前 GitHub 回 404,CI 的死链检查会红 —— 同一个 PR 在 `.markdown-link-check.json` 里给这两个确切地址加一条临时放行,tag 推上去之后删掉。
-3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
+3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc、beta 与正式版用同一个 X.Y.Z)。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。v1 这一次按 J142(2026-09-28):维护者本机长期可用内存不够跑整套 `gates.ps1`,本地全量门禁由 PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿代替;CI 的 pluginval 带 `--skip-gui-tests`,GUI pluginval 那一半由出包前在本机的自测补(见发版验证清单 B6)。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
-6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**`v0.9.0-rc.1` 这一次例外(J180)**:`dev` 上的 `build-vst3` 绿了之后、打 tag 之前,先把 `staging` 快进到这个提交并对 `staging` dispatch 一次 `build-vst3` 全绿,再把 `prod` 快进到同一个提交,然后才在这个提交上打 tag —— 顺序与命令见下方「`staging` 与 `prod` 两个分支」里的「`v0.9.0-rc.1` 这一次的顺序」。
+6. **合进 `dev`,在 `dev` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿,再在 `dev` 上的这个提交打 tag:`git fetch origin && git tag vX.Y.Z origin/dev && git push origin vX.Y.Z`(预发布用 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`)。打之前确认 `origin/dev` 仍是那个里程碑提交(该节第 5 步的回读)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**`v0.9.0-rc.1` 这一次例外(J180)**:`dev` 上的 `build-vst3` 绿了之后、打 tag 之前,先把 `staging` 快进到这个提交并对 `staging` dispatch 一次 `build-vst3` 全绿,再把 `prod` 快进到同一个提交,然后才在这个提交上打 tag —— 顺序与命令见下方「`staging` 与 `prod` 两个分支」里的「`v0.9.0-rc.1` 这一次的顺序」。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
 9. **发布后**:先按下方「`staging` 与 `prod` 两个分支」前移分支 —— **每次发布(含 rc)都把 `staging` 前移到本次 tag**,**只有正式版再把 `prod` 前移到本次 tag**(两个分支都开着保护,前移时由仓库管理员临时允许绕过、推完恢复,J172;命令见该节;都不加 `--force`)。**`v0.9.0-rc.1` 例外(J180)**:这一次 `staging` 与 `prod` 在推 tag 之前就已前移到 tag 所在的提交,发布后不再前移,只回读两个分支仍等于 tag 提交(见该节「`v0.9.0-rc.1` 这一次的顺序」第 5 步)。插件里的文档链接都指向 `prod`(见下「文档链接」),正式版漏了这一步,用户在插件里点开的就还是上一个正式版的手册;rc 一般不前移 `prod`(J163),所以之后的 rc 构建里这些链接打开的是 `prod` 最近一次前移时那一版的手册,不是 rc 自己的(发布说明模板里 rc 那一条写明这一点)。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。

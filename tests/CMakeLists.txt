@@ -94,6 +94,11 @@ if(APPLE)
   target_sources(scvb_tests PRIVATE core/test_segment_backend_posix.cpp)
 endif()
 
+# [B 线 M03] 进程身份与 pid 探活的平台口径([platform][identity]):Windows 与 macOS 都编、都跑;
+# 文件内的 POSIX 专属格(fork 后回收的子进程 pid 判死)由 #ifndef _WIN32 守着。同样是独立的
+# target_sources 追加块,不碰上面那份 scvb_tests 源列表。
+target_sources(scvb_tests PRIVATE core/test_platform_identity.cpp)
+
 # [B 线 M04] seqlock 双线程压测(PlayheadShot / MeterShot 的 arm64 内存序)。同样是独立的
 # target_sources 追加块,不碰上面 scvb_tests 的源列表;两平台都编。用例打隐藏标签 [.],所以
 # 下面 `scvb_tests` 那一条 ctest(30s 上界,见 [SL-320] 那段)**不跑**它们;由独立 ctest 条目
