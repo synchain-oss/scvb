@@ -428,12 +428,12 @@ void SegmentBackendPosix::noteLockFailure(int error, const std::string& lockPath
     {
         if (wait.count() == 0)
         {
-            // 断路窗口内:只试了一次。不上报,只计数(并进下一条同类诊断)。
-            suppressedLockFailures_.fetch_add(1, std::memory_order_relaxed);
-            return;
+            // [INJECT K1] breaker-window failures are reported every time (not suppressed)
         }
-        // 真正等满的那次超时才(重新)打开断路窗口;窗口内的失败不续长它。
-        lastLockTimeoutMs_.store(steadyMs(), std::memory_order_relaxed);
+        else
+        {
+            lastLockTimeoutMs_.store(steadyMs(), std::memory_order_relaxed);
+        }
     }
     diag.note(IpcDiagOp::kLifecycleLock, error,
               error == ETIMEDOUT ? "timed out waiting for lifecycle.lock" : "cannot open lifecycle.lock", lockPath);
