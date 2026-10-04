@@ -83,7 +83,7 @@ option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libe
 # 普通变量而不是 cache:产物形态只有这一个真源,不给命令行 -D 留第二个入口。
 set(SCVB_PLUGIN_FORMATS VST3)
 if(APPLE)
-  list(APPEND SCVB_PLUGIN_FORMATS AU)
+  # list(APPEND SCVB_PLUGIN_FORMATS AU)
 endif()
 message(STATUS "SCVB plugin formats: ${SCVB_PLUGIN_FORMATS}")
 
