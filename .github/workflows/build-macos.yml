@@ -361,7 +361,9 @@ jobs:
       #     Info.plist 恰好声明一个 AudioComponent,三元组 = <AU_MAIN_TYPE 映射>/<PLUGIN_CODE>/<厂商码>。
       #     四字码不写死在这里:从 src/<role>/CMakeLists.txt 现读(与 bridge ci.yml 同纪律),改码时这里报
       #     「解析不到」而不是语义无关的「对不上」。定位一律 `-print -quit` / 先落变量再匹配,不用
-      #     `find | head`(pipefail 下 SIGPIPE 会随机杀步骤)。bundle 路径落进 plugin-bundles.txt 给打包步用。
+      #     `find | head`(pipefail 下 SIGPIPE 会随机杀步骤)。bundle 路径落进 plugin-bundles.txt 给打包步用;
+      #     与 Info.plist 核对过的 AU 三元组(`type subtype manufacturer`,一行一个)落进 au-triples.txt,
+      #     auval 步只读这个文件 —— AU_MAIN_TYPE → 四字码的映射只在这里写一次,两步同一个真源。
       - name: Assert plugin bundles (3 VST3 + 3 AU, arm64-only, minos, AU triples)
         id: bundles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -376,6 +378,7 @@ jobs:
             fi
           done
           : > plugin-bundles.txt
+          : > au-triples.txt
           for role in input output monitor; do
             cm="src/$role/CMakeLists.txt"
             name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' "$cm")
@@ -414,6 +417,7 @@ jobs:
                 fi
                 if [ -n "$(pb 1:type)" ]; then echo "::error::'$name.component' declares more than one AudioComponent"; exit 1; fi
                 triple="$got"
+                printf '%s %s %s\n' "$au_type" "$code" "$mfr" >> au-triples.txt
               fi
               printf '%s\n' "$b" >> plugin-bundles.txt
               echo "$name.$ext: $archs, minos $minos, AU $triple"
@@ -557,6 +561,9 @@ jobs:
       #     但 AU 加载不起来」这类编译期看不到的问题。照 bridge ci.yml:ditto 装进用户 Components、踢一次
       #     注册器、轮询 auval -a 至多 30s、以输出里的 'AU VALIDATION SUCCEEDED' 为准(auval 退出码历史上
       #     不可靠)。结果只进 step summary;本步 continue-on-error 且脚本自身不以非零退出。
+      #     三元组只读 8c 落下的 au-triples.txt(已与 Info.plist 核对过),不在这里再写一份 componentType:
+      #     哪个插件改了 AU_MAIN_TYPE,8c 跟着对上,这里也跟着走,不会悄悄轮询一个不存在的 aufx 三元组。
+      #     逐行读用 fd 3,auval 一律 </dev/null,免得它吃掉循环的输入。
       - name: auval smoke (informational, not a gate)
         if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
         continue-on-error: true
@@ -572,23 +579,26 @@ jobs:
           done < plugin-bundles.txt
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           echo "### auval smoke (informational)" >> "$GITHUB_STEP_SUMMARY"
-          for role in input output monitor; do
-            cm="src/$role/CMakeLists.txt"
-            code=$(awk '$1 == "PLUGIN_CODE" { print $2; exit }' "$cm")
-            mfr=$(awk '$1 == "PLUGIN_MANUFACTURER_CODE" { print $2; exit }' "$cm")
+          n=$(grep -c . au-triples.txt 2>/dev/null || true)
+          if [ "${n:-0}" != "3" ]; then
+            echo "::warning::au-triples.txt from the bundle step has ${n:-0} line(s), expected 3; auval smoke covers only those"
+            echo "- au-triples.txt has ${n:-0} line(s), expected 3" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          while read -r type code mfr <&3; do
+            [ -n "$type" ] || continue
             seen=0
             for _ in $(seq 1 30); do
-              list="$(auval -a 2>/dev/null || true)"
-              if grep -qE "^[[:space:]]*aufx[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list"; then seen=1; break; fi
+              list="$(auval -a </dev/null 2>/dev/null || true)"
+              if grep -qE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list"; then seen=1; break; fi
               sleep 1
             done
-            auval -v aufx "$code" "$mfr" > "auval-logs/auval-$code.log" 2>&1
+            auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1
             if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then verdict=SUCCEEDED; else verdict="did not succeed (see job log)"; fi
-            echo "::group::auval -v aufx $code $mfr (registered in auval -a: $seen)"
+            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen)"
             tail -n 40 "auval-logs/auval-$code.log"
             echo "::endgroup::"
-            echo "- \`aufx $code $mfr\`: registered=$seen, auval -v $verdict" >> "$GITHUB_STEP_SUMMARY"
-          done
+            echo "- \`$type $code $mfr\`: registered=$seen, auval -v $verdict" >> "$GITHUB_STEP_SUMMARY"
+          done 3< au-triples.txt
           exit 0
 
       - name: Upload build log (on failure)
