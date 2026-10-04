@@ -10,6 +10,11 @@
 
 ### 新增
 
+- **macOS(系统 WKWebView)前端适配**:界面先量一次 CSS 缩放下 `getBoundingClientRect` 的语义;落在 WebKit 26.4
+  之前的旧语义上时,缩放档固定在 100%(其它档位隐藏;按存过的别的档位开窗时自动请回 100%,存档本身不改),
+  footer 缩放下拉旁显示一行提示(中 / 英 / 法)—— 旧 WebKit 上点击、拖拽的位置因此不会偏。Windows(WebView2)上
+  行为不变。声像轨迹图的横向缩放除 Ctrl+滚轮外也认 Cmd+滚轮,三条快捷键文案三语改为「Ctrl 或 Cmd」(#360)
+
 ### 变更
 
 - **`v0.9.0-rc.1` 发布后收尾**:发版验证清单 `docs/validation/release-checklist-v0.9.0-rc.1.md` 按发布实况补完,
