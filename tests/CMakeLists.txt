@@ -192,6 +192,13 @@ else()
   target_compile_options(scvb_params_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# [B 线 M06b] AU 参数 ID 冻结表([params][au]):123 个 ParamID 现算的 AU 参数 ID 两两不同、最高位为 0、
+# 等于文件内嵌的表,并与 JUCE 给 VST3 算的 ID 逐项相等。两个参数 ID 宏读根 CMakeLists.txt 的
+# SCVB_PLUGIN_PARAM_ID_DEFINITIONS —— 与三个插件同一个变量,用例里的 static_assert 钉的才是插件的口径。
+# Windows / macOS 都编都跑。独立的 target_sources 追加块,不碰上面那份源列表(跨线协调)。
+target_sources(scvb_params_tests PRIVATE core/test_au_param_ids.cpp)
+target_compile_definitions(scvb_params_tests PRIVATE ${SCVB_PLUGIN_PARAM_ID_DEFINITIONS})
+
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
