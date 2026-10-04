@@ -3,8 +3,9 @@ name: Release
 # ── 发版流水线(T40;06 §3.8 / 07 T40)─────────────────────────────────────────
 # 推一个 v* tag ⇒ 三个 job 串行:
 #   1. verify-tag  tag 与 CMakeLists.txt 的 project(SCVB VERSION x.y.z) 对得上才往下走(排在 20 分钟的
-#                  构建之前,对不上立刻红)。规则见 scripts/lib/release-version.ps1:vX.Y.Z 与 vX.Y.Z-rc.N
-#                  的 X.Y.Z 必须等于 CMake 版本;v0.0.0-test[.N] 是演练专用,不比对版本。判据先自测再实判。
+#                  构建之前,对不上立刻红)。规则见 scripts/lib/release-version.ps1:vX.Y.Z、vX.Y.Z-rc.N 与
+#                  vX.Y.Z-beta.N 的 X.Y.Z 必须等于 CMake 版本;v0.0.0-test[.N] 是演练专用,不比对版本。
+#                  判据先自测再实判。outputs.prerelease 对 rc / beta / test 为 true(草稿勾 pre-release)。
 #   2. build       **调用 build-vst3.yml**(workflow_call),与出包硬门同一份配方:构建(/W4 零 warning)
 #                  → ctest → 三个 bundle 的 pluginval,最后把 .vst3 按 tag 名上传成 artifact。
 #   3. release     取回 artifact → scripts/package.ps1 打 zip / .sha256 / package-summary.md →
@@ -87,7 +88,7 @@ jobs:
           VERSION: ${{ needs.verify-tag.outputs.version }}
           TAG_NAME: ${{ github.ref_name }}
           KIND: ${{ needs.verify-tag.outputs.kind }}
-        # 只有演练 tag 放行「LICENSES/ 缺许可证全文」(降为警告并记进 summary);正式版与 rc 缺就红。
+        # 只有演练 tag 放行「LICENSES/ 缺许可证全文」(降为警告并记进 summary);正式版、rc 与 beta 缺就红。
         run: |
           $extra = @()
           if ($env:KIND -eq 'test') { $extra += '-AllowMissingLicenseTexts' }
