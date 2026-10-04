@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -276,6 +277,7 @@ struct RecordedDiag
     std::string segment;
     std::string path;
     std::string detail;
+    std::uint32_t suppressed;
     int lifecycleLockFree; // 回调那一刻 lifecycle.lock 是否空闲:1 = 空闲,0 = 被人持着,-1 = 没探测
 };
 
@@ -315,7 +317,7 @@ void recordDiag(const scvb::IpcDiagEvent& e) noexcept
     const int lockFree = probeLifecycleLockFree();
     try
     {
-        recordedDiags().push_back(RecordedDiag{e.op, e.error, e.segment, e.path, e.detail, lockFree});
+        recordedDiags().push_back(RecordedDiag{e.op, e.error, e.segment, e.path, e.detail, e.suppressed, lockFree});
     }
     catch (...)
     {
@@ -368,7 +370,8 @@ public:
         for (const auto& d : recordedDiags())
         {
             s += std::string(scvb::ipcDiagOpName(d.op)) + " errno=" + std::to_string(d.error) + " seg=" + d.segment +
-                 " path=" + d.path + " lockFree=" + std::to_string(d.lifecycleLockFree) + " (" + d.detail + ")\n";
+                 " path=" + d.path + " suppressed=" + std::to_string(d.suppressed) +
+                 " lockFree=" + std::to_string(d.lifecycleLockFree) + " (" + d.detail + ")\n";
         }
         return s;
     }
@@ -1084,7 +1087,7 @@ TEST_CASE("POSIX backend: diagnostics reach the sink only after lifecycle.lock i
     ::close(holder);
 }
 
-TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; the breaker skips the rest",
+TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; the breaker skips the rest quietly",
           "[posix][diag][lockwait]")
 {
     TempLockDir dir;
@@ -1095,8 +1098,9 @@ TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; 
     const std::string lifecyclePath = dir.path() + "/" + SegmentBackendPosix::kLifecycleLockName;
 
     // 先正常建好三个映射(丢掉视图、不 unmap —— 与插件卸载时同形),再由「挂住的进程」拿住全局锁。
+    constexpr std::size_t kViews = 3;
     auto backend = std::make_unique<SegmentBackendPosix>();
-    for (int i = 0; i < 3; ++i)
+    for (std::size_t i = 0; i < kViews; ++i)
     {
         SegmentView v;
         REQUIRE(backend->createOrOpen(name, kSeg, v) == InitResult::kOk);
@@ -1106,20 +1110,46 @@ TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; 
     REQUIRE(stuck >= 0);
     REQUIRE(::flock(stuck, LOCK_EX) == 0);
 
-    // 后端析构对三个映射各做一次「离开」:第一次等满 kLeaveLockWait 超时,之后断路,只试一次。
+    // ① 后端析构对三个映射各做一次「离开」:第一次等满 kLeaveLockWait 超时并上报;断路窗口内的
+    //    其余两次只试一次、不上报。判据不钉墙钟:断路失效时三次都会等满并各报一条(== 3);
+    //    即便调度停顿超过 1 s 让窗口提前过期,也至多多出一条真实等待(仍 < 3)。
     backend.reset();
     INFO(diag.dump());
-    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "timed out waiting") == std::size_t{1});
-    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "breaker") == std::size_t{2});
+    const std::size_t leaveReports = diag.countOf(scvb::IpcDiagOp::kLifecycleLock);
+    CHECK(leaveReports >= std::size_t{1});
+    CHECK(leaveReports < kViews);
     CHECK(shmExists(posix)); // 拿不到全局锁就不做 unlink 判定,段留给下一个创建者
 
-    // 25Hz 重试路径同理:同一实例第一次等满 kAttachLockWait,第二次断路。
+    // ② 25Hz 重试路径:同一实例连着失败几次,窗口内的失败不上报、只计数;等窗口过期(只往「一定已
+    //    过期」的方向睡),下一次真实等待再超时,那一条诊断带上此前略去的次数。不变量:
+    //    「上报的条数 + 各条 suppressed 之和 == 尝试总数」,与调度快慢无关。
     SegmentBackendPosix reader;
     SegmentView r;
+    const std::size_t mark = diag.events().size();
+    constexpr std::size_t kQuick = 3;
+    for (std::size_t i = 0; i < kQuick; ++i)
+    {
+        CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
+    }
+    std::this_thread::sleep_for(SegmentBackendPosix::kLockBreakerWindow + std::chrono::milliseconds(100));
     CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
-    CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
-    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "timed out waiting") == std::size_t{2});
-    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "breaker") == std::size_t{3});
+    std::size_t reports = 0;
+    std::size_t suppressedSum = 0;
+    for (std::size_t i = mark; i < diag.events().size(); ++i)
+    {
+        const auto& e = diag.events()[i];
+        if (e.op == scvb::IpcDiagOp::kLifecycleLock)
+        {
+            CHECK(e.error == ETIMEDOUT);
+            ++reports;
+            suppressedSum += e.suppressed;
+        }
+    }
+    INFO("reader reports " << reports << ", suppressed sum " << suppressedSum);
+    CHECK(reports + suppressedSum == kQuick + 1);
+    CHECK(suppressedSum >= std::size_t{1}); // 断路确实略去了至少一次
+    REQUIRE(!diag.events().empty());
+    CHECK(diag.events().back().op == scvb::IpcDiagOp::kLifecycleLock); // 窗口过期后那次真实等待上报了
 
     // 锁放开之后:没有持有者的残段由下一个创建者清理重建。
     ::close(stuck);

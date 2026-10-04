@@ -31,7 +31,9 @@
 //   · 全局锁**有界等待**,等不到就放弃这一次(打开 → kFailed;离开 → 不做 unlink 判定,段留给下一个
 //     创建者清理):createOrOpen 2 s(插件加载 / 改组,稀少);openExisting* 100 ms(25Hz 重试路径);
 //     离开 200 ms。某个实例一旦等满超时,之后 1 s 内它的所有取锁都只试一次不等待(断路):锁被一个
-//     挂住的进程拿着时,卸载时的 N 个映射、25Hz 的重试都不会把等待乘上去。
+//     挂住的进程拿着时,卸载时的 N 个映射、25Hz 的重试都不会把等待乘上去。断路窗口内的失败**不上报**,
+//     只计数;计数并进下一条同类诊断的 suppressed 字段(窗口过期后的那次真实等待若仍超时,就报这一条),
+//     所以锁一直挂着时每个实例每秒至多一条诊断。取锁成功即清零。
 //   · createOrOpen:对段锁文件 flock(LOCK_EX|LOCK_NB)。
 //       拿到 ⇒ 没有活着的持有者 ⇒ 先 shm_unlink 残段(崩溃留下的、旧尺寸的都在这里清掉;只清本用户
 //              名下的),再 shm_open(O_CREAT|O_EXCL|O_RDWR, 0600) + ftruncate(size),created = true;
@@ -66,10 +68,14 @@
 //   · App Sandbox 里运行插件的宿主(插件在宿主自己的沙盒进程内):沙盒要求 POSIX shm 名带 App Group
 //     前缀(31 字符也放不下),锁目录也在容器之外,这个后端在那类宿主里会 kFailed(EPERM / EACCES)。
 //     M01 的 G0 只覆盖了进程外的 AUHostingService(未沙盒、HOME 未容器化);沙盒内宿主的实测未做。
+//   · DAW 运行期间手动删掉锁目录(~/Library/Application Support/Synchain/SCVB/ipc 或其上级):活着的
+//     持有者仍拿着旧锁文件(已无名字)上的 SH,新来的创建者建出新锁文件、判段「没有持有者」并清掉活段,
+//     两边各用一份(裂脑)。只能靠「运行中别删这个目录」规避。
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
 
@@ -155,12 +161,15 @@ private:
     void leave(Mapping& m);
     // 断路:本实例最近一次「等满超时」之后 kLockBreakerWindow 内只试一次。
     std::chrono::milliseconds lockWait(std::chrono::milliseconds normal) const noexcept;
-    void noteLockTimeout() noexcept;
+    // 取全局锁失败时的记账:断路窗口内的超时只计数不上报;其余记进 diag(带上此前略去的次数)。
+    void noteLockFailure(int error, const std::string& lockPath, std::chrono::milliseconds wait,
+                         PendingDiag& diag) noexcept;
 
     std::string lockDir_;
     bool lockDirOverridden_ = false;
     std::atomic<bool> overrideReported_{false};
     std::atomic<long long> lastLockTimeoutMs_{-1}; // steady_clock 毫秒;-1 = 从没超时过
+    std::atomic<std::uint32_t> suppressedLockFailures_{0}; // 断路窗口内略去、尚未随诊断报出的失败次数
     std::mutex liveMutex_; // 保护 live_ 链表(多个线程各自用同一个后端实例时)
     Mapping* live_ = nullptr; // 本实例映射出去、尚未 unmap 的视图(侵入式双向链表,插入/摘除不分配)
 };

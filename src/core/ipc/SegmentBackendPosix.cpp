@@ -3,9 +3,8 @@
 
 #include <cerrno>
 #include <cstdlib>
-#include <new>
+#include <memory>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -35,6 +34,8 @@ struct SegmentBackendPosix::Mapping
 };
 
 // 持全局锁期间发生的失败先记在这里,放锁之后再交给诊断 sink(sink 做慢 I/O 也卡不住别的进程)。
+// note() 不抛:它出现在已经开了 fd 的失败路径上,路径拷贝分配失败时宁可丢掉路径,也不能让异常
+// 越过还没关的 fd。
 struct SegmentBackendPosix::PendingDiag
 {
     bool set = false;
@@ -42,14 +43,26 @@ struct SegmentBackendPosix::PendingDiag
     int error = 0;
     std::string path;
     const char* detail = "";
+    std::uint32_t suppressed = 0;
 
-    void note(IpcDiagOp o, int e, const char* d, std::string p = {})
+    void note(IpcDiagOp o, int e, const char* d) noexcept
     {
         set = true;
         op = o;
         error = e;
         detail = d;
-        path = std::move(p);
+    }
+    void note(IpcDiagOp o, int e, const char* d, const std::string& p) noexcept
+    {
+        note(o, e, d);
+        try
+        {
+            path = p;
+        }
+        catch (...)
+        {
+            path.clear();
+        }
     }
 };
 
@@ -59,11 +72,8 @@ constexpr wchar_t kWinPrefix[] = L"Local\\";
 constexpr std::size_t kWinPrefixLength = sizeof(kWinPrefix) / sizeof(kWinPrefix[0]) - 1;
 constexpr auto kLifecycleLockPoll = std::chrono::milliseconds(1);
 
-const char* const kLockTimedOut = "timed out waiting for lifecycle.lock";
-const char* const kLockBreakerOpen =
-    "lifecycle.lock timed out recently on this backend; tried once without waiting (breaker)";
-
-void report(IpcDiagOp op, int error, const std::string& segment, const std::string& path, const char* detail) noexcept
+void report(IpcDiagOp op, int error, const std::string& segment, const std::string& path, const char* detail,
+            std::uint32_t suppressed = 0) noexcept
 {
     IpcDiagEvent e;
     e.op = op;
@@ -71,6 +81,7 @@ void report(IpcDiagOp op, int error, const std::string& segment, const std::stri
     e.segment = segment.c_str();
     e.path = path.c_str();
     e.detail = detail;
+    e.suppressed = suppressed;
     reportIpcDiag(e);
 }
 
@@ -225,14 +236,19 @@ private:
     bool held_ = false;
 };
 
-const char* lockFailureDetail(int error, bool breakerOpen) noexcept
+// 关 fd 的兜底:正常路径上调用方会先手动关掉(置 -1),这里只在异常展开时生效。
+struct FdBackstop
 {
-    if (error == ETIMEDOUT)
+    int& fd;
+    ~FdBackstop()
     {
-        return breakerOpen ? kLockBreakerOpen : kLockTimedOut;
+        if (fd >= 0)
+        {
+            ::close(fd);
+            fd = -1;
+        }
     }
-    return "cannot open lifecycle.lock";
-}
+};
 
 // 无主段的属主检查:只清自己(有效 uid)名下的段。POSIX shm 是全机命名空间,锁目录却在各自的 home 里,
 // 所以另一个用户正在用的段,在本用户的锁看来也是「没有持有者」;不查就会把别人的活段 unlink 掉。
@@ -410,6 +426,24 @@ void SegmentBackendPosix::noteLockTimeout() noexcept
     lastLockTimeoutMs_.store(steadyMs(), std::memory_order_relaxed);
 }
 
+void SegmentBackendPosix::noteLockFailure(int error, const std::string& lockPath, std::chrono::milliseconds wait,
+                                          PendingDiag& diag) noexcept
+{
+    if (error == ETIMEDOUT)
+    {
+        if (wait.count() == 0)
+        {
+            // 断路窗口内:只试了一次。不上报,只计数(并进下一条同类诊断)。
+            suppressedLockFailures_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        noteLockTimeout();
+    }
+    diag.note(IpcDiagOp::kLifecycleLock, error,
+              error == ETIMEDOUT ? "timed out waiting for lifecycle.lock" : "cannot open lifecycle.lock", lockPath);
+    diag.suppressed = suppressedLockFailures_.exchange(0, std::memory_order_relaxed);
+}
+
 void SegmentBackendPosix::track(Mapping* m) noexcept
 {
     std::lock_guard<std::mutex> lock(liveMutex_);
@@ -507,7 +541,7 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
     // 到这里全局锁已经放掉:诊断此刻才交给 sink。
     if (diag.set)
     {
-        report(diag.op, diag.error, shm, diag.path, diag.detail);
+        report(diag.op, diag.error, shm, diag.path, diag.detail, diag.suppressed);
     }
     return r;
 }
@@ -516,6 +550,12 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
                                            PendingDiag& diag)
 {
     const bool create = (mode == Mode::kCreateOrOpen);
+
+    // 映射记录(含两份字符串拷贝)在拿任何 fd / 锁之前就分配好:分配失败只会把异常抛出去,不会留下
+    // 已开的锁 fd 或映射。之后直到成功返回,不再有可能抛的分配。
+    auto record = std::make_unique<Mapping>();
+    record->shmName = shm;
+    record->lockDir = lockDir_;
 
     // ── 全局生命周期锁:从这里到函数返回,本进程与别的进程都插不进任何转换 ──
     const auto wait = lockWait(create ? kCreateLockWait : kAttachLockWait);
@@ -526,14 +566,10 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
         {
             return InitResult::kFailed; // 锁目录里从没建过东西 ⇒ 不可能有段;安静地等下一轮
         }
-        const bool breakerOpen = (wait.count() == 0);
-        if (life.error() == ETIMEDOUT && !breakerOpen)
-        {
-            noteLockTimeout();
-        }
-        diag.note(IpcDiagOp::kLifecycleLock, life.error(), lockFailureDetail(life.error(), breakerOpen), life.path());
+        noteLockFailure(life.error(), life.path(), wait, diag);
         return InitResult::kFailed;
     }
+    suppressedLockFailures_.store(0, std::memory_order_relaxed);
 
     const std::string lockPath = lockDir_ + "/" + shm.substr(1) + ".lock";
     const int lockFlags = create ? (O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW) : (O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -668,15 +704,8 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
     ::close(shmFd); // 映射建立后 shm 的 fd 不再需要
     shmFd = -1;
 
-    auto* m = new (std::nothrow) Mapping();
-    if (m == nullptr)
-    {
-        ::munmap(base, realSize);
-        return failAfterOpen(IpcDiagOp::kShmMap, ENOMEM, "out of memory for the mapping record");
-    }
+    Mapping* m = record.release();
     m->lockFd = lockFd;
-    m->shmName = shm;
-    m->lockDir = lockDir_;
     m->base = base;
     m->size = realSize;
     track(m);
@@ -693,10 +722,14 @@ void SegmentBackendPosix::leave(Mapping& m)
 {
     PendingDiag diag;
     {
+        // 兜底:下面拼锁路径等分配万一抛出,锁 fd 也照样关掉(那时在全局锁外关,最坏只是留下一个
+        // 无主残段,由下一个创建者清理)。正常路径在全局锁内手动关。
+        FdBackstop backstop{m.lockFd};
         const auto wait = lockWait(kLeaveLockWait);
         LifecycleLock life(m.lockDir, /*create=*/false, wait);
         if (life.held())
         {
+            suppressedLockFailures_.store(0, std::memory_order_relaxed);
             // SH → EX 的探测(转换不是原子的:先放 SH 再试 EX;失败时 SH 已经放掉,这正是离开要的)。
             if (flockRetry(m.lockFd, LOCK_EX | LOCK_NB) == 0)
             {
@@ -710,13 +743,7 @@ void SegmentBackendPosix::leave(Mapping& m)
         else
         {
             // 拿不到全局锁就不做 unlink 判定(否则可能与别人的建段交错);段留给下一个创建者清理。
-            const bool breakerOpen = (wait.count() == 0);
-            if (life.error() == ETIMEDOUT && !breakerOpen)
-            {
-                noteLockTimeout();
-            }
-            diag.note(IpcDiagOp::kLifecycleLock, life.error(), lockFailureDetail(life.error(), breakerOpen),
-                      life.path());
+            noteLockFailure(life.error(), life.path(), wait, diag);
         }
         // 关锁 fd 即放掉剩下的锁;此刻全局锁(若拿到)仍在手里,整个离开转换落在锁内。
         ::close(m.lockFd);
@@ -725,7 +752,7 @@ void SegmentBackendPosix::leave(Mapping& m)
     // 全局锁已放:此刻才上报。
     if (diag.set)
     {
-        report(diag.op, diag.error, m.shmName, diag.path, diag.detail);
+        report(diag.op, diag.error, m.shmName, diag.path, diag.detail, diag.suppressed);
     }
 }
 

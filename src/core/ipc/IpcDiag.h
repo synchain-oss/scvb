@@ -48,6 +48,8 @@ struct IpcDiagEvent
     const char* segment = ""; // 平台段名(POSIX 为 "/X");从不为 nullptr,可能为空串
     const char* path = ""; // 相关的文件 / 目录路径(锁目录、锁文件);从不为 nullptr,可能为空串
     const char* detail = ""; // 静态 ASCII 描述;从不为 nullptr
+    // 本条之前、同一后端实例在断路窗口内略去未报的同类失败次数(目前只用于 kLifecycleLock;0 = 没有)。
+    std::uint32_t suppressed = 0;
 };
 
 // sink 必须 noexcept:报告点在后端的失败清理路径里,不允许异常穿出。
