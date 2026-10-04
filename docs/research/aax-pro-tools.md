@@ -290,7 +290,7 @@ Questions:
 - ChowTapeModel:[AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel) 的 `Scripts/aax_builds.sh:84-111`。调研时复核过:mac 用 `--signid` 加 `--dsig1-compat off`;Windows 用 `--keyfile`、`--keypassword`,`--in`/`--out` 传外层 bundle,verify 传内层 DLL。
 - NeuralAmpModelerPlugin:[仓库](https://github.com/sdatkinson/NeuralAmpModelerPlugin)的 `NeuralAmpModeler/scripts/makedist-win.bat:94-95`,这是 **REM 注释掉的模板行**,`--in` 传内层 DLL;`makedist-mac.sh:222`。
 - Dplug:[仓库](https://github.com/AuburnSounds/Dplug)的 `tools/dplug-build/source/main.d:603-651`;mac 上传 bundle(`:1219` 注释:「wraptool won't accept the executable only」)。
-- Venn Audio(云签名,2023-04):[文章](https://www.vennaudio.com/how-we-incorporate-paces-cloud-signing-tools-into-our-build-pipeline-for-free-suite/)。
+- Venn Audio(云签名,2023-04):文章 `https://www.vennaudio.com/how-we-incorporate-paces-cloud-signing-tools-into-our-build-pipeline-for-free-suite/`(CI 链接检查对该站点返回 202,故不做成链接)。
 
 **以 Fusion SDK 自带的 PACE 文档为准。** 2026 年版可能要额外参数(2.6 第 7 步)。
 
@@ -710,7 +710,7 @@ Windows 一轮约 1.5–2 天,再加 1 天;mac 一轮要等 macOS 移植完成�
 - iLok 零售价:[USB-A](https://www.sweetwater.com/store/detail/iLok3--pace-ilok-3rd-generation);[USB-C](https://www.sweetwater.com/store/detail/iLok3USBC--pace-ilok-3-usb-c)
 - DPP 实测:[kirin_hypha PR 54](https://github.com/heyalohaloha/kirin_hypha/pull/54)
 - wraptool 命令先例:
-  - [Venn Audio](https://www.vennaudio.com/how-we-incorporate-paces-cloud-signing-tools-into-our-build-pipeline-for-free-suite/)
+  - Venn Audio:`https://www.vennaudio.com/how-we-incorporate-paces-cloud-signing-tools-into-our-build-pipeline-for-free-suite/`
   - [AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel)(`Scripts/aax_builds.sh:84-111`)
   - [NeuralAmpModelerPlugin](https://github.com/sdatkinson/NeuralAmpModelerPlugin)(`NeuralAmpModeler/scripts/makedist-win.bat:94-95`,注释模板;`makedist-mac.sh:222`)
   - [Dplug](https://github.com/AuburnSounds/Dplug)(`tools/dplug-build/source/main.d:603-651,1219`)及 [Dplug AAX Guide](https://github.com/AuburnSounds/Dplug/wiki/Dplug-AAX-Guide)
