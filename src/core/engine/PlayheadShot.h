@@ -45,15 +45,25 @@ struct PlayheadPod
 // seq 版本号包裹的双缓冲快照(进程内,非 IPC)。
 struct PlayheadShot
 {
-    std::atomic<uint32_t> seq{0}; // 写方:写前 +1(奇)→ 写 pod → 写后 +1(偶)
+    std::atomic<uint32_t> seq{0}; // 写方:写前 +1(奇)+ release fence → 写 pod → 写后 +1(偶)
     PlayheadPod pod{}; // 读方:seq 前后双读,奇或不等 → 沿用上帧(不自旋)
 
     // 音频线程每块整体发布一次(零分配零锁)。绝不在音频线程调 setValueNotifyingHost(R6)。
+    // [B 线 M04] 写侧是标准 Boehm 写法(同 CtrlPlane::writeBroadcast):奇数增量 relaxed + 紧跟一道
+    // release fence。原先奇数增量是 release RMW,release 只约束它**之前**的访问,挡不住后面的 pod 写
+    // 被提到奇数 seq 之前可见 —— arm64 上读方可能读到前后两次 seq 都是同一个偶数、pod 却已经半新半旧
+    // (消费方是 AutomationPrinter / Monitor / UI,撕裂一帧就是一个错误的时间位置或 epoch)。
+    // fence 之后的 pod 写一旦被读方读到,本 fence 与读方 read() 里的 acquire fence 同步 ⇒ 奇数 seq
+    // 对读方第二次 seq 读可见 ⇒ before != after,撕裂被识别。
+    // x86:fetch_add 不论 relaxed / release 都是 lock xadd(本身即全屏障),release fence 只是编译器
+    // 屏障、不生成指令,所以 x86 上本来就不会撕裂,这里也不多一条指令。arm64:LDADDL 换成
+    // LDADD + DMB ISH,每块一次。
     void publish(const PlayheadPod& p) noexcept
     {
-        seq.fetch_add(1, std::memory_order_release); // 奇数:进入临界区
+        seq.fetch_add(1, std::memory_order_relaxed); // 奇数:进入临界区
+        std::atomic_thread_fence(std::memory_order_release); // 挡住后面的 pod 写上浮到奇数 seq 之前
         pod = p;
-        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成
+        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成(release:pod 写不下沉到它之后)
     }
 
     // 读方:返回 false = 本次读撕裂(写者正在写或读期间更新),调用方沿用上帧。

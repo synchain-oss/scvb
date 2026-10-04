@@ -33,15 +33,19 @@ struct MeterPod
 
 struct MeterShot
 {
-    std::atomic<std::uint32_t> seq{0}; // 写方:写前 +1(奇)→ 写 pod → 写后 +1(偶)
+    std::atomic<std::uint32_t> seq{0}; // 写方:写前 +1(奇)+ release fence → 写 pod → 写后 +1(偶)
     MeterPod pod{}; // 读方:seq 前后双读,奇或不等 → 沿用上帧(不自旋)
 
     // 音频线程每块整体发布一次(零分配零锁)。
+    // [B 线 M04] 写侧与 engine::PlayheadShot::publish 同一写法、同一理由(奇数增量 relaxed + release
+    // fence,见那里的注释):release RMW 挡不住后面的 pod 写上浮,arm64 上读方会收下半新半旧的一帧
+    // 电平。本处后果只是电平表一帧撕裂(外观),修法不因此放松。x86 上不多一条指令。
     void publish(const MeterPod& p) noexcept
     {
-        seq.fetch_add(1, std::memory_order_release); // 奇数:进入临界区
+        seq.fetch_add(1, std::memory_order_relaxed); // 奇数:进入临界区
+        std::atomic_thread_fence(std::memory_order_release); // 挡住后面的 pod 写上浮到奇数 seq 之前
         pod = p;
-        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成
+        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成(release:pod 写不下沉到它之后)
     }
 
     // 读方:返回 false = 本次读撕裂(写者正在写或读期间更新),调用方沿用上帧。
