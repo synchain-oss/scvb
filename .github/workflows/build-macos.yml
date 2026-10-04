@@ -184,13 +184,17 @@ jobs:
             grep -E ':[0-9]+:[0-9]+: warning:' | grep -vE '^([^:]*/)?(_deps|JUCE|vcpkg)/' || true
           }
           # 判据先自测(合成行,不读日志):第三方三类必须排掉;正文里提到 JUCE 路径的 first-party
-          # 警告必须留下;链接器噪音不算。自测与实扫走同一个函数。
-          want='/w/scvb/src/core/x.cpp:1:2: warning: shadows a decl in /w/scvb/JUCE/modules/y.h [-Wshadow]'
+          # 警告必须留下;tests/ 下的警告必须留下(选黑名单而不选 `grep '/src/'` 白名单,就是为了它);
+          # 链接器噪音不算。自测与实扫走同一个函数。
+          want_src='/w/scvb/src/core/x.cpp:1:2: warning: shadows a decl in /w/scvb/JUCE/modules/y.h [-Wshadow]'
+          want_tests='/w/scvb/tests/core/x.cpp:3:4: warning: unused variable [-Wunused-variable]'
+          want=$(printf '%s\n%s' "$want_src" "$want_tests")
           probe=$(printf '%s\n' \
             '_deps/catch2-src/src/x.cpp:1:2: warning: third-party [-Wx]' \
             '/w/scvb/JUCE/modules/x.h:1:2: warning: third-party [-Wx]' \
             '/w/scvb/vcpkg/x.h:1:2: warning: third-party [-Wx]' \
-            "$want" \
+            "$want_src" \
+            "$want_tests" \
             'ld: warning: linker noise' | first_party_warnings)
           if [ "$probe" != "$want" ]; then
             echo "::error::zero-warning filter self-test failed; kept: [$probe]"; exit 1
