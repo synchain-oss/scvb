@@ -39,17 +39,24 @@ u64 steadyNowMs() noexcept
     return static_cast<u64>(::GetTickCount64());
 #else
 #if defined(CLOCK_MONOTONIC_RAW)
-    // 心跳是跨进程比较的时间戳:各进程必须读同一个全系统时钟。显式钉 CLOCK_MONOTONIC_RAW,
-    // 不依赖「libc++ 的 steady_clock 在 Apple 上恰好就是它」这一实现细节(B 线 M03)。
+    // 心跳是跨进程比较的时间戳:各进程必须读同一个全系统时钟。这里显式钉 CLOCK_MONOTONIC_RAW,
+    // 不经 std::chrono::steady_clock —— 后者在 Apple 上落到哪个时钟由 libc++ 的版本决定,不同版本
+    // 用过不同的来源,不能拿它当契约(B 线 M03)。
+    // 不设回落:同一进程里一旦混进第二个零点不同的时钟,心跳差值就失去意义。clock id 是编译期已知、
+    // 受支持的(macOS 10.12 起提供;本项目 mac 部署目标 11.0),指针有效,所以 EINVAL / EFAULT 都不会
+    // 出现;万一失败就返回 0,而不是换一个时钟。心跳值 0 在 isStaleDisplay / isTakeoverStale 里按陈旧处理。
     timespec ts{};
-    if (::clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == 0)
+    if (::clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0)
     {
-        return static_cast<u64>(ts.tv_sec) * 1000u + static_cast<u64>(ts.tv_nsec) / 1000000u;
+        return 0;
     }
-#endif
+    return static_cast<u64>(ts.tv_sec) * 1000u + static_cast<u64>(ts.tv_nsec) / 1000000u;
+#else
+    // 没有 CLOCK_MONOTONIC_RAW 的 POSIX(Apple 上不会走到这里,见文件头的 #error):退回 steady_clock。
     return static_cast<u64>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
             .count());
+#endif
 #endif
 }
 

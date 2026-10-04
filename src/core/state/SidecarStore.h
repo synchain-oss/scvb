@@ -69,6 +69,9 @@ struct ProcessIdentity
 };
 // 当前进程身份(Windows 用 GetCurrentProcessId/GetProcessTimes/GetComputerNameA;POSIX 用 getpid/gethostname,
 // 进程起始时刻在 Apple 上取 sysctl(KERN_PROC_PID) 的 p_starttime,其余 POSIX 暂留 0)。
+// 已知限制(非 Apple 的 POSIX):起始时刻为 0 时,「锁是不是本进程的」这个 pid + 起始时刻双元组退化成只比 pid,
+// 防不住 pid 复用 —— 复用了旧 pid 的新进程会把旧进程留下的 owner.lock 认作自己的(心跳续写、跳过 copy-on-write)。
+// 旧进程既已退出,不会有两个写者同时写;但这一侧确实没有覆盖。那些平台不是发布目标。
 ProcessIdentity currentProcessIdentity();
 
 // owner.lock(04 §5.5):{pid, processStartTime, heartbeatIso8601}。
