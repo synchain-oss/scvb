@@ -561,6 +561,9 @@ jobs:
       #     但 AU 加载不起来」这类编译期看不到的问题。照 bridge ci.yml:ditto 装进用户 Components、踢一次
       #     注册器、轮询 auval -a 至多 30s、以输出里的 'AU VALIDATION SUCCEEDED' 为准(auval 退出码历史上
       #     不可靠)。结果只进 step summary;本步 continue-on-error 且脚本自身不以非零退出。
+      #     注意 `shell: bash` 实际是 `bash --noprofile --norc -e -o pipefail`:脚本里只写 `set -uo pipefail`
+      #     关不掉 -e,某个组件的 `auval -v` 一旦非零退出,整步就停在那里,后面组件的 summary 行都没了
+      #     (一次性注入 run 实测过)。所以这里显式 `set +e`,auval 的退出码记进 summary,判定仍以输出为准。
       #     三元组只读 8c 落下的 au-triples.txt(已与 Info.plist 核对过),不在这里再写一份 componentType:
       #     哪个插件改了 AU_MAIN_TYPE,8c 跟着对上,这里也跟着走,不会悄悄轮询一个不存在的 aufx 三元组。
       #     逐行读用 fd 3,auval 一律 </dev/null,免得它吃掉循环的输入。
@@ -570,6 +573,7 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           dest="$HOME/Library/Audio/Plug-Ins/Components"
           mkdir -p "$dest"
@@ -593,11 +597,12 @@ jobs:
               sleep 1
             done
             auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1
+            rc=$?
             if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then verdict=SUCCEEDED; else verdict="did not succeed (see job log)"; fi
-            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen)"
+            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen, exit $rc)"
             tail -n 40 "auval-logs/auval-$code.log"
             echo "::endgroup::"
-            echo "- \`$type $code $mfr\`: registered=$seen, auval -v $verdict" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`$type $code $mfr\`: registered=$seen, auval -v exit $rc, $verdict" >> "$GITHUB_STEP_SUMMARY"
           done 3< au-triples.txt
           exit 0
 
