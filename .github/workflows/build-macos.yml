@@ -158,32 +158,53 @@ jobs:
           set -euo pipefail
           cmake --build build --target scvb_tests --parallel -- -k 0 2>&1 | tee build.log
 
-      # 5) clang 零警告门 —— 与 Windows 的 /W4 门(build-vst3.yml 的 Build 步)同构的**黑名单**,
-      #    写法照 bridge 仓 ci.yml 的 mac job:只排除第三方(Catch2 在 build/_deps/、JUCE 在 JUCE/),
-      #    其余一律算;白名单式的 `grep '/src/'` 会让 tests/ 与将来新增的源码目录静默逃过门禁。
+      # 5) clang 零警告门 —— 与 Windows 的 /W4 门(build-vst3.yml 的 Build 步)同构的**黑名单**:
+      #    只排除第三方(Catch2 在 build/_deps/、JUCE 在 JUCE/),其余一律算;白名单式的 `grep '/src/'`
+      #    会让 tests/ 与将来新增的源码目录静默逃过门禁。起点是 bridge 仓 ci.yml 的 mac job,
+      #    排除式收紧成只看行首路径(理由见步骤内注释)。
       #    - 只认编译器诊断行 `file:line:col: warning:`,与 Windows 侧只认 `warning Cxxxx` 同口径,
       #      `ld: warning:` 这类链接器噪音不进门禁;
-      #    - 排除项写成 (^|/):Ninja 把 FetchContent 依赖写成相对构建目录的 `_deps/<name>-src/...`
-      #      (无前导斜杠),只写 `/_deps/` 排不掉。
-      #    单列一步而不是并进 Build:编译红了也照样把警告清单列出来;反向注入(加一个未使用变量)
-      #    时红的是**这一步**,不是 Build。
+      #    单列一步而不是并进 Build:编译红了也照样把警告清单列出来(这时汇总行带上 Build 的结论,
+      #    「0 条」只覆盖编过的那些编译单元);反向注入(加一个未使用变量)时红的是**这一步**,不是 Build。
       #    「零命中」要先证明日志里真的编过 first-party 源:日志空或只编了第三方时,
       #    这道门会因为没东西可数而恒绿,那不是零警告。
       - name: Zero-warning gate (first-party clang warnings)
         if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
         shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
         run: |
           set -euo pipefail
+          # 判据:只认编译器诊断行 `file:line:col: warning:`,只按**行首那段文件路径**排除第三方。
+          # 不能拿整行去匹配 `/JUCE/`:first-party 警告的正文里也可能带一条 JUCE 路径(比如遮蔽了某个
+          # JUCE 头里的声明),整行匹配会把它一起排掉 —— 门禁绿是因为没数到,不是因为没有。
+          # `([^:]*/)?` 不跨冒号,所以只看到路径段;Ninja 把 FetchContent 依赖写成相对构建目录的
+          # `_deps/<name>-src/...`(无前导斜杠),可选前缀让这种写法同样排得掉。
+          first_party_warnings() {
+            grep -E ':[0-9]+:[0-9]+: warning:' | grep -vE '^([^:]*/)?(_deps|JUCE|vcpkg)/' || true
+          }
+          # 判据先自测(合成行,不读日志):第三方三类必须排掉;正文里提到 JUCE 路径的 first-party
+          # 警告必须留下;链接器噪音不算。自测与实扫走同一个函数。
+          want='/w/scvb/src/core/x.cpp:1:2: warning: shadows a decl in /w/scvb/JUCE/modules/y.h [-Wshadow]'
+          probe=$(printf '%s\n' \
+            '_deps/catch2-src/src/x.cpp:1:2: warning: third-party [-Wx]' \
+            '/w/scvb/JUCE/modules/x.h:1:2: warning: third-party [-Wx]' \
+            '/w/scvb/vcpkg/x.h:1:2: warning: third-party [-Wx]' \
+            "$want" \
+            'ld: warning: linker noise' | first_party_warnings)
+          if [ "$probe" != "$want" ]; then
+            echo "::error::zero-warning filter self-test failed; kept: [$probe]"; exit 1
+          fi
           if [ ! -s build.log ]; then echo "::error::build.log is missing or empty; nothing to judge"; exit 1; fi
           compiled=$(grep -cE 'Building CXX object (src/core|tests)/' build.log || true)
           if [ "${compiled:-0}" -lt 1 ]; then
             echo "::error::build.log shows no first-party translation unit compiled (src/core or tests); an empty set would make this gate vacuously green"; exit 1
           fi
-          warns=$(grep -E ':[0-9]+:[0-9]+: warning:' build.log | grep -vE '(^|/)(_deps|JUCE|vcpkg)/' || true)
+          warns=$(first_party_warnings < build.log)
           n=0
           if [ -n "$warns" ]; then n=$(printf '%s\n' "$warns" | wc -l | tr -d ' '); fi
-          echo "first-party TUs compiled in this run: $compiled; first-party clang warnings: $n"
-          echo "- first-party TUs compiled: $compiled; first-party clang warnings: **$n**" >> "$GITHUB_STEP_SUMMARY"
+          echo "first-party TUs compiled in this run: $compiled; first-party clang warnings: $n (build step: $BUILD_OUTCOME)"
+          echo "- first-party TUs compiled: $compiled; first-party clang warnings: **$n** (build step: $BUILD_OUTCOME)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$n" != "0" ]; then
             printf '%s\n' "$warns" | while IFS= read -r line; do echo "::error::$line"; done
             echo "::error::first-party clang warnings: $n; zero-warning gate"
@@ -259,7 +280,14 @@ jobs:
             echo "::group::IpcLayoutFreeze output"; cat ipc-layout-compact.log; echo "::endgroup::"
             echo "::error::IpcLayoutFreeze failed on arm64 (exit $rc)"; exit 1
           fi
-          sed 's/\r$//' tests/golden/ipc-layout.txt | grep -v '^#' | grep -v '^$' | LC_ALL=C sort -u > golden-lines.txt
+          # 去 CR 用 tr 而不是 sed:正则里的 `\r` 是 GNU sed 的扩展,macOS 自带的 BSD sed 不保证认
+          # (不认时 `s/\r$//` 删的是行尾字母 r);tr 的 `\r` 两边都认。
+          tr -d '\r' < tests/golden/ipc-layout.txt | grep -v '^#' | grep -v '^$' | LC_ALL=C sort -u > golden-lines.txt
+          # 下面的提取靠 compact reporter 把 INFO 包在单引号里打印('golden line: …');golden 数据行里
+          # 一旦出现单引号,提取会在那里截断,所以先拦住,改这一步的解析再放行。
+          if grep -q "'" golden-lines.txt; then
+            echo "::error::a golden data line contains a single quote; the compact-reporter parsing below cannot handle it"; exit 1
+          fi
           grep -o "'golden line: [^']*'" ipc-layout-compact.log | sed "s/^'golden line: //; s/'\$//" | LC_ALL=C sort -u > seen-lines.txt
           expected=$(wc -l < golden-lines.txt | tr -d ' ')
           seen=$(wc -l < seen-lines.txt | tr -d ' ')
