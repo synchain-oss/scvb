@@ -557,6 +557,15 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
                    openErr == ENOENT ? "segment missing although its lock is held" : "shm_open(attach) failed");
             return InitResult::kFailed;
         }
+        // [INJECT I3] attacher resizes the segment
+        if (create && ::ftruncate(shmFd, static_cast<off_t>(size)) != 0)
+        {
+            const int truncErr = errno;
+            ::close(shmFd);
+            ::close(lockFd);
+            report(IpcDiagOp::kShmTruncate, truncErr, shm, "[INJECT I3] attacher ftruncate failed");
+            return InitResult::kFailed;
+        }
     }
 
     // 失败清理:自己刚建的段要撤掉(此刻只有自己持锁),附着的不动。
