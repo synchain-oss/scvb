@@ -64,6 +64,8 @@ add_executable(scvb_tests
   core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
+  core/test_mix_source_provenance.cpp # [A-1] 读环出处判据落点(A-3 的 oracle 模糊测试在此展开)
+  core/test_presence_meter.cpp # [A-1] 在场判据仪器 tests/support/presence_meter.h 的自测
   core/test_panlaw.cpp # [SL-575] 10 §4.4.1 PANLAW-2..5 渲染层对拍(发版验证清单 D3)
   core/test_output_session.cpp
   core/test_feature_fingerprint.cpp
@@ -321,6 +323,10 @@ add_executable(scvb_host_tests
   host/test_host_harness.cpp
   host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
+  # [A-1] 宿主调度模拟器两份落点,用例一律打 `[.][sched]`:主条目默认不跑,由下面的
+  # `scvb_host_sched_tests` 显式选中。
+  host/test_host_sched.cpp # 框架自测(A-2 展开)
+  host/test_host_sched_scenarios.cpp # 复现场景 LS-1…15(A-4 展开)
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
@@ -393,4 +399,27 @@ add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # 确实杀掉了被测进程,返回后立刻数与 5 秒后再数都是 0;但另一次真实场景里残留确实出现过,
 # 成因还没查清。兜底在 `scripts/gates.ps1` gate 6 前后那两次孤儿扫描,不在这里。
 set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
+
+# [A-1] scvb_host_sched_tests:宿主调度模拟器(A 线)的独立条目。同一个二进制,只靠 Catch2 的
+# 过滤串 `[sched]` 选出 `host/test_host_sched*.cpp` 里打 `[.][sched]` 的用例:
+#   · `[.]` 隐藏 ⇒ 上面的主条目 `scvb_host_tests` 命令行不变、默认**不跑**它们,主条目
+#     那个量过的 900s 上界和它的基线都不受影响;
+#   · 过滤串里显式写出 `[sched]` 时,Catch2 会选中带这个标签的隐藏用例(实测见下);
+#   · 过滤不到任何用例时 Catch2 以**非零**退出(实测见下)—— 所以两份 sched 文件各放了一条
+#     最小用例,模拟器场景落地之前这条也不会红;
+#   · `[sched]` 这个标签在 `scvb_tests` 里另有一条(`[j146][sched]` 那条,`core/test_vad_preview.cpp`)。
+#     过滤是按二进制生效的,这里只选 `scvb_host_tests` 里的,互不影响。
+# 为什么单开一条、不并进主条目:模拟器场景要按墙钟节拍跑(500ms / 5s 那几道门限只能实时等),
+# 整套会长,上界要单独量;并进主条目会把 900s 那个量过的数冲掉。
+# 与主条目一样持 `support/exclusive_guard.h` 的进程互斥,两条串行跑(gates 与 CI 的 ctest 都不带 -j)。
+#
+# **观测**(A-1 落地时只有两条脚手架用例;本机,经 with-ipc-lock 手跑 ctest 三轮):
+#     scvb_host_sched_tests       0.03 0.04 0.04 (s,`Passed` 那一列)
+# 同一份二进制直接跑 `"[sched]"`:2 例全过,三轮墙钟 0.04–0.05s;过滤串换成不存在的标签时
+# 打印 `No tests ran`、退出码 2。
+# 规则沿用上面四套快套件那段的 `max(最慢观测 × 3, 30s)`,今天落在 30s 这一档。
+# ⚠ A-4 落场景后**重新量**并只改这个数 —— 本文件里 A 线的源文件与 ctest 条目由 A-1 一次登记完,
+#   之后不再增删,只改这里的 TIMEOUT 与观测。
+add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
+set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 30)
 endif()
