@@ -625,7 +625,10 @@ void SegmentBackendPosix::leave(Mapping& m)
         if (flockRetry(m.lockFd, LOCK_EX | LOCK_NB) == 0)
         {
             // 最后一个离开者:撤掉名字。别的进程里已有的映射(若有)不受影响。
-            // [INJECT I1] last-leaver shm_unlink removed
+            if (::shm_unlink(m.shmName.c_str()) != 0 && errno != ENOENT)
+            {
+                report(IpcDiagOp::kShmUnlink, errno, m.shmName, "last holder could not unlink the segment");
+            }
         }
     }
     else
