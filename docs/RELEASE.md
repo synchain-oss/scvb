@@ -21,7 +21,7 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 ## Tag 规则
 
 - 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`(流水线建的草稿都自动勾 pre-release)。**预发布不改 `CMakeLists.txt`**:`v1.2.3-beta.1`、`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc / beta 构建在插件设置页里显示的版本号不带 `-rc.N` / `-beta.N`(它来自 CMake 版本),区分是第几个预发布要看 zip 文件名或 Release 页。
-- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字;`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。下面发版清单第 9 步与「`staging` 与 `prod` 两个分支」目前只写了 rc 与正式版;beta 发布后这两个分支怎么动尚未定,首次发 beta 之前补进来。
+- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字(按 semver 不带前导零,写 `beta.1` 不写 `beta.01`;判据与 rc 一样不拦前导零,打 tag 时自己注意);`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。下面发版清单第 9 步与「`staging` 与 `prod` 两个分支」目前只写了 rc 与正式版;beta 发布后这两个分支怎么动尚未定,首次发 beta 之前补进来。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
 - 其他形态(`v1.2.3-alpha.1`、`v1.2.3-beta`、`v1.2` 等)一律被拒。
 - tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。v1 的改动都在主支线 `feature/v1` 上,所以发版前先按下方「里程碑合并:`feature/v1` → `dev`」把它压成一个提交合进 `dev`,tag 打在 `dev` 上的这个提交(J170)。
