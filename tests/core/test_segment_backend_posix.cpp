@@ -33,15 +33,7 @@ std::string posixName(const std::wstring& logical)
 TEST_CASE("POSIX shm names: every logical segment name fits PSHMNAMLEN with the '/' prefix", "[posix][names]")
 {
     std::size_t longest = 0;
-    std::string longestName;
-    const auto consider = [&](const std::wstring& logical) {
-        const std::string n = posixName(logical);
-        if (n.size() > longest)
-        {
-            longest = n.size();
-            longestName = n;
-        }
-    };
+    const auto consider = [&](const std::wstring& logical) { longest = std::max(longest, posixName(logical).size()); };
 
     for (scvb::u32 g = 1; g <= scvb::kMaxGroups; ++g)
     {
@@ -55,8 +47,10 @@ TEST_CASE("POSIX shm names: every logical segment name fits PSHMNAMLEN with the 
         }
     }
 
-    INFO("longest POSIX name: " << longestName);
-    // SegmentLayout.h 段名注释写的上界:"/SynchainSCVB.v1.g8.audio.ch15" = 30 字符。
-    CHECK(longestName == "/SynchainSCVB.v1.g8.audio.ch15");
+    // SegmentLayout.h 段名注释写的上界 "/SynchainSCVB.v1.g8.audio.ch15"(30 字符)确实是最长的那一档
+    // (两位数声道的 audio / feat 名都与它等长,不唯一,所以比长度而不比名字)。
+    const std::string documentedLongest = posixName(scvb::segmentLogicalName(8, scvb::SegmentKind::kAudio, 15));
+    INFO("documented longest: " << documentedLongest << " (" << documentedLongest.size() << " chars)");
+    CHECK(documentedLongest.size() == longest);
     REQUIRE(longest <= kPosixShmNameMax);
 }
