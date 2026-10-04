@@ -23,7 +23,18 @@
 // ⚠ 只写 `el.style.zoom`,不碰 transform:命中测试(web/shared/hit.js)与后备存储
 // (web/output/canvas/hidpi.js)全套按 CSS zoom 的语义写的,换成 transform 会让
 // getBoundingClientRect 与布局坐标脱钩。
+//
+// [M09] **旧 rect 语义下缩放锁 1**(WebKit 26.4 之前的系统 WKWebView;判据与理由见
+// hit.js 的 zoomRectMode 头注):安装时量一次语义,判出旧语义就
+//   ① 画面倍率恒为 1,不再从视口反算 —— zoom=1 时两种语义逐字相同,命中按构造正确;
+//   ② 档位只留 1 档(`scalePresets`),宿主带着别的档位开窗时请回 1(`enforceZoomLock`,
+//      走现有 setUiScale,不新增桥函数、不落盘:用户存过的档位原样留着,换到新 WebKit
+//      后照旧生效);
+//   ③ 页面显示一行提示(词条 `scale.lockedLegacy`,各页自己摘 hidden)。
+// 新语义(以及量不出来的 unknown)下以上三条**一条都不触发**,行为与改前逐字相同。
 // =============================================================================
+
+import { ZOOM_RECT_LEGACY, zoomRectMode } from "./hit.js";
 
 /** 有限数才用,否则回落 d(视口在首帧/隐藏时会读到 0 或 NaN)。 */
 function num(v, d) {
@@ -92,6 +103,58 @@ export function backingFitFactor() {
 }
 
 /**
+ * [M09] 本文档是否因旧 rect 语义把缩放锁在 1(安装时量定;见文件头 [M09] 一段)。
+ * 与 `current` 同为模块级单例,理由相同:一个文档只有一个外壳。
+ */
+let locked = false;
+/** `enforceZoomLock` 这一趟离开 1 档时已经为哪个档位值请求过回 1(回推回到 1 时清空)。 */
+let lockRequestedFrom = null;
+
+/** 旧 rect 语义 ⇒ true:缩放锁在 1,档位只剩 1 档,页面该显示那行提示。 */
+export function zoomLocked() {
+    return locked;
+}
+
+/**
+ * 档位表过一道锁:锁定时只留 1 档(「隐藏其它档位」);没锁时**原样返回同一个数组**,
+ * 调用方生成的选项与改前逐字相同。
+ * @param {number[]} presets 真源 web/shared/design-box.js 的档位表
+ */
+export function scalePresets(presets) {
+    if (!locked || !Array.isArray(presets)) return presets;
+    return presets.filter((f) => f === 1);
+}
+
+/**
+ * 锁定时,state 回推的档位不是 1(宿主按用户存过的档位开了窗)⇒ 经 `request(1)` 请回 1。
+ *
+ * `request` 由页面传进来(它手里才有桥),约定就是调现有的 `setUiScale(1)`:只改窗口、
+ * 不调 `commitUiScale`,所以用户存过的档位不被改写。**每离开 1 档一次只请求一次** ——
+ * 渲染每帧都会调到这里,而回声要晚一拍才到;回推回到 1 时清掉记账,之后再被推到别的
+ * 档位(比如宿主重新按存档开窗)会再请求一次。请求本身失败不重试(setUiScale(1) 在
+ * 档位表内,不会被拒,真失败多半是桥没接上,重试只会刷屏)。
+ * 没锁时直接返回 false,不碰任何东西。
+ *
+ * @param {number} scale 页面此刻手上的档位(state 回推值)
+ * @param {(f:number)=>unknown} request 发 setUiScale 的那一下
+ * @returns {boolean} 这一次是否发了请求
+ */
+export function enforceZoomLock(scale, request) {
+    if (!locked) return false;
+    if (typeof scale !== "number" || !Number.isFinite(scale)) return false;
+    if (scale === 1) {
+        lockRequestedFrom = null; // 已经回到 1:这一趟结清,下次离开 1 档再请求
+        return false;
+    }
+    if (scale === lockRequestedFrom || typeof request !== "function") {
+        return false;
+    }
+    lockRequestedFrom = scale;
+    request(1);
+    return true;
+}
+
+/**
  * 把 el 钉成「永远刚好装进视口」。
  *
  * @param {object} o
@@ -123,6 +186,10 @@ export function installShellFit(o) {
         return { factor: () => 1, refresh: () => {}, destroy: () => {} };
     }
 
+    // [M09] 语义只量这一次(hit.js 按文档缓存)。unknown 按新语义处理:不锁。
+    locked = zoomRectMode(win.document) === ZOOM_RECT_LEGACY;
+    lockRequestedFrom = null;
+
     let last = 0;
     let raf = 0;
     let rafIsTimeout = false; // raf 里存的是 timeout id 还是 rAF id(destroy 按类型取消)
@@ -140,7 +207,8 @@ export function installShellFit(o) {
     function apply(silent) {
         raf = 0;
         const v = viewport();
-        const f = fitFactor(v.w, v.h, box.w, box.h);
+        // [M09] 降级而不是换算:旧 rect 语义下画面倍率恒为 1,不随视口变。
+        const f = locked ? 1 : fitFactor(v.w, v.h, box.w, box.h);
         if (f === last) return;
         last = f;
         current = f;
@@ -200,6 +268,8 @@ export function installShellFit(o) {
             // 倍率会让热重挂之后的第一批画布按僵值分配。
             current = 1;
             last = 0;
+            locked = false;
+            lockRequestedFrom = null;
         },
     };
 }

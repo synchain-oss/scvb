@@ -353,7 +353,7 @@ export const T = {
             "查看分析结果、调整分段;上方是泳道曲线,下方是工具条;拖动、框选、缩放都在这页完成。",
         "tour.step34.title": "下方面板与操作",
         "tour.step34.body":
-            "框选泳道建立选区;拖拽边界微调分段。滚轮:裸滚=左右平移,Shift=上下平移,Ctrl=横向缩放,Alt=改泳道高度(底部缩放条同效)。双击段内=在此分割,双击段与段之间的分界线=删掉它、把左右两段并成一段;选中相邻两段也可合并。",
+            "框选泳道建立选区;拖拽边界微调分段。滚轮:裸滚=左右平移,Shift=上下平移,Ctrl 或 Cmd=横向缩放,Alt=改泳道高度(底部缩放条同效)。双击段内=在此分割,双击段与段之间的分界线=删掉它、把左右两段并成一段;选中相邻两段也可合并。",
         "tour.step32.title": "泳道区",
         "tour.step32.body":
             "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
@@ -497,7 +497,7 @@ export const T = {
         "chart.panSideC": "中 C",
         "chart.panSideL": "左 L",
         "chart.trajCanvasAria":
-            "声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键",
+            "声像轨迹图:滚轮左右平移,Ctrl 或 Cmd+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键",
         "chart.zoomAria": "时间轴缩放档位",
         "chart.backToPlayhead": "回到播放头",
         "chart.resetPanZoom": "纵向复位",
@@ -560,7 +560,7 @@ export const T = {
 
         "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
-            "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
+            "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl 或 Cmd+Z)。",
         // ⚠ [SL-293] 「音量」段是**参与语义**,**别照 05 §5 改成「音量豁免…不进平衡计算」**。
         // 屏幕上那枚开关的显示层是**取反**的,依据是 `tab-tracks.js` 里 volexempt 单元格上方
         // 那条注释(以「参与语义(用户裁定 2026-08-21:…」开头)逐字记着的
@@ -860,6 +860,10 @@ export const T = {
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
         "scale.overflow": "超出当前屏幕",
+        // [M09] 旧 WebKit(26.4 之前 getBoundingClientRect 不含 CSS zoom)下缩放锁 100% 的一行提示。
+        // 判据是**量到的** rect 语义(web/shared/hit.js zoomRectMode),26.4 是那条语义改动的版本号。
+        // 落笔前已对 web/fonts/*.woff2 核过字形(gate 3h);改字先核字,别重跑 fetch_fonts.py。
+        "scale.lockedLegacy": "WebKit 低于 26.4,缩放固定为 100%",
 
         // ---- T31 Wave 2 新增(统筹裁定「§E 九处 + Wave 2 增补」;zh 逐字取 05 §2.0/§2.1 正文)----
         // 建议 05 §5 收录;EN/FR 为 T31 自译,已入待审校清单(scratchpad/t31/deviations.md)。
@@ -1413,7 +1417,7 @@ export const T = {
             "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
         "tour.step34.title": "Bottom panel and actions",
         "tour.step34.body":
-            "Box-select lanes to make a selection; drag boundaries to fine-tune segments. Wheel: plain = pan left/right, Shift = pan up/down, Ctrl = zoom horizontally, Alt = change lane height (the bottom zoom bars do the same). Double-click inside a segment to split it there; double-click the divider between two segments to delete it and merge them; selecting two adjacent segments also merges.",
+            "Box-select lanes to make a selection; drag boundaries to fine-tune segments. Wheel: plain = pan left/right, Shift = pan up/down, Ctrl or Cmd = zoom horizontally, Alt = change lane height (the bottom zoom bars do the same). Double-click inside a segment to split it there; double-click the divider between two segments to delete it and merge them; selecting two adjacent segments also merges.",
         "tour.step32.title": "Lane area",
         "tour.step32.body":
             "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
@@ -1540,7 +1544,7 @@ export const T = {
         "chart.panSideC": "C",
         "chart.panSideL": "L",
         "chart.trajCanvasAria":
-            "Pan trajectory chart: scroll to move sideways, Ctrl+scroll to zoom horizontally, Shift+scroll to move up and down, Alt+scroll to zoom vertically; drag or arrow keys also work",
+            "Pan trajectory chart: scroll to move sideways, Ctrl or Cmd+scroll to zoom horizontally, Shift+scroll to move up and down, Alt+scroll to zoom vertically; drag or arrow keys also work",
         "chart.zoomAria": "Timeline zoom level",
         "chart.backToPlayhead": "Back to playhead",
         "chart.resetPanZoom": "Reset Y zoom",
@@ -1606,7 +1610,7 @@ export const T = {
         "master.transitionHint":
             "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
-            "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
+            "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl or Cmd+Z).",
         // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
@@ -1837,6 +1841,7 @@ export const T = {
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
         "scale.overflow": "Exceeds current screen",
+        "scale.lockedLegacy": "WebKit older than 26.4: zoom fixed at 100%",
 
         // ---- T31 Wave 2 新增(EN 自译,待人工审校)----
         "banner.misaligned":
@@ -2275,7 +2280,7 @@ export const T = {
             "Vérifiez les résultats et ajustez les segments ; courbes des pistes en haut, barre d'outils en bas ; glisser, sélectionner par rectangle, zoomer se font ici.",
         "tour.step34.title": "Panneau inférieur et actions",
         "tour.step34.body":
-            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments. Molette : seule = défilement horizontal, Maj = défilement vertical, Ctrl = zoom horizontal, Alt = hauteur des pistes (les barres de zoom font de même). Double-clic dans un segment pour le diviser ; double-clic sur la limite entre deux segments pour la supprimer et les fusionner ; sélectionner deux segments adjacents fusionne aussi.",
+            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments. Molette : seule = défilement horizontal, Maj = défilement vertical, Ctrl ou Cmd = zoom horizontal, Alt = hauteur des pistes (les barres de zoom font de même). Double-clic dans un segment pour le diviser ; double-clic sur la limite entre deux segments pour la supprimer et les fusionner ; sélectionner deux segments adjacents fusionne aussi.",
         "tour.step32.title": "Zone de pistes",
         "tour.step32.body":
             "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
@@ -2405,7 +2410,7 @@ export const T = {
         "chart.panSideC": "C",
         "chart.panSideL": "G",
         "chart.trajCanvasAria":
-            "Graphique de trajectoire du panoramique : molette pour défiler latéralement, Ctrl+molette pour zoomer horizontalement, Maj+molette pour défiler verticalement, Alt+molette pour zoomer verticalement ; le glisser et les flèches fonctionnent aussi",
+            "Graphique de trajectoire du panoramique : molette pour défiler latéralement, Ctrl ou Cmd+molette pour zoomer horizontalement, Maj+molette pour défiler verticalement, Alt+molette pour zoomer verticalement ; le glisser et les flèches fonctionnent aussi",
         "chart.zoomAria": "Niveau de zoom de la timeline",
         "chart.backToPlayhead": "Revenir à la tête de lecture",
         "chart.resetPanZoom": "Réinit. zoom Y",
@@ -2475,7 +2480,7 @@ export const T = {
         "master.transitionHint":
             "Durée de transition des paramètres entre segments.",
         "master.copyConfirmWarn":
-            "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
+            "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl ou Cmd+Z).",
         // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
         //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
         //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
@@ -2713,6 +2718,7 @@ export const T = {
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
         "scale.overflow": "Dépasse l'écran actuel",
+        "scale.lockedLegacy": "WebKit antérieur à 26.4 : zoom fixé à 100 %",
 
         // ---- T31 Wave 2 新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "banner.misaligned":

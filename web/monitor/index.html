@@ -962,6 +962,15 @@
                 flex: 1;
                 min-width: 0;
             }
+            /* [M09] 旧 WebKit 下「缩放锁 100%」的一行提示,紧挨缩放下拉(新语义下恒 hidden)。
+               可缩 + 省略号:放不下时它自己让;左边的只读提示是 flex:1(基准 0),先让的是那一条。 */
+            .mon-footer__lock {
+                flex: 0 1 auto;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
             .mon-footer__version {
                 font-size: var(--fs-85);
                 letter-spacing: var(--ls-footer-ver, 0.12em);
@@ -1239,7 +1248,7 @@
                                 role="application"
                                 tabindex="0"
                                 data-t-aria="chart.trajCanvasAria"
-                                aria-label="声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键"
+                                aria-label="声像轨迹图:滚轮左右平移,Ctrl 或 Cmd+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键"
                             ></canvas>
                             <div
                                 class="traj-stage__playhead"
@@ -1327,6 +1336,15 @@
                         data-gb="monitor-footer-hint"
                         data-t="monitor.footerHint"
                         >只读窗口:这里改不了任何设置,也不写回工程</span
+                    >
+                    <!-- [M09] 旧 WebKit(getBoundingClientRect 不含 CSS zoom)下缩放锁在 100% 的一行提示。
+                         判据见 web/shared/hit.js 的 zoomRectMode;app.js 只在锁定时摘掉 hidden。 -->
+                    <span
+                        class="sc-hint mon-footer__lock"
+                        data-gb="monitor-scale-lock"
+                        data-t="scale.lockedLegacy"
+                        hidden
+                        >WebKit 低于 26.4,缩放固定为 100%</span
                     >
                     <select
                         class="sc-select"

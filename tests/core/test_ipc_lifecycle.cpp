@@ -784,6 +784,20 @@ TEST_CASE("命令环双线程混跑(SPSC 丢最旧自洽)", "[ipc][lifecycle][cm
         }
         producerDone.store(true, std::memory_order_release);
     });
+    // [B 线 M06a] 下面消费循环里的 REQUIRE 一旦抛出,栈展开时 producer 还没 join,std::thread 析构即
+    // std::terminate —— 整个 scvb_tests 进程 SIGABRT,后面所有用例都不跑,结论被一条用例连坐遮掉
+    // (arm64 上实测)。展开时先 join(生产者是有界循环,自己会跑完),这条用例照常记红、其余照常跑。
+    struct JoinOnUnwind
+    {
+        std::thread& t;
+        ~JoinOnUnwind()
+        {
+            if (t.joinable())
+            {
+                t.join();
+            }
+        }
+    } joinOnUnwind{producer};
 
     // 消费者:持续 dequeue;校验 seq 单调、无 0、value==seq-1(无撕裂记录)。
     u32 lastSeq = 0;

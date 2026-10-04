@@ -131,3 +131,15 @@ if(MSVC)
 else()
   target_compile_options(scvb_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# [B 线 M06a] 非 MSVC 编译器关掉浮点乘加融合(-ffp-contract=off)。clang 默认 `on`:同一条语句里的
+# a*b+c 会被融成一条 fmadd(arm64 上必然发生),中间积不再舍入。于是「同一个表达式算两遍、相减得 0」
+# 这类恒等式不再成立 —— 实测 BAL-3(tests/core/test_balance.cpp)在 arm64 上因此红:
+# AutoAssign.cpp 的 `delta = lTarget - 10*log10(z)`,在该用例里 lTarget 与 10*log10(z) 是同一个量,
+# 融合成 fma 之后差却成了一个打印为 -0.0 的极小负数,`u == 0.0` 断言落空。
+# MSVC 默认不融合(/fp:precise 下要显式 /fp:contract 才融),这一条让两个平台的求值语义对齐。
+# PUBLIC:scvb_core 头文件里的内联数学(PanMath / MixMath 等)会在链接方自己的编译单元里展开,
+# 链接方(测试、插件)必须同口径,否则同一个内联函数在两个编译单元里能算出不同的末位。
+if(NOT MSVC)
+  target_compile_options(scvb_core PUBLIC -ffp-contract=off)
+endif()

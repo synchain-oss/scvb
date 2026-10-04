@@ -65,6 +65,10 @@
 // 这条顺序约束**没有机器保证**:把本头的 include 往下挪一行、或上面某个头开始拉
 // windows.h,就会复现 `error C2062: 意外的类型「unknown-type」`,而且报在
 // `src/output/BridgeArgs.h` 那种**别人的文件**上,极难联想到是这里引起的(实测过)。
+//
+// [B 线 M06a] 下面整段实现只在 Windows 上编(命名互斥体 `CreateMutexW`)。非 Windows 分支见文件末尾。
+#ifdef _WIN32
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -170,3 +174,16 @@ struct TestsExclusiveListener : Catch::EventListenerBase
 } // namespace scvb::testsupport
 
 CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
+
+#else // !_WIN32
+
+// [B 线 M06a] 非 Windows:今天**不注册任何守卫**,POSIX 版(按 uid 区分的锁文件 + flock)归 M12a。
+// 这一刻它不放松任何保护,理由是可核对的:
+//   · 包含本头的四套里,非 Windows 上进构建集合的只有 scvb_tests(host / ipc / monitor 三套在
+//     tests/CMakeLists.txt 里都只在 WIN32 下定义);
+//   · scvb_tests 的 IPC 用例一律走 `SegmentBackendInProcess`(进程内模拟,不建任何机器级段),
+//     本头头注里那张「组号重叠表」描述的跨进程互相打坏,在这里没有可打坏的对象。
+// ⚠ 一旦有测试在非 Windows 上建**真的**共享内存段(M05 的 POSIX 后端用例),这里必须先换成真守卫,
+//   否则两个测试进程同机并发时会重演 SL-324 那一类「段被隔壁覆写」的假红。
+
+#endif // _WIN32

@@ -87,6 +87,13 @@ if(SCVB_TESTS_WITH_EBUR128)
   target_link_libraries(scvb_tests PRIVATE ebur128)
 endif()
 
+# [B 线 M06a] macOS 专属源的接缝:POSIX 共享内存后端(M05)的用例落在这里。用独立的
+# target_sources 追加块,不碰上面 scvb_tests 的源列表(跨线协调:那份列表由 A 线一次登记)。
+# Windows 上这个块不生效,scvb_tests 的源集合逐字不变。
+if(APPLE)
+  target_sources(scvb_tests PRIVATE core/test_segment_backend_posix.cpp)
+endif()
+
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
 else()
@@ -187,6 +194,11 @@ set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
 # scvb_monitor_tests:T45 Monitor 三铁律的 L0 断言(0 参数 / 直通按位相等 / 共享段零写入)。
 # 只编 MonitorProcessor.cpp,并定义 SCVB_MONITOR_HEADLESS —— MonitorEditor 依赖 WebViewHost 的
 # 真 WebView2 实例化,与 InputEditor/OutputEditor 同款留给 gate 8 的真机 GUI pluginval。
+# [B 线 M06a] 只在 WIN32 下定义:harness 直接用 SegmentBackendWin32 建真段、用 support/peer_spawn.h
+# (CreateProcessW)拉对端进程、用 support/exclusive_guard.h(CreateMutexW)取同机独占,三者今天都只有
+# Windows 实现,对端 scvb_ipc_peer 也只在 WIN32 下构建(tests/tools/CMakeLists.txt)。POSIX 化归
+# M12a,届时放开。Windows 上逐字不变。
+if(WIN32)
 add_executable(scvb_monitor_tests
   core/test_monitor_processor.cpp
   # [统筹加码] 全数据链双进程 harness:真 VizPublisher 对端进程 + 真 MonitorProcessor,
@@ -220,6 +232,7 @@ add_test(NAME scvb_monitor_tests COMMAND scvb_monitor_tests)
 # harness 拉真进程(scvb_ipc_peer),给足超时。对端的构建依赖在 tests/tools/CMakeLists.txt 里挂 ——
 # 顶层是先 add_subdirectory(tests) 再 add_subdirectory(tests/tools),此处 scvb_ipc_peer 还不存在。
 set_tests_properties(scvb_monitor_tests PROPERTIES TIMEOUT 600)
+endif()
 
 # scvb_plugin_common_tests:T26 WebView 装配层 L0 单测(链接 juce_gui_extra,离线 Catch2)。
 # 只编可离线单测的 TU:ResourceProvider/BridgeBase/FallbackPanel/PlatformWebView。

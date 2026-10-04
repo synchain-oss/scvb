@@ -94,7 +94,12 @@ import {
     isEditableTextTarget,
 } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
-import { installShellFit } from "../shared/shell-fit.js";
+import {
+    enforceZoomLock,
+    installShellFit,
+    scalePresets,
+    zoomLocked,
+} from "../shared/shell-fit.js";
 // [J147] 宿主速度模型:本文件只负责喂(scvb.playhead 订阅),消费者是 Tab1 手动范围。
 import { emptyTempo, observeTempo } from "./host-tempo.js";
 
@@ -833,7 +838,8 @@ function scaleOverflows(f) {
 
 const scalePanel = $("footer-scale-panel");
 if (scalePanel) {
-    scalePanel.innerHTML = DESIGN.output.presets
+    // [M09] scalePresets:旧 rect 语义下只留 1 档;新语义下原样返回同一张档位表。
+    scalePanel.innerHTML = scalePresets(DESIGN.output.presets)
         .map((f) => {
             const over = scaleOverflows(f) ? 1 : 0;
             return `
@@ -850,13 +856,19 @@ if (scalePanel) {
 for (const sel of document.querySelectorAll(
     '[data-gb="settings-scale-select"]',
 )) {
-    for (const f of DESIGN.output.presets) {
+    for (const f of scalePresets(DESIGN.output.presets)) {
         const opt = document.createElement("option");
         opt.value = String(f);
         opt.textContent = Math.round(f * 100) + "%";
         if (f === 1) opt.selected = true;
         sel.appendChild(opt);
     }
+}
+// [M09] 旧 rect 语义 ⇒ 缩放锁 100%:footer 缩放下拉旁那一行提示摘掉 hidden。
+// 只在锁定时动它 —— 新语义下这个节点一个属性都不碰(HTML 里默认 hidden)。
+if (zoomLocked()) {
+    const lockHint = $("footer-scale-lock");
+    if (lockHint) lockHint.hidden = false;
 }
 
 // ============================================================================
@@ -2049,6 +2061,9 @@ function renderFooter() {
 
 function renderScale() {
     const f = currentScale();
+    // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1;
+    // 没锁时这一句什么都不做。
+    enforceZoomLock(f, (one) => call("setUiScale", one));
     renderScaleConfirm(); // 切语言后确认框正文跟着换(倒计时进行中也照刷)
     if (scaleUi.label) scaleUi.label.textContent = Math.round(f * 100) + "%";
     if (!scalePanel) return;
