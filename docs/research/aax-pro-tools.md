@@ -41,7 +41,7 @@
 - **最低现金**:一个 iLok 3 USB,按 $45–60 加国际运费预算。官方店价记录为 USB-A $49.95、USB-C $59.95【二手】;2026-10-03 Sweetwater 页面实时价是 USB-A $44.95、USB-C $48【二手,零售价会浮动】。
 - **其余都是 $0**:Avid 账号、Pro Tools Developer、PACE 工具许可(JUCE README 原文「provided free of charge by Avid」)、自签证书、Pro Tools Intro(免费,磁盘授权,不需要 iLok;【已核实,Avid Intro 介绍页】)。
 - **可选**:Apple Developer $99/年(mac 公证);PACE 云签名约 $1000/年【二手】。
-- 完整表见第 9 节。
+- 完整表见第 8 节。
 
 **日历**:
 
@@ -276,7 +276,7 @@ Questions:
     Export-PfxCertificate -Cert $c -FilePath <安全目录>\aax-signing.pfx -Password (Read-Host -AsSecureString)
     ```
 
-  - 凭据纪律:.pfx、口令、iLok 账号口令都不进仓库、不写进脚本,口令运行时输入或从环境变量读。若要放进 CI,要走 secret,并先评估与本项目「构建流水线不依赖私有凭据」类约束是否冲突【推测】。
+  - 凭据纪律:.pfx、口令、iLok 账号口令都不进仓库、不写进脚本,口令运行时输入或从环境变量读。若要放进 CI,要走 secret。**这与本仓已定案的约束直接相关**:[CLAUDE.md](../../CLAUDE.md) §0 的 U13 规定 v1 不做代码签名(将来引入签名时,证书与凭据必须走 secret、不落盘明文、不进仓库),CLAUDE.md §6 规定构建流水线不需要任何 secret。而公开发布的 Pro Tools 只加载 PACE 签名的 AAX(硬门槛 1),所以发布 AAX 本身就要先由用户对 U13 重新裁定,云签名(2.10)与 Validator CI(3.3)也都要引入 secret,适用同一条【推测】。
 - **mac**:
   - 用 `--signid "<钥匙串里的签名身份>"`。
   - 2021 年 JUCE 论坛的说法:如果不打 pkg、不公证,钥匙串里任何一张证书都可以;要公证或打 pkg,就必须用 Developer ID Application【二手,[JUCE 论坛 48418](https://forum.juce.com/t/aax-plugin-and-package-builder-in-mac/48418)】。
@@ -565,6 +565,7 @@ wraptool verify --verbose --in "<构建输出>/<插件名>.aaxplugin"
 - **AlwaysProcess 必须给 Input 和 Output 都开**:
   - Output 所在 Aux 的输入恒为静音;**Input 健康时向下游输出的也恒为数字静音**。不管 DPP 按输入还是按输出判静音,SCVB 都会坏【调研结论】。
   - 代价:每条人声轨的整条插件链在走带停止时也会持续处理(第三方实测:停止时 1024 帧的块大约每秒被调用 47 次)【二手】。
+- **SCVB Monitor**:本仓有三个插件,Monitor 是只读监视器(参见宪法 ADR-001a)。调研时没有单独分析 DPP 对它的影响。推测:若它所在的链被 DPP 停调,投影面会停止更新,但不影响 Input/Output 的音频路径;要不要也开 AlwaysProcess 应在 P-2 里顺带观察后再定【推测,未实测】。
 - **KI-6 链路**:
   - 调研时的行为:Output 被停调后,看门狗 0.5 秒断开(`src/core/ipc/CtrlPlane.cpp` 的 `kWatchdogStallMs`)→ Input 经 5 秒滞回转为直通(`src/core/input/OutputStage.h` 的 `kPassthroughHysteresisMs`)→ 合计约 5.5 秒无声,之后是未平衡的原始声像。描述见 [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) 的 KI-6,**以当时 KNOWN_ISSUES 为准**(宿主调度加固会改变它)【已核实】。
   - 要用 P-2 的三组对照把 DPP 的判据测出来。
@@ -577,7 +578,7 @@ wraptool verify --verbose --in "<构建输出>/<插件名>.aaxplugin"
 
 ### 7.3 参数、桥面与宪法
 
-- **参数是 123 + 1**:AAX 下宿主可见 124 个(Master Bypass 由 JUCE 合成,口径见 [PARAMETERS.md](../PARAMETERS.md))。4 字符短名会全部变成 `V1 T`,修它只改显示名,可选,约 0.5 人日【调研结论】。若要按格式分别说明参数口径,改冻结文档的措辞需要批准。
+- **参数是 123 + 1**:AAX 下宿主可见 124 个(Master Bypass 由 JUCE 合成,口径见 [PARAMETERS.md](../PARAMETERS.md))。4 字符短名下,120 个分轨参数会塌成 `V1 T` / `V2 T` 两种,彼此区分不开(3 个全局参数是 `Widt` / `MS B` / `Lead`)。修它只改显示名,可选,约 0.5 人日【调研结论】。若要按格式分别说明参数口径,改冻结文档的措辞需要批准。
 - **桥面 `host` 闭集加 `"protools"`**:`host` 字段取值域在 [SCVB_CONTRACT.md](../SCVB_CONTRACT.md) 里是闭集,只许放宽;加值属于契约变更,要写 `docs/contract-changes/` 文档并获批准;beta 不是必须【调研结论】。
 - **ADR-001 修宪**:宪法 [ADR-001](../constitution/ADR.md) 把三个插件写死为 VST3,加 AAX 需要走修宪流程并获批准【已核实,宪法文本】。
 
@@ -599,7 +600,7 @@ wraptool verify --verbose --in "<构建输出>/<插件名>.aaxplugin"
 | ---- | ------------------------------------------------------------------------------ | ------------------ |
 | P-1  | 5 条人声轨 → Aux 实时播放,缺口为 0,**逐轨能量在场**(不能只看缺口计数)         | P0                 |
 | P-2  | DPP 三组对照(不加 AlwaysProcess):(a) 连续演唱 3 分钟、中间没有全体静默,看人声会不会中途消失;(b) 人为制造 ≥10 秒的全体人声静默再进入,看会不会出现一次约 5.5 秒的缺口;(c) 观察 Output 有没有周期性振荡。同时在 Input 和 Output 的处理回调里记录调用间隙 | P0                 |
-| P-3  | Input 之前挂高延迟插件:Output 放在 Aux 上,实时和离线 Bounce 各一次,Windows 和 mac 各一次;同时看缺口计数、这条轨有没有声音、null 对比 | P0                 |
+| P-3  | Input 之前挂高延迟插件:Output 放在 Aux 上,实时和离线 Bounce 各一次,Windows 先做,mac 待 macOS 移植完成后再做;同时看缺口计数、这条轨有没有声音、null 对比 | P0                 |
 | P-4  | 切换录音布防和输入监听、改缓冲大小、44.1/48/96 kHz                             | P0                 |
 | P-11 | 插件菜单里没有 Multi-Mono 和 AudioSuite 版本                                   | P0                 |
 | P-5  | 离线和实时 Bounce 的 null 对比                                                 | P1(Developer 版能不能导出不确定) |
@@ -609,7 +610,12 @@ wraptool verify --verbose --in "<构建输出>/<插件名>.aaxplugin"
 | P-9  | 键盘和 DPI                                                                     | P1                 |
 | P-12 | 签过名的构建能在零售版里加载                                                   | 发布前             |
 
-Windows 和 mac 各跑一轮,约 1.5–2 天,再加 1 天【推测】。
+P 系列在调研原稿中共 12 项;上表只列出了压缩后的主要项,**P-6 与 P-10 在压缩时略去**,补在这里:
+
+- **P-6**:Track Freeze、Commit、Track Bounce 各对一条人声轨做一次,记录产物,确认原素材没丢(调研时未标优先级;关联 KI-4)。
+- **P-10**:Mute / Solo 人声轨;停用 Output 插件;旁路 Output、旁路 Input;判据是与 KI-6 / KI-8 的描述一致(调研时未标优先级)。
+
+Windows 一轮约 1.5–2 天,再加 1 天;mac 一轮要等 macOS 移植完成之后才能做,不计入上面的 10–16 人日【推测】。
 
 **工作量**【推测,人类工程师当量;由 agent 驱动的实际耗时通常更低】:只做 AAX Windows beta 约 **10–16 人日**,其中包含建议先做的两项前置修复(失败可见性与位置补偿判据);真机测完后每轮另留 2–5 人日修复。
 
@@ -643,6 +649,7 @@ Windows 和 mac 各跑一轮,约 1.5–2 天,再加 1 天【推测】。
 
 **需要项目层面决定的事**(调研时没有决定):
 
+0. **U13 重新裁定**:AAX 公开发布要求代码签名,与 CLAUDE.md U13(v1 不做代码签名)和「构建流水线不需要任何 secret」冲突,需用户先裁定(口径怎么改、凭据放哪里)。这是其余各项的前提。
 1. 以公司名义申请,还是以个人名义?PACE 邮件里要不要主动写明 GPL 开源并直接发问(2.5 的建议是写)?
 2. 凭据放哪里:本地手动签名(.pfx 加密放本机、口令运行时输入),还是上云签名(约 $1000/年、凭据进 GitHub secrets)?要先对照项目现有的凭据与流水线约束。
 3. 先只发 AAX Windows,还是同时做 mac?mac 只出 arm64,还是出 universal(Pro Tools 仍然支持 Intel)?
