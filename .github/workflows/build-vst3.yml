@@ -9,7 +9,8 @@ name: Build & Validate
 #         (clang-format / web-smoke / docs-truth)、compliance(gitleaks / REUSE /
 #         check-privacy / 设计盒)与三个 review bot。
 #         **[SL-283] 修正**:碰了 native 路径(src / tests / cmake / CMakeLists.txt /
-#         **web** / third_party / 钉版文件 / 本文件)的子 PR **照跑全量** —— 判定见下面
+#         **web** / third_party / 钉版文件 / 本文件 / 两个 mac reusable workflow /
+#         scripts/package-macos.sh)的子 PR **照跑全量** —— 判定见下面
 #         `detect-native` job。[J96] 原来一刀切跳过,结果是「动了 C++ 的子 PR 在 CI 侧
 #         一次都不编译」,「CI 全绿」不再等价「native 编过」,下一张就可能把没编过的
 #         C++ 合进去。本地 `scripts/gates.ps1`(CLAUDE.md §2)仍是第一道,但它靠人记得跑。
@@ -129,7 +130,13 @@ jobs:
           #   third_party/                       —— vendored 上游(miniz 等)
           #   .*-version / .sccache-sha256       —— 钉版依赖变了就得重编(CLAUDE.md §6)
           #   build-vst3.yml                     —— 改构建配方本身,必须自己编一遍验证
-          NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$)'
+          #   build-macos.yml / macos-oop.yml    —— [B 线 M01] 本文件 caller 调的两个 mac reusable
+          #                                         配方;改它们同样要自己跑一遍。拆成两个顶层分支
+          #                                         而不是写成一个分组:删除式验证逐分支有牙,且
+          #                                         check-native-paths.mjs 的拆法不认嵌套组
+          #   scripts/package-macos.sh           —— [B 线 M01 预登记,M10 落地] mac 打包脚本,
+          #                                         由 build-macos.yml 消费;scripts/ 其余仍是 non-native
+          NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$|\.github/workflows/build-macos\.yml$|\.github/workflows/macos-oop\.yml$|scripts/package-macos\.sh$)'
 
           # 两个开关都是**堵静默跳过**用的(PR#180 复审采纳),不是风格问题:
           #  `--no-renames`:改名检测默认开,`--name-only` 对一次改名只打印**目标**路径。
@@ -613,3 +620,52 @@ jobs:
           path: ${{ runner.temp }}/pluginval-logs
           retention-days: 7
           if-no-files-found: ignore
+
+  # ── macOS 两个 caller([B 线 M01])────────────────────────────────────────────────────────
+  # mac 配方**不写进本文件**,各自放进 reusable 文件,这里只留 caller:release.yml 以
+  # workflow_call 调用本文件,`release` 又 needs `build` —— mac 步骤若直接写在这里,mac 一红
+  # `build` 就整体失败,Windows 发不出版(违反「mac 失败不挡 Windows」)。
+  #
+  # 条件四件事,两个 caller 逐字相同:
+  #   `!cancelled()` 与 `!= 'false'`  —— 与 build-and-validate 同一对:detect-native 挂掉时输出为
+  #                                       空串,`!= 'false'` 为真 ⇒ 照跑,不因探测坏了而静默跳过。
+  #   `!startsWith(github.ref, 'refs/tags/')` —— 被 release.yml 调起时 ref 是 refs/tags/v…,两个
+  #                                       mac caller 都跳过(显示为 skipped);mac 发版另走
+  #                                       release.yml 自己的路(M16),与 Windows 的 release 互不 needs。
+  #   标签事件不跑 —— 与 build-and-validate 的「标签事件只认 ci:full」不同,mac 这两路不吃任何标签:
+  #                                       bot 每改一次 `Review effort N/5` 就是一次 labeled 事件,
+  #                                       而标签事件不取消在跑的 run(见上面 concurrency),放行就是
+  #                                       每个标签多排一轮 mac 构建。想手动再跑一遍用 workflow_dispatch。
+  # 必须写成 `if: >` 折叠块:YAML 里行首裸写 `!` 会被当成 tag,整个文件 startup_failure。
+  # 两个 job 名都不是 required context,mac 失败不挡任何 PR 的合并按钮。
+  # 出包前那次 dispatch 的 run 里也有它们:run 的整体结论会被 mac 拖红,而 Windows 出包只看
+  # detect-native + build-and-validate 两个 job(CLAUDE.md §4「出包流程硬规」那条的子项)。
+  macos-build:
+    name: macos-build
+    needs: detect-native
+    if: >
+      !cancelled() &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      github.event.action != 'labeled' &&
+      github.event.action != 'unlabeled' &&
+      needs.detect-native.outputs.native != 'false'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
+
+  macos-oop:
+    name: macos-oop
+    needs: detect-native
+    if: >
+      !cancelled() &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      github.event.action != 'labeled' &&
+      github.event.action != 'unlabeled' &&
+      needs.detect-native.outputs.native != 'false'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/macos-oop.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
