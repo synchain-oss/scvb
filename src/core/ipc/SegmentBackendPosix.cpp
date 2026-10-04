@@ -421,11 +421,6 @@ std::chrono::milliseconds SegmentBackendPosix::lockWait(std::chrono::millisecond
     return normal;
 }
 
-void SegmentBackendPosix::noteLockTimeout() noexcept
-{
-    lastLockTimeoutMs_.store(steadyMs(), std::memory_order_relaxed);
-}
-
 void SegmentBackendPosix::noteLockFailure(int error, const std::string& lockPath, std::chrono::milliseconds wait,
                                           PendingDiag& diag) noexcept
 {
@@ -437,7 +432,8 @@ void SegmentBackendPosix::noteLockFailure(int error, const std::string& lockPath
             suppressedLockFailures_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        noteLockTimeout();
+        // 真正等满的那次超时才(重新)打开断路窗口;窗口内的失败不续长它。
+        lastLockTimeoutMs_.store(steadyMs(), std::memory_order_relaxed);
     }
     diag.note(IpcDiagOp::kLifecycleLock, error,
               error == ETIMEDOUT ? "timed out waiting for lifecycle.lock" : "cannot open lifecycle.lock", lockPath);
