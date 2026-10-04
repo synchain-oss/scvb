@@ -92,18 +92,10 @@ std::string cfToString(CFStringRef s)
     return {};
 }
 
-std::string cfHomeUrlPath()
+const char* envOr(const char* name, const char* fallback)
 {
-    CFURLRef url = CFCopyHomeDirectoryURL();
-    if (url == nullptr)
-        return {};
-    std::array<char, 2048> buf{};
-    std::string out;
-    if (CFURLGetFileSystemRepresentation(url, true, reinterpret_cast<UInt8*>(buf.data()),
-                                         static_cast<CFIndex>(buf.size())))
-        out = buf.data();
-    CFRelease(url);
-    return out;
+    const char* v = std::getenv(name);
+    return v != nullptr ? v : fallback;
 }
 
 // mkdir -p;返回 0 或第一个真实错误的 errno(已存在的目录不算错,沙箱下 mkdir 已存在目录可能报 EPERM,
@@ -225,7 +217,8 @@ public:
     }
 
 private:
-    std::array<juce::AudioParameterFloat*, spike::pCount> params_{};
+    // 存基类指针:AudioParameterFloat 把 getValue() 收成了 private,只能经 AudioProcessorParameter 调。
+    std::array<juce::AudioProcessorParameter*, spike::pCount> params_{};
     bool probed_ = false;
     void* seg_ = nullptr;
     void* hostSeg_ = nullptr;
@@ -463,7 +456,6 @@ private:
         }
         const char* envHome = std::getenv("HOME");
         const std::string nsHome = stripSlash(cfToString(NSHomeDirectory()));
-        const std::string cfHome = stripSlash(cfHomeUrlPath());
         const std::string pwHome = stripSlash(home);
         if (pwHome.empty())
             put(spike::pHomeEnv, spike::kSkipped);
@@ -584,7 +576,8 @@ private:
         kvs("env_HOME", envHome != nullptr ? envHome : "<unset>");
         kvs("pw_dir", home);
         kvs("NSHomeDirectory", nsHome);
-        kvs("CFCopyHomeDirectoryURL", cfHome);
+        // 沙箱进程里 CF 用这个变量把 home 指进容器;有值本身就是容器化的旁证。
+        kvs("env_CFFIXED_USER_HOME", envOr("CFFIXED_USER_HOME", "<unset>"));
         const char* tmpdir = std::getenv("TMPDIR");
         kvs("env_TMPDIR", tmpdir != nullptr ? tmpdir : "<unset>");
         kvs("env_APP_SANDBOX_CONTAINER_ID", sandboxId != nullptr ? sandboxId : "<unset>");

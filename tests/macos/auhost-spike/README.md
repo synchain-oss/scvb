@@ -18,7 +18,7 @@
 
 1. 30 字符名 `/SynchainSCVB.v1.g8.spike.ch15`:`shm_open(O_CREAT|O_EXCL)`、`ftruncate`(4 MB)、`mmap`;后到的实例走附着(绝不 `ftruncate`)并读段头 magic。
 2. 负对照:32 字符名必须得到 `ENAMETOOLONG`;31 字符名只记录。
-3. 用 `getpwuid` 取真实 home,在 `Library/Application Support/Synchain/SCVB/ipc/` 下建锁文件并 `flock`(EX 拿不到时要 SH);同时记录 `HOME`、`NSHomeDirectory()`、`CFCopyHomeDirectoryURL()` 的实际值,判断是否被容器化。
+3. 用 `getpwuid` 取真实 home,在 `Library/Application Support/Synchain/SCVB/ipc/` 下建锁文件并 `flock`(EX 拿不到时要 SH);同时记录 `HOME`、`NSHomeDirectory()`、`CFFIXED_USER_HOME` 的实际值,判断是否被容器化。
 4. `getpid`、`getppid`、进程名、可执行文件路径。
 5. 对宿主 pid 做 `kill(pid, 0)` 与 `sysctl(KERN_PROC_PID)`。
 6. 方案 B 前置:A 用 ObjC 运行时 C API(`objc_allocateClassPair` / `objc_registerClassPair`)注册会合类,B 用 `objc_lookUpClass` 找它并调用其类方法。

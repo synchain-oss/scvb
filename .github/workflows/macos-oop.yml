@@ -125,10 +125,12 @@ jobs:
           set -euo pipefail
           cmake -S tests/macos/auhost-spike -B build-spike -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DJUCE_PATH="$GITHUB_WORKSPACE/JUCE"
-          cmake --build build-spike --parallel 2>&1 | tee build-spike.log
+          # -k 0:一个编译单元红了也继续编别的,一轮 CI 往返就能看到全部编译错误。
+          cmake --build build-spike --parallel -- -k 0 2>&1 | tee build-spike.log
 
       # 4) 定位产物 + 架构断言(arm64 单架构);数量写死「恰好 1 个」,取第一个会静默带走不确定的产物。
       - name: Locate artefacts & assert arm64
+        id: locate
         shell: bash
         run: |
           set -euo pipefail
@@ -159,6 +161,7 @@ jobs:
       #    负对照不成立 => 判定 inconclusive + 退出码 1,不会被读成任何结论。
       #    先把 auval -a 落进变量再 grep:`auval -a | grep -q` 会因 SIGPIPE 在 pipefail 下判非零。
       - name: Install AUs & wait for registration
+        id: install
         shell: bash
         run: |
           set -euo pipefail
@@ -214,10 +217,11 @@ jobs:
           echo "$rc" > spike-out/oop.rc
           echo "oop host exit=$rc"
 
-      # 9) 判定:退出码 1 只给「负对照不成立」(组件没注册上 / 进程内 shm 没成功 / 32 字符名没报
+      # 9) 判定(只在宿主编出来之后跑;编译红了就是编译红,不再叠一条「判定失败」的噪声)。
+      #    退出码 1 只给「负对照不成立」(组件没注册上 / 进程内 shm 没成功 / 32 字符名没报
       #    ENAMETOOLONG);其余结论(A / A′ / B / C / 因 OOP 起不来的不定)都是 0。
       - name: Judge (G0 decision table)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' }}
         shell: bash
         run: |
           set -uo pipefail
@@ -230,7 +234,7 @@ jobs:
       # 10) 反向注入(常驻):宿主按错误的 subtype 找组件,判定必须是 inconclusive 且退出码 1,
       #     绝不能是任何一种「结论」。这一格红 = 判定会把「根本没测到」读成结果。
       - name: Reverse injection - wrong subtype must be inconclusive
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' }}
         shell: bash
         run: |
           set -uo pipefail
@@ -248,7 +252,7 @@ jobs:
       # 11) 只记录、不判定:auval 自己的进程内 / -oop 加载结果,供 OOP 起不来时区分「本宿主的问题」
       #     还是「runner 的问题」。auval 加载时探针同样会跑(token 0),它写的 JSON 一并收进 artifact。
       - name: Informational - auval in-process and -oop
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         continue-on-error: true
         shell: bash
         run: |
