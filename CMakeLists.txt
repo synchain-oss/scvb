@@ -94,6 +94,9 @@ message(STATUS "SCVB plugin formats: ${SCVB_PLUGIN_FORMATS}")
 # 任何一个翻转,已发布工程里的自动化就全部对不上。插件目标以 PUBLIC 传给各格式 wrapper;
 # scvb_params_tests 读同一个变量,tests/core/test_au_param_ids.cpp 用 static_assert 钉值、
 # 并对 123 个 ParamID 现算 AU 参数 ID 与文件内嵌的冻结表逐项对拍。
+# Input / Monitor 目前没有自动化参数,两个宏对它们暂不起作用;三个插件仍统一挂上是**预防性**的 ——
+# 将来哪个插件加了参数,ID 口径已经钉好,不会悄悄落回 JUCE 默认。不要当成冗余删掉:
+# mac CI(build-macos.yml)的「宏进 wrapper」一步逐个插件核这两个 -D,哪个插件删了都会在那一步红。
 set(SCVB_PLUGIN_PARAM_ID_DEFINITIONS
   JUCE_FORCE_USE_LEGACY_PARAM_IDS=0
   JUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=1
