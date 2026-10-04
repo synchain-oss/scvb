@@ -481,12 +481,7 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
         return InitResult::kFailed;
     }
 
-    if (lockDirOverridden_ && !overrideReported_.exchange(true, std::memory_order_acq_rel))
-    {
-        report(IpcDiagOp::kLockDirOverride, 0, shm, lockDir_,
-               "lock directory taken from SCVB_IPC_LOCK_DIR (test hook); every process sharing these segments "
-               "must use the same value");
-    }
+    // [INJECT J3] override report removed
     if (lockDir_.empty())
     {
         report(IpcDiagOp::kLockDir, ENOENT, shm, {}, "cannot resolve the lock directory (no home directory)");
