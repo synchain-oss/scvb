@@ -41,7 +41,11 @@
 // 依赖方向:web-preview/ → web/(单向,06 §6.2)。本文件不碰 DOM、不复制任何 UI 代码。
 // =============================================================================
 
-import { buildWorld } from "./state-driver.js";
+import {
+    buildWorld,
+    openingScaleFor,
+    parseScaleQuery,
+} from "./state-driver.js";
 import { curveSegmentAt } from "../../web/shared/readback.js";
 import {
     CHANNEL_COUNT,
@@ -221,7 +225,10 @@ export function parseMonitorQuery(params) {
     const rawPh = q.get("playhead");
     const playhead = rawPh === null ? true : rawPh !== "off" && rawPh !== "0";
 
-    return { scenario, group, play, playhead, globalWidthPct, warnings };
+    // [M09] `?scale=` —— 开窗档位,判据与 state-driver / 壳页同一份(见 openingScaleFor)。
+    const scale = openingScaleFor("monitor", parseScaleQuery(q, warnings));
+
+    return { scenario, group, play, playhead, globalWidthPct, scale, warnings };
 }
 
 // -----------------------------------------------------------------------------
@@ -464,7 +471,8 @@ function createMonitorBackend(parsed) {
         withTracks: parsed.scenario !== "monitor-no-tracks",
         // `monitor-no-lead`:有三条标量但没有 leadMask ⇒ 柱照画、一律不戴绿帽
         withLead: parsed.scenario !== "monitor-no-lead",
-        scale: 1,
+        // [M09] 开窗档位 = 快照 `ui.scale`(真宿主上二者出自同一个 uiScale_;见 state-driver)
+        scale: parsed.scale ?? 1,
         language: "zh",
         committedScale: 1,
         lastLaneRecalcMs: 0,
