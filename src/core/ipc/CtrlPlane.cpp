@@ -418,7 +418,10 @@ bool CtrlPlane::enqueue(u32 channel, CtrlOp op, u64 value)
     // 且生产者重启后新实例续用共享 write_pos,seq 不中断(环不卡死)。
     // 理论边界:w+1 在 u32 回绕点为 0,与「在写」标记(seq=0)撞车;≈5.4 年 @25Hz 才回绕一次,
     // v1 不接受此理论边界(abi+1 增补清单),故不做跳过处理。
-    rec.seq.store(0, std::memory_order_release);
+    // [B 线 M06a] seqlock 写侧 fence:release **store** 只约束它之前的访问,挡不住后面三条 relaxed
+    // 写被提到 seq=0 之前可见(x86 的 TSO 天然不重排,arm64 会)。必须是 store 之后的 release fence。
+    rec.seq.store(0, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
     rec.channel.store(channel, std::memory_order_relaxed);
     rec.op.store(static_cast<u32>(op), std::memory_order_relaxed);
     rec.value.store(value, std::memory_order_relaxed);
@@ -460,7 +463,10 @@ bool CtrlPlane::dequeue(u32 channel, CtrlRecord& out)
         const u32 ch = rec.channel.load(std::memory_order_relaxed);
         const u32 opv = rec.op.load(std::memory_order_relaxed);
         const u64 val = rec.value.load(std::memory_order_relaxed);
-        const u32 s2 = rec.seq.load(std::memory_order_acquire);
+        // [B 线 M06a] seqlock 读侧 fence:acquire **load** 只约束它之后的访问,挡不住上面三条 relaxed
+        // 读被推迟到 s2 之后;arm64 上实测会读到同槽下一圈的 value 而 s1==s2(命令环双线程用例 4/30 红)。
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const u32 s2 = rec.seq.load(std::memory_order_relaxed);
         if (s1 != s2)
         {
             continue; // 撕裂读(生产者正覆写同槽)→ 重试
