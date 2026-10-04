@@ -72,7 +72,7 @@ std::vector<std::string> readGoldenDataLines()
     std::string line;
     while (std::getline(f, line))
     {
-        if (!line.empty() && line.back() == '')
+        if (!line.empty() && line.back() == '\r')
             line.pop_back();
         if (line.empty() || line[0] == '#')
             continue;

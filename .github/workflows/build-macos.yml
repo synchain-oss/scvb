@@ -1,12 +1,18 @@
 name: Build macOS (reusable)
 
-# ── B 线 macOS 构建(M01 只放骨架;M06a 起填实)───────────────────────────────────────────────
+# ── B 线 macOS 构建 ────────────────────────────────────────────────────────────────────────
 # 只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job `macos-build` 调用,
 # 跑不跑完全继承 build-vst3.yml 的触发规则;被 release.yml 经 build-vst3.yml 调起时,caller 的
 # tag 守卫让它跳过(mac 发版另由 release.yml 自己的 build-mac 调本文件,见 M16)。
 # 写者链(严格串行):M01 → M06a → M06b → M08 → M10 → M16。
-# 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action。
+# 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
+# org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
+#
+# [M06a] 本卡的范围:scvb_core + scvb_tests 在 macOS arm64(Apple clang + libc++)上编过、
+# first-party 零警告、ctest 绿,其中 tests/golden/ipc-layout.txt 在 arm64 上逐行对拍。
+# 三个插件、auval / pluginval、打包都不在这里(M06b / M08 / M10)。
+# gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
   workflow_call:
@@ -24,33 +30,247 @@ jobs:
   build-and-validate-macos:
     name: build-and-validate-macos
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # 骨架:只证明「caller → reusable → macOS arm64 runner」这条链路通、钉版文件可读。
-      # M06a 在这里换成真构建(scvb_core + scvb_tests、clang 零警告门、ctest)。
-      - name: Skeleton - runner identity & pinned versions
+      # 0) 版本单一真源:JUCE tag 只从仓库根 .juce-version 读(CLAUDE.md §6),不写版本字面量。
+      - name: Resolve pinned versions
         shell: bash
         run: |
           set -euo pipefail
-          sw_vers
+          juce=$(tr -d '[:space:]' < .juce-version)
+          if [ -z "$juce" ]; then echo "::error::empty .juce-version"; exit 1; fi
+          built=$(git rev-parse HEAD)
+          echo "JUCE_TAG=$juce" >> "$GITHUB_ENV"
+          echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
+          echo "built sha=$built juce=$juce"
+
+      # 1) 工具链留痕。runner 镜像会轮换,哪天 clang 升了一版多出一条警告,第一件要对的就是这几行。
+      #    pwsh 在这里只探测、不判红;真正用到它的那一步缺了它会自己红(不是跳过)。
+      - name: Record toolchain
+        shell: bash
+        run: |
+          set -uo pipefail
           arch=$(uname -m)
           if [ "$arch" != "arm64" ]; then echo "::error::expected an arm64 runner, got $arch"; exit 1; fi
+          sw_vers
+          xcodebuild -version
+          clang --version
           cmake --version | head -n 1
-          clang --version | head -n 1
-          for f in .juce-version .pluginval-version; do
-            v=$(tr -d '[:space:]' < "$f")
-            if [ -z "$v" ]; then echo "::error::empty $f"; exit 1; fi
-            echo "$f=$v"
-          done
+          if command -v pwsh >/dev/null 2>&1; then pwsh_ver=$(pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'); else pwsh_ver="(absent)"; fi
+          echo "pwsh $pwsh_ver"
           {
-            echo "## build-macos (skeleton)"
+            echo "## build-macos: scvb_core + scvb_tests"
             echo ""
-            echo "- runner: macOS $(sw_vers -productVersion) $arch"
-            echo "- built sha: $(git rev-parse HEAD)"
-            echo "- M01 skeleton only; the real macOS build (scvb_core + scvb_tests, zero-warning gate, ctest) lands with M06a."
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| built sha | \`$BUILT_SHA\` |"
+            echo "| runner | macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion)) $arch |"
+            echo "| Xcode | $(xcodebuild -version | tr '\n' ' ') |"
+            echo "| clang | $(clang --version | head -n 1) |"
+            echo "| cmake | $(cmake --version | head -n 1) |"
+            echo "| pwsh | $pwsh_ver |"
+            echo "| JUCE | $JUCE_TAG |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(与 macos-oop.yml 同一段,
+      #    逻辑逐条照抄 bridge 仓 ci.yml 的 bash 版)。scvb_tests 本身不链接 JUCE,但根工程的
+      #    configure 要 add_subdirectory(JUCE)(三个插件目标在同一次 configure 里定义)。
+      - name: Restore JUCE cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/JUCE
+          key: juce-${{ runner.os }}-${{ env.JUCE_TAG }}
+
+      - name: Clone JUCE (shallow, pinned; skipped on cache hit) & assert tag identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          juce="$GITHUB_WORKSPACE/JUCE"
+          want="${JUCE_TAG#v}"
+          for attempt in 1 2; do
+            cloned=0
+            if [ -f "$juce/CMakeLists.txt" ]; then
+              echo "JUCE $JUCE_TAG restored from cache (attempt $attempt)"
+            else
+              rm -rf "$juce"
+              git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git "$juce"
+              cloned=1
+            fi
+            tags="$(git -C "$juce" tag --points-at HEAD 2>/dev/null || true)"
+            got=""
+            while IFS= read -r t; do
+              if [ -n "$t" ] && [ "${t#v}" = "$want" ]; then got="$t"; break; fi
+            done <<< "$tags"
+            if [ -n "$got" ]; then
+              echo "JUCE identity OK: HEAD is tag '$got' == .juce-version $JUCE_TAG"; exit 0
+            fi
+            if [ "$cloned" = "1" ]; then
+              echo "::error::freshly cloned JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG"; exit 1
+            fi
+            echo "::warning::cached JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG; re-cloning"
+            rm -rf "$juce"
+          done
+          echo "::error::JUCE identity check failed: expected $JUCE_TAG"; exit 1
+
+      - name: Ensure Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+          ninja --version
+
+      # 3) Configure。OSX 架构与部署目标**不在命令行传**:它们的唯一真源是根 CMakeLists.txt 里
+      #    project() 之前那两段默认值,这里传了就证明不了那两段在起作用。下一步从 CMakeCache 读回来核。
+      #    CMAKE_COLOR_DIAGNOSTICS=OFF:诊断行里一旦夹进 ANSI 颜色码,零警告门的
+      #    `file:line:col: warning:` 匹配就会静默失效 —— 门禁绿是因为没认出来,不是因为没有。
+      - name: Configure CMake (Ninja, Release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DJUCE_PATH="$GITHUB_WORKSPACE/JUCE" \
+            -DSCVB_BUILD_TESTS=ON \
+            -DCMAKE_COLOR_DIAGNOSTICS=OFF \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Assert OSX target settings came from CMakeLists.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          archs=$(sed -n 's/^CMAKE_OSX_ARCHITECTURES:[A-Z]*=//p' build/CMakeCache.txt)
+          target=$(sed -n 's/^CMAKE_OSX_DEPLOYMENT_TARGET:[A-Z]*=//p' build/CMakeCache.txt)
+          echo "CMakeCache: CMAKE_OSX_ARCHITECTURES='$archs' CMAKE_OSX_DEPLOYMENT_TARGET='$target'"
+          if [ "$archs" != "arm64" ]; then echo "::error::CMAKE_OSX_ARCHITECTURES is '$archs', expected arm64 (root CMakeLists.txt default)"; exit 1; fi
+          if [ -z "$target" ]; then echo "::error::CMAKE_OSX_DEPLOYMENT_TARGET is empty; the root CMakeLists.txt default did not apply"; exit 1; fi
+          echo "OSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
+
+      # 4) 只编 scvb_tests(连带 scvb_core 与 Catch2)。`-k 0`:一个编译单元红了也继续编别的,
+      #    一轮 CI 往返就能看到全部编译错误。日志全量落盘给下一步的零警告门读。
+      - name: Build scvb_tests
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --target scvb_tests --parallel -- -k 0 2>&1 | tee build.log
+
+      # 5) clang 零警告门 —— 与 Windows 的 /W4 门(build-vst3.yml 的 Build 步)同构的**黑名单**,
+      #    写法照 bridge 仓 ci.yml 的 mac job:只排除第三方(Catch2 在 build/_deps/、JUCE 在 JUCE/),
+      #    其余一律算;白名单式的 `grep '/src/'` 会让 tests/ 与将来新增的源码目录静默逃过门禁。
+      #    - 只认编译器诊断行 `file:line:col: warning:`,与 Windows 侧只认 `warning Cxxxx` 同口径,
+      #      `ld: warning:` 这类链接器噪音不进门禁;
+      #    - 排除项写成 (^|/):Ninja 把 FetchContent 依赖写成相对构建目录的 `_deps/<name>-src/...`
+      #      (无前导斜杠),只写 `/_deps/` 排不掉。
+      #    单列一步而不是并进 Build:编译红了也照样把警告清单列出来;反向注入(加一个未使用变量)
+      #    时红的是**这一步**,不是 Build。
+      #    「零命中」要先证明日志里真的编过 first-party 源:日志空或只编了第三方时,
+      #    这道门会因为没东西可数而恒绿,那不是零警告。
+      - name: Zero-warning gate (first-party clang warnings)
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s build.log ]; then echo "::error::build.log is missing or empty; nothing to judge"; exit 1; fi
+          compiled=$(grep -cE 'Building CXX object (src/core|tests)/' build.log || true)
+          if [ "${compiled:-0}" -lt 1 ]; then
+            echo "::error::build.log shows no first-party translation unit compiled (src/core or tests); an empty set would make this gate vacuously green"; exit 1
+          fi
+          warns=$(grep -E ':[0-9]+:[0-9]+: warning:' build.log | grep -vE '(^|/)(_deps|JUCE|vcpkg)/' || true)
+          n=0
+          if [ -n "$warns" ]; then n=$(printf '%s\n' "$warns" | wc -l | tr -d ' '); fi
+          echo "first-party TUs compiled in this run: $compiled; first-party clang warnings: $n"
+          echo "- first-party TUs compiled: $compiled; first-party clang warnings: **$n**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" != "0" ]; then
+            printf '%s\n' "$warns" | while IFS= read -r line; do echo "::error::$line"; done
+            echo "::error::first-party clang warnings: $n; zero-warning gate"
+            exit 1
+          fi
+
+      # 6) ctest 上界属性门禁:先自测再实扫(与 build-vst3.yml / 本机 gate 5b 同一条命令)。
+      #    两步分开写:合进一个块,自测红、实扫绿会让整步变绿。
+      #    pwsh 不在镜像里时这两步直接红:「工具缺失」不得计为通过。
+      - name: ctest timeout properties - self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v pwsh >/dev/null 2>&1 || { echo "::error::pwsh not found on this runner image; scripts/check-ctest-timeouts.ps1 cannot run"; exit 1; }
+          pwsh -NoProfile -File scripts/check-ctest-timeouts.ps1 -SelfTest
+
+      - name: ctest timeout properties (reads generated CTestTestfile.cmake)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v pwsh >/dev/null 2>&1 || { echo "::error::pwsh not found on this runner image; scripts/check-ctest-timeouts.ps1 cannot run"; exit 1; }
+          pwsh -NoProfile -File scripts/check-ctest-timeouts.ps1 -BuildDir build
+
+      # 7) 产物身份:scvb_tests 必须是 arm64 单架构,且 Mach-O 的 minos 等于 CMakeCache 里的
+      #    部署目标(证明根 CMakeLists.txt 那两段真的进了编译参数,而不只是进了缓存)。
+      - name: Assert scvb_tests is arm64-only with the configured minos
+        shell: bash
+        run: |
+          set -euo pipefail
+          n=$(find build -type f -name scvb_tests -perm -u+x -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+          if [ "$n" != "1" ]; then echo "::error::expected exactly 1 scvb_tests executable under build, found $n"; exit 1; fi
+          exe=$(find build -type f -name scvb_tests -perm -u+x -not -path '*/_deps/*' -print -quit)
+          echo "SCVB_TESTS_EXE=$GITHUB_WORKSPACE/$exe" >> "$GITHUB_ENV"
+          archs=$(lipo -archs "$exe")
+          echo "lipo -archs: $archs"
+          if [ "$archs" != "arm64" ]; then echo "::error::scvb_tests archs are '$archs', expected arm64 only"; exit 1; fi
+          minos=$(otool -l "$exe" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          echo "LC_BUILD_VERSION minos: $minos (CMakeCache: $OSX_DEPLOYMENT_TARGET)"
+          if [ "$minos" != "$OSX_DEPLOYMENT_TARGET" ]; then
+            echo "::error::scvb_tests minos is '$minos', expected '$OSX_DEPLOYMENT_TARGET' from CMAKE_OSX_DEPLOYMENT_TARGET"; exit 1
+          fi
+          echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
+
+      # 8) ctest。本卡只编了 scvb_tests 一个目标,所以只选它这一条(其余条目的二进制本轮没编,
+      #    跑了只会报 Not Run);`--no-tests=error` 让正则一旦选空就红,而不是绿着什么都没跑。
+      #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
+      - name: Unit tests (ctest -R scvb_tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R '^scvb_tests$'
+
+      # 9) tests/golden/ipc-layout.txt 在 arm64 上**逐行**对拍的显式证据。上一步 scvb_tests 绿已经
+      #    包含这一条;这里单跑 IpcLayoutFreeze 并让每条通过的断言都打印出来(`--success`),再核对:
+      #    golden 里每一条数据行(非空、非 # 注释,与测试里 readLines 同一口径)都至少在一条**通过**的
+      #    断言上出现过。这样「逐行通过」是数出来的,而不是从「整套绿」推出来的。
+      - name: IPC layout golden - line-by-line on arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "IpcLayoutFreeze" --reporter compact --success > ipc-layout-compact.log 2>&1 || rc=$?
+          tail -n 3 ipc-layout-compact.log
+          if [ "$rc" != "0" ]; then
+            echo "::group::IpcLayoutFreeze output"; cat ipc-layout-compact.log; echo "::endgroup::"
+            echo "::error::IpcLayoutFreeze failed on arm64 (exit $rc)"; exit 1
+          fi
+          sed 's/\r$//' tests/golden/ipc-layout.txt | grep -v '^#' | grep -v '^$' | LC_ALL=C sort -u > golden-lines.txt
+          grep -o "'golden line: [^']*'" ipc-layout-compact.log | sed "s/^'golden line: //; s/'\$//" | LC_ALL=C sort -u > seen-lines.txt
+          expected=$(wc -l < golden-lines.txt | tr -d ' ')
+          seen=$(wc -l < seen-lines.txt | tr -d ' ')
+          missing=$(LC_ALL=C comm -23 golden-lines.txt seen-lines.txt)
+          echo "golden data lines: $expected; lines covered by passing assertions: $seen"
+          if [ "$expected" -lt 1 ]; then echo "::error::no data lines read from tests/golden/ipc-layout.txt"; exit 1; fi
+          if [ -n "$missing" ]; then
+            printf '%s\n' "$missing" | while IFS= read -r line; do echo "::error::golden line not covered by a passing assertion: $line"; done
+            exit 1
+          fi
+          echo "- ipc-layout golden on arm64: **$seen / $expected** data lines covered by passing assertions" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SCVB-macos-build-log-${{ env.BUILT_SHA }}
+          path: |
+            build.log
+            ipc-layout-compact.log
+          retention-days: 7
+          if-no-files-found: ignore
