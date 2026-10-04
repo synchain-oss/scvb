@@ -720,6 +720,8 @@ std::string flagRows(const spike::ModeEval& i, const spike::ModeEval& o)
         {"shm denied (EPERM/EACCES)", &spike::ModeEval::shmDenied},
         {"32-char name -> ENAMETOOLONG", &spike::ModeEval::longNameOk},
         {"A1/A2/B1 same pid", &spike::ModeEval::samePid},
+        {"instances inside the host process", &spike::ModeEval::inHostProcess},
+        {"instances outside the host process", &spike::ModeEval::outOfHostProcess},
         {"host sees plugin segment", &spike::ModeEval::hostSeesPlugin},
         {"plugin sees host segment", &spike::ModeEval::pluginSeesHost},
         {"render counters advance", &spike::ModeEval::liveRender},

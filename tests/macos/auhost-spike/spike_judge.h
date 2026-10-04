@@ -77,6 +77,8 @@ struct ModeEval
     bool shmDenied = false; // 三个实例的 shm_open 都是 EPERM 或 EACCES
     bool longNameOk = false; // 三个实例的 32 字符名都报 ENAMETOOLONG
     bool samePid = false; // 三个实例 pid 相同且非 0
+    bool inHostProcess = false; // 三个实例 pid 都等于宿主 pid(进程内模式必须成立)
+    bool outOfHostProcess = false; // 三个实例 pid 都非 0 且都不等于宿主 pid(进程外模式必须成立)
     bool hostSeesPlugin = false; // 宿主打开插件建的段且读到 magic
     bool pluginSeesHost = false; // 三个实例都读到宿主建的段且 magic+token 对得上
     bool liveRender = false; // 渲染后宿主在段里看到每个实例的计数前进(同一块物理内存)
@@ -104,6 +106,8 @@ inline ModeEval evaluate(const KV* kv)
     bool lockAll = true;
     long pid0 = -2;
     bool pidsEqual = true;
+    const long hostPid = getl(*kv, "host.pid");
+    e.inHostProcess = e.outOfHostProcess = hostPid > 0;
     for (const char* i : kInstances)
     {
         e.allFound = e.allFound && inst(i, "found") == 1;
@@ -138,6 +142,8 @@ inline ModeEval evaluate(const KV* kv)
             e.homeUnset = true;
 
         const long pid = inst(i, "out.pid");
+        e.inHostProcess = e.inHostProcess && pid == hostPid;
+        e.outOfHostProcess = e.outOfHostProcess && pid > 0 && pid != hostPid;
         if (pid <= 0)
             pidsEqual = false;
         else if (pid0 == -2)
@@ -189,6 +195,7 @@ inline Verdict judge(const KV* inproc, const KV* oop)
         {"inproc.result_present", i.present},
         {"inproc.components_registered", i.allFound},
         {"inproc.instantiated_initialized_done", i.allInstantiated && i.allInitialized && i.allDone},
+        {"inproc.ran_in_host_process", i.inHostProcess},
         {"inproc.shm_create_attach_ok", i.shmOk},
         {"inproc.long_name_enametoolong", i.longNameOk},
     };
@@ -227,6 +234,15 @@ inline Verdict judge(const KV* inproc, const KV* oop)
     {
         v.verdict = "inconclusive";
         v.notes.push_back("OOP instances never reported probes done through the parameter channel");
+        return v;
+    }
+    // 判据失效的那一种:进程外标志被静默忽略、插件其实跑在宿主进程里 —— 那样量到的是进程内结果,
+    // 绝不能当成进程外的 A 报出去。
+    if (!o.outOfHostProcess)
+    {
+        v.verdict = "inconclusive";
+        v.notes.push_back("OOP: instances did not run outside the host process (pid equals the host pid or is "
+                          "unknown) - the out-of-process flag did not take effect");
         return v;
     }
     if (o.present && !o.longNameOk)
@@ -283,6 +299,7 @@ inline KV syntheticGoodMode(bool oop)
     kv["mode"] = oop ? "oop" : "inproc";
     kv["host.plugin_seg_open"] = "1";
     kv["host.plugin_seg_magic"] = "1";
+    kv["host.pid"] = oop ? "4000" : "1000"; // 进程内:实例与宿主同 pid;进程外:实例在另一个进程
     const char* pid = oop ? "4242" : "1000";
     int n = 0;
     for (const char* i : kInstances)
@@ -394,6 +411,13 @@ inline int selfTest()
         o2["b1.out.done"] = "0";
         cases.push_back({"OOP probes never done -> inconclusive, exit 0", gi, o2, true, "inconclusive", 0});
         cases.push_back({"OOP result missing -> inconclusive, exit 0", gi, KV{}, false, "inconclusive", 0});
+        KV o3 = go;
+        o3["host.pid"] = "4242";
+        cases.push_back({"OOP flag ignored (instances in the host process) -> inconclusive, exit 0", gi, o3, true,
+                         "inconclusive", 0});
+        KV o4 = go;
+        o4.erase("host.pid");
+        cases.push_back({"OOP host pid unknown -> inconclusive, exit 0", gi, o4, true, "inconclusive", 0});
     }
     {
         KV in = gi;
@@ -412,6 +436,10 @@ inline int selfTest()
         KV in5 = gi;
         in5["a2.out.done"] = "0";
         cases.push_back({"inproc probes not done -> inconclusive, exit 1", in5, go, true, "inconclusive", 1});
+        KV in6 = gi;
+        in6["b1.out.pid"] = "1001";
+        cases.push_back(
+            {"inproc instance outside the host process -> inconclusive, exit 1", in6, go, true, "inconclusive", 1});
     }
     {
         // 没有创建者(上一轮的残段没清掉,三个实例全是附着):各探针都「成功」,但不能被读成 A。
