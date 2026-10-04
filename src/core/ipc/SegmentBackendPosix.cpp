@@ -540,13 +540,7 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
             return InitResult::kFailed;
         }
         // 有活持有者:附着。先拿 SH(全局锁下只有 SH 持有者,所以不会等),再打开段;绝不 ftruncate。
-        if (flockRetry(lockFd, LOCK_SH | LOCK_NB) != 0)
-        {
-            const int shErr = errno;
-            ::close(lockFd);
-            report(IpcDiagOp::kSegmentLock, shErr, shm, "cannot take the shared segment lock");
-            return InitResult::kFailed;
-        }
+        // [INJECT I4] attacher does not take LOCK_SH
         const int oflag = (mode == Mode::kOpenReadOnly) ? O_RDONLY : O_RDWR;
         shmFd = ::shm_open(shm.c_str(), oflag, 0);
         if (shmFd < 0)
