@@ -21,13 +21,20 @@
 //   · 锁目录 = 真实 home(getpwuid,不看可能被容器化的 HOME)下的
 //     "Library/Application Support/Synchain/SCVB/ipc"。不放 Caches(会被系统清理),也**不放 TMPDIR**
 //     (M01 实测:进程外的 AUHostingService 里 TMPDIR 是服务专属子目录,与宿主进程看到的不是同一处)。
-//     测试可用环境变量 SCVB_IPC_LOCK_DIR 覆盖(在构造后端之前设)。
+//   · 测试钩子:环境变量 SCVB_IPC_LOCK_DIR 覆盖锁目录(构造后端时读一次)。它在发布版里同样生效,所以
+//     **同一组段的所有进程必须看到同一个值** —— 宿主与进程外的 AUHostingService 若只有一边设了它,
+//     两边的锁就不是同一把,后来的创建者会把对方的活段当残段清掉。为了让这种错配在日志里看得见,
+//     用到覆盖的后端实例在第一次打开段时经 IpcDiag 上报一次 kLockDirOverride(带覆盖路径)。
 //   · **所有生命周期转换**(建、附着、离开)都在全局 <锁目录>/lifecycle.lock 的 flock(LOCK_EX) 下做:
 //     BSD flock 的升降级不是原子的(先放旧锁再上新锁),只有在这把全局锁下,「EX 探测 → 降为 SH」与
-//     「离开时 EX 探测 → unlink」之间才不会插进别人的转换。全局锁有界等待(2 s),等不到就 kFailed。
+//     「离开时 EX 探测 → unlink」之间才不会插进别人的转换。
+//   · 全局锁**有界等待**,等不到就放弃这一次(打开 → kFailed;离开 → 不做 unlink 判定,段留给下一个
+//     创建者清理):createOrOpen 2 s(插件加载 / 改组,稀少);openExisting* 100 ms(25Hz 重试路径);
+//     离开 200 ms。某个实例一旦等满超时,之后 1 s 内它的所有取锁都只试一次不等待(断路):锁被一个
+//     挂住的进程拿着时,卸载时的 N 个映射、25Hz 的重试都不会把等待乘上去。
 //   · createOrOpen:对段锁文件 flock(LOCK_EX|LOCK_NB)。
-//       拿到 ⇒ 没有活着的持有者 ⇒ 先 shm_unlink 残段(崩溃留下的、旧尺寸的都在这里清掉),
-//              再 shm_open(O_CREAT|O_EXCL|O_RDWR, 0600) + ftruncate(size),created = true;
+//       拿到 ⇒ 没有活着的持有者 ⇒ 先 shm_unlink 残段(崩溃留下的、旧尺寸的都在这里清掉;只清本用户
+//              名下的),再 shm_open(O_CREAT|O_EXCL|O_RDWR, 0600) + ftruncate(size),created = true;
 //       EWOULDBLOCK ⇒ 有活持有者 ⇒ 以 O_RDWR 附着,**绝不 ftruncate**(macOS 上同一个 shm 对象只能
 //              ftruncate 一次;尺寸以创建者为准,经 fstat 回填)。
 //     之后都降为 LOCK_SH,持有到 unmap。
@@ -48,11 +55,20 @@
 //   · 必须用 flock,不能用 fcntl:flock 按「打开的文件描述」计,同一进程里两个实例各自 open 锁文件,
 //     彼此照样互斥;fcntl 记录锁按进程计,同进程第二个实例会误以为没有持有者而 unlink 活段。
 //
-// ── 错误 ─────────────────────────────────────────────────────────────────────────────────
+// ── 错误与诊断 ───────────────────────────────────────────────────────────────────────────
 // EACCES / EPERM / ENAMETOOLONG 等一律返回 kFailed,并经 ipc/IpcDiag.h 上报(默认空操作,M07 接到
-// mac 文件日志)。权限 0600:同机另一个用户同时开 DAW 会拿到 EACCES(POSIX shm 是全机命名空间,段名
-// 没有余量加 uid),列为已知限制。mlock 尽力而为:失败只上报诊断,不影响返回值。
+// mac 文件日志)。诊断**一律在放掉全局 lifecycle.lock 之后**才交给 sink:sink 做慢 I/O 也卡不住
+// 别的进程的段操作。mlock 尽力而为:失败只上报诊断,不影响返回值。
+//
+// ── 已知限制 ─────────────────────────────────────────────────────────────────────────────
+//   · 多用户:权限 0600。同机另一个用户同时开 DAW 会拿不到段(EACCES;POSIX shm 是全机命名空间,
+//     段名没有余量加 uid),也不会清掉对方的段。
+//   · App Sandbox 里运行插件的宿主(插件在宿主自己的沙盒进程内):沙盒要求 POSIX shm 名带 App Group
+//     前缀(31 字符也放不下),锁目录也在容器之外,这个后端在那类宿主里会 kFailed(EPERM / EACCES)。
+//     M01 的 G0 只覆盖了进程外的 AUHostingService(未沙盒、HOME 未容器化);沙盒内宿主的实测未做。
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <mutex>
 #include <string>
@@ -75,12 +91,19 @@ class SegmentBackendPosix final : public ISegmentBackend
 public:
     // POSIX 段名(含开头的 '/')的最大长度:xnu 的 PSHMNAMLEN。
     static constexpr std::size_t kMaxShmNameLength = 31;
-    // 测试用锁目录覆盖(构造时读一次)。
+    // 测试用锁目录覆盖(构造时读一次;见头注「测试钩子」)。
     static constexpr const char* kLockDirEnvVar = "SCVB_IPC_LOCK_DIR";
     // 全局生命周期锁文件名(在锁目录下)。
     static constexpr const char* kLifecycleLockName = "lifecycle.lock";
     // 锁目录相对真实 home 的路径。
     static constexpr const char* kHomeRelativeLockDir = "Library/Application Support/Synchain/SCVB/ipc";
+
+    // 全局锁的有界等待(见头注)。
+    static constexpr std::chrono::milliseconds kCreateLockWait{2000};
+    static constexpr std::chrono::milliseconds kAttachLockWait{100};
+    static constexpr std::chrono::milliseconds kLeaveLockWait{200};
+    // 一次等满超时之后,本实例在这段时间内只试一次、不等待。
+    static constexpr std::chrono::milliseconds kLockBreakerWindow{1000};
 
     enum class NameStatus
     {
@@ -110,9 +133,12 @@ public:
 
     // 本实例使用的锁目录(构造时定下,之后不变;空 = 解析失败,所有打开都会 kFailed)。
     const std::string& lockDir() const noexcept { return lockDir_; }
+    // 锁目录是否来自 SCVB_IPC_LOCK_DIR。
+    bool lockDirOverridden() const noexcept { return lockDirOverridden_; }
 
 private:
     struct Mapping;
+    struct PendingDiag;
     enum class Mode
     {
         kCreateOrOpen,
@@ -121,12 +147,20 @@ private:
     };
 
     InitResult openSegment(const std::wstring& name, std::size_t size, SegmentView& view, Mode mode);
+    // 持全局锁的那一段;失败原因记进 diag,由调用方在放锁之后上报。
+    InitResult openLocked(const std::string& shm, std::size_t size, SegmentView& view, Mode mode, PendingDiag& diag);
     void track(Mapping* m) noexcept;
     void untrack(Mapping* m) noexcept;
     // 「离开」这一半:全局锁下 EX 探测 → 最后离开者 shm_unlink → 关锁 fd。不 munmap。
-    static void leave(Mapping& m);
+    void leave(Mapping& m);
+    // 断路:本实例最近一次「等满超时」之后 kLockBreakerWindow 内只试一次。
+    std::chrono::milliseconds lockWait(std::chrono::milliseconds normal) const noexcept;
+    void noteLockTimeout() noexcept;
 
     std::string lockDir_;
+    bool lockDirOverridden_ = false;
+    std::atomic<bool> overrideReported_{false};
+    std::atomic<long long> lastLockTimeoutMs_{-1}; // steady_clock 毫秒;-1 = 从没超时过
     std::mutex liveMutex_; // 保护 live_ 链表(多个线程各自用同一个后端实例时)
     Mapping* live_ = nullptr; // 本实例映射出去、尚未 unmap 的视图(侵入式双向链表,插入/摘除不分配)
 };

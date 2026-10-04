@@ -58,6 +58,8 @@ const char* ipcDiagOpName(IpcDiagOp op) noexcept
         return "shm-unlink";
     case IpcDiagOp::kMlock:
         return "mlock";
+    case IpcDiagOp::kLockDirOverride:
+        return "lock-dir-override";
     }
     return "unknown";
 }

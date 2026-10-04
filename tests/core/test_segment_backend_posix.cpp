@@ -21,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <thread>
@@ -273,7 +274,9 @@ struct RecordedDiag
     scvb::IpcDiagOp op;
     int error;
     std::string segment;
+    std::string path;
     std::string detail;
+    int lifecycleLockFree; // 回调那一刻 lifecycle.lock 是否空闲:1 = 空闲,0 = 被人持着,-1 = 没探测
 };
 
 std::vector<RecordedDiag>& recordedDiags()
@@ -282,11 +285,37 @@ std::vector<RecordedDiag>& recordedDiags()
     return v;
 }
 
+// 非空时,sink 在每次回调里对这个 lifecycle.lock 试一次 LOCK_EX|LOCK_NB(新开的 fd;flock 按打开的
+// 文件描述计,所以后端自己若还持着它,这里必然 EWOULDBLOCK),据此判断诊断是不是在放锁之后才上报的。
+std::string& lifecycleLockProbePath()
+{
+    static std::string p;
+    return p;
+}
+
+int probeLifecycleLockFree() noexcept
+{
+    const std::string& path = lifecycleLockProbePath();
+    if (path.empty())
+    {
+        return -1;
+    }
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+    {
+        return -1;
+    }
+    const int r = ::flock(fd, LOCK_EX | LOCK_NB);
+    ::close(fd);
+    return r == 0 ? 1 : 0;
+}
+
 void recordDiag(const scvb::IpcDiagEvent& e) noexcept
 {
+    const int lockFree = probeLifecycleLockFree();
     try
     {
-        recordedDiags().push_back(RecordedDiag{e.op, e.error, e.segment, e.detail});
+        recordedDiags().push_back(RecordedDiag{e.op, e.error, e.segment, e.path, e.detail, lockFree});
     }
     catch (...)
     {
@@ -299,9 +328,14 @@ public:
     DiagRecorder()
     {
         recordedDiags().clear();
+        lifecycleLockProbePath().clear();
         prev_ = scvb::setIpcDiagSink(&recordDiag);
     }
-    ~DiagRecorder() { scvb::setIpcDiagSink(prev_); }
+    ~DiagRecorder()
+    {
+        scvb::setIpcDiagSink(prev_);
+        lifecycleLockProbePath().clear();
+    }
     DiagRecorder(const DiagRecorder&) = delete;
     DiagRecorder& operator=(const DiagRecorder&) = delete;
 
@@ -313,13 +347,28 @@ public:
         });
     }
     std::size_t count() const { return recordedDiags().size(); }
+    // 失败类事件数(不计信息性的 kLockDirOverride)。
+    std::size_t failureCount() const
+    {
+        const auto& v = recordedDiags();
+        return static_cast<std::size_t>(std::count_if(
+            v.begin(), v.end(), [](const RecordedDiag& d) { return d.op != scvb::IpcDiagOp::kLockDirOverride; }));
+    }
+    std::size_t countOf(scvb::IpcDiagOp op, const char* detailContains = "") const
+    {
+        const auto& v = recordedDiags();
+        return static_cast<std::size_t>(std::count_if(v.begin(), v.end(), [&](const RecordedDiag& d) {
+            return d.op == op && d.detail.find(detailContains) != std::string::npos;
+        }));
+    }
+    const std::vector<RecordedDiag>& events() const { return recordedDiags(); }
     std::string dump() const
     {
         std::string s;
         for (const auto& d : recordedDiags())
         {
             s += std::string(scvb::ipcDiagOpName(d.op)) + " errno=" + std::to_string(d.error) + " seg=" + d.segment +
-                 " (" + d.detail + ")\n";
+                 " path=" + d.path + " lockFree=" + std::to_string(d.lifecycleLockFree) + " (" + d.detail + ")\n";
         }
         return s;
     }
@@ -560,7 +609,7 @@ TEST_CASE("POSIX backend: read-only open is PROT_READ, holds the segment, and ne
     CHECK_FALSE(shmExists(posix));
     CHECK_FALSE(std::filesystem::exists(dir.lockFile(posix)));
     INFO(diag.dump());
-    CHECK(diag.count() == std::size_t{0});
+    CHECK(diag.failureCount() == std::size_t{0});
 
     SegmentView c;
     REQUIRE(creator.createOrOpen(name, kSeg, c) == InitResult::kOk);
@@ -679,6 +728,31 @@ TEST_CASE("POSIX backend: after a child dies without cleanup the parent takes th
     REQUIRE(::pipe(ready) == 0);
     REQUIRE(::pipe(release) == 0);
 
+    // 父进程任何一条 REQUIRE 失败时也要放行并回收子进程:关掉 release 写端,子进程的 read 返回 0
+    // 随即 _exit;再 waitpid。正常路径上下面会先手动做完,这里就什么都不做。
+    struct ChildReaper
+    {
+        pid_t pid = -1;
+        int* release = nullptr;
+        int* ready = nullptr;
+        ~ChildReaper()
+        {
+            if (release[1] >= 0)
+            {
+                ::close(release[1]);
+            }
+            if (ready[0] >= 0)
+            {
+                ::close(ready[0]);
+            }
+            if (pid > 0)
+            {
+                int ignored = 0;
+                ::waitpid(pid, &ignored, 0);
+            }
+        }
+    };
+
     const pid_t child = ::fork();
     REQUIRE(child >= 0);
     if (child == 0)
@@ -704,6 +778,7 @@ TEST_CASE("POSIX backend: after a child dies without cleanup the parent takes th
 
     ::close(ready[1]);
     ::close(release[0]);
+    ChildReaper reaper{child, release, ready};
     char status = 0;
     REQUIRE(::read(ready[0], &status, 1) == 1);
     REQUIRE(status == 'C');
@@ -723,9 +798,12 @@ TEST_CASE("POSIX backend: after a child dies without cleanup the parent takes th
     REQUIRE(::write(release[1], &go, 1) == 1);
     int wstatus = 0;
     REQUIRE(::waitpid(child, &wstatus, 0) == child);
+    reaper.pid = -1; // 已回收
     CHECK(WIFEXITED(wstatus));
     ::close(ready[0]);
+    ready[0] = -1;
     ::close(release[1]);
+    release[1] = -1;
     CHECK(shmExists(posix));
 
     // 父进程接管:走清理分支,按自己的尺寸重建,旧数据不在了。
@@ -973,6 +1051,133 @@ TEST_CASE("POSIX backend: EACCES is kFailed and reported to the diagnostics sink
     }
 }
 
+TEST_CASE("POSIX backend: diagnostics reach the sink only after lifecycle.lock is released", "[posix][diag]")
+{
+    if (::geteuid() == 0)
+    {
+        SKIP("root bypasses file permission checks");
+    }
+    TempLockDir dir;
+    DiagRecorder diag;
+    lifecycleLockProbePath() = dir.path() + "/" + SegmentBackendPosix::kLifecycleLockName;
+    const auto name = uniqueName("late");
+    const auto posix = toPosix(name);
+    UnlinkOnExit guard{posix};
+
+    // 让失败发生在持全局锁的那一段里:段对附着者不可写(0400),且有一个活持有者(自己拿 SH)。
+    createOrphan(posix, kSeg, 0x22, 0400);
+    touchFile(lifecycleLockProbePath());
+    const int holder = ::open(dir.lockFile(posix).c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    REQUIRE(holder >= 0);
+    REQUIRE(::flock(holder, LOCK_SH) == 0);
+
+    SegmentBackendPosix backend;
+    SegmentView v;
+    CHECK(backend.createOrOpen(name, kSeg, v) == InitResult::kFailed);
+    INFO(diag.dump());
+    REQUIRE(diag.has(scvb::IpcDiagOp::kShmOpen, EACCES, posix));
+    for (const auto& e : diag.events())
+    {
+        INFO("event " << scvb::ipcDiagOpName(e.op));
+        CHECK(e.lifecycleLockFree == 1); // sink 被调用时,后端已经放掉了 lifecycle.lock
+    }
+    ::close(holder);
+}
+
+TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; the breaker skips the rest",
+          "[posix][diag][lockwait]")
+{
+    TempLockDir dir;
+    DiagRecorder diag;
+    const auto name = uniqueName("stuck");
+    const auto posix = toPosix(name);
+    UnlinkOnExit guard{posix};
+    const std::string lifecyclePath = dir.path() + "/" + SegmentBackendPosix::kLifecycleLockName;
+
+    // 先正常建好三个映射(丢掉视图、不 unmap —— 与插件卸载时同形),再由「挂住的进程」拿住全局锁。
+    auto backend = std::make_unique<SegmentBackendPosix>();
+    for (int i = 0; i < 3; ++i)
+    {
+        SegmentView v;
+        REQUIRE(backend->createOrOpen(name, kSeg, v) == InitResult::kOk);
+        v.reset();
+    }
+    const int stuck = ::open(lifecyclePath.c_str(), O_RDWR | O_CLOEXEC);
+    REQUIRE(stuck >= 0);
+    REQUIRE(::flock(stuck, LOCK_EX) == 0);
+
+    // 后端析构对三个映射各做一次「离开」:第一次等满 kLeaveLockWait 超时,之后断路,只试一次。
+    backend.reset();
+    INFO(diag.dump());
+    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "timed out waiting") == std::size_t{1});
+    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "breaker") == std::size_t{2});
+    CHECK(shmExists(posix)); // 拿不到全局锁就不做 unlink 判定,段留给下一个创建者
+
+    // 25Hz 重试路径同理:同一实例第一次等满 kAttachLockWait,第二次断路。
+    SegmentBackendPosix reader;
+    SegmentView r;
+    CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
+    CHECK(reader.openExistingReadOnly(name, r) == InitResult::kFailed);
+    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "timed out waiting") == std::size_t{2});
+    CHECK(diag.countOf(scvb::IpcDiagOp::kLifecycleLock, "breaker") == std::size_t{3});
+
+    // 锁放开之后:没有持有者的残段由下一个创建者清理重建。
+    ::close(stuck);
+    SegmentBackendPosix next;
+    SegmentView v;
+    REQUIRE(next.createOrOpen(name, kSeg, v) == InitResult::kOk);
+    CHECK(v.created);
+    next.unmap(v);
+    CHECK_FALSE(shmExists(posix));
+}
+
+TEST_CASE("POSIX backend: the SCVB_IPC_LOCK_DIR override is reported once per backend instance",
+          "[posix][diag][lockdir]")
+{
+    {
+        TempLockDir dir;
+        DiagRecorder diag;
+        const auto name = uniqueName("ovr");
+        const auto posix = toPosix(name);
+        UnlinkOnExit guard{posix};
+        SegmentBackendPosix backend;
+        CHECK(backend.lockDirOverridden());
+        SegmentView v1;
+        SegmentView v2;
+        REQUIRE(backend.createOrOpen(name, kSeg, v1) == InitResult::kOk);
+        REQUIRE(backend.openExisting(name, v2) == InitResult::kOk);
+        INFO(diag.dump());
+        REQUIRE(diag.countOf(scvb::IpcDiagOp::kLockDirOverride) == std::size_t{1});
+        for (const auto& e : diag.events())
+        {
+            if (e.op == scvb::IpcDiagOp::kLockDirOverride)
+            {
+                CHECK(e.error == 0);
+                CHECK(e.path == dir.path());
+            }
+        }
+        SegmentBackendPosix second; // 另一个实例:自己再报一次
+        SegmentView v3;
+        REQUIRE(second.openExisting(name, v3) == InitResult::kOk);
+        CHECK(diag.countOf(scvb::IpcDiagOp::kLockDirOverride) == std::size_t{2});
+        backend.unmap(v1);
+        backend.unmap(v2);
+        second.unmap(v3);
+    }
+    {
+        // 没设覆盖:不报。只走只读路径:不建目录、不建文件,真实 home 下什么都不留。
+        EnvVarGuard env(SegmentBackendPosix::kLockDirEnvVar);
+        ::unsetenv(SegmentBackendPosix::kLockDirEnvVar);
+        DiagRecorder diag;
+        SegmentBackendPosix backend;
+        CHECK_FALSE(backend.lockDirOverridden());
+        SegmentView r;
+        CHECK(backend.openExistingReadOnly(uniqueName("noovr"), r) == InitResult::kFailed);
+        INFO(diag.dump());
+        CHECK(diag.countOf(scvb::IpcDiagOp::kLockDirOverride) == std::size_t{0});
+    }
+}
+
 TEST_CASE("IpcDiag: no-op by default, routes to an installed sink, restores the previous one", "[posix][diag]")
 {
     const bool noSinkAtStart = (scvb::ipcDiagSink() == nullptr);
@@ -993,10 +1198,10 @@ TEST_CASE("IpcDiag: no-op by default, routes to an installed sink, restores the 
     const bool noSinkAfterRecorder = (scvb::ipcDiagSink() == nullptr);
     CHECK(noSinkAfterRecorder);
 
-    for (const auto op :
-         {scvb::IpcDiagOp::kName, scvb::IpcDiagOp::kLockDir, scvb::IpcDiagOp::kLifecycleLock,
-          scvb::IpcDiagOp::kSegmentLock, scvb::IpcDiagOp::kShmOpen, scvb::IpcDiagOp::kShmTruncate,
-          scvb::IpcDiagOp::kShmStat, scvb::IpcDiagOp::kShmMap, scvb::IpcDiagOp::kShmUnlink, scvb::IpcDiagOp::kMlock})
+    for (const auto op : {scvb::IpcDiagOp::kName, scvb::IpcDiagOp::kLockDir, scvb::IpcDiagOp::kLifecycleLock,
+                          scvb::IpcDiagOp::kSegmentLock, scvb::IpcDiagOp::kShmOpen, scvb::IpcDiagOp::kShmTruncate,
+                          scvb::IpcDiagOp::kShmStat, scvb::IpcDiagOp::kShmMap, scvb::IpcDiagOp::kShmUnlink,
+                          scvb::IpcDiagOp::kMlock, scvb::IpcDiagOp::kLockDirOverride})
     {
         CHECK(std::string(scvb::ipcDiagOpName(op)) != "unknown");
     }

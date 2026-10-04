@@ -12,8 +12,9 @@
 //     构建行为不变。
 //   · **只在消息线程(非实时线程)上调用**:reportIpcDiag() 只出现在段后端的 createOrOpen / openExisting /
 //     openExistingReadOnly / unmap / tryLock 里,这些按 ISegmentBackend 的约定只在持 lifecycleMutex 的
-//     非实时线程调用(01 §3.1);音频线程从不经过这里。sink 在报告者的线程上**同步**调用,sink 里可以做
-//     文件 I/O,但不得回调段后端(会在后端持锁时重入)。
+//     非实时线程调用(01 §3.1);音频线程从不经过这里。sink 在报告者的线程上**同步**调用。
+//   · **不在跨进程锁里调用**:POSIX 后端先放掉全局 lifecycle.lock,再把诊断交给 sink,所以 sink 里做文件
+//     I/O 卡不住别的进程的段操作;但它仍在调用方的消息线程上,应当尽快返回。sink 不得回调段后端。
 //   · sink 是进程内(准确说是「每个链接了 scvb_core 的二进制内」)唯一的一个函数指针:三个插件是三个
 //     二进制,各有一份,互不影响。设置与读取都是原子的;换 sink 时正在进行的那一次报告可能仍落到旧 sink。
 //   · 事件里的字符串一律 ASCII,只在回调期间有效;sink 要留存就自己拷贝。
@@ -37,6 +38,7 @@ enum class IpcDiagOp : std::uint32_t
     kShmMap, // mmap 失败
     kShmUnlink, // 清残段或最后离开者 shm_unlink 失败
     kMlock, // 创建者锁页失败(尽力而为,不影响返回值)
+    kLockDirOverride, // 不是失败:锁目录来自测试钩子 SCVB_IPC_LOCK_DIR(每个后端实例报一次,error = 0)
 };
 
 struct IpcDiagEvent
@@ -44,6 +46,7 @@ struct IpcDiagEvent
     IpcDiagOp op = IpcDiagOp::kName;
     int error = 0; // errno;0 = 不适用
     const char* segment = ""; // 平台段名(POSIX 为 "/X");从不为 nullptr,可能为空串
+    const char* path = ""; // 相关的文件 / 目录路径(锁目录、锁文件);从不为 nullptr,可能为空串
     const char* detail = ""; // 静态 ASCII 描述;从不为 nullptr
 };
 
