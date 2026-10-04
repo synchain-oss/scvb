@@ -15,7 +15,8 @@
 //   ⑤ pace=1 跑 2 s,墙钟在 ±20% 内;
 //   ⑥ 纯时间线场景(Cycle + 定位 + 静音区 + 一条领先的预取轨)连跑 3 次,逐帧判定日志逐字相同;
 //   ⑦ 事件与停调策略的落账(live 切换三种方式、带在途旧块的定位、停 / 起走带、起播怪癖、无 region、
-//      静音即停调 Input、总线静音尾巴停调 Output、整链停调、几何重写、离线):只看调度账,与墙钟无关。
+//      静音即停调 Input、总线静音尾巴停调 Output、整链停调(含关 → 再开)、几何重写、离线、at() 的落点、
+//      首尾相接的静音区间):只看调度账,不按节拍、不泵消息,与墙钟无关。
 //
 // 删除式(PR 里有结果表):总线输入改喂零 ⇒ ③ 红;去掉不变式检查 ⇒ ④ 红。
 //
@@ -433,6 +434,10 @@ TEST_CASE("SCHED rig 5: pace=1 keeps the wall clock within 20% of audio time", "
 //    脚本:定位到 S0 → Cycle [B,E)(1 s)放 3 圈多 → 圈内回跳 → 关 Cycle 前跳到 20 s。
 //    lane 2 在圈内有一段静音区;lane 3 是提前 4096 的预取轨(跨循环点会提前回绕)。
 //    交接(settle)那段依赖墙钟,不入判定;脚本从定位开始,时间线位置与块格都只由脚本决定。
+//    确定性的来源要说准:脚本段仍按 pace=4 边跑边泵 [M],[M] 的状态(心跳年龄、注入仲裁、失准计数)
+//    照样随墙钟走 —— 日志逐字相同,靠的是这段脚本**不跨任何墙钟门限**(写头没有冻结 ≥ 500ms,没有
+//    交接 / 注入翻转;预取轨提前回绕后读不到的那几块在本代还没 primed,不计失准),所以 [M] 翻不动
+//    任何一帧的判定。不是「与墙钟无关」:跨门限的场景不属于纯时间线场景(定义见 SchedRig.h 头注)。
 // ---------------------------------------------------------------------------
 TEST_CASE("SCHED rig 6: a pure-timeline scenario gives identical per-frame verdict logs over 3 runs", "[.][sched]")
 {
@@ -654,8 +659,12 @@ TEST_CASE("SCHED rig 7: transport events, live switches, quirks and stall polici
     rig.outputSilenceTail(-1);
 
     // (g) 整链停调(只做表征):所有轨源信号静音超过 T ⇒ Input 与 Output 都不调用。
+    //     静音计时每周期都走(策略开没开都走),所以先起走带一周期把它归零,再停走带从零数起。
+    rig.start();
+    rig.runCycles(1);
     rig.chainSuspend(2048, sched::ChainBy::In);
     const std::int64_t cs = rig.outCursor();
+    rig.stop();
     rig.runCycles(5);
     {
         const std::vector<sched::OutBlock> ob = outBlocksFrom(rig, cs);
@@ -673,11 +682,30 @@ TEST_CASE("SCHED rig 7: transport events, live switches, quirks and stall polici
             CHECK(lb.reason == sched::CallReason::ChainSuspended);
         }
     }
+    // 关 → 有声一段 → 再静音 → 再开:计时反映的是**这一次**的静音时长(关着期间也照走、有声就归零),
+    // 不会接着上一次冻住的旧值往上加而提前判停调。
+    rig.chainSuspend(-1, sched::ChainBy::In);
+    rig.start();
+    rig.runCycles(2);
+    rig.stop();
+    rig.chainSuspend(2048, sched::ChainBy::In);
+    const std::int64_t cr = rig.outCursor();
+    rig.runCycles(4);
+    {
+        const std::vector<sched::OutBlock> ob = outBlocksFrom(rig, cr);
+        REQUIRE(ob.size() == 4u);
+        for (std::size_t k = 0; k < ob.size(); ++k)
+        {
+            INFO("block " << k);
+            CHECK(ob[k].reason == (k < 2 ? sched::CallReason::Called : sched::CallReason::ChainSuspended));
+        }
+    }
     rig.chainSuspend(-1, sched::ChainBy::In);
     rig.start();
     rig.runCycles(2);
 
     // (h) 几何重写:循环中途把 lane 2 改成 stereo 重新 prepare,之后照常被调用。
+    //     (重新 prepare 之后组号、通道号、声道数的读回断言在 geometryRewrite 里面。)
     rig.geometryRewrite(2, true);
     CHECK(rig.input(2).getTotalNumInputChannels() == 2);
     const std::int64_t g = rig.outCursor();
@@ -698,6 +726,33 @@ TEST_CASE("SCHED rig 7: transport events, live switches, quirks and stall polici
     }
     rig.offline(false);
     CHECK_FALSE(rig.output().isNonRealtime());
+
+    // (j) at(c, fn):排到将来的操作在**第一个起点 >= c 的周期开头**执行(落在 Output 块格上)。
+    {
+        const std::int64_t base = rig.outCursor();
+        std::int64_t offGrid = -1;
+        std::int64_t onGrid = -1;
+        rig.at(base + 100, [&offGrid](sched::SchedRig& r) { offGrid = r.outCursor(); });
+        rig.at(base + 2 * b, [&onGrid](sched::SchedRig& r) { onGrid = r.outCursor(); });
+        rig.runCycles(3);
+        CHECK(offGrid == base + b);
+        CHECK(onGrid == base + 2 * b);
+    }
+
+    // (k) 首尾相接的 noRegion 与 silent 区间算连起来:跨接缝的那一帧整帧静音,不是边沿帧。
+    //     (区间放在 100 s,本用例的时间线走不到那里,不影响上面的块日志。)
+    {
+        const std::int64_t x = sec(100.0);
+        rig.noRegion(1, x, x + 500);
+        rig.silentRegion(1, x + 500, x + 2000);
+        bool edge = true;
+        CHECK_FALSE(rig.contentActiveOver(1, x, x + presence::kFrame, &edge));
+        CHECK_FALSE(edge);
+        CHECK(rig.contentActiveOver(1, x - 100, x - 100 + presence::kFrame, &edge));
+        CHECK(edge);
+        CHECK(rig.contentActiveOver(1, x + 2000, x + 2000 + presence::kFrame, &edge));
+        CHECK_FALSE(edge);
+    }
 
     // 全程:按图顺序调度,不变式每周期都查、一次没破;总线输入没有欠账。
     CHECK(rig.invariant().checked == rig.cycles());

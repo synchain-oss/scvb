@@ -28,6 +28,10 @@
 //   · 节拍:pace=1 按墙钟实时(runDispatchLoopUntil,500ms / 200ms / 5s 这类墙钟门限的场景只能用它);
 //     pace>1 加速(只适合纯时间线场景);pace<=0 不按节拍,每周期泵 unpacedPumpMs 毫秒(0 = 不泵,
 //     [M] 冻结)。offline(on) 是另一维:对所有实例 setNonRealtime(on)。
+//     「纯时间线场景」的确切含义:块格与时间线位置只由脚本决定(本台保证);[M] 仍在按墙钟跑
+//     (心跳、注入仲裁、失准计数都是真实的墙钟量,本台去不掉),但脚本**不跨任何墙钟门限** ——
+//     没有写头冻结 ≥ 500ms、没有交接 / 注入翻转、没有会被计成失准的读失败 —— 所以 [M] 的状态翻不动
+//     任何一帧的判定。跨门限的场景不是纯时间线场景,必须用 pace=1,且判据要留容差窗。
 //   · 记录:每个 Output 块的 L/R、总线输入 L/R 与时间线位置;每个 [M] 拍(本台每次泵完消息、
 //     间隔 ≥ beatMinGapMs 时采一拍)的 connSnapshot()(suspended)、misalignCount、gapCount、trackPeak;
 //     每条 lane 已处理的块日志;逐帧判定接 tests/support/presence_meter.h。
@@ -37,9 +41,12 @@
 //   · 游标 = 「该样本送到总线的时刻」(渲染时间,从 0 起的样本数)。lane i 的 FIFO 按游标存,所以
 //     预取轨提前算出来的音频照样在正确的时刻进总线。
 //   · 静态的时间线结构(Cycle 回绕)写在 map 里,预取轨会**提前**跨过循环点 —— 这正是 H1 的形状。
-//   · 用户操作(定位 / 停 / 起 / 改 Cycle)发生在某个 Output 游标 a 上:生效游标 e = a(定位另加
-//     staleOutBlocks × b_out),所有游标已超过 e 的 lane **冲刷**回 e(FIFO 截断、游标回退,重新渲染)。
-//     即:宿主丢掉已预取的旧音频重新预取;Output 先把 k 个已在途的旧块放完再换到新位置。
+//   · 用户操作(定位 / 停 / 起 / 改 Cycle)发生在某个 Output 周期的开头,a = 那一刻的 Output 游标:
+//     生效游标 e = a(定位另加 staleOutBlocks × b_out),所有游标已超过 e 的 lane **冲刷**回 e(FIFO 截断、
+//     游标回退,重新渲染)。即:宿主丢掉已预取的旧音频重新预取;Output 先把 k 个已在途的旧块放完再换位置。
+//     at(c, fn) 排到将来的操作在**第一个起点 ≥ c 的周期开头**执行,a 是那个周期的起点 —— 落在 Output
+//     块格上(与真实宿主只在缓冲边界上换位置同形),c 不在块格上时最多晚 b_out − 1 个样本。要精确落点,
+//     就把 c 取在块格上(b_out 的整数倍,前提是此前没有被切短的块),或在两次 run 之间用 kNow 直接调用。
 //   · readerOffset = Δ:Output 报给插件的时间线 = map(C_O + Δ),总线内容仍按 C_O。模拟「Aux 位置没做
 //     延迟补偿」一类读方超前(H3)。逐帧判定按**总线时间** map(C_O) 对齐 —— 那才是听者听到的位置。
 //   · 起播怪癖(quirk):只改**报给插件**的时间线位置(覆盖接下来几次被调用的块),不改游标与总线内容。
@@ -54,6 +61,9 @@
 //     Output 那一路原样直通总线输入。
 //   · chainSuspend(T, by=in|out|both):整条链停调,**只做表征**(by=in:所有 lane 源信号静音 > T;
 //     by=out:总线输入静音 > T;both:两者同时)。停调期间 Input 与 Output 都不调用,宿主原样直通。
+//   · 两个静音计时(总线输入连续静音 / 全部 lane 源信号连续静音)**每个周期都更新**,与策略开没开
+//     无关;策略开关只决定「据此停不停调」。所以关掉再打开时,计时反映的是真实的静音时长,不会
+//     接着一个冻住的旧值往上加。
 //   · bypassInput(lane,on):宿主旁路该 Input —— 不调用,宿主把该轨源信号原样送进总线
 //     (JUCE 默认的 processBlockBypassed 就是直通)。写头因此停住,Output 那边读不到这一轨;
 //     而总线上这条轨的原声**是在的** —— 「判定经过真实 Output 混音路径」的自测靠的就是这个反差。
@@ -67,6 +77,8 @@
 //   · lane 进总线只取第 0 声道(stereo lane 的两声道内容相同),R 恒为 0。
 //   · [M] 拍是本台**泵消息时**采的样,不是挂在 Output 的 Timer 上(不改 src/);两次采样间隔
 //     ≥ beatMinGapMs(默认 20ms,约半拍),足够抓住持续 ≥ 1s 的失准 / 挂起状态,抓不住单拍闪烁。
+//   · 停调状态(chainSuspend 判出来的那一位)每周期开头算一次,本周期里预取轨提前渲染的块(最远到
+//     lead 之后)也套用这一位,而不是按各块自己的时间点重算。整链停调只做表征,这里不细分。
 //
 // ## 纪律
 //
@@ -834,6 +846,8 @@ public:
     // 等交接走完:所有源信号在放的 lane 都在 Output 那边读得到(trackPeak > 0),且送总线的 lane 都已
     // 自静音(本块总线输入里该轨为零),连续 stableCycles 个周期。只等不断言 —— 等不到返回 false,
     // 由调用方 REQUIRE。
+    // 副作用:把泵消息打开(setPumping(true))并**保持打开** —— 交接要 [M] 才走得完,之后的运行照常
+    // 按 pace 泵消息。要在 settle 之后冻结 [M],调用方自己再 setPumping(false)。
     bool settle(int maxWallMs = 8000, int stableCycles = 8)
     {
         setPumping(true);
@@ -853,7 +867,8 @@ public:
 
     // ---- 事件 ----------------------------------------------------------------
 
-    // 在 Output 游标到达 at 的那个周期开头执行 fn(at == kNow:立刻)。
+    // 在**第一个起点 ≥ atCursor 的** Output 周期开头执行 fn(atCursor == kNow 或已过去:立刻)。
+    // 落在 Output 块格上:atCursor 不在块格上时最多晚 b_out − 1 个样本执行(见头注「时间模型」)。
     void at(std::int64_t atCursor, std::function<void(SchedRig&)> fn)
     {
         if (atCursor == kNow || atCursor <= outCursor())
@@ -969,6 +984,7 @@ public:
     }
 
     // 宿主改该轨布局:release → setBusesLayout → prepareToPlay(循环中途 mono⇄stereo 重新 prepare)。
+    // 重新 prepare 之后与构造时同一口径读回([SL-324]):组号、通道号都还在,声道数确实换了。
     void geometryRewrite(int lane, bool stereo)
     {
         Lane& l = laneAt(lane);
@@ -976,6 +992,10 @@ public:
         applyLayout(*l.proc, stereo);
         l.stereo = stereo;
         l.proc->prepareToPlay(cfg_.sr, lanePrepareBlock(l));
+        const ScvbInputAudioProcessor::BridgeTickSnapshot snap = l.proc->bridgeTickSnapshot();
+        REQUIRE(snap.groupId == cfg_.group);
+        REQUIRE(snap.configuredChannelId == channelOf(lane));
+        REQUIRE(snap.sourceChannels == (stereo ? 2 : 1));
     }
 
     void violateGraphOrder(const GraphViolation& v)
@@ -1012,23 +1032,36 @@ public:
                          outBlocks_.end());
     }
 
-    // 该轨源信号在时间线 [t0, t1) 上是否全程在放 / 部分在放。
+    // 该轨源信号在时间线 [t0, t1) 上是否在放:返回 false = 整段都落在静音里(noRegion 与 silent
+    // 两类区间的**并集**整段覆盖,首尾相接、互相重叠的区间都算连起来);edge = 只覆盖了一部分。
     bool contentActiveOver(int lane, std::int64_t t0, std::int64_t t1, bool* edge = nullptr) const
     {
         const Lane& l = laneAt(lane);
-        bool covered = false;
-        bool touched = false;
+        std::vector<Range> hits;
         for (const std::vector<Range>* rs : {&l.cfg.noRegion, &l.cfg.silent})
         {
             for (const Range& r : *rs)
             {
-                covered = covered || r.covers(t0, t1);
-                touched = touched || r.overlaps(t0, t1);
+                if (r.overlaps(t0, t1))
+                {
+                    hits.push_back(r);
+                }
             }
         }
+        std::sort(hits.begin(), hits.end(), [](const Range& a, const Range& b) { return a.begin < b.begin; });
+        std::int64_t reach = t0; // [t0, reach) 已被并集连续覆盖
+        for (const Range& r : hits)
+        {
+            if (r.begin > reach)
+            {
+                break; // 中间有缝
+            }
+            reach = std::max(reach, r.end);
+        }
+        const bool covered = reach >= t1;
         if (edge != nullptr)
         {
-            *edge = touched && !covered;
+            *edge = !hits.empty() && !covered;
         }
         return !covered;
     }
@@ -1416,15 +1449,17 @@ private:
 
     void updateChainSuspension(int nOut)
     {
+        // 「全部源信号静音」的计时每周期都更新,与策略开没开无关(与 busSilentRun_ 同口径,见头注):
+        // 关掉再打开时计时反映真实的静音时长,不会接着一个冻住的旧值往上加。
+        const MapPoint p = map_.at(outCursor());
+        const bool allSilent = std::none_of(lanes_.begin(), lanes_.end(),
+                                            [&p](const std::unique_ptr<Lane>& l) { return contentActiveAt(*l, p); });
+        inSilentRun_ = allSilent ? inSilentRun_ + nOut : 0;
         if (chainSuspendT_ < 0)
         {
             chainSuspended_ = false;
             return;
         }
-        const MapPoint p = map_.at(outCursor());
-        const bool allSilent = std::none_of(lanes_.begin(), lanes_.end(),
-                                            [&p](const std::unique_ptr<Lane>& l) { return contentActiveAt(*l, p); });
-        inSilentRun_ = allSilent ? inSilentRun_ + nOut : 0;
         const bool byIn = inSilentRun_ > chainSuspendT_;
         const bool byOut = busSilentRun_ > chainSuspendT_;
         chainSuspended_ = chainBy_ == ChainBy::In ? byIn : (chainBy_ == ChainBy::Out ? byOut : (byIn && byOut));
