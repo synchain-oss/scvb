@@ -428,8 +428,8 @@ public:
         {
             return Lease{};
         }
-        p->leaseCount.fetch_add(1, std::memory_order_seq_cst);
-        if (p->releaseRequested.load(std::memory_order_seq_cst))
+        p->leaseCount.fetch_add(1, std::memory_order_acq_rel); // [临时实验 E3] 改回 51d1386
+        if (p->releaseRequested.load(std::memory_order_acquire)) // [临时实验 E3] 改回 51d1386
         {
             p->leaseCount.fetch_sub(1, std::memory_order_acq_rel); // 释放已请求,退还租约
             return Lease{};
@@ -446,7 +446,7 @@ public:
             return true;
         }
         // 先置释放请求。seq_cst:与 lease() 的 Dekker 握手,理由见 lease() 上方。
-        impl_->releaseRequested.store(true, std::memory_order_seq_cst);
+        impl_->releaseRequested.store(true, std::memory_order_release); // [临时实验 E3] 改回 51d1386
         implPtr_.store(nullptr, std::memory_order_release); // 再摘指针(阻止新租约)
         return unmapIfIdle(nowMs);
     }
@@ -459,7 +459,7 @@ private:
             return true;
         }
         // seq_cst:与 lease() 的 Dekker 握手(release() 首次调用时这一读就是握手的消息侧),理由见 lease() 上方。
-        if (impl_->leaseCount.load(std::memory_order_seq_cst) != 0)
+        if (impl_->leaseCount.load(std::memory_order_acquire) != 0) // [临时实验 E3] 改回 51d1386
         {
             return false; // 租约在途
         }
