@@ -78,6 +78,11 @@
 //     块级错位(64…4096 样本),不是「任意错位都判得出」。
 //   · 同一轨内容被**常数倍**放大(例如两条路径叠加)在自标定下看不出来;双路叠加要靠
 //     来源判别(Raw 与 Mix 同时出现时 R/L 比变化)或调用方给 fixedGain。
+//   · 自标定取中位数,前提是一段里**正确的帧过半**。某轨大半段都是错读(例如 2R 别名)时,
+//     参考值就是从错读帧里标出来的,Present / Partial 的分布没法解释。增益已知的场景
+//     (未平衡原声 0.5、混音增益由场景设定)优先传 fixedGain。
+//   · 只认梳上的 lane 0..kMaxLanes−1:越界的 lane 落在 probe 保护范围之外,analyze() 对含越界
+//     lane 的请求直接返回空报告(调用方先 REQUIRE 帧数非零,就会当场红)。
 //   · 运行期文案(toString)一律 ASCII(中文字面量在本机 CP936 上会触发 C4819)。
 
 #include <algorithm>
@@ -147,6 +152,11 @@ inline constexpr double ampToMs(double amp)
 inline double msToDbfs(double ms)
 {
     return ms > 0.0 ? 10.0 * std::log10(2.0 * ms) : -400.0;
+}
+
+inline constexpr bool validLane(int lane)
+{
+    return lane >= 0 && lane < kMaxLanes;
 }
 
 inline constexpr std::int64_t laneUnits(int lane)
@@ -662,6 +672,11 @@ inline CombReport analyze(const Span& span, const std::vector<int>& lanes, const
 {
     CombReport rep;
     if (span.left == nullptr || span.right == nullptr)
+    {
+        return rep;
+    }
+    // 越界 lane 不受 probe 保护,判出来的东西没法信 —— 整个请求返回空报告,不悄悄判一半。
+    if (!std::all_of(lanes.begin(), lanes.end(), [](int id) { return validLane(id); }))
     {
         return rep;
     }

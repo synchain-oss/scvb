@@ -273,22 +273,38 @@ TEST_CASE("PRESENCE 2R alias: carrier is back in phase, the envelope amplitude c
 
 TEST_CASE("PRESENCE block-offset reads (64 to 4096 samples late) are never Present", "[presence]")
 {
-    // 读方按块错位(读成了 d 个样本之前的内容):常见块长与其倍数逐个钉住。四条 lane 同时错位,
-    // 每条的相关都必须掉到 rhoPresent 以下 —— 只靠载波相位就拒掉,不依赖幅度核对。
+    // 读方按块错位(读成了 d 个样本之前的内容):常见块长与其倍数逐个钉住。全梳 16 条 lane
+    // 同时错位,每条的相关都必须掉到 rhoPresent 以下 —— 只靠载波相位就拒掉,不依赖幅度核对。
     constexpr int kFrames = 64;
     const Thresholds th;
+    std::vector<int> ids;
+    for (int id = 0; id < kMaxLanes; ++id)
+    {
+        ids.push_back(id);
+    }
     for (std::int64_t d : {64, 128, 256, 480, 512, 1024, 2048, 3072, 4096})
     {
-        const Bus bus = render(kT0, kFrames * static_cast<std::int64_t>(kFrame),
-                               {shifted(0, d), shifted(1, d), shifted(2, d), shifted(3, d)});
-        const CombReport rep = analyze(bus.span(), {0, 1, 2, 3});
-        REQUIRE(rep.frameStarts.size() == static_cast<std::size_t>(kFrames));
-        for (const LaneReport& late : rep.lanes)
+        std::vector<LaneRender> late;
+        for (int id : ids)
         {
-            INFO("offset " << d << " lane " << late.lane << " maxRho " << maxRho(late) << " minRho " << minRho(late));
-            CHECK(late.count(Verdict::Present) == 0);
-            CHECK(maxRho(late) < th.rhoPresent);
+            LaneRender r = panned(id, 0.16, 0.16);
+            r.shift = d;
+            late.push_back(r);
         }
+        const Bus bus = render(kT0, kFrames * static_cast<std::int64_t>(kFrame), late);
+        const CombReport rep = analyze(bus.span(), ids);
+        REQUIRE(rep.frameStarts.size() == static_cast<std::size_t>(kFrames));
+        REQUIRE(rep.lanes.size() == static_cast<std::size_t>(kMaxLanes));
+        double worst = -1.0;
+        for (const LaneReport& lr : rep.lanes)
+        {
+            INFO("offset " << d << " lane " << lr.lane << " maxRho " << maxRho(lr) << " minRho " << minRho(lr));
+            CHECK(lr.count(Verdict::Present) == 0);
+            CHECK(maxRho(lr) < th.rhoPresent);
+            worst = maxRho(lr) > worst ? maxRho(lr) : worst;
+        }
+        INFO("offset " << d << " worst maxRho over 16 lanes " << worst);
+        CHECK(worst < 0.81);
         CHECK(rep.dirtyFrames(th) == 0);
     }
 }
@@ -450,6 +466,63 @@ TEST_CASE("PRESENCE verdicts ignore gain and pan; the L/R energy ratio tells the
         CHECK(countSource(l1, Source::Mix) == kFrames / 2);
         CHECK(l1.sources.front() == Source::Raw);
         CHECK(l1.sources.back() == Source::Mix);
+    }
+}
+
+TEST_CASE("PRESENCE amplitude options: ampTol < 0 tolerates a gain ramp, fixedGain exposes a constant-factor boost",
+          "[presence]")
+{
+    constexpr int kFrames = 96;
+    const std::int64_t len = kFrames * static_cast<std::int64_t>(kFrame);
+
+    SECTION("gain ramp: default tolerance flags it, ampTol < 0 accepts it")
+    {
+        // lane 0 的增益在整段里从 1.0 线性降到 0.3(被测增益本身随时间变);lane 1 恒定。
+        Bus bus = render(kT0, len, {lane(1)});
+        const auto tone = laneTone(0);
+        for (std::int64_t i = 0; i < len; ++i)
+        {
+            const double g = 1.0 - 0.7 * static_cast<double>(i) / static_cast<double>(len);
+            const double v = 0.7 * g * sampleAt(tone, kT0 + i);
+            bus.left[static_cast<std::size_t>(i)] += static_cast<float>(v);
+            bus.right[static_cast<std::size_t>(i)] += static_cast<float>(v);
+        }
+        const CombReport strict = analyze(bus.span(), {0, 1});
+        REQUIRE(strict.frameStarts.size() == static_cast<std::size_t>(kFrames));
+        // 前提:默认口径下斜坡确实会被当成「幅度不符」。
+        CHECK(laneOf(strict, 0).countWhy(Why::AmpMismatch) > 0);
+
+        Thresholds loose;
+        loose.ampTol = -1.0;
+        const CombReport rep = analyze(bus.span(), {0, 1}, {}, loose);
+        REQUIRE(rep.frameStarts.size() == static_cast<std::size_t>(kFrames));
+        CHECK(laneOf(rep, 0).count(Verdict::Present) == kFrames);
+        CHECK(laneOf(rep, 1).count(Verdict::Present) == kFrames);
+    }
+
+    SECTION("constant 2x boost: invisible to self-calibration, caught by fixedGain")
+    {
+        // lane 0 被常数倍放大(例如原声与混音两条路叠在一起);lane 1 是正常的 0.7 居中。
+        const Bus bus = render(kT0, len, {panned(0, 1.4, 1.4), lane(1)});
+        const CombReport autoRep = analyze(bus.span(), {0, 1});
+        REQUIRE(autoRep.frameStarts.size() == static_cast<std::size_t>(kFrames));
+        // 头注「不覆盖的」那一条:自标定把 2 倍当成了参考,照样全帧 Present。
+        CHECK(laneOf(autoRep, 0).count(Verdict::Present) == kFrames);
+
+        const scvb::testsupport::presence::GainRef known{0.5, 1.4}; // 原声 0.5;混音 0.7 + 0.7
+        const CombReport rep = analyze(bus.span(), {0, 1}, {}, Thresholds{}, &known);
+        REQUIRE(rep.frameStarts.size() == static_cast<std::size_t>(kFrames));
+        CHECK(laneOf(rep, 0).countWhy(Why::AmpMismatch) == kFrames);
+        CHECK(laneOf(rep, 1).count(Verdict::Present) == kFrames);
+    }
+
+    SECTION("lanes outside the comb are refused with an empty report")
+    {
+        const Bus bus = render(kT0, len, {lane(0)});
+        const CombReport rep = analyze(bus.span(), {0, kMaxLanes});
+        CHECK(rep.frameStarts.empty());
+        CHECK(rep.lanes.empty());
+        CHECK(analyze(bus.span(), {-1}).lanes.empty());
     }
 }
 
