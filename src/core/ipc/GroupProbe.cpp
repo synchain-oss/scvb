@@ -32,6 +32,15 @@ std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs
         {
             continue; // 段不存在 → 该组离线(不创建,只读探测;契约 §2.4 FILE_MAP_READ 最小权限)
         }
+        // 尺寸校验(B 线 M03:由退役的 RegistryProbe 迁来,那是它比本函数多出的唯一一条判据):
+        // 段必须至少容纳 RegistryHeader + 15 个 InputSlot + OutputSlot,才允许读头部与 OutputSlot。
+        // 不足 = 旧版本 / 异常残段 → 该组离线。必须排在读 magic 之前 —— 不足 64 字节时连头部都在界外。
+        // view.size 由各后端回填真实段大小(Win32 v6 GetFileSizeEx / VirtualQuery;InProcess = 缓冲长度)。
+        if (view.base == nullptr || view.size < kOutputSlotOffset + sizeof(OutputSlot))
+        {
+            backend.unmap(view);
+            continue;
+        }
         const auto* header = static_cast<const RegistryHeader*>(view.base);
         // 只读 attach 校验(PR#54 R8):checkHeaderReadOnly 取 const 引用、严格只读(绝不写 view/头部),
         // 不经 initHeader(其 allowOverwrite=true 分支会写)—— FILE_MAP_READ 只读映射上任何写都会

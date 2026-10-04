@@ -22,6 +22,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/types.h>
+#include <unistd.h> // getpid / gethostname
+#if defined(__APPLE__)
+#include <sys/sysctl.h> // sysctl(KERN_PROC_PID) -> kinfo_proc.kp_proc.p_starttime
+#endif
 #endif
 
 // T21:sidecar 读写 + owner.lock + copy-on-write(04 §5.4/§5.5/§5.6)。JUCE-free。
@@ -297,6 +303,28 @@ ProcessIdentity currentProcessIdentity()
     DWORD hostLen = static_cast<DWORD>(sizeof(host));
     if (::GetComputerNameA(host, &hostLen) != 0)
         id.hostName.assign(host, hostLen);
+#else
+    // [B 线 M03] POSIX:此前这里什么都不填(pid=0),isOwnerLockAlive 遇 pid==0 一律判死 →
+    // mac 上 owner.lock 的 copy-on-write 保护形同虚设。口径与 Windows 分支逐项对齐:
+    // pid = getpid();processStartEpochMs = 进程起始时刻(epoch ms,同一进程两次取值相同,
+    // 换一个进程即使 pid 复用也不同);hostName = gethostname()。
+    id.pid = static_cast<std::uint64_t>(::getpid());
+#if defined(__APPLE__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, static_cast<int>(::getpid())};
+    struct kinfo_proc info;
+    std::memset(&info, 0, sizeof(info));
+    std::size_t infoLen = sizeof(info);
+    if (::sysctl(mib, 4, &info, &infoLen, nullptr, 0) == 0 && infoLen >= sizeof(info))
+    {
+        // p_starttime 是 timeval(自 1970-01-01 的秒 + 微秒),与 Windows 分支同为 epoch ms。
+        const struct timeval& st = info.kp_proc.p_starttime;
+        id.processStartEpochMs =
+            static_cast<std::uint64_t>(st.tv_sec) * 1000ull + static_cast<std::uint64_t>(st.tv_usec) / 1000ull;
+    }
+#endif
+    char host[256]{};
+    if (::gethostname(host, sizeof(host) - 1) == 0)
+        id.hostName.assign(host); // 末字节恒为 0:截断时 gethostname 不保证补 NUL
 #endif
     return id;
 }

@@ -84,7 +84,7 @@ D5 的三条理由(ADR-002 细则):
 | `src/core/dsp/`(KWeighting / PanMath / ParamSmoother) | ANALYSIS | ADR-009/010 |
 | `src/core/engine/`(AuthorityMode / CurveEvaluator / DspArbiter / PlayheadShot / VersionStore) | ARCHITECTURE(§7) | ADR-004/005/006 |
 | `src/core/input/`(InputSession / OutputStage) | ARCHITECTURE(§1) | ADR-002 |
-| `src/core/ipc/`(AudioRing / CtrlPlane / FeatRing / GroupProbe / ISegmentBackend / Registry / RegistryProbe / SegmentBackendInProcess / SegmentBackendWin32 / SegmentLayout) | IPC_CONTRACT | ADR-002 |
+| `src/core/ipc/`(AudioRing / CtrlPlane / FeatRing / GroupProbe / ISegmentBackend / PlatformSegmentBackend / Registry / SegmentBackendInProcess / SegmentBackendWin32 / SegmentLayout) | IPC_CONTRACT | ADR-002 |
 | `src/core/output/`(BusXfade / IMixSource / MixMath / OutputSession / ShmRingMixSource) | ARCHITECTURE(§1) | ADR-002 |
 | `src/core/state/`(FeaturesCodec / InputStateCodec / OutputStateCodec / SegmentEdit / SidecarStore / StateCodec / StateMigration) | STATE_SCHEMA | ADR-005/007 |
 
