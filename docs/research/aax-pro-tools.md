@@ -79,7 +79,7 @@
    - Avid 2026-03 给一位**免费插件**作者的回信原话是「You don't need a commercial license, you only need to sign your plugin using the PACE signing tools」【二手,[note.com 记录](https://note.com/kawato3/n/ne11473420ad5)】。
    - 作者本人也猜是因为插件免费才豁免的。**没有任何来源专门讲 GPL 或开源项目能不能拿到签名资质**【已核实「查无来源」】。
 4. **不需要交出签名凭据**:
-   - FSF FAQ 的 `#GiveUpKeys` 写明,只有把 GPL 软件装进 User Product(消费类硬件)交付,并且由硬件校验签名时,才必须交出签名密钥【已核实·一手,[GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html#GiveUpKeys)】。
+   - FSF FAQ 的 `#GiveUpKeys` 写明,只有把 GPL 软件装进 User Product(消费类硬件)交付,并且由硬件校验签名时,才必须交出签名密钥【已核实·一手,GPL FAQ,`https://www.gnu.org/licenses/gpl-faq.html#GiveUpKeys`(CI 链接检查对该站点超时,故不做成链接)】。
    - SCVB 是可下载的纯软件,所以不需要公开 iLok 或 PACE 凭据【推测】。
 
 ### 1.3 注意事项
@@ -686,7 +686,7 @@ Windows 和 mac 各跑一轮,约 1.5–2 天,再加 1 天【推测】。
 - PACE 云签名「Cloud 2 Cloud」:[paceap.com](https://paceap.com/cloud-aax-code-signing-with-ci-build-systems/)
 - PACE 文档站(要登录):`https://docs.paceap.com/`
 - Pro Tools 系统要求:[kb.avid.com](https://kb.avid.com/pkb/articles/compatibility/Pro-Tools-System-Requirements)
-- FSF GPL FAQ:[GiveUpKeys](https://www.gnu.org/licenses/gpl-faq.html#GiveUpKeys)
+- FSF GPL FAQ:`https://www.gnu.org/licenses/gpl-faq.html#GiveUpKeys`
 - Apple:[Developer ID](https://developer.apple.com/developer-id/);[macOS 15 放行方式变化](https://developer.apple.com/news/?id=saqachfa);[会员对比](https://developer.apple.com/support/compare-memberships/)
 - GitHub 依赖缓存的安全说明:[docs.github.com](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 
