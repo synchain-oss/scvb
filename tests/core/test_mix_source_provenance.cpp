@@ -12,15 +12,17 @@
 //    样本原样拷出来,oracle 逐帧解码,和「这一块请求的位置」逐字段比。
 // 2. 写方模型(WriterModel):逐条照 Input 的写环协议生成「微操作」序列,每一步都标了
 //    源码行号(以 21d4520 为准),供评审逐条核对:
-//      · InputProcessor.cpp:264-286  跳变判定:t0 != expectedNext_ 且(在播 或 t0 != lastT0_)⇒ bumpEpoch
-//                                    (startRun 只管特征段,不进本模型);lastT0_/expectedNext_ 记账
-//      · InputProcessor.cpp:288-298  按段(SL-523,段长 = preparedMaxBlock_)逐段 AudioRing::write
+//      · InputProcessor.cpp:264-274  跳变判定:t0 != expectedNext_ 且(在播 或 t0 != lastT0_)⇒ bumpEpoch
+//                                    (startRun 只管特征段,不进本模型)
+//      · InputProcessor.cpp:285-286  lastT0_ = t0; expectedNext_ = t0 + nRender(nRender = numIn,
+//                                    OutputStage.h:39-50)
+//      · InputProcessor.cpp:291-298  按段(SL-523,段长 = preparedMaxBlock_)逐段 AudioRing::write
 //      · InputProcessor.cpp:226-253  负 t0 分支:跨零点那一段走 writeTailFromZero,其后的正段只补写环
 //      · InputProcessor.cpp:141-162  writeTailFromZero:0 != expectedNext_ 才换代(:152-157),写 [0, 段尾)
 //      · InputProcessor.cpp:99-100   每次 prepareToPlay 把两个哨兵复位成 lowest()(下一块必换代)
-//      · AudioRing.cpp:39-49         先写数据、后 release 发布写头(write_head = 段尾)
+//      · AudioRing.cpp:33-50         AudioRing::write:先写数据、后 release 发布写头(write_head = 段尾)
 //      · AudioRing.cpp:52-58         bumpEpoch = epoch.fetch_add(1, release)
-//      · InputSession.cpp:430-436    新建段:几何写定 → write_head 归零 → epoch+1
+//      · InputSession.cpp:428-437    新建段:几何写定 → write_head 归零 → epoch+1(:469 发布写方快照)
 //      · InputSession.cpp:460-467    attach 到存活旧段且几何不符:同上一条路;几何相符则一个字节都不写
 //      · InputSession.cpp:507-521    rebuildAudioGeometry(布局变了才走,:59-65):几何 → w=0 → epoch+1
 //                                    → 重发布写方绑定快照
@@ -30,7 +32,7 @@
 // 3. 读方:被测读方 = 现行 scvb::output::ShmRingMixSource(A-5 会改它,所有调用只经
 //    readUnderTest 一处);LegacyReader = 现行 bind()/read() 的测试内原样副本(来源见类头注),
 //    给 A-5 之后做差分用。读方侧的 Output 行为照 OutputProcessor.cpp:820-831(自身时间线代号
-//    podEpoch)与 :869-875(负 t0 整段直通、不读环)建模;几何快照刷新照 OutputSession.cpp:190-205
+//    podEpoch)与 :870-875(负 t0 整段直通、不读环)建模;几何快照刷新照 OutputSession.cpp:190-205
 //    (按值比对,变了才重绑)。
 // 4. 调度族(见下方各 family 函数):同步;写方领先的循环;回跳与前跳;写方领先时从停调恢复;
 //    Δ 内两次定位(含第一次往前跳将近一个环距);接近一个环距的单次跳变;读写目标不一致;
@@ -53,7 +55,8 @@
 // (回绕次数、读次数、oracle 确实记录到可读数据 / 危险状态)。修复卡(A-5)去掉标记后转绿。
 // 设计稿 LS-13 列为「可能出现 WRONG」的几族(Δ 内两次定位、接近一个环距的跳变)在现行代码上
 // 实测安全的,写成普通用例(A-5 改读方时必须保持);只有构造出真实危险状态并实测出错帧的才打
-// [!shouldfail]。
+// [!shouldfail]。同一族里只有部分格出错时按格拆开(RunCfg::knownBad):[!shouldfail] 只收实测
+// 出错的格,其余格进普通用例 —— 否则族里现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
 //
 // 全部调度用固定种子,结果确定;不起线程(x86 上的双线程压力格测不出 ARM 内存序问题,
 // 本卡不做,见 PR 说明)。运行期文案一律 ASCII(本机 CP936 上中文字面量会触发 C4819)。
@@ -298,7 +301,7 @@ public:
     {
     }
 
-    // 新建段:InputSession::createSegments → initHeader 的 initData(InputSession.cpp:430-436):
+    // 新建段:InputSession::createSegments → initHeader 的 initData(InputSession.cpp:428-437):
     // 几何写定 → write_head 归零 → epoch+1;随后 audioRing_.bind(:469)发布写方绑定快照。
     void createFresh(u32 channels, std::deque<WOp>& q)
     {
@@ -396,6 +399,8 @@ public:
             genOpen_ = true;
             break;
         case OpKind::kWrite: {
+            // 逐帧循环用裸指针:Debug 构建里 vector::operator[] 带越界检查,这里是全文件最热的几处之一。
+            float* data = ring_.data.data();
             const u32 mask = kRingFrames - 1;
             for (int i = 0; i < o.n; ++i)
             {
@@ -403,8 +408,7 @@ public:
                 const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(p)) & mask);
                 for (u32 c = 0; c < o.channels; ++c)
                 {
-                    const std::size_t idx = slot * o.channels + c;
-                    ring_.data[idx] = encodeTag(Tag{p, c, o.channels, o.writer});
+                    data[slot * o.channels + c] = encodeTag(Tag{p, c, o.channels, o.writer});
                 }
             }
             unpublished_.push_back(o);
@@ -419,6 +423,7 @@ public:
             h.write_head_samples.store(static_cast<u64>(o.pos), std::memory_order_release);
             for (const WOp& wr : unpublished_)
             {
+                int64_t* writtenAt = ring_.writtenAt.data();
                 const u32 mask = kRingFrames - 1;
                 for (int i = 0; i < wr.n; ++i)
                 {
@@ -426,7 +431,7 @@ public:
                         static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(wr.pos + i)) & mask);
                     for (u32 c = 0; c < wr.channels; ++c)
                     {
-                        ring_.writtenAt[slot * wr.channels + c] = wr.counter + i;
+                        writtenAt[slot * wr.channels + c] = wr.counter + i;
                     }
                 }
             }
@@ -541,6 +546,9 @@ private:
 //   · read()  = src/core/output/ShmRingMixSource.cpp:75-167
 //   · 成员与初值 = src/core/output/ShmRingMixSource.h:59-85
 // 只改了与逻辑无关的三处:类名、read() 不再是 override、gapCount()/stallFailCount() 就地内联。
+// 另抄了两个只读 getter:acquire()(ShmRingMixSource.h:44)与 channels()(ShmRingMixSource.cpp:45-49),
+// 让旧读方一侧的几何刷新与记账都用它**自己**的快照,不借被测读方的(A-5 改被测读方的 bind /
+// channels() 语义时,旧读方这条下界不跟着变)。
 // A-5 会重写 ShmRingMixSource::read;本副本留作「旧读方」,差分判据拿它当下界。
 // 现在两者逐块等价,由「legacy pin」用例钉住(A-5 改读方时删掉那一条,保留 ⊇ 差分)。
 namespace legacy
@@ -677,6 +685,12 @@ public:
 
     u32 gapCount() const noexcept { return gapCount_.load(std::memory_order_relaxed); }
     u32 stallFailCount() const noexcept { return stallFailCount_.load(std::memory_order_relaxed); }
+    const AudioRingBinding* acquire() const noexcept { return binding_.load(std::memory_order_acquire); }
+    u32 channels() const noexcept
+    {
+        const AudioRingBinding* b = binding_.load(std::memory_order_acquire);
+        return b != nullptr ? b->geo.channels : 0;
+    }
 
 private:
     std::atomic<const AudioRingBinding*> binding_{nullptr}; // [M] 写 / [A] 读
@@ -854,6 +868,9 @@ struct RunCfg
     int64_t refreshPeriod = 0;
     int64_t readerEnd = 0; // 读方走带计数上界
     u32 seed = 1;
+    // 按构造,现行实现在这一格上预期失败。族里只有部分格会红时,[!shouldfail] 用例只收这些格,
+    // 其余格进普通用例 —— 否则族里现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
+    bool knownBad = false;
 };
 
 struct LapStat
@@ -878,6 +895,7 @@ struct ReaderStat
 struct RunResult
 {
     std::string name;
+    bool knownBad = false; // 抄自 RunCfg::knownBad
     ReaderStat cur; // 被测读方 = 现行 scvb::output::ShmRingMixSource
     ReaderStat legacy; // LegacyReader
     std::vector<LapStat> laps; // 按读方自身跳变(podEpoch)切圈,统计被测读方
@@ -908,6 +926,8 @@ bool oracleAvailable(const Ring& r, int64_t cR, int64_t t0, int n, u32 nch, u32 
     {
         return false;
     }
+    const float* data = r.data.data();
+    const int64_t* writtenAt = r.writtenAt.data();
     const u32 mask = kRingFrames - 1;
     for (int i = 0; i < n; ++i)
     {
@@ -915,9 +935,12 @@ bool oracleAvailable(const Ring& r, int64_t cR, int64_t t0, int n, u32 nch, u32 
         for (u32 c = 0; c < nch; ++c)
         {
             const std::size_t idx = slot * nch + c;
+            if (writtenAt[idx] < cR + i)
+            {
+                return false;
+            }
             Tag t;
-            if (!decodeTag(r.data[idx], t) || t.pos != t0 + i || t.ch != c || t.layout != nch || t.writer != writer ||
-                r.writtenAt[idx] < cR + i)
+            if (!decodeTag(data[idx], t) || t.pos != t0 + i || t.ch != c || t.layout != nch || t.writer != writer)
             {
                 return false;
             }
@@ -933,12 +956,13 @@ bool blockHasLapAlias(const Ring& r, int64_t t0, int n, u32 nch)
     {
         return false;
     }
+    const float* data = r.data.data();
     const u32 mask = kRingFrames - 1;
     for (int i = 0; i < n; ++i)
     {
         const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(t0 + i)) & mask);
         Tag t;
-        if (decodeTag(r.data[slot * nch], t) && t.layout == nch && t.pos != t0 + i && ((t.pos - (t0 + i)) % kRing) == 0)
+        if (decodeTag(data[slot * nch], t) && t.layout == nch && t.pos != t0 + i && ((t.pos - (t0 + i)) % kRing) == 0)
         {
             return true;
         }
@@ -976,7 +1000,9 @@ int countWrongFrames(const float* dst, int64_t t0, int n, u32 nch, u32 writer, s
     return wrong;
 }
 
-void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst, int64_t t0, int n, u32 nch, u32 writer)
+// badKnown >= 0:调用方已经算好本块错帧数(两个读方交出的样本逐位相同),不再逐帧解码。
+void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst, int64_t t0, int n, u32 nch, u32 writer,
+             int badKnown = -1)
 {
     ++s.reads;
     s.framesRead += n;
@@ -999,7 +1025,9 @@ void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst,
     if (ok)
     {
         ++s.ok;
-        const int bad = countWrongFrames(dst, t0, n, nch, writer, s.firstWrong.empty() ? &s.firstWrong : nullptr);
+        const int bad = badKnown >= 0
+                            ? badKnown
+                            : countWrongFrames(dst, t0, n, nch, writer, s.firstWrong.empty() ? &s.firstWrong : nullptr);
         if (bad > 0)
         {
             ++s.wrongReads;
@@ -1008,10 +1036,12 @@ void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst,
     }
 }
 
-// 读方 [M] 线程的几何刷新(OutputSession.cpp:190-205):快照与段头不一致才重绑。两读方同时刷。
-void refreshGeometry(scvb::output::ShmRingMixSource& cur, LegacyReader& leg, Ring& ring)
+// 读方 [M] 线程的几何刷新(OutputSession.cpp:190-205):快照与段头不一致才重绑。两个读方各按自己的
+// 快照判定、各自重绑。
+template<typename Reader>
+void refreshGeometry(Reader& reader)
 {
-    const scvb::AudioRingBinding* b = cur.acquire();
+    const scvb::AudioRingBinding* b = reader.acquire();
     if (b == nullptr || !b->bound || b->header == nullptr || b->data == nullptr)
     {
         return;
@@ -1021,8 +1051,7 @@ void refreshGeometry(scvb::output::ShmRingMixSource& cur, LegacyReader& leg, Rin
     {
         return;
     }
-    cur.bind(&ring.header, ring.data.data());
-    leg.bind(&ring.header, ring.data.data());
+    reader.bind(b->header, b->data);
 }
 
 Ring& sharedRing()
@@ -1052,6 +1081,7 @@ RunResult runOne(const RunCfg& cfg)
 
     RunResult res;
     res.name = cfg.name;
+    res.knownBad = cfg.knownBad;
     Ring& ring = sharedRing();
     resetRing(ring);
     WriterModel w(ring, cfg.writerMaxBlock, cfg.chunk);
@@ -1196,11 +1226,13 @@ RunResult runOne(const RunCfg& cfg)
         {
             if (cfg.refreshPeriod == 0)
             {
-                refreshGeometry(cur, leg, ring);
+                refreshGeometry(cur);
+                refreshGeometry(leg);
             }
             else if (cR >= nextRefresh)
             {
-                refreshGeometry(cur, leg, ring);
+                refreshGeometry(cur);
+                refreshGeometry(leg);
                 while (nextRefresh <= cR)
                 {
                     nextRefresh += cfg.refreshPeriod;
@@ -1227,8 +1259,10 @@ RunResult runOne(const RunCfg& cfg)
             }
 
             const u32 nch = cur.channels();
+            const u32 nchL = leg.channels();
             const u32 inst = w.appliedInstance();
             const bool avail = oracleAvailable(ring, cR, t0, len, nch, inst);
+            const bool availL = nchL == nch ? avail : oracleAvailable(ring, cR, t0, len, nchL, inst);
             const u64 wNow = ring.header.write_head_samples.load(std::memory_order_acquire);
             if (!w.genOpen() && w.genStart() > t0 && wNow >= static_cast<u64>(t0 + len))
             {
@@ -1242,7 +1276,8 @@ RunResult runOne(const RunCfg& cfg)
             {
                 ++res.staleSnapshotReads;
             }
-            if (blockHasLapAlias(ring, t0, len, nch))
+            // 整块「可读」意味着每个环槽都是本位置的数据,不可能有别圈的同槽数据,不必再扫。
+            if (!avail && blockHasLapAlias(ring, t0, len, nch))
             {
                 ++res.lapAliasReads;
             }
@@ -1251,8 +1286,8 @@ RunResult runOne(const RunCfg& cfg)
                 ++res.partialBlockReads;
             }
 
-            std::fill(dstCur.begin(), dstCur.end(), 0.0f);
-            std::fill(dstLeg.begin(), dstLeg.end(), 0.0f);
+            std::memset(dstCur.data(), 0, dstCur.size() * sizeof(float));
+            std::memset(dstLeg.data(), 0, dstLeg.size() * sizeof(float));
             const u32 gapC0 = cur.gapCount();
             const u32 stallC0 = cur.stallFailCount();
             const u32 gapL0 = leg.gapCount();
@@ -1261,8 +1296,13 @@ RunResult runOne(const RunCfg& cfg)
             const bool okL = leg.read(t0, dstLeg.data(), len);
 
             LapStat* lap = res.laps.empty() ? nullptr : &res.laps.back();
+            const int64_t wrongBefore = res.cur.wrongFrames;
             account(res.cur, lap, okC, avail, dstCur.data(), t0, len, nch, inst);
-            account(res.legacy, nullptr, okL, avail, dstLeg.data(), t0, len, nch, inst);
+            const int badC = static_cast<int>(res.cur.wrongFrames - wrongBefore);
+            const bool sameBytes = nchL == nch && std::memcmp(dstCur.data(), dstLeg.data(),
+                                                              static_cast<std::size_t>(len) * nch * sizeof(float)) == 0;
+            account(res.legacy, nullptr, okL, availL, dstLeg.data(), t0, len, nchL, inst,
+                    (okL && okC && sameBytes) ? badC : -1);
             if (okL && !okC)
             {
                 ++res.legacyOnlyOk;
@@ -1273,8 +1313,7 @@ RunResult runOne(const RunCfg& cfg)
             }
             const bool sameCounts = (cur.gapCount() - gapC0) == (leg.gapCount() - gapL0) &&
                                     (cur.stallFailCount() - stallC0) == (leg.stallFailCount() - stallL0);
-            if (okC != okL || !sameCounts ||
-                std::memcmp(dstCur.data(), dstLeg.data(), static_cast<std::size_t>(len) * nch * sizeof(float)) != 0)
+            if (okC != okL || !sameCounts || !sameBytes)
             {
                 ++res.pinMismatches;
             }
@@ -1517,18 +1556,19 @@ std::vector<RunResult> runLeadLoopFamily()
 
 // --- 写方领先时的定位(LS-6 回跳 / LS-7 前跳)--------------------------------------------------
 // 同一份脚本,走带计数 cs 处定位到 T(cs) ± d。写方先到 cs、先换代并往前写;读方还要再放 Δ 的
-// 旧位置才轮到它自己跳。
-RunCfg makeSeekCfg(int64_t lead, int64_t d, bool back, const char* tag)
+// 旧位置才轮到它自己跳。定位后默认再放 d + Δ + 60000(回跳的格要放回原位置之后);tail >= 0 时
+// 只放 tail(只关心定位前后那一段的格用它省时间)。
+RunCfg makeSeekCfg(int64_t lead, int64_t d, bool back, const char* tag, int64_t tail = -1)
 {
     RunCfg cfg;
     const int64_t p0 = 1000000;
-    const int64_t cs = 300000;
+    const int64_t cs = 100000;
     const int64_t here = p0 + cs;
     const int64_t target = back ? here - d : here + d;
     cfg.writer.seg(0, p0).seg(cs, target);
     cfg.reader = cfg.writer;
     cfg.lead = lead;
-    cfg.readerEnd = cs + d + lead + 60000;
+    cfg.readerEnd = cs + (tail >= 0 ? tail : d + lead + 60000);
     std::ostringstream os;
     os << tag << " lead=" << lead << " d=" << (back ? "-" : "+") << d;
     cfg.name = os.str();
@@ -1540,12 +1580,16 @@ std::vector<RunResult> runLeadSeekFamily(bool back)
     std::vector<RunResult> out;
     for (const int64_t lead : kLeads)
     {
-        // 起播位置 1000000、走带计数 300000 处定位:回跳 200000 落在放过的区间里,回跳 400000 落在
-        // 从没放过的位置(环里是别处的旧内容);前跳 200000 同样落在没放过的位置。
-        const int64_t ds[] = {lead / 2, 2 * lead + 3000, 200000, 400000};
+        // 起播位置 1000000、走带计数 100000 处定位:回跳 80000 落在放过的区间里,回跳 400000 落在
+        // 从没放过的位置;前跳同样落在没放过的位置。
+        // 回跳超过 Δ/2 时,定位目标落在读方锚点(读方在旧位置上看到换代时的 t0)之前 —— 现行实现
+        // 读不到,直到读方重新走过锚点(LS-6),这几格 knownBad;回跳 Δ/2 落在锚点之后,不丢。
+        const int64_t ds[] = {lead / 2, 2 * lead + 3000, 80000, 400000};
         for (const int64_t d : ds)
         {
-            out.push_back(runOne(makeSeekCfg(lead, d, back, back ? "lead-seek-back" : "lead-seek-fwd")));
+            RunCfg cfg = makeSeekCfg(lead, d, back, back ? "lead-seek-back" : "lead-seek-fwd");
+            cfg.knownBad = back && d > lead / 2;
+            out.push_back(runOne(cfg));
         }
     }
     return out;
@@ -1593,7 +1637,7 @@ std::vector<RunResult> runTwoSeekFamily()
             {
                 RunCfg cfg;
                 const int64_t p0 = 1000000;
-                const int64_t c1 = 300000;
+                const int64_t c1 = 100000;
                 const int64_t c2 = c1 + lead / 2;
                 const int64_t s1 = p0 + c1 + d1;
                 const int64_t s2 = s1 + (c2 - c1) + d2;
@@ -1628,7 +1672,7 @@ std::vector<RunResult> runTwoSeekAcrossRingFamily()
             {
                 RunCfg cfg;
                 const int64_t p0 = 1000000;
-                const int64_t c1 = 300000;
+                const int64_t c1 = 100000;
                 const int64_t h = lead / 2;
                 const int64_t c2 = c1 + h;
                 const int64_t x = p0 + c1;
@@ -1650,7 +1694,7 @@ std::vector<RunResult> runTwoSeekAcrossRingFamily()
 }
 
 // --- 读写目标不一致(LS-8 / LS-13)------------------------------------------------------------------
-// 同一次定位(从 1300000 回跳到 400000,那里从没放过),Output 拿到的目标比 Input 的偏 ε(宿主
+// 同一次定位(从 1100000 回跳到 400000,那里从没放过),Output 拿到的目标比 Input 的偏 ε(宿主
 // 起播时间戳怪癖、各插件取到的位置不一致)。分两支:
 //   · 同块跳变(lead = 0):读方在自己跳变的那一块观测到换代,锚在 S+ε;
 //   · 写方领先(lead > 0):读方在还没跳的旧位置上先观测到换代,锚在旧位置 —— 现行实现里
@@ -1670,7 +1714,7 @@ std::vector<RunResult> runMismatchFamily(bool leading)
         {
             RunCfg cfg;
             const int64_t p0 = 1000000;
-            const int64_t cs = 300000;
+            const int64_t cs = 100000;
             const int64_t s = 400000;
             cfg.writer.seg(0, p0).seg(cs, s);
             cfg.reader.seg(0, p0).seg(cs, s + eps);
@@ -1678,6 +1722,9 @@ std::vector<RunResult> runMismatchFamily(bool leading)
             cfg.readerEnd = cs + 100000;
             std::ostringstream os;
             os << "mismatch lead=" << lead << " eps=" << eps;
+            // 同块跳变、Output 目标在写方目标之前(ε < 0):[S+ε, S) 从没写过,而读方锚在 S+ε、写头已
+            // 覆盖 ⇒ 现行实现交出没写过的数据。ε > 0 时读方要的位置写方都写过(或还没覆盖到就读不到)。
+            cfg.knownBad = !leading && eps < 0;
             cfg.name = os.str();
             out.push_back(runOne(cfg));
         }
@@ -1747,11 +1794,13 @@ std::vector<RunResult> runNearRingFamily()
     std::vector<RunResult> out;
     for (const int64_t lead : kLeads)
     {
-        out.push_back(runOne(makeSeekCfg(lead, kRing - lead, true, "near-ring-back")));
-        out.push_back(runOne(makeSeekCfg(lead, kRing - lead / 2, true, "near-ring-back")));
-        out.push_back(runOne(makeSeekCfg(lead, kRing - 3 * lead, false, "near-ring-fwd")));
-        out.push_back(runOne(makeSeekCfg(lead, kRing - 2 * lead - 1000, false, "near-ring-fwd")));
-        out.push_back(runOne(makeSeekCfg(lead, kRing - lead, false, "near-ring-fwd")));
+        // 危险状态只出现在定位前后各约 Δ 的那一段,定位后放 3Δ + 60000 就够。
+        const int64_t tail = 3 * lead + 60000;
+        out.push_back(runOne(makeSeekCfg(lead, kRing - lead, true, "near-ring-back", tail)));
+        out.push_back(runOne(makeSeekCfg(lead, kRing - lead / 2, true, "near-ring-back", tail)));
+        out.push_back(runOne(makeSeekCfg(lead, kRing - 3 * lead, false, "near-ring-fwd", tail)));
+        out.push_back(runOne(makeSeekCfg(lead, kRing - 2 * lead - 1000, false, "near-ring-fwd", tail)));
+        out.push_back(runOne(makeSeekCfg(lead, kRing - lead, false, "near-ring-fwd", tail)));
     }
     return out;
 }
@@ -1772,8 +1821,8 @@ std::vector<RunResult> runInterleaveFamily(bool seekBack)
             if (seekBack)
             {
                 // 回跳到从没放过、且离旧写头不足一个环距的位置(旧写头仍「覆盖」它)
-                cfg.writer.seg(0, 1000000).seg(300000, 900000);
-                cfg.readerEnd = 450000;
+                cfg.writer.seg(0, 1000000).seg(100000, 900000);
+                cfg.readerEnd = 250000;
             }
             else
             {
@@ -1784,6 +1833,8 @@ std::vector<RunResult> runInterleaveFamily(bool seekBack)
             cfg.lead = lead;
             cfg.leadJitter = lead / 4;
             cfg.micro = seed <= 3 ? Micro::kRandomPrefix : Micro::kCutAfterBump;
+            // 同块回跳(Δ = 0)且读时写方恰好换代了还没写:读方锚在自己的 t0,上一代写头仍覆盖这一块。
+            cfg.knownBad = seekBack && lead == 0 && cfg.micro == Micro::kCutAfterBump;
             cfg.chunk = 256;
             cfg.seed = seed;
             std::ostringstream os;
@@ -1974,6 +2025,9 @@ TEST_CASE("PROVENANCE writer model: its ops leave the same ring bytes as the rea
     // (一段 kWrite… + kPublish ⇒ AudioRing::write,kBump ⇒ AudioRing::bumpEpoch;几何改写两步照
     // InputSession.cpp:517-521 直写段头后重绑)。两环逐字节相同 = 模型的寻址、声道交错、写头发布值、
     // 换代都与真实写侧一致。chunk = 100 再跑一遍:写数据切成多段后结果不变。
+    // 注:B 环在 kGeometry 那一步就重绑,真实代码是在 epoch+1 之后才重发布写方快照(InputSession.cpp:521)。
+    // 两步之间没有写操作,字节结果相同 —— 所以这条用例**不**验证「几何 → w=0 → epoch+1」三步的顺序;
+    // 顺序由下一条用例的 kinds() 逐项钉住。
     for (const int chunk : {0, 100})
     {
         INFO("chunk=" << chunk);
@@ -2104,7 +2158,7 @@ TEST_CASE("PROVENANCE writer model: jump detection and segment writes follow Inp
         }
     };
 
-    // InputSession.cpp:430-436:新段 = 几何 → w=0 → epoch+1。
+    // InputSession.cpp:428-437:新段 = 几何 → w=0 → epoch+1。
     wm.createFresh(2, q);
     CHECK(kinds() == std::vector<OpKind>{OpKind::kGeometry, OpKind::kHeadZero, OpKind::kBump});
     drainWith(wm);
@@ -2254,8 +2308,22 @@ TEST_CASE("PROVENANCE oracle: the checks flag a planted stale frame, a wrong lay
 //   · 「every lap loses at most 1024 readable frames」= 可用性(按读方自身跳变切圈)。
 //   · [!shouldfail] = 现行实现预期失败;配同名「- precondition」普通用例 REQUIRE 场景确实跑到。
 //     修复卡去掉标记后,这条转成普通用例必须绿。
+//   · 族里只有部分格会红时按格拆开(RunCfg::knownBad):shouldfail 只收预期红的格,其余格进普通用例。
 namespace
 {
+std::vector<RunResult> cells(const std::vector<RunResult>& fam, bool knownBad)
+{
+    std::vector<RunResult> out;
+    for (const auto& r : fam)
+    {
+        if (r.knownBad == knownBad)
+        {
+            out.push_back(r);
+        }
+    }
+    return out;
+}
+
 void checkNoWrongFrames(const std::vector<RunResult>& fam, bool alsoLegacy)
 {
     for (const auto& r : fam)
@@ -2370,17 +2438,21 @@ TEST_CASE("PROVENANCE writer-leading back seeks (LS-6): no wrong frames", "[mix]
     checkNoWrongFrames(leadSeekBackFamily(), true);
 }
 
-TEST_CASE("PROVENANCE writer-leading back seeks (LS-6): every lap loses at most 1024 readable frames",
+// 回跳超过 Δ/2:目标落在读方锚点之前,现行实现要等读方重新走过锚点才读得到。
+TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) past the reader's anchor: every lap loses at most 1024 "
+          "readable frames",
           "[mix][provenance][!shouldfail]")
 {
-    checkLapLoss(leadSeekBackFamily());
+    checkLapLoss(cells(leadSeekBackFamily(), true));
 }
 
-TEST_CASE("PROVENANCE writer-leading back seeks (LS-6): every lap loses at most 1024 readable frames - precondition",
+TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) past the reader's anchor: every lap loses at most 1024 "
+          "readable frames - precondition",
           "[mix][provenance]")
 {
     const std::vector<RunResult>& fam = leadSeekBackFamily();
     REQUIRE(fam.size() == 12u);
+    REQUIRE(cells(fam, true).size() == 9u);
     for (const auto& r : fam)
     {
         INFO(summary(r));
@@ -2389,6 +2461,16 @@ TEST_CASE("PROVENANCE writer-leading back seeks (LS-6): every lap loses at most 
         REQUIRE(r.leadObservedReads > 0);
         REQUIRE(r.laps.back().availFrames > 0);
     }
+}
+
+// 回跳 Δ/2:目标仍在读方锚点之后,现行实现不丢(A-5 必须保持)。
+TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) within half the lead: every lap loses at most 1024 readable "
+          "frames",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult> safe = cells(leadSeekBackFamily(), false);
+    REQUIRE(safe.size() == 3u);
+    checkLapLoss(safe);
 }
 
 TEST_CASE("PROVENANCE writer-leading forward seeks (LS-7): no wrong frames and every lap loses at most 1024 "
@@ -2475,26 +2557,44 @@ TEST_CASE("PROVENANCE two seeks within the lead, the first one nearly a ring for
 }
 
 // --- 读写目标不一致 --------------------------------------------------------------------------------
-TEST_CASE("PROVENANCE reader/writer target mismatch in the same block: no wrong frames",
+TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output target before the writer's: no wrong "
+          "frames",
           "[mix][provenance][!shouldfail]")
 {
-    checkNoWrongFrames(mismatchSyncFamily(), false);
+    checkNoWrongFrames(cells(mismatchSyncFamily(), true), false);
 }
 
-TEST_CASE("PROVENANCE reader/writer target mismatch in the same block: no wrong frames - precondition",
+TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output target before the writer's: no wrong "
+          "frames - precondition",
           "[mix][provenance]")
 {
     const std::vector<RunResult>& fam = mismatchSyncFamily();
     REQUIRE(fam.size() == 5u);
-    int64_t hazard = 0;
-    for (const auto& r : fam)
+    const std::vector<RunResult> bad = cells(fam, true);
+    REQUIRE(bad.size() == 3u);
+    for (const auto& r : bad)
     {
         INFO(summary(r));
         REQUIRE(r.readerJumps == 1);
         REQUIRE(r.writerBumps >= 3);
-        hazard += r.hazardReads;
+        REQUIRE(r.hazardReads > 0); // 读方目标落在写方本代起点之前、写头却已覆盖的状态确实出现过
     }
-    REQUIRE(hazard > 0); // 读方目标落在写方本代起点之前、写头却已覆盖的状态确实出现过
+}
+
+// ε > 0:读方要的位置写方都写过,或者还没覆盖到就读不到 —— 现行实现安全(A-5 必须保持)。
+TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output target after the writer's: no wrong "
+          "frames",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult> safe = cells(mismatchSyncFamily(), false);
+    REQUIRE(safe.size() == 2u);
+    checkNoWrongFrames(safe, true);
+    for (const auto& r : safe)
+    {
+        INFO(summary(r));
+        CHECK(r.readerJumps == 1);
+        CHECK(r.cur.ok > 0);
+    }
 }
 
 TEST_CASE("PROVENANCE reader/writer target mismatch behind a leading writer: no wrong frames", "[mix][provenance]")
@@ -2588,39 +2688,67 @@ TEST_CASE("PROVENANCE reads that land inside a writer block, loops: no wrong fra
     REQUIRE(fam.size() == 12u);
     checkNoWrongFrames(fam, true);
     int64_t partial = 0;
-    int64_t bbw = 0;
+    int cutAfterBump = 0;
     for (const auto& r : fam)
     {
+        INFO(summary(r));
         partial += r.partialBlockReads;
-        bbw += r.bumpBeforeWriteReads;
+        if (r.name.find(" cut-after-bump ") != std::string::npos)
+        {
+            ++cutAfterBump;
+            CHECK(r.bumpBeforeWriteReads > 0); // 每一格「恰好停在换代之后」都确实落进了窗口
+        }
     }
-    INFO("partialBlockReads=" << partial << " bumpBeforeWriteReads=" << bbw);
+    INFO("partialBlockReads=" << partial);
     CHECK(partial > 1000);
-    CHECK(bbw > 0);
+    CHECK(cutAfterBump == 3);
 }
 
 // 回跳到从没放过的位置:读方与写方同块跳变(lead = 0),读时写方恰好换代了还没写 —— 读方锚在自己的
 // t0,上一代的写头仍「覆盖」这一块,读方把从没写过的环槽交出去。
-TEST_CASE("PROVENANCE reads that land inside a writer block, back seek to unplayed audio: no wrong frames",
+TEST_CASE("PROVENANCE reads that land inside a writer block, same-block back seek to unplayed audio cut right after "
+          "the bump: no wrong frames",
           "[mix][provenance][!shouldfail]")
 {
-    checkNoWrongFrames(interleaveSeekFamily(), false);
+    checkNoWrongFrames(cells(interleaveSeekFamily(), true), false);
 }
 
-TEST_CASE("PROVENANCE reads that land inside a writer block, back seek to unplayed audio: no wrong frames - "
-          "precondition",
+TEST_CASE("PROVENANCE reads that land inside a writer block, same-block back seek to unplayed audio cut right after "
+          "the bump: no wrong frames - precondition",
           "[mix][provenance]")
 {
-    const std::vector<RunResult>& fam = interleaveSeekFamily();
-    REQUIRE(fam.size() == 12u);
-    for (const auto& r : fam)
+    const std::vector<RunResult> bad = cells(interleaveSeekFamily(), true);
+    REQUIRE(bad.size() == 1u);
+    INFO(summary(bad[0]));
+    REQUIRE(bad[0].readerJumps == 1);
+    REQUIRE(bad[0].partialBlockReads > 0);
+    REQUIRE(bad[0].bumpBeforeWriteReads > 0); // 读方确实落在过「换代了还没写」的窗口里
+}
+
+// 同一族的其余格(随机前缀、写方领先):现行实现安全(A-5 必须保持)。
+TEST_CASE("PROVENANCE reads that land inside a writer block, back seek to unplayed audio, other cuts and leads: no "
+          "wrong frames",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult> safe = cells(interleaveSeekFamily(), false);
+    REQUIRE(safe.size() == 11u);
+    checkNoWrongFrames(safe, true);
+    int64_t partial = 0;
+    int cutAfterBump = 0;
+    for (const auto& r : safe)
     {
         INFO(summary(r));
-        REQUIRE(r.readerJumps == 1);
-        REQUIRE(r.partialBlockReads > 0);
+        CHECK(r.readerJumps == 1);
+        partial += r.partialBlockReads;
+        // 「恰好停在换代之后」的格逐格钉住窗口确实出现过(写方领先:读方在旧位置上看到,锚在旧位置,
+        // 安全)。随机前缀格只在含换代的那几块上以约 1/(微操作数 + 1) 的概率落进窗口,不逐格要求。
         if (r.name.find(" cut-after-bump ") != std::string::npos)
         {
-            REQUIRE(r.bumpBeforeWriteReads > 0); // 读方确实落在过「换代了还没写」的窗口里
+            ++cutAfterBump;
+            CHECK(r.bumpBeforeWriteReads > 0);
         }
     }
+    INFO("partialBlockReads=" << partial);
+    CHECK(partial > 1000);
+    CHECK(cutAfterBump == 2);
 }
