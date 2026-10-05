@@ -105,8 +105,6 @@ void ipcDiagSink(const scvb::IpcDiagEvent& event) noexcept
             verdict = state().deduper.onEvent(static_cast<std::uint32_t>(event.op), event.error, segment,
                                               juce::Time::getMillisecondCounter());
         }
-        if (!verdict.emit)
-            return;
         write(formatIpcDiagLine(event, verdict));
     }
     catch (...)
