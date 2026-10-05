@@ -637,8 +637,10 @@ jobs:
       #      **以输出含 `AU VALIDATION SUCCEEDED` 且退出码 0** 判定(bridge 只看输出,理由是 auval 退出码
       #      历史上不可靠;这里两样都要,哪样不对都红)。
       #      - 期望三元组写死在这里,因为它是冻结值:ADR-001 冻结 PLUGIN_CODE(Scvi / Scvo / Scvm)与
-      #        厂商码 Snch;aufx 是三个插件 AU_MAIN_TYPE kAudioUnitType_Effect 的四字码;AU 三元组发布后
-      #        整体冻结(改了它,用户工程里的 AU 全部失联)。8c 的三元组从 CMakeLists 现读、与 Info.plist
+      #        厂商码 Snch —— 出处是宪法副本 docs/constitution/ADR.md 的 ADR-001(J81h 改写后含 Monitor)与
+      #        docs/contract-changes/20260825-monitor-target.md;docs/adr/0001-plugin-form.md 本体还只写了
+      #        Scvi / Scvo,别拿它核 Scvm。aufx 是三个插件 AU_MAIN_TYPE kAudioUnitType_Effect 的四字码;
+      #        AU 三元组发布后整体冻结(改了它,用户工程里的 AU 全部失联)。8c 的三元组从 CMakeLists 现读、与 Info.plist
       #        对拍,改码时一路自洽、没有任何一步会红 —— 只有对着冻结值核,「subtype 写错」才红。
       #        所以先核 8c 落下的 au-triples.txt 与冻结集逐行相等,再按冻结集逐个 auval。冻结集要变
       #        是契约变更:先改 ADR,再改这里。
@@ -753,7 +755,7 @@ jobs:
       #      bridge ci.yml:按版本取上游发行页的 pluginval_macOS.zip,解包后 chmod +x(上游 zip 不保证
       #      可执行位)。Windows 侧同样只钉版本、不钉 sha,两边口径一致;要钉 sha 是另一件事(两个平台一起
       #      加、进 CLAUDE.md §6 钉版清单与 build-vst3.yml 的副本),不在本步。下载后核一次
-      #      `pluginval --version` 含钉的版本号(身份断言,同 JUCE tag 那一步)。
+      #      `pluginval --version` 报出的版本号与钉的逐字相等(身份断言,同 JUCE tag 那一步)。
       #      参数与 Windows(build-vst3.yml 的 Validate all VST3 bundles、本机 gate 7)逐字对齐:
       #      --strictness-level 5 --timeout-ms 60000 --skip-gui-tests。.vst3 验构建树里那份;.component
       #      验 11b 装好的那份(理由见 11b)。每格判据三样都要:退出码 0;输出里有单独一行 SUCCESS;
@@ -776,10 +778,14 @@ jobs:
           chmod +x "$exe"
           ver=$("$exe" --version </dev/null 2>&1 || true)
           echo "pluginval --version: $ver; archs: $(lipo -archs "$exe")"
-          case "$ver" in
-            *"${PLUGINVAL_TAG#v}"*) ;;
-            *) echo "::error::downloaded pluginval reports '$ver', expected $PLUGINVAL_TAG from .pluginval-version"; exit 1 ;;
-          esac
+          # 逐字相等,不做子串匹配(子串会让 1.0.40 / 1.0.4-rc1 冒充 1.0.4)。上游 --version 的输出形如
+          # `pluginval - 1.0.4`(Source/CommandLine.cpp 的 getVersionText);取 " - " 之后那一段整体比较,
+          # 形态变了就取不到、当场红,而不是猜。
+          want="${PLUGINVAL_TAG#v}"
+          got=$(sed -nE 's/^pluginval - ([^[:space:]]+)[[:space:]]*$/\1/p' <<< "$ver" | tail -n 1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::downloaded pluginval reports version '${got:-?}' (raw: '$ver'), expected exactly $want from .pluginval-version ($PLUGINVAL_TAG)"; exit 1
+          fi
           echo "PLUGINVAL_EXE=$exe" >> "$GITHUB_ENV"
 
           mkdir -p pluginval-logs
