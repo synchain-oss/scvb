@@ -205,10 +205,11 @@ bool RotatingLogFile::append(const juce::String& line)
     while (remaining > 0)
     {
         const auto n = ::write(fd, data, remaining);
-        if (n < 0)
+        if (n < 0 && errno == EINTR)
+            continue;
+        // n == 0 也当失败收手:普通文件上本不该出现,但真出现时原地重试就是在消息线程上死循环。
+        if (n <= 0)
         {
-            if (errno == EINTR)
-                continue;
             ok = false;
             break;
         }
