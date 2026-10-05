@@ -179,7 +179,7 @@ bool RotatingLogFile::append(const juce::String& line)
     if (!dir.isDirectory() && dir.createDirectory().failed())
         return false;
 
-#if JUCE_WINDOWS
+#if 1 // [临时注入 R3] POSIX 也走 FileOutputStream(无 O_APPEND)
     // Windows 上本类只给单测用(不落文件日志,见 defaultLogFile),沿用 JUCE 的流。
     juce::FileOutputStream out(file_); // 已存在时写位置在文件尾 = 追加
     if (out.failedToOpen())
