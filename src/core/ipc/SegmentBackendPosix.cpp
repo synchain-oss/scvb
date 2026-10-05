@@ -718,11 +718,10 @@ void SegmentBackendPosix::leave(Mapping& m) noexcept
             if (flockRetry(m.lockFd, LOCK_EX | LOCK_NB) == 0)
             {
                 // 最后一个离开者:撤掉名字。别的进程里已有的映射(若有)不受影响。
-                // M08 temporary reverse injection D (reverted right after): the last holder no longer unlinks.
-                // if (::shm_unlink(m.shmName.c_str()) != 0 && errno != ENOENT)
-                // {
-                //     diag.note(IpcDiagOp::kShmUnlink, errno, "last holder could not unlink the segment");
-                // }
+                if (::shm_unlink(m.shmName.c_str()) != 0 && errno != ENOENT)
+                {
+                    diag.note(IpcDiagOp::kShmUnlink, errno, "last holder could not unlink the segment");
+                }
             }
         }
         else
