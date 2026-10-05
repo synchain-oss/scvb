@@ -296,6 +296,11 @@ u64 steadyNowMs() noexcept;
 //   届满才 backend->unmap + impl_.reset——audio 已读到裸指针的在途块必在宽限期内完成并归还 lease。
 //   T23/T24 接入时 release() 调用点 = releaseResources/宿主挂起(音频已停),宽限期是兜底双保险;
 //   析构若早于宽限期届满,退回「进程退出统一回收」(罕见边界,进程正在卸载)。
+// [B 线 M04] 两道保护各管一段,不是互为冗余:lease() 里「读到裸指针 → leaseCount +1」之间那一小段
+//   只有宽限期保护(那时租约计数还没加上,握手与 leaseCount 复核都看不见它);租约发放之后才归
+//   leaseCount 复核 + 握手管。前一段依赖的前提是「宽限期 500ms > 音频线程在这两步之间可能被挂起的
+//   时长」,这是有意接受、**没有用例覆盖**的设计假设:test_ipc_lifecycle 的并发用例用虚拟时钟,
+//   靠显式静默点代替这 500ms(否则用例自己会踩到已释放的映射块),所以它测的是后一段。
 class SegmentHandle
 {
 public:
@@ -401,6 +406,21 @@ public:
 
     // 音频线程按块调用。先 p=implPtr_.load(acquire) 读裸指针(不触碰 shared_ptr);再原子增 leaseCount;
     // 再查 releaseRequested,已置则退还并返回空。与 release() 的「先置请求再摘指针」构成握手。
+    //
+    // [B 线 M04] 握手的四个访问一律 seq_cst(本函数的 fetch_add / load,release() 的 store,
+    // unmapIfIdle() 的 load)。这是 Dekker 式「各写一个、再读对方那个」:
+    //   音频:leaseCount += 1 → 读 releaseRequested;消息:releaseRequested = true → 读 leaseCount。
+    // 只用 release / acquire / acq_rel 时,C++ 允许两边同时读到旧值(store→load 重排):音频拿到租约,
+    // 消息同时判「无在途租约」开始计宽限期 —— 「release() 之后不再发放新租约」这句承诺就不成立了。
+    // 四个都是 seq_cst 时它们落进同一个全序 S:若消息的 load 在 S 中先于音频的 fetch_add,则消息的
+    // store 也先于它,音频随后的 load 必读到 true(退还租约);否则消息的 load 必看到这次 +1。
+    // 二者至少有一边看见对方,不会两边都落空。
+    // 代码生成:x86 上 fetch_add 仍是 lock xadd、load 仍是 mov(与改前相同),只有 release() 那条 store
+    // 从 mov 变成 xchg —— 只在消息线程的释放流程里走到,不在音频热路径。arm64 上 fetch_add 仍是
+    // LDADDAL、store 仍是 STLR;两条 load 从 acquire 变 seq_cst:acquire load 在有 RCpc 的目标上
+    // (Apple M 系列有)允许编成 LDAPR,它可以越过前面的 STLR / LDADDAL 提前读,seq_cst load 一律是 LDAR。
+    // 注意:这一对管的是「租约发放」,不管「读到裸指针之后、fetch_add 之前」那一小段 —— 那一段里
+    // 线程若被挂起,p 指向的映射块可能已被回收,能兜住它的只有下面的宽限期(真实时间 500ms)。
     Lease lease() const
     {
         detail::SegmentMapping* p = implPtr_.load(std::memory_order_acquire);
@@ -408,8 +428,8 @@ public:
         {
             return Lease{};
         }
-        p->leaseCount.fetch_add(1, std::memory_order_acq_rel);
-        if (p->releaseRequested.load(std::memory_order_acquire))
+        p->leaseCount.fetch_add(1, std::memory_order_seq_cst);
+        if (p->releaseRequested.load(std::memory_order_seq_cst))
         {
             p->leaseCount.fetch_sub(1, std::memory_order_acq_rel); // 释放已请求,退还租约
             return Lease{};
@@ -425,7 +445,8 @@ public:
         {
             return true;
         }
-        impl_->releaseRequested.store(true, std::memory_order_release); // 先置释放请求
+        // 先置释放请求。seq_cst:与 lease() 的 Dekker 握手,理由见 lease() 上方。
+        impl_->releaseRequested.store(true, std::memory_order_seq_cst);
         implPtr_.store(nullptr, std::memory_order_release); // 再摘指针(阻止新租约)
         return unmapIfIdle(nowMs);
     }
@@ -437,7 +458,8 @@ private:
         {
             return true;
         }
-        if (impl_->leaseCount.load(std::memory_order_acquire) != 0)
+        // seq_cst:与 lease() 的 Dekker 握手(release() 首次调用时这一读就是握手的消息侧),理由见 lease() 上方。
+        if (impl_->leaseCount.load(std::memory_order_seq_cst) != 0)
         {
             return false; // 租约在途
         }
