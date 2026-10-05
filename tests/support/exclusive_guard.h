@@ -181,9 +181,13 @@ CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
 // 这一刻它不放松任何保护,理由是可核对的:
 //   · 包含本头的四套里,非 Windows 上进构建集合的只有 scvb_tests(host / ipc / monitor 三套在
 //     tests/CMakeLists.txt 里都只在 WIN32 下定义);
-//   · scvb_tests 的 IPC 用例一律走 `SegmentBackendInProcess`(进程内模拟,不建任何机器级段),
-//     本头头注里那张「组号重叠表」描述的跨进程互相打坏,在这里没有可打坏的对象。
-// ⚠ 一旦有测试在非 Windows 上建**真的**共享内存段(M05 的 POSIX 后端用例),这里必须先换成真守卫,
-//   否则两个测试进程同机并发时会重演 SL-324 那一类「段被隔壁覆写」的假红。
+//   · scvb_tests 里用**固定组号**的 IPC 用例一律走 `SegmentBackendInProcess`(进程内模拟,不建任何
+//     机器级段);[B 线 M05] 的 POSIX 后端用例(tests/core/test_segment_backend_posix.cpp)虽然建
+//     **真的**段,但段名一律带本进程 pid("SCVBt<pid>.…" / "T<pid>s<n>.…",不用冻结前缀)、锁目录
+//     一律是各自的临时目录,两个测试进程之间没有同名对象 —— 本头头注里那张「组号重叠表」描述的
+//     跨进程互相打坏,在这里仍没有可打坏的对象。(那份文件里唯一碰真实段名的隐藏格 [shm-leftover]
+//     只做 shm_open(O_RDONLY) 探测,不建段。)
+// ⚠ 一旦有测试在非 Windows 上用**固定组号 / 真实段名**建段(M12a 把 ipc / monitor 套件搬上 mac),
+//   这里必须先换成真守卫,否则两个测试进程同机并发时会重演 SL-324 那一类「段被隔壁覆写」的假红。
 
 #endif // _WIN32
