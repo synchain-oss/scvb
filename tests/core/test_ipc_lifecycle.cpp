@@ -959,13 +959,52 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     std::atomic<u64> leases{0};
     std::atomic<u64> nullBaseLeases{0}; // [SL-453] 拿到租约却基址为空的次数;join 后在主线程断言
 
+    // [B 线 M04] 虚拟时钟下的宽限期模型。
+    // SegmentHandle 的设计前提(ISegmentBackend.h 类头注)是「宽限期 500ms > 音频线程任何一次在途
+    // 访问」:lease() 先读裸指针、再对 p->leaseCount 做 fetch_add —— 这两步之间线程若被挂起,能保证
+    // p 指向的映射块还活着的只有宽限期,租约握手管不到这一段(那时 leaseCount 还没 +1)。
+    // 本用例用虚拟时钟(每拍 +100ms),宽限期 = 5 拍,真实时间只有几微秒:音频线程在那两步之间被挂起
+    // 几微秒,映射块就已解映射并释放,随后的 fetch_add / 查 releaseRequested / 取 base 落在已释放
+    // 的内存上 —— 那是本用例自己违反了被测对象的前提,不是被测对象的缺陷(B 线 M06a 在 arm64 上
+    // 观察到的 nullBaseLeases == 1,3/40,按代码推断即此形态)。所以消息线程每拍结束前做一次「静默点」:
+    //   · 音频线程进 lease() 前把 attemptPhase 置奇、返回后置偶;
+    //   · 消息线程在本拍摘指针 / 重发布之后读 attemptPhase,读到奇数就等它变,即等「本拍摘指针时
+    //     可能已读到旧裸指针的那一次 lease()」走完。两侧各一道 seq_cst fence(Dekker):要么消息线程
+    //     读到这次的奇数,要么音频线程的 lease() 读到的已是摘过的指针 —— 不会两边都落空。
+    // 这只把真实时间里由 500ms 保证的那一段补成显式等待;租约**发放之后**的保护仍全靠被测代码:
+    // 每 kHoldEvery 个租约里有一个被持有 kHoldTicks 拍(> 宽限期 5 拍),跨过宽限期届满那一拍,
+    // 期间它的映射不许被解映射 —— 那靠 unmapIfIdle() 的 leaseCount 复核与 lease() / release() 的握手。
+    constexpr u64 kHoldEvery = 8;
+    constexpr u64 kHoldTicks = 7; // 宽限期 500ms / 每拍 100ms = 5 拍;多持 2 拍,确保跨过届满那一拍
+    std::atomic<u64> attemptPhase{0}; // 奇 = 音频线程正在 lease() 里
+    std::atomic<u64> messageTicks{0}; // 消息线程已走完的拍数
+    std::atomic<u64> heldAcrossGrace{0}; // 实际持满 kHoldTicks 拍的租约数(非空洞断言用)
+
     // 音频线程:循环 lease()/归还(只读 implPtr_ 原子裸指针)。不放断言宏,理由见 publish() 上方。
     std::thread audio([&] {
+        u64 granted = 0;
         while (!stop.load(std::memory_order_acquire))
         {
+            attemptPhase.fetch_add(1, std::memory_order_seq_cst); // 奇:进入 lease()
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             auto lease = handle.lease();
+            attemptPhase.fetch_add(1, std::memory_order_seq_cst); // 偶:lease() 已返回
             if (lease)
             {
+                if (++granted % kHoldEvery == 0)
+                {
+                    // 持有租约跨过宽限期届满(期间 attemptPhase 为偶,消息线程照常推进)。
+                    const u64 start = messageTicks.load(std::memory_order_acquire);
+                    while (messageTicks.load(std::memory_order_acquire) < start + kHoldTicks &&
+                           !stop.load(std::memory_order_acquire))
+                    {
+                        std::this_thread::yield();
+                    }
+                    if (messageTicks.load(std::memory_order_acquire) >= start + kHoldTicks)
+                    {
+                        ++heldAcrossGrace;
+                    }
+                }
                 if (lease.base() == nullptr)
                 {
                     ++nullBaseLeases;
@@ -1001,6 +1040,17 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
                     ++it;
                 }
             }
+            // [B 线 M04] 静默点(理由见 audio 线程上方):本拍的摘指针 / 重发布都在这道 fence 之前。
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            const u64 phase = attemptPhase.load(std::memory_order_seq_cst);
+            if ((phase & 1u) != 0u)
+            {
+                while (attemptPhase.load(std::memory_order_acquire) == phase)
+                {
+                    std::this_thread::yield();
+                }
+            }
+            messageTicks.fetch_add(1, std::memory_order_release);
         }
         stop.store(true, std::memory_order_release);
     });
@@ -1012,6 +1062,7 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     REQUIRE(initFailures.load() == 0); // 且头部初始化成功
     REQUIRE(nullBaseLeases.load() == 0); // 发出去的租约基址从不为空
     REQUIRE(leases.load() > 0); // 音频线程确实租约过
+    CHECK(heldAcrossGrace.load() > 0); // [B 线 M04] 确有租约被持有跨过宽限期届满(否则上一条没测到这一面)
     // 收尾:宽限期是 500ms,release 需两拍(首次记录宽限期起始,次拍届满解映射)。
     const u64 finalNowMs = 1000000000;
     for (auto& h : pending)

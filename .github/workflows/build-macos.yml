@@ -4,7 +4,7 @@ name: Build macOS (reusable)
 # 只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job `macos-build` 调用,
 # 跑不跑完全继承 build-vst3.yml 的触发规则;被 release.yml 经 build-vst3.yml 调起时,caller 的
 # tag 守卫让它跳过(mac 发版另由 release.yml 自己的 build-mac 调本文件,见 M16)。
-# 写者链(严格串行):M01 → M06a → M06b → M08 → M10 → M16。
+# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M10 → M16。
 # 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
 # org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
@@ -309,18 +309,20 @@ jobs:
           fi
           echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
 
-      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的四套,
+      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的五条,
       #    而不是不带 -R 跑全部:scvb_monitor_tests / scvb_ipc_tests / scvb_host_tests 在 mac 上还没登记
       #    (WIN32 守卫,M12a / M12b 放开),列名让「mac 上跑哪几套」是写下来的事实,不由 CMake 守卫隐式决定。
       #    每一条先核「恰好登记一次」:被删、改名、或被守卫挡掉,这里当场红 —— `--no-tests=error`
-      #    只管「一条都没选中」,选中四条里的三条它照样绿。
+      #    只管「一条都没选中」,选中五条里的四条它照样绿。
+      #    [B 线 M04] `scvb_seqlock_stress` 与 `scvb_tests` 是同一个二进制,按标签 `[stress]` 单跑 seqlock
+      #    压测(tests/core/test_seqlock_stress.cpp)。它是 arm64 内存序的门禁,在 x86 上恒绿,所以必须在这里跑。
       #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
-      - name: Unit tests (ctest - scvb_tests, params, plugin_common, input_bridge)
+      - name: Unit tests (ctest - scvb_tests, seqlock_stress, params, plugin_common, input_bridge)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          want=(scvb_tests scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests)
+          want=(scvb_tests scvb_seqlock_stress scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests)
           for t in "${want[@]}"; do
             n=$(ctest --test-dir build -N -R "^${t}\$" | grep -cE "Test +#[0-9]+: ${t}\$" || true)
             if [ "$n" != "1" ]; then echo "::error::ctest entry $t is not registered exactly once (found $n); see tests/CMakeLists.txt"; exit 1; fi
@@ -328,7 +330,7 @@ jobs:
           re="^($(IFS='|'; echo "${want[*]}"))\$"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R "$re"
 
-      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步四套全绿已经包含它们,但「整套绿」
+      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步五条全绿已经包含它们,但「整套绿」
       #     推不出「那几格在场」:test_au_param_ids.cpp 从目标里掉出去、或 [assets] 两格被改了标签,
       #     scvb_params_tests / scvb_plugin_common_tests 照样绿。这里按标签单跑,数 Catch2 汇总行里的用例数。
       #       [au]     AU 参数 ID 冻结表(tests/core/test_au_param_ids.cpp,3 格)
