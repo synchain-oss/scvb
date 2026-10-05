@@ -565,7 +565,7 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
         noteLockFailure(life.error(), life.path(), wait, diag);
         return InitResult::kFailed;
     }
-    suppressedLockFailures_.store(0, std::memory_order_relaxed);
+    // [INJECT K3] openLocked no longer clears the suppressed count on success
 
     const std::string lockPath = lockDir_ + "/" + shm.substr(1) + ".lock";
     const int lockFlags = create ? (O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW) : (O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
