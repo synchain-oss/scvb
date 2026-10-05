@@ -5,10 +5,11 @@
 // 三个插件的 Processor(Input / Output / Monitor)只认这个别名,不再各自写死后端类型:
 //
 //   · _WIN32                 → SegmentBackendWin32(命名共享内存 Local\...,现行实现,行为逐字不变);
-//   · 定义了 SCVB_HAS_POSIX_SHM → SegmentBackendPosix(shm_open + 锁文件,由 M05 落地并负责定义该宏;
-//                               宏未定义时本头**不引用**那个头文件,所以它此刻不存在也能编);
+//   · 定义了 SCVB_HAS_POSIX_SHM → SegmentBackendPosix(shm_open + flock 生命周期锁,B 线 M05;宏由
+//                               src/core/CMakeLists.txt 只在 Apple 上 PUBLIC 定义,宏未定义时本头**不引用**
+//                               那个头文件,所以别的平台不需要它的 POSIX 依赖);
 //   · 其余平台               → SegmentBackendInProcess(进程内模拟:同一宿主进程里的实例彼此可见,
-//                               跨进程不可见 —— 只是 M05 落地前让 core 能编过的过渡,不是可发布形态)。
+//                               跨进程不可见 —— 只是让 core 在没有真后端的平台上也能编过,不是可发布形态)。
 //
 // 选择只发生在预处理期:别名之外不加任何间接层(不做运行期多态切换),音频线程的访问路径与改动前同形。
 

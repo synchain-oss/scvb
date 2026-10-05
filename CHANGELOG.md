@@ -15,6 +15,12 @@
   footer 缩放下拉旁显示一行提示(中 / 英 / 法)—— 旧 WebKit 上点击、拖拽的位置因此不会偏。Windows(WebView2)上
   行为不变。声像轨迹图的横向缩放除 Ctrl+滚轮外也认 Cmd+滚轮,三条快捷键文案三语改为「Ctrl 或 Cmd」(#360)
 
+- **macOS 共享内存后端**:mac 上三个插件之间的共享内存段改由 POSIX `shm_open` 承载,段名与 Windows 用同一套冻结前缀
+  (只是 OS 前缀由 `Local\` 换成 `/`)。Windows 上「最后一个实例关掉,段就消失」的语义用锁文件模拟:锁放在
+  `~/Library/Application Support/Synchain/SCVB/ipc/`,最后一个离开的实例撤掉段;DAW 崩溃留下的段由下一次打开清理,
+  旧尺寸的残段会按新尺寸重建。权限 0600:同机另一个用户同时使用时拿不到段(打不开,不覆盖对方的段)。打不开的原因
+  经一个诊断出口上报(默认不输出,mac 文件日志由后续卡接上)。三个插件在 mac 上的构建由后续卡落地;Windows 行为不变(#369)
+
 ### 变更
 
 - **`v0.9.0-rc.1` 发布后收尾**:发版验证清单 `docs/validation/release-checklist-v0.9.0-rc.1.md` 按发布实况补完,
