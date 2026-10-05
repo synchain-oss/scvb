@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "MonitorProcessor.h"
 
-#include <cstdlib>
-
 // SCVB_MONITOR_HEADLESS:离线单测(scvb_monitor_tests)专用 —— 不实例化 WebView2 编辑器。
 // 与 tests/CMakeLists.txt 把 WebViewHost.cpp / PlatformWebViewRuntime.cpp 排除在单测之外
 // 同源(真 WebView2 由 gate 8 的真机 GUI pluginval 验)。生产构建从不定义本宏。
@@ -61,10 +59,6 @@ ScvbMonitorAudioProcessor::~ScvbMonitorAudioProcessor()
 
 void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
-#if JUCE_MAC
-    if (wrapperType == wrapperType_VST3)
-        std::abort(); // M08 temporary reverse injection C (reverted right after)
-#endif
     const juce::ScopedLock lock(lifecycleMutex_);
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     // 只读监视器:不分配音频缓冲、不建段、不 claim。attach 交给 [M] 定时器(段可能还没建起来)。
