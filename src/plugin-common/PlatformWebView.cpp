@@ -198,9 +198,9 @@ juce::String PlatformWebView::envNotStartedMessage(Engine engine)
                "process, or the host blocking the msedgewebview2.exe child process.";
     // 系统 WebKit:没有 user-data 目录这一环(userDataFolderRoot() 为空),剩下的常见成因是宿主挡了
     // WebKit 的网页内容子进程(com.apple.WebKit.WebContent),或系统内存吃紧。
-    return "The WebView2 environment did not start (no navigation ever began).\n"
-           "This is usually the user-data folder being unwritable or already in use by another\n"
-           "process, or the host blocking the msedgewebview2.exe child process.";
+    return "The system web view (WebKit) did not start (no navigation ever began).\n"
+           "This is usually the host blocking the WebKit web content process, or the\n"
+           "system running low on memory. Click Retry, or close and reopen this plugin window.";
 }
 
 juce::String PlatformWebView::runtimeDiagnosticsField(const RuntimeInfo& info, Engine engine)
