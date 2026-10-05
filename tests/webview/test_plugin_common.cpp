@@ -3,14 +3,32 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include <BridgeBase.h>
 #include <FallbackPanel.h>
+#include <PlatformLog.h> // [B 线 M07]
 #include <PlatformWebView.h>
 #include <WebViewRevealGate.h>
 #include <ResourceProvider.h>
 #include <WebViewHost.h> // 只取看门狗预算/事件名常量(全是 constexpr,不需要编 WebViewHost.cpp)
+
+#if JUCE_MAC
+// [B 线 M07] mac 上本目标链 scvb_core(tests/CMakeLists.txt),IpcDiag 与 SCVB_HAS_POSIX_SHM 都从那里来;
+// 宏若没到,[mac] 那一格「sink 去重」会被 #if 静默拿掉 —— 宁可当场编译红。
+#if !SCVB_HAS_POSIX_SHM
+#error "scvb_plugin_common_tests on macOS must link scvb_core (SCVB_HAS_POSIX_SHM / IpcDiag)"
+#endif
+#include <ipc/IpcDiag.h>
+#include <unistd.h> // getpid
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -679,10 +697,12 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
     // 每实例一个目录会让进程组永不复用 —— 于是「热启动」判定形同虚设(第二次开窗其实还是
     // 完整冷启动却按 5s 热预算计时),而且每开一个编辑器就多一整套 msedgewebview2 进程。
     CHECK(in1 == in2);
-    // 两个插件之间仍然分开(各自的会话/缓存互不干扰)。
-    CHECK_FALSE(in1 == out1);
 
 #if JUCE_WINDOWS
+    // 两个插件之间仍然分开(各自的会话/缓存互不干扰)。
+    // [B 线 M07] 这一条挪进 Windows 分支:系统 WebKit 上不用 UDF,两者都是空 File(见下面的 #else)。
+    CHECK_FALSE(in1 == out1);
+
     const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, in1);
     CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
     CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == in1);
@@ -724,6 +744,9 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
 #else
     const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, in1);
     CHECK(o1.getBackend() == WBC::Options::Backend::defaultBackend); // 非 Windows 走系统默认
+    // [B 线 M07] 系统 WebKit 不用 UDF:两个插件拿到的都是空 File(细节判据见 [mac] 那几格)。
+    CHECK(in1 == juce::File());
+    CHECK(out1 == juce::File());
 #endif
 }
 
@@ -768,3 +791,722 @@ TEST_CASE("FallbackPanel deferred retry avoids use-after-free (SafePointer + cal
     holder->panel.reset();
     CHECK(holder->safe == nullptr);
 }
+
+// =============================================================================
+// [B 线 M07] WebView C++ 侧的 mac 适配 + 平台文件日志(PlatformLog)
+//
+// 分三层:
+//   · [M07][platform] —— 按引擎分支的文案 / 诊断行 / 遮挡闸开关。每个平台都跑:Windows 上显式传
+//     systemWebKit 把 mac 那一份逐条判过(本机没有 Mac),同时把 WebView2 那一份**逐字**钉住;
+//   · [M07][source]   —— WebViewHost.cpp 与三个插件入口不进任何测试目标(真 WebView / 插件 wrapper),
+//     接线只能读源码文本判(与 test_input_bridge.cpp 的 [SL-463] 同一手法);
+//   · [M07][platformlog] / [mac] —— 轮转、去重、只在消息线程写;[mac] 只在 macOS 上编,核默认值确实落在
+//     系统 WebKit、默认日志路径、真 IpcDiag sink 的去重与 1 MB 轮转。build-macos.yml 按 [mac] 标签单跑并数格数。
+// =============================================================================
+namespace
+{
+using scvb::webview::PlatformWebView;
+using Engine = scvb::webview::PlatformWebView::Engine;
+
+PlatformWebView::RuntimeInfo runtimeOf(PlatformWebView::RuntimeStatus status, const char* version)
+{
+    PlatformWebView::RuntimeInfo info;
+    info.status = status;
+    info.version = version;
+    return info;
+}
+
+bool isAscii(const juce::String& s)
+{
+    for (auto p = s.getCharPointer(); !p.isEmpty(); ++p)
+        if (static_cast<juce::uint32>(*p) > 0x7fu)
+            return false;
+    return true;
+}
+
+// mac 上用户看得见的字里不许出现的东西:WebView2、msedgewebview2、Microsoft Edge。
+bool namesWebView2(const juce::String& s)
+{
+    return s.containsIgnoreCase("webview2") || s.containsIgnoreCase("msedge") || s.contains("Edge");
+}
+
+// 每格一个临时目录,格末整个删掉。
+struct ScratchDir
+{
+    ScratchDir()
+        : dir(juce::File::getSpecialLocation(juce::File::tempDirectory)
+                  .getNonexistentChildFile(
+                      "scvb-m07-" + juce::String::toHexString(juce::Random::getSystemRandom().nextInt64()), "", false))
+    {
+        REQUIRE(dir.createDirectory().wasOk());
+    }
+    ~ScratchDir() { dir.deleteRecursively(); }
+    juce::File dir;
+};
+
+juce::StringArray linesOf(const juce::File& f)
+{
+    juce::StringArray lines;
+    if (f.existsAsFile())
+        lines.addLines(f.loadFileAsString());
+    lines.removeEmptyStrings();
+    return lines;
+}
+
+// 全局日志的进出口:无论这一格从哪条路退出,都恢复「没装 + IpcDiag 空操作」,不把状态漏给下一格。
+struct PlatformLogGuard
+{
+    PlatformLogGuard() { scvb::platformlog::uninstall(); }
+    ~PlatformLogGuard() { scvb::platformlog::uninstall(); }
+};
+
+// 读源文件:剥 // 与 /* */ 注释、删掉字面量之外的全部空白(不钉排版),字面量原样保留;顺手收集
+// **运行期**字符串字面量的内容(static_assert(...) 里的不算 —— 那是编译期消息,用户看不到)。
+// 与 test_input_bridge.cpp 的 readStrippedSource 同一手法,多认了字面量:那边的版本会把 "https://"
+// 里的 // 当注释吃掉,这里要扫字面量,不能那样。
+struct LexedSource
+{
+    std::string code;
+    std::vector<std::string> literals;
+};
+
+LexedSource lexSource(const char* relPath)
+{
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/" + relPath;
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    LexedSource out;
+    const std::string kStaticAssert = "static_assert";
+    int depth = 0;
+    int staticAssertDepth = -1; // static_assert( 开在哪一层括号;-1 = 不在里面
+    const auto n = raw.size();
+    for (std::size_t i = 0; i < n;)
+    {
+        const char c = raw[i];
+        if (c == '/' && i + 1 < n && raw[i + 1] == '/')
+        {
+            while (i < n && raw[i] != '\n')
+                ++i;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < n && !(raw[i] == '*' && raw[i + 1] == '/'))
+                ++i;
+            i = (i + 1 < n) ? i + 2 : n;
+            continue;
+        }
+        if (c == '"' || c == '\'')
+        {
+            std::string body;
+            out.code.push_back(c);
+            ++i;
+            while (i < n && raw[i] != c)
+            {
+                if (raw[i] == '\\' && i + 1 < n)
+                {
+                    body.push_back(raw[i]);
+                    out.code.push_back(raw[i]);
+                    ++i;
+                }
+                body.push_back(raw[i]);
+                out.code.push_back(raw[i]);
+                ++i;
+            }
+            out.code.push_back(c);
+            ++i;
+            if (c == '"' && staticAssertDepth < 0)
+                out.literals.push_back(body);
+            continue;
+        }
+        if (c == '(')
+        {
+            ++depth;
+            if (out.code.size() >= kStaticAssert.size() &&
+                out.code.compare(out.code.size() - kStaticAssert.size(), kStaticAssert.size(), kStaticAssert) == 0)
+                staticAssertDepth = depth;
+        }
+        else if (c == ')')
+        {
+            if (depth == staticAssertDepth)
+                staticAssertDepth = -1;
+            --depth;
+        }
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+            out.code.push_back(c);
+        ++i;
+    }
+    return out;
+}
+
+// 取一个成员函数的函数体:从(去空白后的)签名起,到下一个 nextMarker 为止。改名 / 挪走 = 判负,不是跳过。
+std::string methodBody(const std::string& code, const std::string& signature, const std::string& nextMarker)
+{
+    const auto begin = code.find(signature);
+    REQUIRE(begin != std::string::npos);
+    const auto end = code.find(nextMarker, begin + signature.size());
+    return code.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+
+std::size_t countOf(const std::string& haystack, const std::string& needle)
+{
+    std::size_t count = 0;
+    for (auto pos = haystack.find(needle); pos != std::string::npos; pos = haystack.find(needle, pos + needle.size()))
+        ++count;
+    return count;
+}
+} // namespace
+
+TEST_CASE("[M07] WebView2 copy and diagnostics lines stay byte-identical to the pre-M07 text", "[M07][platform]")
+{
+    // 期望串逐字取自 M07 之前 WebViewHost.cpp 里的字面量(missingRuntimeMessage / tooOldRuntimeMessage /
+    // envNotStartedMessage / logBackgroundColourSupport / buildDiagnostics)。**这就是 Windows 用户看到的字**:
+    // 搬家不许改一个字节。每一条都是独立落点,一律 CHECK。
+    const auto wv2 = Engine::webView2;
+    CHECK(PlatformWebView::missingRuntimeMessage(wv2) ==
+          juce::String("Microsoft Edge WebView2 Runtime was not found, so the full UI cannot load.\n"
+                       "Install the runtime once, then reopen this plugin window."));
+    CHECK(PlatformWebView::tooOldRuntimeMessage(wv2) ==
+          juce::String("The installed Microsoft Edge WebView2 Runtime is too old for this plugin.\n"
+                       "Update to the Evergreen runtime, then reopen this plugin window."));
+    CHECK(PlatformWebView::envNotStartedMessage(wv2) ==
+          juce::String("The WebView2 environment did not start (no navigation ever began).\n"
+                       "This is usually the user-data folder being unwritable or already in use by another\n"
+                       "process, or the host blocking the msedgewebview2.exe child process."));
+
+    using RS = PlatformWebView::RuntimeStatus;
+    const auto current = runtimeOf(RS::ok, "137.0.3296.83");
+    const auto old = runtimeOf(RS::ok, "86.0.622.38");
+    const auto garbled = runtimeOf(RS::ok, "dev-build");
+    const auto missing = runtimeOf(RS::missing, "");
+
+    // 诊断行(兜底面板 + 日志)里运行时那一段。
+    CHECK(PlatformWebView::runtimeDiagnosticsField(current, wv2) == "WebView2 137.0.3296.83");
+    CHECK(PlatformWebView::runtimeDiagnosticsField(missing, wv2) == "WebView2 not found");
+
+    // [SL-376] 背景色诊断行的四种形态(argb = shellBackdropMid() = #d9cadb,上面 [SL-402] 那格钉着)。
+    CHECK(PlatformWebView::backgroundColourDiagnostics(current, wv2) ==
+          "webview2 default background: available -- ICoreWebView2Controller2 inferred present (from runtime "
+          "137.0.3296.83 >= major 87, not directly observed), JUCE puts argb ffd9cadb");
+    CHECK(PlatformWebView::backgroundColourDiagnostics(old, wv2) ==
+          "webview2 default background: UNAVAILABLE -- ICoreWebView2Controller2 inferred absent (from runtime "
+          "86.0.622.38 < major 87, not directly observed), JUCE drops argb ffd9cadb silently");
+    CHECK(PlatformWebView::backgroundColourDiagnostics(missing, wv2) ==
+          "webview2 default background: unknown (no WebView2 runtime detected)");
+    CHECK(PlatformWebView::backgroundColourDiagnostics(garbled, wv2) ==
+          "webview2 default background: unknown (runtime version dev-build not parsable)");
+
+    // 行为开关:遮挡闸与「下载运行时」按钮在 WebView2 上照旧开着。
+    CHECK(PlatformWebView::revealGateEnabled(wv2));
+    CHECK(PlatformWebView::offersRuntimeDownload(wv2));
+
+    // UDF 那一段:非空时原样是完整路径。
+    const auto udf = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("SCVBInputWV2");
+    CHECK(PlatformWebView::userDataFolderDisplay(udf) == udf.getFullPathName());
+
+#if JUCE_WINDOWS
+    // Windows 上默认值就是 WebView2 这一支 —— 上面钉的字就是插件实际打出来的字。
+    CHECK(PlatformWebView::kEngine == Engine::webView2);
+    CHECK(PlatformWebView::missingRuntimeMessage() == PlatformWebView::missingRuntimeMessage(wv2));
+    CHECK(PlatformWebView::tooOldRuntimeMessage() == PlatformWebView::tooOldRuntimeMessage(wv2));
+    CHECK(PlatformWebView::envNotStartedMessage() == PlatformWebView::envNotStartedMessage(wv2));
+    CHECK(PlatformWebView::runtimeDiagnosticsField(current) == PlatformWebView::runtimeDiagnosticsField(current, wv2));
+    CHECK(PlatformWebView::backgroundColourDiagnostics(current) ==
+          PlatformWebView::backgroundColourDiagnostics(current, wv2));
+    CHECK(PlatformWebView::revealGateEnabled());
+    CHECK(PlatformWebView::offersRuntimeDownload());
+#endif
+}
+
+TEST_CASE("[M07] system WebKit copy never names WebView2, msedgewebview2 or Edge", "[M07][platform]")
+{
+    // mac 那一份文案在**每个平台**上都判(显式传 systemWebKit);[mac] 格另核 mac 上默认值确实落在这里。
+    // 反向注入「在 mac 分支放回 WebView2 文案」红在这一格(以及 [mac] 那一格)。
+    const auto wk = Engine::systemWebKit;
+    using RS = PlatformWebView::RuntimeStatus;
+    const auto okNoVersion = runtimeOf(RS::ok, ""); // = mac 上 runtimeInfo() 的返回值
+    const auto withVersion = runtimeOf(RS::ok, "137.0.3296.83");
+    const auto missing = runtimeOf(RS::missing, "");
+
+    const juce::String texts[] = {
+        PlatformWebView::missingRuntimeMessage(wk),
+        PlatformWebView::tooOldRuntimeMessage(wk),
+        PlatformWebView::envNotStartedMessage(wk),
+        PlatformWebView::runtimeDiagnosticsField(okNoVersion, wk),
+        PlatformWebView::runtimeDiagnosticsField(missing, wk),
+    };
+    for (const auto& t : texts)
+    {
+        INFO(t);
+        CHECK(t.isNotEmpty());
+        CHECK_FALSE(namesWebView2(t));
+        CHECK(isAscii(t)); // 运行期文案只写 ASCII(C4819 纪律)
+    }
+
+    // 诊断行写 `WebKit (system)`,不管 version 在不在(mac 上恒空)—— 不许再误报「not found」。
+    CHECK(PlatformWebView::runtimeDiagnosticsField(okNoVersion, wk) == "WebKit (system)");
+    CHECK(PlatformWebView::runtimeDiagnosticsField(missing, wk) == "WebKit (system)");
+
+    // 背景色诊断只在 WebView2 上出:系统 WebKit 一律空串(调用方据此不打这一行)。
+    CHECK(PlatformWebView::backgroundColourDiagnostics(okNoVersion, wk).isEmpty());
+    CHECK(PlatformWebView::backgroundColourDiagnostics(withVersion, wk).isEmpty());
+    CHECK(PlatformWebView::backgroundColourDiagnostics(missing, wk).isEmpty());
+
+    CHECK_FALSE(PlatformWebView::revealGateEnabled(wk));
+    CHECK_FALSE(PlatformWebView::offersRuntimeDownload(wk));
+
+    // 两份不是同一句(防「两支返回同一个变量」这种改坏法让上面的 namesWebView2 两头都绿/都红)。
+    CHECK(PlatformWebView::envNotStartedMessage(wk) != PlatformWebView::envNotStartedMessage(Engine::webView2));
+    CHECK(PlatformWebView::missingRuntimeMessage(wk) != PlatformWebView::missingRuntimeMessage(Engine::webView2));
+
+    // WebView2 那一份的确点名了 WebView2(否则上面的 namesWebView2 是个恒 false 的判据)。
+    CHECK(namesWebView2(PlatformWebView::envNotStartedMessage(Engine::webView2)));
+    CHECK(isAscii(PlatformWebView::envNotStartedMessage(Engine::webView2)));
+}
+
+TEST_CASE("[M07] reveal gate is armed only on the WebView2 engine", "[M07][platform]")
+{
+    // 这一格复刻 WebViewHost::onNavigationStarted 的分支形状(接线本身由下面的 [source] 格钉):
+    // 闸门只在 revealGateEnabled() 时武装。系统 WebKit 上首帧信号一直不来时,WebView 从头到尾不挪、
+    // 也就不用白等 kRevealFallbackMs —— 那正是 mac 上不启用它的理由。
+    using scvb::webview::RevealGate;
+    for (const auto engine : {Engine::webView2, Engine::systemWebKit})
+    {
+        const bool enabled = PlatformWebView::revealGateEnabled(engine);
+        INFO("engine webView2=" << (engine == Engine::webView2));
+        RevealGate gate;
+        gate.beginLoadAttempt();
+        const std::uint32_t navMs = 1000;
+        if (enabled)
+            gate.onNavigationStarted(navMs);
+        CHECK(gate.parked() == enabled);
+        gate.onNavigationFinished();
+        gate.onTick(navMs + RevealGate::kRevealFallbackMs - 1);
+        CHECK(gate.parked() == enabled);
+        gate.onTick(navMs + RevealGate::kRevealFallbackMs);
+        CHECK_FALSE(gate.parked());
+        CHECK(juce::String(gate.lastRevealReason()) == juce::String(enabled ? "timeout" : ""));
+    }
+}
+
+TEST_CASE("[M07] an empty user-data folder means not used: no probe, shown as (not used)", "[M07][platform]")
+{
+    // 系统 WebKit 上 makeUserDataFolder 返回空 File;探针对空 File 不建目录、不写探针、不报问题。
+    // (Windows 上 UDF 恒非空,走不到这一支;这里直接喂空 File 判函数本身。)
+    CHECK(PlatformWebView::probeUserDataFolder(juce::File()).isEmpty());
+    CHECK(PlatformWebView::userDataFolderDisplay(juce::File()) == "(not used)");
+    CHECK_FALSE(juce::File::getCurrentWorkingDirectory().getChildFile(".scvb-write-probe").exists());
+}
+
+TEST_CASE("[M07] WebViewHost.cpp routes platform text and the reveal gate through PlatformWebView", "[M07][source]")
+{
+    // WebViewHost.cpp 不进任何测试目标(真 WebView 实例化),上面几格证明 PlatformWebView 本身对,
+    // 证明不了 WebViewHost 真的在用它 —— 把调用点改回字面量或去掉闸门的条件,那几格照样全绿。
+    // 判据读的是源码文本(去注释、去空白后按片段匹配):红了先看是写法变了(改名、拆函数)还是接线真的断了。
+    // 不变式是:带平台名字的文案 / 诊断行、遮挡闸的启用条件都经 PlatformWebView,日志同一行交给 platformlog::write。
+    INFO("source-level check on WebViewHost.cpp: platform copy and the reveal-gate condition must go through "
+         "PlatformWebView, logDiag must also feed platformlog::write; if only the wording of the code changed, "
+         "update the expected snippet");
+    const auto src = lexSource("src/plugin-common/WebViewHost.cpp");
+
+    // ① 用户可见的、带平台名字的字都不再写在这个文件里(static_assert 的编译期消息不算)。
+    CHECK(src.literals.size() > 20); // 判据自检:字面量真的收上来了(空集会让下面的循环恒绿)
+    for (const auto& lit : src.literals)
+    {
+        INFO(lit);
+        CHECK_FALSE(namesWebView2(juce::String(lit)));
+    }
+
+    // ② 遮挡闸:武装只在 revealGateEnabled() 之下,且全文件只有这一处武装。
+    const auto nav = methodBody(src.code, "voidWebViewHost::onNavigationStarted(", "WebViewHost::");
+    CHECK(nav.find("if(PlatformWebView::revealGateEnabled()){revealGate_.onNavigationStarted(juce::Time::"
+                   "getMillisecondCounter());applyRevealGate();}") != std::string::npos);
+    CHECK(countOf(src.code, "revealGate_.onNavigationStarted(") == 1);
+
+    // ③ 兜底面板:三条提到运行时的文案 + install 按钮的平台条件。
+    const auto fallback = methodBody(src.code, "voidWebViewHost::showFallback(", "WebViewHost::");
+    CHECK(fallback.find("message=PlatformWebView::missingRuntimeMessage();") != std::string::npos);
+    CHECK(fallback.find("message=PlatformWebView::tooOldRuntimeMessage();") != std::string::npos);
+    CHECK(fallback.find("message=PlatformWebView::envNotStartedMessage();") != std::string::npos);
+    CHECK(fallback.find("options.showInstall=(missing||tooOld)&&PlatformWebView::offersRuntimeDownload();") !=
+          std::string::npos);
+
+    // ④ 诊断行:运行时那一段 + UDF 那一段;背景色诊断行;冷/热起步那一行的 UDF。
+    const auto diag = methodBody(src.code, "juce::StringWebViewHost::buildDiagnostics(", "WebViewHost::");
+    CHECK(diag.find("PlatformWebView::runtimeDiagnosticsField(runtime_)") != std::string::npos);
+    CHECK(diag.find("PlatformWebView::userDataFolderDisplay(userDataFolder_)") != std::string::npos);
+    const auto bg = methodBody(src.code, "voidWebViewHost::logBackgroundColourSupport(", "WebViewHost::");
+    CHECK(bg.find("PlatformWebView::backgroundColourDiagnostics(runtime_)") != std::string::npos);
+    const auto begin = methodBody(src.code, "voidWebViewHost::beginLoadAttempt(", "WebViewHost::");
+    CHECK(begin.find("PlatformWebView::userDataFolderDisplay(userDataFolder_)") != std::string::npos);
+
+    // ⑤ 日志:OutputDebugString 那条照旧(juce::Logger),同一行再交给平台文件日志(Windows 上是空操作)。
+    const auto log = methodBody(src.code, "voidWebViewHost::logDiag(", "WebViewHost::");
+    CHECK(log.find("juce::Logger::writeToLog(message);") != std::string::npos);
+    CHECK(log.find("platformlog::write(message);") != std::string::npos);
+}
+
+TEST_CASE("[M07] plugin entry points install the platform log before the first processor", "[M07][source]")
+{
+    // install 必须早于本二进制里任何一个 Processor 的构造(段后端从构造起就可能经 IpcDiag 报失败)。
+    INFO("source-level check: createPluginFilter() must call scvb::platformlog::install(<role>, "
+         "JucePlugin_VersionString) before constructing the processor");
+    struct Entry
+    {
+        const char* file;
+        const char* install;
+        const char* construct;
+    };
+    const Entry entries[] = {
+        {"src/input/InputPluginEntry.cpp", "scvb::platformlog::install(\"input\",JucePlugin_VersionString);",
+         "returnnewScvbInputAudioProcessor();"},
+        {"src/output/OutputPluginEntry.cpp", "scvb::platformlog::install(\"output\",JucePlugin_VersionString);",
+         "returnnewScvbOutputAudioProcessor();"},
+        {"src/monitor/MonitorProcessor.cpp", "scvb::platformlog::install(\"monitor\",JucePlugin_VersionString);",
+         "returnnewScvbMonitorAudioProcessor();"},
+    };
+    for (const auto& e : entries)
+    {
+        INFO(e.file);
+        const auto src = lexSource(e.file);
+        const auto filter = src.code.find("JUCE_CALLTYPEcreatePluginFilter()");
+        REQUIRE(filter != std::string::npos);
+        const auto install = src.code.find(e.install, filter);
+        const auto construct = src.code.find(e.construct, filter);
+        CHECK(install != std::string::npos);
+        CHECK(construct != std::string::npos);
+        CHECK(install < construct);
+    }
+}
+
+TEST_CASE("[M07] RotatingLogFile rotates right before a line would cross the limit", "[M07][platformlog]")
+{
+    ScratchDir scratch;
+    // 父目录还不存在:append 自己建。
+    const auto file = scratch.dir.getChildFile("sub").getChildFile("role.log");
+    scvb::platformlog::RotatingLogFile log(file, 200);
+    CHECK(log.rotatedFile() == file.getSiblingFile("role.1.log"));
+
+    // 每行 49 字符 + '\n' = 50 字节:4 行正好 200,第 5 行之前轮转。
+    const auto lineFor = [](int i) { return juce::String(i) + juce::String::repeatedString("a", 48); };
+    for (int i = 0; i < 4; ++i)
+        REQUIRE(log.append(lineFor(i)));
+    CHECK(file.getSize() == 200);
+    CHECK_FALSE(log.rotatedFile().exists());
+
+    REQUIRE(log.append(lineFor(4)));
+    CHECK(log.rotatedFile().getSize() == 200);
+    CHECK(file.getSize() == 50);
+    CHECK(linesOf(log.rotatedFile()) == juce::StringArray(lineFor(0), lineFor(1), lineFor(2), lineFor(3)));
+    CHECK(linesOf(file) == juce::StringArray(lineFor(4)));
+
+    // 再轮转一次:只留一份旧的(上一份被覆盖),一行不丢地落在两份里。
+    for (int i = 5; i < 9; ++i)
+        REQUIRE(log.append(lineFor(i)));
+    CHECK(linesOf(log.rotatedFile()) == juce::StringArray(lineFor(4), lineFor(5), lineFor(6), lineFor(7)));
+    CHECK(linesOf(file) == juce::StringArray(lineFor(8)));
+    CHECK_FALSE(file.getSiblingFile("role.2.log").exists());
+}
+
+TEST_CASE("[M07] DiagDeduper keeps one line per (op, error, segment) per window", "[M07][platformlog]")
+{
+    using scvb::platformlog::DiagDeduper;
+    DiagDeduper d;
+    const juce::String seg("/SynchainSCVB.v1.g1.registry");
+    const std::uint32_t t0 = 1000;
+
+    auto v = d.onEvent(4, 13, seg, t0);
+    CHECK(v.emit);
+    CHECK(v.repeatsSuppressed == 0);
+    CHECK(v.rateLimited == 0);
+
+    // 25Hz 重试路径上的同一个失败:窗口内只计数。
+    int emitted = 0;
+    for (std::uint32_t i = 1; i <= 99; ++i)
+        emitted += d.onEvent(4, 13, seg, t0 + i * 40).emit ? 1 : 0;
+    CHECK(emitted == 0);
+
+    // 键的三个分量各自独立:换任何一个都是新键,当场落行。
+    CHECK(d.onEvent(4, 2, seg, t0 + 10).emit);
+    CHECK(d.onEvent(5, 13, seg, t0 + 10).emit);
+    CHECK(d.onEvent(4, 13, "/SynchainSCVB.v1.g8.audio.ch15", t0 + 10).emit);
+    CHECK(d.keyCount() == 4);
+
+    // 窗口边界:差 1 ms 仍略去,到点落行并带上期间略去的次数(99 + 1),计数随之清零。
+    CHECK_FALSE(d.onEvent(4, 13, seg, t0 + DiagDeduper::kRepeatWindowMs - 1).emit);
+    v = d.onEvent(4, 13, seg, t0 + DiagDeduper::kRepeatWindowMs);
+    CHECK(v.emit);
+    CHECK(v.repeatsSuppressed == 100);
+    CHECK_FALSE(d.onEvent(4, 13, seg, t0 + DiagDeduper::kRepeatWindowMs + 1).emit);
+}
+
+TEST_CASE("[M07] DiagDeduper global rate limit and key table cap", "[M07][platformlog]")
+{
+    using scvb::platformlog::DiagDeduper;
+    {
+        // 同一窗口里大量**不同**键:前 kMaxLinesPerWindow 条落行,其余只计数,并进下一窗口的第一条。
+        DiagDeduper d;
+        for (std::uint32_t k = 0; k < DiagDeduper::kMaxLinesPerWindow; ++k)
+            CHECK(d.onEvent(1, static_cast<int>(k), "/s", 5000).emit);
+        CHECK_FALSE(d.onEvent(1, 9999, "/s", 5001).emit);
+        CHECK_FALSE(d.onEvent(1, 9998, "/s", 5002).emit);
+        const auto v = d.onEvent(1, 9999, "/s", 5000 + DiagDeduper::kRepeatWindowMs);
+        CHECK(v.emit);
+        CHECK(v.rateLimited == 2);
+    }
+    {
+        // 记住的键有上限:错开时间(每窗口不超过全局上限)喂 kMaxKeys + 10 个不同键,表不涨过上限。
+        DiagDeduper d;
+        const std::uint32_t step = DiagDeduper::kRepeatWindowMs / DiagDeduper::kMaxLinesPerWindow + 1;
+        std::uint32_t now = 0;
+        int emitted = 0;
+        const auto total = static_cast<int>(DiagDeduper::kMaxKeys) + 10;
+        for (int k = 0; k < total; ++k, now += step)
+            emitted += d.onEvent(2, k, "/s", now).emit ? 1 : 0;
+        CHECK(emitted == total);
+        CHECK(d.keyCount() == DiagDeduper::kMaxKeys);
+        // 最近落过行的键还在表里(窗口内照样略去),淘汰的是最旧的那些。
+        CHECK_FALSE(d.onEvent(2, total - 1, "/s", now).emit);
+    }
+}
+
+TEST_CASE("[M07] DiagDeduper window survives the millisecond counter wrapping around", "[M07][platformlog]")
+{
+    using scvb::platformlog::DiagDeduper;
+    DiagDeduper d;
+    const std::uint32_t nearWrap = 0xffffffffu - 1000u;
+    CHECK(d.onEvent(3, 1, "/w", nearWrap).emit);
+    CHECK_FALSE(d.onEvent(3, 1, "/w", 500u).emit); // 回绕后 1501 ms:仍在窗口内
+    const std::uint32_t later = nearWrap + DiagDeduper::kRepeatWindowMs; // 无符号回绕到 58999
+    const auto v = d.onEvent(3, 1, "/w", later);
+    CHECK(v.emit);
+    CHECK(v.repeatsSuppressed == 1);
+}
+
+TEST_CASE("[M07] platform log writes only on the message thread", "[M07][platformlog]")
+{
+    juce::ScopedJuceInitialiser_GUI gui; // 本线程 = 消息线程
+    PlatformLogGuard guard;
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("input.log");
+
+    // 没装:写什么都不落。
+    scvb::platformlog::write("before install");
+    CHECK_FALSE(file.exists());
+
+    REQUIRE(scvb::platformlog::installAt(file));
+    CHECK(scvb::platformlog::isInstalled());
+    CHECK(scvb::platformlog::installedFile() == file);
+    // 先装者为准:同一个二进制里第二个实例再装是空操作。
+    CHECK_FALSE(scvb::platformlog::installAt(scratch.dir.getChildFile("other.log")));
+    CHECK(scvb::platformlog::installedFile() == file);
+
+    scvb::platformlog::write("on the message thread");
+    auto lines = linesOf(file);
+    CHECK(lines.size() == 1);
+    if (!lines.isEmpty())
+        CHECK(lines[0].endsWith(" on the message thread"));
+
+    // 别的线程:不就地写(投递给消息线程;本进程不跑消息循环,所以它不会落下来)。
+    std::thread worker([] { scvb::platformlog::write("from a worker thread"); });
+    worker.join();
+    CHECK(linesOf(file).size() == 1);
+
+    scvb::platformlog::uninstall();
+    CHECK_FALSE(scvb::platformlog::isInstalled());
+    scvb::platformlog::write("after uninstall");
+    CHECK(linesOf(file).size() == 1);
+}
+
+#if JUCE_WINDOWS
+TEST_CASE("[M07] Windows keeps OutputDebugString only: no file log is installed", "[M07][platformlog]")
+{
+    // Windows 维持现状:不落文件日志。默认路径为空 ⇒ install() 空操作 ⇒ write() 什么都不做。
+    PlatformLogGuard guard;
+    for (const char* role : {"input", "output", "monitor"})
+        CHECK(scvb::platformlog::defaultLogFile(role) == juce::File());
+    CHECK_FALSE(scvb::platformlog::install("input", "0.0.0"));
+    CHECK_FALSE(scvb::platformlog::isInstalled());
+    CHECK(scvb::platformlog::installedFile() == juce::File());
+}
+#endif
+
+#if JUCE_MAC
+TEST_CASE("[M07][mac] defaults resolve to system WebKit: copy, diagnostics, reveal gate, pid", "[M07][mac]")
+{
+    CHECK(PlatformWebView::kEngine == Engine::systemWebKit);
+    const auto okNoVersion = runtimeOf(PlatformWebView::RuntimeStatus::ok, ""); // = runtimeInfo() on macOS
+    const juce::String texts[] = {
+        PlatformWebView::missingRuntimeMessage(),
+        PlatformWebView::tooOldRuntimeMessage(),
+        PlatformWebView::envNotStartedMessage(),
+        PlatformWebView::runtimeDiagnosticsField(okNoVersion),
+    };
+    for (const auto& t : texts)
+    {
+        INFO(t);
+        CHECK_FALSE(namesWebView2(t));
+    }
+    CHECK(PlatformWebView::runtimeDiagnosticsField(okNoVersion) == "WebKit (system)");
+    CHECK(PlatformWebView::backgroundColourDiagnostics(okNoVersion).isEmpty());
+    CHECK_FALSE(PlatformWebView::revealGateEnabled());
+    CHECK_FALSE(PlatformWebView::offersRuntimeDownload());
+    // pid 进诊断行:mac 上与活动监视器对得上(M07 之前恒 0)。
+    CHECK(PlatformWebView::processId() == static_cast<int>(::getpid()));
+    CHECK(PlatformWebView::processId() > 0);
+}
+
+TEST_CASE("[M07][mac] no user-data folder: empty root, no directory, no probe file", "[M07][mac]")
+{
+    // M07 之前这里落在 tempDirectory/SCVB-WebView(= ~/Library/Caches/<宿主名>/SCVB-WebView)并建目录、写探针。
+    const auto legacy = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("SCVB-WebView");
+    const bool legacyExisted = legacy.exists();
+
+    CHECK(PlatformWebView::userDataFolderRoot() == juce::File());
+    const auto in = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    CHECK(in == juce::File());
+    CHECK(PlatformWebView::probeUserDataFolder(in).isEmpty());
+    CHECK(PlatformWebView::userDataFolderDisplay(in) == "(not used)");
+
+    CHECK(legacy.exists() == legacyExisted); // 不建旧目录
+    CHECK_FALSE(juce::File("/SCVBInputWV2").exists()); // 空根没被拼成文件系统根下的路径
+}
+
+TEST_CASE("[M07][mac] default log file lives under ~/Library/Logs/Synchain/SCVB", "[M07][mac]")
+{
+    const auto home = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+    REQUIRE(home != juce::File());
+    for (const char* role : {"input", "output", "monitor"})
+    {
+        INFO(role);
+        CHECK(scvb::platformlog::defaultLogFile(role) ==
+              home.getChildFile("Library/Logs/Synchain/SCVB").getChildFile(juce::String(role) + ".log"));
+    }
+    // 角色名不在闭集里:不拼路径。
+    CHECK(scvb::platformlog::defaultLogFile("") == juce::File());
+    CHECK(scvb::platformlog::defaultLogFile("../input") == juce::File());
+}
+
+TEST_CASE("[M07][mac] the installed log writes and rotates at 1 MB", "[M07][mac]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    PlatformLogGuard guard;
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("Logs").getChildFile("input.log"); // 父目录由日志自己建
+    REQUIRE(scvb::platformlog::installAt(file));
+
+    // 每行约 2 KB(时间戳 + 序号 + 2000 字符):600 行约 1.2 MB ⇒ 走生产阈值 kMaxLogBytes 恰好轮转一次。
+    const juce::String body = juce::String::repeatedString("x", 2000);
+    constexpr int kLines = 600;
+    for (int i = 0; i < kLines; ++i)
+        scvb::platformlog::write(juce::String(i) + " " + body);
+
+    const auto rotated = file.getSiblingFile("input.1.log");
+    CHECK(rotated.existsAsFile());
+    CHECK(rotated.getSize() <= scvb::platformlog::kMaxLogBytes);
+    CHECK(rotated.getSize() > scvb::platformlog::kMaxLogBytes - 4096); // 轮转在「再写一行就超」那一刻,不更早
+    CHECK(file.getSize() <= scvb::platformlog::kMaxLogBytes);
+    const auto older = linesOf(rotated);
+    const auto newer = linesOf(file);
+    CHECK(older.size() + newer.size() == kLines); // 一次轮转,一行不丢
+    if (!older.isEmpty() && !newer.isEmpty())
+    {
+        CHECK(older[0].contains(" 0 x"));
+        CHECK(newer[newer.size() - 1].contains(" " + juce::String(kLines - 1) + " x"));
+    }
+}
+
+TEST_CASE("[M07][mac] several writers on one log file never overwrite each other's lines", "[M07][mac]")
+{
+    // 同一份 <role>.log 的多个写者(同一宿主里同角色的 AU 与 VST3 是两个二进制,各有一把进程内锁):
+    // 这里用 4 个线程、各自一个 RotatingLogFile 实例(= 各自的锁)同时往同一个文件追加。
+    // 每行一次 O_APPEND write ⇒ 一行不丢、一行不残。阈值放大到不会轮转(轮转跨写者不协调,头注里写明了)。
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("input.log");
+    constexpr int kWriters = 4;
+    constexpr int kPerWriter = 2000;
+    const juce::String pad = juce::String::repeatedString("x", 80);
+    std::vector<std::thread> writers;
+    for (int w = 0; w < kWriters; ++w)
+        writers.emplace_back([&file, &pad, w] {
+            scvb::platformlog::RotatingLogFile log(file, 64 * 1024 * 1024);
+            for (int i = 0; i < kPerWriter; ++i)
+                log.append("w" + juce::String(w) + " " + juce::String(i) + " " + pad);
+        });
+    for (auto& t : writers)
+        t.join();
+
+    const auto lines = linesOf(file);
+    CHECK(lines.size() == kWriters * kPerWriter);
+    int intact = 0;
+    std::vector<int> perWriter(kWriters, 0);
+    for (const auto& l : lines)
+    {
+        const auto tokens = juce::StringArray::fromTokens(l, " ", "");
+        if (tokens.size() == 3 && tokens[0].length() == 2 && tokens[0][0] == 'w' && tokens[2] == pad)
+        {
+            const int w = tokens[0].getTrailingIntValue();
+            if (w >= 0 && w < kWriters)
+            {
+                ++perWriter[static_cast<std::size_t>(w)];
+                ++intact;
+            }
+        }
+    }
+    CHECK(intact == kWriters * kPerWriter);
+    for (int w = 0; w < kWriters; ++w)
+    {
+        INFO("writer " << w);
+        CHECK(perWriter[static_cast<std::size_t>(w)] == kPerWriter);
+    }
+}
+
+TEST_CASE("[M07][mac] IpcDiag sink keeps one line per (op, error, segment)", "[M07][mac]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    PlatformLogGuard guard;
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("output.log");
+
+    const auto hasSink = [] { return scvb::ipcDiagSink() != nullptr; };
+    CHECK_FALSE(hasSink()); // M05 的默认:空操作
+    REQUIRE(scvb::platformlog::installAt(file));
+    CHECK(hasSink());
+
+    scvb::IpcDiagEvent e;
+    e.op = scvb::IpcDiagOp::kShmOpen;
+    e.error = 13;
+    e.segment = "/SynchainSCVB.v1.g1.registry";
+    e.detail = "shm_open failed";
+    // 25Hz 重试路径上的同一个失败报 50 次:只落一行。反向注入「去掉 sink 去重」红在这一格。
+    for (int i = 0; i < 50; ++i)
+        scvb::reportIpcDiag(e);
+    auto lines = linesOf(file);
+    CHECK(lines.size() == 1);
+    if (!lines.isEmpty())
+        CHECK(lines[0].contains("ipc shm-open errno 13 segment /SynchainSCVB.v1.g1.registry -- shm_open failed"));
+
+    // 键的三个分量各自独立。
+    e.error = 1;
+    scvb::reportIpcDiag(e);
+    e.segment = "/SynchainSCVB.v1.g8.audio.ch15";
+    scvb::reportIpcDiag(e);
+    e.op = scvb::IpcDiagOp::kSegmentLock;
+    e.path = "/tmp/scvb-m07.lock";
+    scvb::reportIpcDiag(e);
+    lines = linesOf(file);
+    CHECK(lines.size() == 4);
+    if (lines.size() == 4)
+        CHECK(lines[3].contains(
+            "ipc segment-lock errno 1 segment /SynchainSCVB.v1.g8.audio.ch15 path /tmp/scvb-m07.lock"));
+
+    // 卸下:IpcDiag 回到空操作,之后的报告不落盘。
+    scvb::platformlog::uninstall();
+    CHECK_FALSE(hasSink());
+    scvb::reportIpcDiag(e);
+    CHECK(linesOf(file).size() == 4);
+}
+#endif

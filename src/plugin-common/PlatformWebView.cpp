@@ -7,6 +7,8 @@
 // 前置声明免引 <windows.h>(与 PlatformWebViewRuntime.cpp 对 loader 的处理同一手法:
 // 这个 TU 还要能离线单测,不该把整个 Win32 头拖进来)。
 extern "C" unsigned long __stdcall GetCurrentProcessId();
+#else
+#include <unistd.h> // getpid
 #endif
 
 namespace scvb::webview
@@ -18,12 +20,14 @@ namespace
 {
 // 本进程 PID。**只进诊断行,不再进目录名**(理由见 makeUserDataFolder)。用户在诊断行里
 // 看到的数字能直接和任务管理器对上,排查「谁占着 WebView2」时有用。
+// [B 线 M07] 非 Windows 由恒 0 改为 getpid():mac 上同样要能和活动监视器对上
+// (进程外 AU 时插件跑在 AUHostingService 里,PID 就是区分「进程内 / 进程外」的那一项)。
 int currentProcessId()
 {
 #if JUCE_WINDOWS
     return static_cast<int>(GetCurrentProcessId());
 #else
-    return 0;
+    return static_cast<int>(::getpid());
 #endif
 }
 } // namespace
@@ -51,7 +55,10 @@ juce::File PlatformWebView::userDataFolderRoot()
         .getChildFile("SCVB")
         .getChildFile("WebView2");
 #else
-    return juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("SCVB-WebView");
+    // [B 线 M07] 空 File = 本平台不用 UDF。WKWebView 用默认的 WKWebsiteDataStore,从不读这个目录;
+    // 此前这里返回 tempDirectory/SCVB-WebView(mac 上 = ~/Library/Caches/<宿主可执行名>/),
+    // 构造期还会在里面建目录、写探针 —— 只是在用户的 Caches 里留一个没人用的目录。
+    return {};
 #endif
 }
 
@@ -75,11 +82,22 @@ juce::File PlatformWebView::makeUserDataFolder(const juce::String& userDataFolde
     //
     // 万一仍然创建失败(企业策略、目录被锁等),现在不会再表现成一句「加载太慢」:构造期的
     // 可写性探针 + 「导航事件从未到达 ⇒ 环境没起来」三态面板会把它如实说出来。
-    return userDataFolderRoot().getChildFile(userDataFolderName);
+    //
+    // [B 线 M07] 根为空(本平台不用 UDF)时返回空 File,**不**往下拼:juce 的
+    // File().getChildFile("x") 会把空路径补成分隔符,得到文件系统根下的 "/x"。
+    const auto root = userDataFolderRoot();
+    if (root == juce::File())
+        return {};
+    return root.getChildFile(userDataFolderName);
 }
 
 juce::String PlatformWebView::probeUserDataFolder(const juce::File& folder)
 {
+    // [B 线 M07] 空 File = 本平台不用 UDF(见 userDataFolderRoot):不建目录、不写探针,也不算问题。
+    // Windows 上 makeUserDataFolder 恒非空,走不到这一支。
+    if (folder == juce::File())
+        return {};
+
     // 建目录 + 落一个探针文件再删。WebView2 只有在环境创建时才会碰这个目录,而那一步的失败被
     // JUCE 吞掉,所以「目录到底写不写得进」必须我们自己先测一次,否则诊断面板只能说「超时」。
     const auto result = folder.createDirectory();
@@ -145,6 +163,103 @@ PlatformWebView::BackgroundColourSupport PlatformWebView::backgroundColourSuppor
 
     return major >= kBackgroundColourMinRuntimeMajor ? BackgroundColourSupport::available
                                                      : BackgroundColourSupport::unavailable;
+}
+
+// -----------------------------------------------------------------------------
+// [B 线 M07] 按引擎分支的用户可见文案与诊断行。
+// WebView2 那一支**逐字**搬自 WebViewHost.cpp(M07 之前的 missingRuntimeMessage / tooOldRuntimeMessage /
+// envNotStartedMessage / logBackgroundColourSupport / buildDiagnostics),由 test_plugin_common.cpp 的
+// [M07] 钉字格逐字对拍 —— 改这几句就是改 Windows 用户看到的字,那几格会红。
+// 文案一律 ASCII:运行期字面量含非 ASCII 会在 CP936 机器上触发 MSVC C4819(判例 cp936-chinese-source-c4819)。
+// -----------------------------------------------------------------------------
+juce::String PlatformWebView::missingRuntimeMessage(Engine engine)
+{
+    if (engine == Engine::webView2)
+        return "Microsoft Edge WebView2 Runtime was not found, so the full UI cannot load.\n"
+               "Install the runtime once, then reopen this plugin window.";
+    return "The system web view (WebKit) is not available, so the full UI cannot load.\n"
+           "Update macOS, then reopen this plugin window.";
+}
+
+juce::String PlatformWebView::tooOldRuntimeMessage(Engine engine)
+{
+    if (engine == Engine::webView2)
+        return "The installed Microsoft Edge WebView2 Runtime is too old for this plugin.\n"
+               "Update to the Evergreen runtime, then reopen this plugin window.";
+    return "The system web view (WebKit) is too old for this plugin.\n"
+           "Update macOS, then reopen this plugin window.";
+}
+
+juce::String PlatformWebView::envNotStartedMessage(Engine engine)
+{
+    if (engine == Engine::webView2)
+        return "The WebView2 environment did not start (no navigation ever began).\n"
+               "This is usually the user-data folder being unwritable or already in use by another\n"
+               "process, or the host blocking the msedgewebview2.exe child process.";
+    // 系统 WebKit:没有 user-data 目录这一环(userDataFolderRoot() 为空),剩下的常见成因是宿主挡了
+    // WebKit 的网页内容子进程(com.apple.WebKit.WebContent),或系统内存吃紧。
+    return "The system web view (WebKit) did not start (no navigation ever began).\n"
+           "This is usually the host blocking the WebKit web content process, or the\n"
+           "system running low on memory. Click Retry, or close and reopen this plugin window.";
+}
+
+juce::String PlatformWebView::runtimeDiagnosticsField(const RuntimeInfo& info, Engine engine)
+{
+    if (engine == Engine::webView2)
+        return "WebView2 " + (info.version.isNotEmpty() ? info.version : juce::String("not found"));
+    // 系统 WebKit 的版本跟着 macOS / Safari 走,runtimeInfo() 不探测(version 恒空)。
+    // 写成「not found」会把一台正常的机器误报成缺运行时(M07 之前 mac 上就是这样)。
+    return "WebKit (system)";
+}
+
+// [SL-376 / SL-364] 判定与它证到哪一步(以及为什么插件侧做不到直接观测)只写在
+// PlatformWebView.h 的 backgroundColourSupport() 头注一处,这里不复述。
+// 四条形态,措辞互不相同,便于在 DebugView / 宿主日志里直接 grep:
+//   available   —— 正常;这一层**按版本推断**在,控制器建好到首帧之间铺的是我方 argb。
+//   UNAVAILABLE —— SL-364 命中;那一段露的是 WebView2 默认白。**本卡不修**(遮挡闸已经让
+//                  那一段不上屏),但要如实说出来,别再让下一个人从零查一遍。
+//   unknown ×2  —— 版本串没解析出来 / 压根没探到运行时;两种原因分开写,不猜。
+// ⚠ 措辞用 `inferred present|absent (from runtime ..., not directly observed)` 而不是
+//   `present|absent`(#247 复审【建议】3,统筹裁定按「inferred from runtime >= 87」落地):
+//   这一行是**按运行时主版本推断**出来的,不是对 JUCE 那次 QueryInterface 的直接观测。
+//   用户会把 DebugView 片段整段贴回来,而贴回来的人多半不会同时读 PlatformWebView.h 的
+//   头注 —— 所以「这是推断」必须写在**行里**,不能只写在注释里。
+// [B 线 M07] 这一层是 WebView2 专有的(DefaultBackgroundColor / ICoreWebView2Controller2),系统 WebKit
+// 返回空串 = 不出这一行;M07 之前 mac 上会打出「unknown (runtime version unknown not parsable)」。
+juce::String PlatformWebView::backgroundColourDiagnostics(const RuntimeInfo& info, Engine engine)
+{
+    if (engine != Engine::webView2)
+        return {};
+
+    using Support = BackgroundColourSupport;
+    const auto support = backgroundColourSupport(info);
+    const juce::String version = info.version.isNotEmpty() ? info.version : juce::String("unknown");
+    const juce::String argb = juce::String::toHexString(static_cast<int>(scvb::webview::shellBackdropMid().getARGB()))
+                                  .paddedLeft('0', 8); // [SL-402] DefaultBackgroundColor 仍收纯色:占位渐变的轴中点色
+
+    const juce::String floor = juce::String(kBackgroundColourMinRuntimeMajor);
+    if (support == Support::available)
+        return "webview2 default background: available -- ICoreWebView2Controller2 inferred present "
+               "(from runtime " +
+               version + " >= major " + floor + ", not directly observed), JUCE puts argb " + argb;
+    if (support == Support::unavailable)
+        return "webview2 default background: UNAVAILABLE -- ICoreWebView2Controller2 inferred absent "
+               "(from runtime " +
+               version + " < major " + floor + ", not directly observed), JUCE drops argb " + argb + " silently";
+    if (info.status == RuntimeStatus::missing)
+        // 当前调用点(beginLoadAttempt)在 missing 时已提前 return,走不到这里 —— 但把它写对
+        // 是为了将来挪调用点的人(#247 复审【建议】⑤):否则这条会打成
+        // "runtime version unknown not parsable",把原因指错。
+        return "webview2 default background: unknown (no WebView2 runtime detected)";
+    return "webview2 default background: unknown (runtime version " + version + " not parsable)";
+}
+
+juce::String PlatformWebView::userDataFolderDisplay(const juce::File& folder)
+{
+    // 空 File = 本平台不用 UDF(userDataFolderRoot() 的非 Windows 分支)。WebView2 上恒非空,原样出路径。
+    if (folder == juce::File())
+        return "(not used)";
+    return folder.getFullPathName();
 }
 
 } // namespace scvb::webview

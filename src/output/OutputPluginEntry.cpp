@@ -12,6 +12,7 @@
 
 #include "OutputEditor.h"
 #include "OutputProcessor.h"
+#include "PlatformLog.h"
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
 {
@@ -21,5 +22,8 @@ juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
 // juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
+    // [B 线 M07] 平台文件日志 + IPC 诊断 sink(mac:~/Library/Logs/Synchain/SCVB/output.log;Windows 空操作)。
+    // 落点理由同 InputPluginEntry.cpp:早于本二进制里任何一个 Processor 的构造;每个二进制只装一次。
+    scvb::platformlog::install("output", JucePlugin_VersionString);
     return new ScvbOutputAudioProcessor();
 }

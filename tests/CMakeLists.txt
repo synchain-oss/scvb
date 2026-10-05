@@ -304,6 +304,19 @@ add_test(NAME scvb_plugin_common_tests COMMAND scvb_plugin_common_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_plugin_common_tests PROPERTIES TIMEOUT 30)
 
+# [B 线 M07] WebView C++ 侧 mac 适配的判据([M07] / [mac] 标签,tests/webview/test_plugin_common.cpp):
+#   · PlatformLog.cpp(mac 文件日志:轮转、IpcDiag sink 去重、只在消息线程写)进本目标,每个平台都编都跑;
+#   · SCVB_SOURCE_DIR:[M07][source] 两格读 WebViewHost.cpp 与三个插件入口的源码文本(那几个 TU 依赖真
+#     WebView / 插件 wrapper,不编入,接线只能这样判 —— 与 scvb_input_bridge_tests 的 [SL-463] 同一手法);
+#   · Apple 上另链 scvb_core:IpcDiag 只在 Apple 上编进 scvb_core,SCVB_HAS_POSIX_SHM 也由它 PUBLIC 带过来,
+#     [mac] 那一格要经真 reportIpcDiag() 走一遍 sink。Windows 上不链,源集合只多一个 PlatformLog.cpp。
+# 独立的追加块,不碰上面那份源列表(跨线协调)。
+target_sources(scvb_plugin_common_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/plugin-common/PlatformLog.cpp)
+target_compile_definitions(scvb_plugin_common_tests PRIVATE SCVB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(APPLE)
+  target_link_libraries(scvb_plugin_common_tests PRIVATE scvb_core)
+endif()
+
 # scvb_input_bridge_tests:T30 Input 桥 L0 单测(claim 六值/载荷形状/拒绝语义;链接 JUCE,离线 Catch2)。
 # 只编可离线单测的 TU:InputBridgeLogic + BridgeBase(InputEditor 依赖 WebViewHost 真 WebView2
 # 实例化,留待 gate 8 真机 GUI pluginval 验证,不编入本测试)。

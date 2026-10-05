@@ -6,6 +6,7 @@
 // 同源(真 WebView2 由 gate 8 的真机 GUI pluginval 验)。生产构建从不定义本宏。
 #if !SCVB_MONITOR_HEADLESS
 #include "MonitorEditor.h"
+#include "PlatformLog.h" // [B 线 M07] createPluginFilter 里装平台文件日志
 #endif
 
 #include "UiDefaultsStore.h" // [rc-misc c] 语言/缩放的系统级全局默认(与 Output/Input 共用一份存储)
@@ -371,5 +372,11 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
+#if !SCVB_MONITOR_HEADLESS
+    // [B 线 M07] 平台文件日志 + IPC 诊断 sink(mac:~/Library/Logs/Synchain/SCVB/monitor.log;Windows 空操作)。
+    // 落点理由同 InputPluginEntry.cpp:早于本二进制里任何一个 Processor 的构造;每个二进制只装一次。
+    // 离线单测(SCVB_MONITOR_HEADLESS)不编 PlatformLog.cpp,与它不编 MonitorEditor 同一条线。
+    scvb::platformlog::install("monitor", JucePlugin_VersionString);
+#endif
     return new ScvbMonitorAudioProcessor();
 }
