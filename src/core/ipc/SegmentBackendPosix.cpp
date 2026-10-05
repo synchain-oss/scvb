@@ -26,7 +26,9 @@ struct SegmentBackendPosix::Mapping
 {
     int lockFd = -1; // 段锁文件的 fd,持 LOCK_SH 直到离开
     std::string shmName; // POSIX 名 "/<逻辑名>"
-    std::string lockDir; // 建立映射时的锁目录:离开时用同一把全局锁
+    // 建立映射时的 <锁目录>/lifecycle.lock:离开时用同一把全局锁。建映射时就拼好,leave() 不再分配
+    // (它会从后端析构里调用,不能抛)。
+    std::string lifecyclePath;
     void* base = nullptr;
     std::size_t size = 0;
     Mapping* prev = nullptr;
@@ -177,11 +179,11 @@ bool ensureDirectory(const std::string& path, int& err)
 
 // 全局 lifecycle.lock 的作用域持有(LOCK_EX,有界等待;wait = 0 时只试一次)。create=false 时文件
 // 不存在就不建(只读 / 附着 / 离开路径:锁目录里从没建过任何东西,说明也不可能有段)。
+// 路径由调用方拼好并保证在本对象生命期内有效(这里只存引用、不拷贝):离开路径不允许分配。
 class LifecycleLock
 {
 public:
-    LifecycleLock(const std::string& lockDir, bool create, std::chrono::milliseconds wait)
-        : path_(lockDir + "/" + SegmentBackendPosix::kLifecycleLockName)
+    LifecycleLock(const std::string& path, bool create, std::chrono::milliseconds wait) : path_(path)
     {
         const int flags = create ? (O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW) : (O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         fd_ = openRetry(path_.c_str(), flags, 0600);
@@ -230,24 +232,10 @@ public:
     const std::string& path() const noexcept { return path_; }
 
 private:
-    std::string path_;
+    const std::string& path_;
     int fd_ = -1;
     int error_ = 0;
     bool held_ = false;
-};
-
-// 关 fd 的兜底:正常路径上调用方会先手动关掉(置 -1),这里只在异常展开时生效。
-struct FdBackstop
-{
-    int& fd;
-    ~FdBackstop()
-    {
-        if (fd >= 0)
-        {
-            ::close(fd);
-            fd = -1;
-        }
-    }
 };
 
 // 无主段的属主检查:只清自己(有效 uid)名下的段。POSIX shm 是全机命名空间,锁目录却在各自的 home 里,
@@ -547,15 +535,16 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
 {
     const bool create = (mode == Mode::kCreateOrOpen);
 
-    // 映射记录(含两份字符串拷贝)在拿任何 fd / 锁之前就分配好:分配失败只会把异常抛出去,不会留下
-    // 已开的锁 fd 或映射。之后直到成功返回,不再有可能抛的分配。
+    // 映射记录(含两份字符串:段名、lifecycle.lock 路径)在拿任何 fd / 锁之前就分配好:分配失败只会把
+    // 异常抛出去,不会留下已开的锁 fd 或映射。之后直到成功返回,不再有可能抛的分配。离开时也用这份
+    // 现成的路径,所以 leave() 不分配。
     auto record = std::make_unique<Mapping>();
     record->shmName = shm;
-    record->lockDir = lockDir_;
+    record->lifecyclePath = lockDir_ + "/" + kLifecycleLockName;
 
     // ── 全局生命周期锁:从这里到函数返回,本进程与别的进程都插不进任何转换 ──
     const auto wait = lockWait(create ? kCreateLockWait : kAttachLockWait);
-    LifecycleLock life(lockDir_, create, wait);
+    LifecycleLock life(record->lifecyclePath, create, wait);
     if (!life.held())
     {
         if (!create && life.error() == ENOENT)
@@ -714,15 +703,14 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
     return InitResult::kOk;
 }
 
-void SegmentBackendPosix::leave(Mapping& m)
+void SegmentBackendPosix::leave(Mapping& m) noexcept
 {
+    // 不抛(它会从后端析构里调用):lifecycle.lock 的路径建映射时就拼好了,这里不再拼字符串;
+    // PendingDiag::note 与 noteLockFailure 都是 noexcept(带路径的 note 拷贝失败时只丢掉路径)。
     PendingDiag diag;
     {
-        // 兜底:下面拼锁路径等分配万一抛出,锁 fd 也照样关掉(那时在全局锁外关,最坏只是留下一个
-        // 无主残段,由下一个创建者清理)。正常路径在全局锁内手动关。
-        FdBackstop backstop{m.lockFd};
         const auto wait = lockWait(kLeaveLockWait);
-        LifecycleLock life(m.lockDir, /*create=*/false, wait);
+        LifecycleLock life(m.lifecyclePath, /*create=*/false, wait);
         if (life.held())
         {
             suppressedLockFailures_.store(0, std::memory_order_relaxed);

@@ -158,7 +158,8 @@ private:
     void track(Mapping* m) noexcept;
     void untrack(Mapping* m) noexcept;
     // 「离开」这一半:全局锁下 EX 探测 → 最后离开者 shm_unlink → 关锁 fd。不 munmap。
-    void leave(Mapping& m);
+    // noexcept:后端析构里也调它,不分配、不抛。
+    void leave(Mapping& m) noexcept;
     // 断路:本实例最近一次「等满超时」之后 kLockBreakerWindow 内只试一次。
     std::chrono::milliseconds lockWait(std::chrono::milliseconds normal) const noexcept;
     // 取全局锁失败时的记账:断路窗口内的超时只计数不上报;其余记进 diag(带上此前略去的次数)。
