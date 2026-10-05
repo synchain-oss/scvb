@@ -1105,6 +1105,11 @@ TEST_CASE("[M07] WebViewHost.cpp routes platform text and the reveal gate throug
 {
     // WebViewHost.cpp 不进任何测试目标(真 WebView 实例化),上面几格证明 PlatformWebView 本身对,
     // 证明不了 WebViewHost 真的在用它 —— 把调用点改回字面量或去掉闸门的条件,那几格照样全绿。
+    // 判据读的是源码文本(去注释、去空白后按片段匹配):红了先看是写法变了(改名、拆函数)还是接线真的断了。
+    // 不变式是:带平台名字的文案 / 诊断行、遮挡闸的启用条件都经 PlatformWebView,日志同一行交给 platformlog::write。
+    INFO("source-level check on WebViewHost.cpp: platform copy and the reveal-gate condition must go through "
+         "PlatformWebView, logDiag must also feed platformlog::write; if only the wording of the code changed, "
+         "update the expected snippet");
     const auto src = lexSource("src/plugin-common/WebViewHost.cpp");
 
     // ① 用户可见的、带平台名字的字都不再写在这个文件里(static_assert 的编译期消息不算)。
@@ -1147,6 +1152,8 @@ TEST_CASE("[M07] WebViewHost.cpp routes platform text and the reveal gate throug
 TEST_CASE("[M07] plugin entry points install the platform log before the first processor", "[M07][source]")
 {
     // install 必须早于本二进制里任何一个 Processor 的构造(段后端从构造起就可能经 IpcDiag 报失败)。
+    INFO("source-level check: createPluginFilter() must call scvb::platformlog::install(<role>, "
+         "JucePlugin_VersionString) before constructing the processor");
     struct Entry
     {
         const char* file;
@@ -1409,6 +1416,51 @@ TEST_CASE("[M07][mac] the installed log writes and rotates at 1 MB", "[M07][mac]
     {
         CHECK(older[0].contains(" 0 x"));
         CHECK(newer[newer.size() - 1].contains(" " + juce::String(kLines - 1) + " x"));
+    }
+}
+
+TEST_CASE("[M07][mac] several writers on one log file never overwrite each other's lines", "[M07][mac]")
+{
+    // 同一份 <role>.log 的多个写者(同一宿主里同角色的 AU 与 VST3 是两个二进制,各有一把进程内锁):
+    // 这里用 4 个线程、各自一个 RotatingLogFile 实例(= 各自的锁)同时往同一个文件追加。
+    // 每行一次 O_APPEND write ⇒ 一行不丢、一行不残。阈值放大到不会轮转(轮转跨写者不协调,头注里写明了)。
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("input.log");
+    constexpr int kWriters = 4;
+    constexpr int kPerWriter = 2000;
+    const juce::String pad = juce::String::repeatedString("x", 80);
+    std::vector<std::thread> writers;
+    for (int w = 0; w < kWriters; ++w)
+        writers.emplace_back([&file, &pad, w] {
+            scvb::platformlog::RotatingLogFile log(file, 64 * 1024 * 1024);
+            for (int i = 0; i < kPerWriter; ++i)
+                log.append("w" + juce::String(w) + " " + juce::String(i) + " " + pad);
+        });
+    for (auto& t : writers)
+        t.join();
+
+    const auto lines = linesOf(file);
+    CHECK(lines.size() == kWriters * kPerWriter);
+    int intact = 0;
+    std::vector<int> perWriter(kWriters, 0);
+    for (const auto& l : lines)
+    {
+        const auto tokens = juce::StringArray::fromTokens(l, " ", "");
+        if (tokens.size() == 3 && tokens[0].length() == 2 && tokens[0][0] == 'w' && tokens[2] == pad)
+        {
+            const int w = tokens[0].getTrailingIntValue();
+            if (w >= 0 && w < kWriters)
+            {
+                ++perWriter[static_cast<std::size_t>(w)];
+                ++intact;
+            }
+        }
+    }
+    CHECK(intact == kWriters * kPerWriter);
+    for (int w = 0; w < kWriters; ++w)
+    {
+        INFO("writer " << w);
+        CHECK(perWriter[static_cast<std::size_t>(w)] == kPerWriter);
     }
 }
 

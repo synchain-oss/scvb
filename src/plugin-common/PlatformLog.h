@@ -14,6 +14,11 @@
 // Windows 与其它平台**不落文件**:defaultLogFile() 返回空 File ⇒ install() 是空操作 ⇒ write() 什么都不做;
 // OutputDebugString 那条路(WebViewHost::logDiag 里的 juce::Logger)不变。
 //
+// 【多个写者】同一份 <role>.log 可能同时有几个写者:同一宿主里同角色的 AU 与 VST3(两个二进制,各有一把
+// 进程内锁),以及同时开着的多个宿主进程。POSIX 上每行用 O_APPEND 一次 write 落盘,行与行不交错、不互相覆盖;
+// **轮转不跨写者协调**:两个写者同时越过阈值时可能连着轮转两次,较旧的那份备份(至多约 1 MB)被覆盖。
+// 对诊断日志可以接受,这里写明不保证。
+//
 // 【线程】**文件只在消息线程写。** write() 可在任何非实时线程调用:当前就是消息线程时就地写;不是就经
 // MessageManager::callAsync 投递(行内容按值拷贝),没有 MessageManager 时丢弃。音频线程一律不许调
 // (CLAUDE.md §8:文件 I/O、锁、堆分配)。全局状态由一把 std::mutex 守,只在非实时线程上取。
