@@ -1001,6 +1001,8 @@ int countWrongFrames(const float* dst, int64_t t0, int n, u32 nch, u32 writer, s
 }
 
 // badKnown >= 0:调用方已经算好本块错帧数(两个读方交出的样本逐位相同),不再逐帧解码。
+// 例外:本块有错帧而 firstWrong 还空着时照样逐帧解码一次,好把首个错帧记下来(每次运行最多一次),
+// 免得旧读方的 firstWrong 因为一直走复用这条路而空着。
 void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst, int64_t t0, int n, u32 nch, u32 writer,
              int badKnown = -1)
 {
@@ -1025,9 +1027,10 @@ void account(ReaderStat& s, LapStat* lap, bool ok, bool avail, const float* dst,
     if (ok)
     {
         ++s.ok;
-        const int bad = badKnown >= 0
+        const bool needFirst = s.firstWrong.empty();
+        const int bad = (badKnown == 0 || (badKnown > 0 && !needFirst))
                             ? badKnown
-                            : countWrongFrames(dst, t0, n, nch, writer, s.firstWrong.empty() ? &s.firstWrong : nullptr);
+                            : countWrongFrames(dst, t0, n, nch, writer, needFirst ? &s.firstWrong : nullptr);
         if (bad > 0)
         {
             ++s.wrongReads;
@@ -2394,6 +2397,10 @@ TEST_CASE("PROVENANCE legacy pin: LegacyReader is read-for-read identical to the
         {
             INFO(f.name << ": " << summary(r));
             CHECK(r.pinMismatches == 0);
+            // 逐块相同,则错帧数与首个错帧也相同。旧读方一侧多半走「复用被测读方错帧数」那条路
+            // (account 的 badKnown),这两条钉住复用不丢账、也不丢首个错帧。
+            CHECK(r.legacy.wrongFrames == r.cur.wrongFrames);
+            CHECK(r.legacy.firstWrong == r.cur.firstWrong);
             reads += r.cur.reads;
         }
     }
