@@ -9,7 +9,7 @@ juce_add_plugin(SCVBMonitor
   COMPANY_WEBSITE          "https://synchain.ca"
   COMPANY_EMAIL            "contact@synchain.ca"
   PLUGIN_MANUFACTURER_CODE Snch
-  PLUGIN_CODE              Scvo
+  PLUGIN_CODE              Scvm
   FORMATS                  ${SCVB_PLUGIN_FORMATS}  # 根 CMakeLists.txt:VST3,Apple 上 + AU
   PRODUCT_NAME             "SCVB Monitor"
 
