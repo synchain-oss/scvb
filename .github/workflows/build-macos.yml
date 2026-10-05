@@ -330,7 +330,7 @@ jobs:
           re="^($(IFS='|'; echo "${want[*]}"))\$"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R "$re"
 
-      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步四套全绿已经包含它们,但「整套绿」
+      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步五条全绿已经包含它们,但「整套绿」
       #     推不出「那几格在场」:test_au_param_ids.cpp 从目标里掉出去、或 [assets] 两格被改了标签,
       #     scvb_params_tests / scvb_plugin_common_tests 照样绿。这里按标签单跑,数 Catch2 汇总行里的用例数。
       #       [au]     AU 参数 ID 冻结表(tests/core/test_au_param_ids.cpp,3 格)
