@@ -510,11 +510,12 @@ void OutputEditor::emitMeters()
     // 数据面 = 音频线程发布的 MeterShot 线性快照(post-gain/pre-pan 轨道电平 + 替换后的总线)。
     // dB 换算刻意留在这里:[A] 只做乘加,25Hz 的 [M] 才做 32 次 log10。
     // 0.3 dB 阈值(契约 §0.4-2):任一轨/总线变化 ≥ 阈值才发,首帧必发。
-    constexpr float kFloorDb = -60.0f;
+    // static:lambda 里直接用、不必捕获(clang 对捕获非 odr-use 的 constexpr 局部量报 -Wunused-lambda-capture)。
+    static constexpr float kFloorDb = -60.0f;
     constexpr float kMeterThresholdDb = 0.3f;
 
     // 线性幅度 → dBFS,并钳到地板。0(静音/无数据)→ 地板,不产生 -inf。
-    const auto toDb = [kFloorDb](float lin) {
+    const auto toDb = [](float lin) {
         if (!(lin > 0.0f))
             return kFloorDb;
         const float db = 20.0f * std::log10(lin);
@@ -1226,8 +1227,6 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
 // ============================================================================
 void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& options)
 {
-    using WBC = juce::WebBrowserComponent;
-
     auto add = [&options, this](const char* name, void (OutputEditor::*handler)(const ArgList&, Completion)) {
         options = options.withNativeFunction(juce::Identifier(name), [this, handler](const ArgList& a, Completion c) {
             (this->*handler)(a, std::move(c));
@@ -2674,7 +2673,7 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
     input.sampleRate = processor_.sampleRate();
     // [SL-472 R1] 持锁快照读 label(juce::String 跨线程,见 OutputProcessor.h `channelsSnapshot`)。
     const auto channelCfg = processor_.channelsSnapshot();
-    for (int t = 0; t < scvb::state::kNumTracks; ++t)
+    for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks); ++t)
     {
         auto& meta = input.tracks[static_cast<std::size_t>(t)];
         meta.label = channelCfg[static_cast<std::size_t>(t)].label.toStdString();
@@ -2683,9 +2682,9 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
     // width:参数面真值。取不到的格留哨兵 —— `kWidthUnknown` 的头注写明了为什么不能填 0
     // (0 在 stereo 轨上是「收成 mono」的有效建议,把「没装这一格」写成 0 是替用户下了反向决定)。
     auto& apvts = processor_.getAPVTS();
-    for (int v = 1; v <= scvb::state::kNumVersions; ++v)
+    for (int v = 1; v <= static_cast<int>(scvb::state::kNumVersions); ++v)
     {
-        for (int t = 1; t <= scvb::state::kNumTracks; ++t)
+        for (int t = 1; t <= static_cast<int>(scvb::state::kNumTracks); ++t)
         {
             auto& cell = input.widthPercent[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(t - 1)];
             const juce::String id = scvb::params::widthId(v, t);

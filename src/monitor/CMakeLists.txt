@@ -1,4 +1,4 @@
-# SCVBMonitor:Monitor 插件(VST3),第三主目标([J75];ADR-001 由 J75 授权扩为三主目标,
+# SCVBMonitor:Monitor 插件(VST3;macOS 上另出 AU,aufx/Scvm/Snch),第三主目标([J75];ADR-001 由 J75 授权扩为三主目标,
 # 修宪见 docs/contract-changes/20260825-monitor-target.md)。
 # PLUGIN_CODE=Scvm(Scvi/Scvo/Snb1 已占),厂商码 Snch。0 自动化参数、音频直通、只读 attach。
 juce_add_plugin(SCVBMonitor
@@ -10,7 +10,7 @@ juce_add_plugin(SCVBMonitor
   COMPANY_EMAIL            "contact@synchain.ca"
   PLUGIN_MANUFACTURER_CODE Snch
   PLUGIN_CODE              Scvm
-  FORMATS                  VST3
+  FORMATS                  ${SCVB_PLUGIN_FORMATS}  # 根 CMakeLists.txt:VST3,Apple 上 + AU
   PRODUCT_NAME             "SCVB Monitor"
 
   # [J151] 子分类 Fx → Analyzer:Monitor 只读、音频原样直通,归到宿主插件浏览器的「分析器」
@@ -19,6 +19,16 @@ juce_add_plugin(SCVBMonitor
   VST3_CATEGORIES          "Fx" "Analyzer"
 
   BUNDLE_ID                "com.synchain.scvb.monitor"
+
+  # --- AU(只在 Apple 上随 SCVB_PLUGIN_FORMATS 生效)。两项都等于 JUCE 按本插件形态推导的默认值:
+  #     Windows 上编译宏 JucePlugin_AUMainType 仍是 'aufx';AU_SANDBOX_SAFE 只进 AU 的 Info.plist ---
+  # 类型写死 aufx:现在的默认推导也是 Effect,写死是防将来加 NEEDS_MIDI_INPUT 之类时 componentType
+  # 从 aufx 漂成 aumf —— 那等于换了插件身份,用户工程里的 AU 实例全部丢失。AU 三元组
+  # aufx/<PLUGIN_CODE>/Snch 发布后与四字码同样冻结。
+  AU_MAIN_TYPE             kAudioUnitType_Effect
+  # 显式 FALSE(= JUCE 默认),不要改成 TRUE:插件要建/附着跨进程共享内存段、起 WKWebView,
+  # 沙箱里这两样都会被拒。M01 的 AUHostingService 进程外结论也是在 FALSE 下测得的。
+  AU_SANDBOX_SAFE          FALSE
 
   # Windows:链接 WebView2 静态 loader(顶层 CMakeLists 已预置 NuGet 包)。
   NEEDS_WEBVIEW2           TRUE
@@ -73,6 +83,9 @@ endif()
 
 target_compile_definitions(SCVBMonitor PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
+  # 参数 ID 两个宏(值与理由见根 CMakeLists.txt 的 SCVB_PLUGIN_PARAM_ID_DEFINITIONS);PUBLIC 才能
+  # 传到 VST3 / AU 两个 wrapper 目标 —— 真正用它们算参数 ID 的是 wrapper 那几个编译单元。
+  ${SCVB_PLUGIN_PARAM_ID_DEFINITIONS}
 )
 
 # Windows:WebView2 宏(JUCE_WEB_BROWSER 已由 scvb_plugin_common 提供;与 Input/Output 先例一致)。

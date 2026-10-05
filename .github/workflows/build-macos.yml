@@ -9,9 +9,13 @@ name: Build macOS (reusable)
 # org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
 #
-# [M06a] 本卡的范围:scvb_core + scvb_tests 在 macOS arm64(Apple clang + libc++)上编过、
-# first-party 零警告、ctest 绿,其中 tests/golden/ipc-layout.txt 在 arm64 上逐行对拍。
-# 三个插件、auval / pluginval、打包都不在这里(M06b / M08 / M10)。
+# [M06a] scvb_core + scvb_tests 在 macOS arm64(Apple clang + libc++)上编过、first-party 零警告、
+# ctest 绿,其中 tests/golden/ipc-layout.txt 在 arm64 上逐行对拍。
+# [M06b] 全量构建:三个插件各出 VST3 + AU(格式表在根 CMakeLists.txt 的 SCVB_PLUGIN_FORMATS),
+# 连同 JUCE 系测试与工具。门:first-party 零警告;恰好 3 个 .vst3 + 3 个 .component,逐个核 arm64 单架构、
+# minos = 部署目标、AU 三元组;两个参数 ID 宏真的进了每个插件的 AU / VST3 wrapper 编译单元;
+# ctest 加跑 params / plugin_common / input_bridge;ditto 打 artifact(解压后可执行位完好)。
+# auval 在这里只是信息项(不作门),auval / pluginval 的门在 M08;发行打包在 M10。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -30,6 +34,8 @@ jobs:
   build-and-validate-macos:
     name: build-and-validate-macos
     runs-on: macos-15
+    # [M06b] 实测(macos-15 arm64,JUCE 源码缓存命中、无编译缓存):configure 35 s,全量构建 541 步
+    # 384 s,整个 job 约 8 分钟。45 分钟留约 5 倍余量,只拦挂死,不是性能预算。
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -38,8 +44,21 @@ jobs:
           persist-credentials: false
 
       # 0) 版本单一真源:JUCE tag 只从仓库根 .juce-version 读(CLAUDE.md §6),不写版本字面量。
-      - name: Resolve pinned versions
+      #    [M06b] 同时定 artifact 名,与 Windows(build-vst3.yml 的三档 Upload VST3)逐档平行:
+      #      PR       SCVB-macos-arm64-pr<N>-<head sha>
+      #      push dev SCVB-macos-arm64-dev-<sha>
+      #      dispatch SCVB-macos-arm64-preview-<ref slug>-<实际 checkout 的 sha>
+      #    reusable workflow 里的 `github` 上下文属于调用方,所以事件名 / PR 号 / head sha 与 Windows
+      #    那边看到的是同一组值。全部经 env 传入、不直接插值进脚本(分支名可含 `$` `;`,插值即注入面)。
+      #    其余事件(今天的 caller 不会出现)不上传,只在日志里说明。
+      - name: Resolve pinned versions & artifact name
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_REF: ${{ inputs.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           juce=$(tr -d '[:space:]' < .juce-version)
@@ -48,6 +67,27 @@ jobs:
           echo "JUCE_TAG=$juce" >> "$GITHUB_ENV"
           echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
           echo "built sha=$built juce=$juce"
+          artifact=""; retention=""
+          case "$EVENT_NAME" in
+            pull_request)
+              artifact="SCVB-macos-arm64-pr${PR_NUMBER}-${PR_HEAD_SHA}"; retention=14 ;;
+            push)
+              if [ "$REF_NAME" = "dev" ]; then artifact="SCVB-macos-arm64-dev-${built}"; retention=30; fi ;;
+            workflow_dispatch)
+              eff_ref="${INPUT_REF:-$REF_NAME}"
+              slug=$(printf '%s' "$eff_ref" | tr '/\\' '--')
+              artifact="SCVB-macos-arm64-preview-${slug}-${built}"; retention=30 ;;
+          esac
+          if [ -n "$artifact" ]; then
+            echo "ARTIFACT_NAME=$artifact" >> "$GITHUB_ENV"
+            echo "ARTIFACT_RETENTION_DAYS=$retention" >> "$GITHUB_ENV"
+            echo "MAC_ZIP=$artifact.zip" >> "$GITHUB_ENV"
+            echo "artifact: $artifact (retention ${retention}d)"
+          else
+            # 照样打包并核可执行位(那一步的判据不该因事件而缺席),只是不上传。
+            echo "MAC_ZIP=SCVB-macos-arm64-unpublished-${built}.zip" >> "$GITHUB_ENV"
+            echo "event '$EVENT_NAME' on '$REF_NAME' has no artifact channel; bundles are packed and checked but not uploaded"
+          fi
 
       # 1) 工具链留痕。runner 镜像会轮换,哪天 clang 升了一版多出一条警告,第一件要对的就是这几行。
       #    pwsh 在这里只探测、不判红;真正用到它的那一步缺了它会自己红(不是跳过)。
@@ -64,7 +104,7 @@ jobs:
           if command -v pwsh >/dev/null 2>&1; then pwsh_ver=$(pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'); else pwsh_ver="(absent)"; fi
           echo "pwsh $pwsh_ver"
           {
-            echo "## build-macos: scvb_core + scvb_tests"
+            echo "## build-macos: SCVB Input / Output / Monitor (VST3 + AU) + tests"
             echo ""
             echo "| item | value |"
             echo "|---|---|"
@@ -78,8 +118,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(与 macos-oop.yml 同一段,
-      #    逻辑逐条照抄 bridge 仓 ci.yml 的 bash 版)。scvb_tests 本身不链接 JUCE,但根工程的
-      #    configure 要 add_subdirectory(JUCE)(三个插件目标在同一次 configure 里定义)。
+      #    逻辑逐条照抄 bridge 仓 ci.yml 的 bash 版)。三个插件与 params / plugin_common / input_bridge
+      #    三套测试都链接 JUCE 模块。
       - name: Restore JUCE cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -149,14 +189,16 @@ jobs:
           if [ -z "$target" ]; then echo "::error::CMAKE_OSX_DEPLOYMENT_TARGET is empty; the root CMakeLists.txt default did not apply"; exit 1; fi
           echo "OSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
 
-      # 4) 只编 scvb_tests(连带 scvb_core 与 Catch2)。`-k 0`:一个编译单元红了也继续编别的,
-      #    一轮 CI 往返就能看到全部编译错误。日志全量落盘给下一步的零警告门读。
-      - name: Build scvb_tests
+      # 4) [M06b] 全量构建(默认 all 目标):三个插件各自的 VST3 + AU wrapper、mac 上登记的全部测试与
+      #    tests/tools 下的工具。不按目标挑着编:「插件编过」与「零警告」要覆盖 Windows 那边 /W4 门
+      #    管着的同一个面。`-k 0`:一个编译单元红了也继续编别的,一轮 CI 往返就能看到全部编译错误。
+      #    日志全量落盘给下一步的零警告门读。
+      - name: Build all targets (3 plugins x VST3 + AU, tests, tools)
         id: build
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build --target scvb_tests --parallel -- -k 0 2>&1 | tee build.log
+          cmake --build build --parallel -- -k 0 2>&1 | tee build.log
 
       # 5) clang 零警告门 —— 与 Windows 的 /W4 门(build-vst3.yml 的 Build 步)同构的**黑名单**:
       #    只排除第三方(Catch2 在 build/_deps/、JUCE 在 JUCE/),其余一律算;白名单式的 `grep '/src/'`
@@ -200,10 +242,19 @@ jobs:
             echo "::error::zero-warning filter self-test failed; kept: [$probe]"; exit 1
           fi
           if [ ! -s build.log ]; then echo "::error::build.log is missing or empty; nothing to judge"; exit 1; fi
-          compiled=$(grep -cE 'Building CXX object (src/core|tests)/' build.log || true)
+          compiled=$(grep -cE 'Building (CXX|OBJCXX) object (src|tests)/' build.log || true)
           if [ "${compiled:-0}" -lt 1 ]; then
-            echo "::error::build.log shows no first-party translation unit compiled (src/core or tests); an empty set would make this gate vacuously green"; exit 1
+            echo "::error::build.log shows no first-party translation unit compiled (src or tests); an empty set would make this gate vacuously green"; exit 1
           fi
+          # [M06b] 非空集还要落到每个插件目标上:三个插件的源(连同编进各自目标的 plugin-common)
+          # 都得出现在日志里,否则「插件侧零警告」对没编到的那个插件是恒真。
+          for spec in input:SCVBInput output:SCVBOutput monitor:SCVBMonitor; do
+            dir="${spec%%:*}"; tgt="${spec##*:}"
+            k=$(grep -cE "Building (CXX|OBJCXX) object src/$dir/CMakeFiles/$tgt\\.dir/" build.log || true)
+            if [ "${k:-0}" -lt 1 ]; then
+              echo "::error::build.log shows no translation unit of plugin target $tgt (src/$dir); the zero-warning gate would be vacuous for it"; exit 1
+            fi
+          done
           warns=$(first_party_warnings < build.log)
           n=0
           if [ -n "$warns" ]; then n=$(printf '%s\n' "$warns" | wc -l | tr -d ' '); fi
@@ -258,15 +309,161 @@ jobs:
           fi
           echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
 
-      # 8) ctest。本卡只编了 scvb_tests 一个目标,所以只选它这一条(其余条目的二进制本轮没编,
-      #    跑了只会报 Not Run);`--no-tests=error` 让正则一旦选空就红,而不是绿着什么都没跑。
+      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的四套,
+      #    而不是不带 -R 跑全部:scvb_monitor_tests / scvb_ipc_tests / scvb_host_tests 在 mac 上还没登记
+      #    (WIN32 守卫,M12a / M12b 放开),列名让「mac 上跑哪几套」是写下来的事实,不由 CMake 守卫隐式决定。
+      #    每一条先核「恰好登记一次」:被删、改名、或被守卫挡掉,这里当场红 —— `--no-tests=error`
+      #    只管「一条都没选中」,选中四条里的三条它照样绿。
       #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
-      - name: Unit tests (ctest -R scvb_tests)
+      - name: Unit tests (ctest - scvb_tests, params, plugin_common, input_bridge)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R '^scvb_tests$'
+          want=(scvb_tests scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests)
+          for t in "${want[@]}"; do
+            n=$(ctest --test-dir build -N -R "^${t}\$" | grep -cE "Test +#[0-9]+: ${t}\$" || true)
+            if [ "$n" != "1" ]; then echo "::error::ctest entry $t is not registered exactly once (found $n); see tests/CMakeLists.txt"; exit 1; fi
+          done
+          re="^($(IFS='|'; echo "${want[*]}"))\$"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R "$re"
+
+      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步四套全绿已经包含它们,但「整套绿」
+      #     推不出「那几格在场」:test_au_param_ids.cpp 从目标里掉出去、或 [assets] 两格被改了标签,
+      #     scvb_params_tests / scvb_plugin_common_tests 照样绿。这里按标签单跑,数 Catch2 汇总行里的用例数。
+      #       [au]     AU 参数 ID 冻结表(tests/core/test_au_param_ids.cpp,3 格)
+      #       [assets] web 资源嵌入闭包(tests/webview/test_web_assets_embedded.cpp,2 格)
+      - name: AU parameter-ID cases and embedded web assets ran on arm64
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_tagged() { # $1 = executable name, $2 = Catch2 tag, $3 = minimum test-case count
+            local n exe out rc cases
+            n=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+            if [ "$n" != "1" ]; then echo "::error::expected exactly 1 $1 executable under build, found $n"; return 1; fi
+            exe=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' -print -quit)
+            rc=0
+            out=$("$exe" "$2" 2>&1) || rc=$?
+            printf '%s\n' "$out" | tail -n 3
+            if [ "$rc" != "0" ]; then echo "::error::$1 $2 failed (exit $rc)"; return 1; fi
+            cases=$(printf '%s\n' "$out" | sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' | tail -n 1)
+            if [ -z "$cases" ] || [ "$cases" -lt "$3" ]; then
+              echo "::error::$1 $2 ran ${cases:-0} test cases, expected at least $3"; return 1
+            fi
+            echo "- \`$1 $2\`: $cases test cases passed on $(uname -m)" >> "$GITHUB_STEP_SUMMARY"
+          }
+          run_tagged scvb_params_tests '[au]' 3
+          run_tagged scvb_plugin_common_tests '[assets]' 2
+
+      # 8c) [M06b] 插件产物形态。三个插件 × 两种格式 = 恰好 3 个 .vst3 + 3 个 .component,名字逐个对上;
+      #     每个 bundle 的 Mach-O 都是 arm64 单架构、minos = CMakeCache 里的部署目标;每个 .component 的
+      #     Info.plist 恰好声明一个 AudioComponent,三元组 = <AU_MAIN_TYPE 映射>/<PLUGIN_CODE>/<厂商码>。
+      #     四字码不写死在这里:从 src/<role>/CMakeLists.txt 现读(与 bridge ci.yml 同纪律),改码时这里报
+      #     「解析不到」而不是语义无关的「对不上」。定位一律 `-print -quit` / 先落变量再匹配,不用
+      #     `find | head`(pipefail 下 SIGPIPE 会随机杀步骤)。bundle 路径落进 plugin-bundles.txt 给打包步用;
+      #     与 Info.plist 核对过的 AU 三元组(`type subtype manufacturer`,一行一个)落进 au-triples.txt,
+      #     auval 步只读这个文件 —— AU_MAIN_TYPE → 四字码的映射只在这里写一次,两步同一个真源。
+      - name: Assert plugin bundles (3 VST3 + 3 AU, arm64-only, minos, AU triples)
+        id: bundles
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ext in vst3 component; do
+            n=$(find build -type d -name "*.$ext" -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+            if [ "$n" != "3" ]; then
+              find build -type d -name "*.$ext" -not -path '*/_deps/*' | sed 's/^/  found: /'
+              echo "::error::expected exactly 3 .$ext bundles under build (SCVB Input / Output / Monitor), found $n"; exit 1
+            fi
+          done
+          : > plugin-bundles.txt
+          : > au-triples.txt
+          for role in input output monitor; do
+            cm="src/$role/CMakeLists.txt"
+            name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' "$cm")
+            code=$(awk '$1 == "PLUGIN_CODE" { print $2; exit }' "$cm")
+            mfr=$(awk '$1 == "PLUGIN_MANUFACTURER_CODE" { print $2; exit }' "$cm")
+            au_main=$(awk '$1 == "AU_MAIN_TYPE" { print $2; exit }' "$cm")
+            if [ -z "$name" ] || [ -z "$code" ] || [ -z "$mfr" ] || [ -z "$au_main" ]; then
+              echo "::error::cannot parse PRODUCT_NAME / PLUGIN_CODE / PLUGIN_MANUFACTURER_CODE / AU_MAIN_TYPE from $cm"; exit 1
+            fi
+            case "$au_main" in
+              kAudioUnitType_Effect)        au_type=aufx ;;
+              kAudioUnitType_MusicEffect)   au_type=aumf ;;
+              kAudioUnitType_MusicDevice)   au_type=aumu ;;
+              kAudioUnitType_MIDIProcessor) au_type=aumi ;;
+              *) echo "::error::cannot map AU_MAIN_TYPE '$au_main' from $cm to a four-char type"; exit 1 ;;
+            esac
+            for ext in vst3 component; do
+              k=$(find build -type d -name "$name.$ext" -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+              if [ "$k" != "1" ]; then echo "::error::expected exactly 1 '$name.$ext' under build, found $k"; exit 1; fi
+              b=$(find build -type d -name "$name.$ext" -not -path '*/_deps/*' -print -quit)
+              bin="$b/Contents/MacOS/$name"
+              if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then echo "::error::'$bin' is missing or not executable"; exit 1; fi
+              archs=$(lipo -archs "$bin")
+              if [ "$archs" != "arm64" ]; then echo "::error::'$name.$ext' archs are '$archs', expected arm64 only"; exit 1; fi
+              minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+              if [ "$minos" != "$OSX_DEPLOYMENT_TARGET" ]; then
+                echo "::error::'$name.$ext' minos is '$minos', expected '$OSX_DEPLOYMENT_TARGET' from CMAKE_OSX_DEPLOYMENT_TARGET"; exit 1
+              fi
+              triple="-"
+              if [ "$ext" = "component" ]; then
+                plist="$b/Contents/Info.plist"
+                pb() { /usr/libexec/PlistBuddy -c "Print :AudioComponents:$1" "$plist" 2>/dev/null || true; }
+                got="$(pb 0:type)/$(pb 0:subtype)/$(pb 0:manufacturer)"
+                if [ "$got" != "$au_type/$code/$mfr" ]; then
+                  echo "::error::'$name.component' AudioComponents[0] is '$got', expected '$au_type/$code/$mfr'"; exit 1
+                fi
+                if [ -n "$(pb 1:type)" ]; then echo "::error::'$name.component' declares more than one AudioComponent"; exit 1; fi
+                triple="$got"
+                printf '%s %s %s\n' "$au_type" "$code" "$mfr" >> au-triples.txt
+              fi
+              printf '%s\n' "$b" >> plugin-bundles.txt
+              echo "$name.$ext: $archs, minos $minos, AU $triple"
+              echo "- \`$name.$ext\`: \`$archs\`, minos $minos, AU triple \`$triple\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+      # 8d) [M06b] 两个参数 ID 宏(根 CMakeLists.txt 的 SCVB_PLUGIN_PARAM_ID_DEFINITIONS)真的进了**每个
+      #     插件的 AU 与 VST3 wrapper 编译单元**。test_au_param_ids.cpp 的 static_assert 只能证明测试目标
+      #     拿到了这两个值;真正用它们算参数 ID 的是 juce_audio_plugin_client_{AU,VST3}* 这几个 TU。
+      #     值与 JUCE 默认相同,所以某个插件漏掉它们今天不改行为,却让「钉住」名存实亡 —— 只有这一步看得见。
+      #     读 configure 生成的 compile_commands.json(本 job 的 configure 带 CMAKE_EXPORT_COMPILE_COMMANDS)。
+      - name: Assert pinned parameter-ID macros reach every plugin wrapper TU
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          entries = json.load(open("build/compile_commands.json"))
+          need = ("-DJUCE_FORCE_USE_LEGACY_PARAM_IDS=0", "-DJUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=1")
+          bad = 0
+          for plugin in ("SCVBInput", "SCVBOutput", "SCVBMonitor"):
+              for kind in ("AU", "VST3"):
+                  marker = "/%s_%s.dir/" % (plugin, kind)
+                  stem = "juce_audio_plugin_client_%s" % kind
+                  cmds = []
+                  for e in entries:
+                      cmd = e.get("command") or " ".join(e.get("arguments", []))
+                      if (marker in e.get("output", "") or marker in cmd) and os.path.basename(e["file"]).startswith(stem):
+                          cmds.append(cmd.split())
+                  if not cmds:
+                      print("::error::no %s* translation unit of %s_%s in compile_commands.json" % (stem, plugin, kind))
+                      bad += 1
+                      continue
+                  lacking = 0
+                  for argv in cmds:
+                      missing = [d for d in need if d not in argv]
+                      if missing:
+                          print("::error::%s_%s wrapper TU lacks %s" % (plugin, kind, " ".join(missing)))
+                          lacking += 1
+                  bad += lacking
+                  print("%s_%s: %d wrapper TU(s), %d lacking the macros" % (plugin, kind, len(cmds), lacking))
+          sys.exit(1 if bad else 0)
+          PY
+          echo "- param-ID macros (\`LEGACY_PARAM_IDS=0\`, \`STUDIO_ONE_COMPATIBLE=1\`) present in every AU / VST3 wrapper TU of the 3 plugins" >> "$GITHUB_STEP_SUMMARY"
 
       # 9) tests/golden/ipc-layout.txt 在 arm64 上**逐行**对拍的显式证据。上一步 scvb_tests 绿已经
       #    包含这一条;这里单跑 IpcLayoutFreeze 并让每条通过的断言都打印出来(`--success`),再核对:
@@ -304,6 +501,111 @@ jobs:
           fi
           echo "- ipc-layout golden on arm64: **$seen / $expected** data lines covered by passing assertions" >> "$GITHUB_STEP_SUMMARY"
 
+      # 10) [M06b] artifact 传输封装(**不是发行打包**,那是 M10 的 package-macos.sh):upload-artifact
+      #     不保留 POSIX 权限位,直接传 bundle 目录 = 下载方拿到不可执行的死壳。所以先用 ditto 打一层
+      #     内层 zip(VST3/ 与 Components/ 两个目录,对应 ~/Library/Audio/Plug-Ins 下的两个安装位置)。
+      #     `--norsrc --noextattr`:bundle 不需要资源叉,而扩展属性会被写进 __MACOSX/ 条目(权限恒为
+      #     -rw-r--r--),让下面的可执行位断言误报。核两遍:① zip 元数据里 Contents/MacOS/ 下每个文件条目
+      #     带 x 位;② 真解压一遍(ditto -x -k,与用户双击解压同一条路),逐个 test -x + 再核一次 arm64。
+      - name: Pack plugin bundles (ditto zip keeps exec bits)
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf stage unpack-check "$MAC_ZIP"
+          mkdir -p stage/VST3 stage/Components
+          while IFS= read -r b; do
+            case "$b" in
+              *.vst3)      ditto "$b" "stage/VST3/$(basename "$b")" ;;
+              *.component) ditto "$b" "stage/Components/$(basename "$b")" ;;
+              *) echo "::error::unexpected bundle path '$b'"; exit 1 ;;
+            esac
+          done < plugin-bundles.txt
+          ditto -c -k --norsrc --noextattr stage "$MAC_ZIP"
+          unzip -Z1 "$MAC_ZIP" | grep -E '\.(vst3|component)/$' || true
+          # ① zip 元数据。只挑 Contents/MacOS/ 下的**文件**条目(目录条目是 d 开头,拿它比 x 位会误报);
+          #    首字符放行 `-`(文件)与 `l`(符号链接,unzip -Z 打 lrwxrwxrwx)。
+          macho=$(unzip -Z "$MAC_ZIP" | grep -v '__MACOSX/' | grep -E '/Contents/MacOS/[^[:space:]]' || true)
+          nmacho=$(printf '%s\n' "$macho" | grep -c . || true)
+          if [ "$nmacho" != "6" ]; then
+            printf '%s\n' "$macho"
+            echo "::error::zip should hold exactly 6 Contents/MacOS/ binaries (3 VST3 + 3 AU), found $nmacho"; exit 1
+          fi
+          if printf '%s\n' "$macho" | grep -vE '^[-l]rwx'; then
+            echo "::error::zip lost the executable bit on Contents/MacOS/*"; exit 1
+          fi
+          # ② 真解压。
+          mkdir unpack-check
+          ditto -x -k "$MAC_ZIP" unpack-check
+          n=0
+          while IFS= read -r -d '' bin; do
+            if [ ! -x "$bin" ]; then echo "::error::unpacked '$bin' is not executable"; exit 1; fi
+            a=$(lipo -archs "$bin")
+            if [ "$a" != "arm64" ]; then echo "::error::unpacked '$bin' archs are '$a'"; exit 1; fi
+            n=$((n + 1))
+          done < <(find unpack-check -type f -path '*/Contents/MacOS/*' -print0)
+          if [ "$n" != "6" ]; then echo "::error::unpacked zip holds $n Contents/MacOS/ binaries, expected 6"; exit 1; fi
+          ls -l "$MAC_ZIP"
+          echo "- artifact zip \`$MAC_ZIP\`: 6 bundles, exec bits intact after ditto -x -k" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS bundles (pr / dev / preview, named like the Windows artifact)
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' && env.ARTIFACT_NAME != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.MAC_ZIP }}
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # 11) [M06b] auval 冒烟 —— **信息项,不作门**(auval / pluginval 的门在 M08)。只为提前看见「编过了
+      #     但 AU 加载不起来」这类编译期看不到的问题。照 bridge ci.yml:ditto 装进用户 Components、踢一次
+      #     注册器、轮询 auval -a 至多 30s、以输出里的 'AU VALIDATION SUCCEEDED' 为准(auval 退出码历史上
+      #     不可靠)。结果只进 step summary;本步 continue-on-error 且脚本自身不以非零退出。
+      #     注意 `shell: bash` 实际是 `bash --noprofile --norc -e -o pipefail`:脚本里只写 `set -uo pipefail`
+      #     关不掉 -e,某个组件的 `auval -v` 一旦非零退出,整步就停在那里,后面组件的 summary 行都没了
+      #     (一次性注入 run 实测过)。所以这里显式 `set +e`,auval 的退出码记进 summary,判定仍以输出为准。
+      #     三元组只读 8c 落下的 au-triples.txt(已与 Info.plist 核对过),不在这里再写一份 componentType:
+      #     哪个插件改了 AU_MAIN_TYPE,8c 跟着对上,这里也跟着走,不会悄悄轮询一个不存在的 aufx 三元组。
+      #     逐行读用 fd 3,auval 一律 </dev/null,免得它吃掉循环的输入。
+      - name: auval smoke (informational, not a gate)
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          dest="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$dest"
+          mkdir -p auval-logs
+          while IFS= read -r b; do
+            case "$b" in *.component) ditto "$b" "$dest/$(basename "$b")" ;; esac
+          done < plugin-bundles.txt
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          echo "### auval smoke (informational)" >> "$GITHUB_STEP_SUMMARY"
+          n=$(grep -c . au-triples.txt 2>/dev/null || true)
+          if [ "${n:-0}" != "3" ]; then
+            echo "::warning::au-triples.txt from the bundle step has ${n:-0} line(s), expected 3; auval smoke covers only those"
+            echo "- au-triples.txt has ${n:-0} line(s), expected 3" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          while read -r type code mfr <&3; do
+            [ -n "$type" ] || continue
+            seen=0
+            for _ in $(seq 1 30); do
+              list="$(auval -a </dev/null 2>/dev/null || true)"
+              if grep -qE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list"; then seen=1; break; fi
+              sleep 1
+            done
+            auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1
+            rc=$?
+            if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then verdict=SUCCEEDED; else verdict="did not succeed (see job log)"; fi
+            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen, exit $rc)"
+            tail -n 40 "auval-logs/auval-$code.log"
+            echo "::endgroup::"
+            echo "- \`$type $code $mfr\`: registered=$seen, auval -v exit $rc, $verdict" >> "$GITHUB_STEP_SUMMARY"
+          done 3< au-triples.txt
+          exit 0
+
       - name: Upload build log (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -312,5 +614,6 @@ jobs:
           path: |
             build.log
             ipc-layout-compact.log
+            plugin-bundles.txt
           retention-days: 7
           if-no-files-found: ignore

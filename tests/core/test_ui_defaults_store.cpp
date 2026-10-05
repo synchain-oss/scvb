@@ -110,7 +110,7 @@ TEST_CASE("UiDefaultsStore:语言值全局镜像覆盖 §1.30 归一集 {zh,en,f
     // **三种语言逐一往返**。fr 这一条是必须的:白名单漏掉它时,法文用户的写入会静默
     // return,而 setLangChosenGlobal(true) 照写不误 —— 移除插件重加载后语言回落 en,
     // 语言起始卡又被 lang_chosen_global 挡住,P1-6 在 fr 上原样复现。
-    for (const juce::String lang : {juce::String("zh"), juce::String("en"), juce::String("fr")})
+    for (const juce::String& lang : {juce::String("zh"), juce::String("en"), juce::String("fr")})
     {
         ud::setLangGlobal(lang);
         REQUIRE(ud::langGlobal() == lang); // 每次调用现开一份 PropertiesFile → 真的过了磁盘

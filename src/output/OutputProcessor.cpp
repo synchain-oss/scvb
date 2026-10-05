@@ -2726,7 +2726,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         DBG("SCVB Output: [SL-217] 本次 state 未恢复段真身("
             << (crvsChunkPresent ? "CRVS chunk 解码失败" : "无 CRVS chunk") << "),**保留**既有段表不清空");
         // 版本名兜底:全新实例(从未加载过、名字为空)才补默认名,已有名字一律不动。
-        for (int v = 0; v < scvb::state::kNumVersions; ++v)
+        for (int v = 0; v < static_cast<int>(scvb::state::kNumVersions); ++v)
         {
             auto& meta = crvsData_.versions[static_cast<std::size_t>(v)].meta;
             if (meta.name.empty())
@@ -3531,14 +3531,14 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
     // (VizPublisher 的 needLanes,不刷新的话 Monitor 的车道停在编辑前的样子)。
     curvesRevision_.fetch_add(1, std::memory_order_release);
 
-    for (int v = 1; v <= scvb::state::kNumVersions; ++v)
+    for (int v = 1; v <= static_cast<int>(scvb::state::kNumVersions); ++v)
     {
         // pan 角度域曲线 G 也从这里下发(02 §8.1 步骤 5):挂在同一个「覆盖全部改曲线路径」的
         // 钩子上,setPanCurve 的撤销/重做、复制版本、加载工程就都不必各记一笔。
         // 点没变时 OutputAuthority::setPanCurve 整个 no-op,段编辑不会白烘一张 32769 点的表。
         authority_.setPanCurve(v, crvsData_.versions[static_cast<std::size_t>(v - 1)].panCurve);
 
-        for (int t = 0; t < scvb::state::kNumTracks; ++t)
+        for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks); ++t)
         {
             const auto& src =
                 crvsData_.versions[static_cast<std::size_t>(v - 1)].tracks[static_cast<std::size_t>(t)].segments;
@@ -3810,7 +3810,7 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
 void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    if (version < 1 || version > scvb::state::kNumVersions)
+    if (version < 1 || version > static_cast<int>(scvb::state::kNumVersions))
         return; // 越界拒绝(public API 防 UB,PR#55 建议②)
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Set pan curve",
@@ -5293,7 +5293,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 旧判据 `producedAny`(15 轨全无产出)是本判据的真子集:无产出 ⇒
             // applyAnalysisSegments 恒等 ⇒ tableChanged 为假,行为不变。
             bool tableChanged = false;
-            for (int t = 0; t < scvb::state::kNumTracks && !tableChanged; ++t)
+            for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks) && !tableChanged; ++t)
             {
                 tableChanged = !scvb::output::segmentsIdentical(beforeTracks[static_cast<std::size_t>(t)].segments,
                                                                 liveTracks[static_cast<std::size_t>(t)].segments);
@@ -5358,7 +5358,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // diffTrackInto 里按半开区间筛 —— 两条都与 previewAnalysis 的 manualKept
             // 同源,A-07 预览行与 A-02 摘要行的 {k} 才在同一把尺子上([SL-255] 复审③)。
             lastSegmentDiff_ = scvb::output::SegmentDiff{};
-            for (int t = 0; t < scvb::state::kNumTracks; ++t)
+            for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks); ++t)
             {
                 if ((analyzedTracks & (1u << t)) == 0)
                 {
