@@ -355,6 +355,7 @@ jobs:
           }
           run_tagged scvb_params_tests '[au]' 3
           run_tagged scvb_plugin_common_tests '[assets]' 2
+          run_tagged scvb_plugin_common_tests '[mac]' 5 # [M07] 只在 macOS 上编的 5 格(系统 WebKit 文案 / 无 UDF / 日志路径 / 1 MB 轮转 / IpcDiag sink 去重)
 
       # 8c) [M06b] 插件产物形态。三个插件 × 两种格式 = 恰好 3 个 .vst3 + 3 个 .component,名字逐个对上;
       #     每个 bundle 的 Mach-O 都是 arm64 单架构、minos = CMakeCache 里的部署目标;每个 .component 的
