@@ -15,7 +15,11 @@ name: Build macOS (reusable)
 # 连同 JUCE 系测试与工具。门:first-party 零警告;恰好 3 个 .vst3 + 3 个 .component,逐个核 arm64 单架构、
 # minos = 部署目标、AU 三元组;两个参数 ID 宏真的进了每个插件的 AU / VST3 wrapper 编译单元;
 # ctest 加跑 params / plugin_common / input_bridge;ditto 打 artifact(解压后可执行位完好)。
-# auval 在这里只是信息项(不作门),auval / pluginval 的门在 M08;发行打包在 M10。
+# [M08] 验证门(步骤 11a–11g):M06b 的 auval 冒烟升级为门 —— ADR-001 冻结的三个 AU 三元组各跑
+# `auval -v`(输出含 AU VALIDATION SUCCEEDED 且退出码 0;-strict 只记录);`auval -a` 唯一性;
+# pluginval(版本读 .pluginval-version,参数与 Windows gate 7 对齐)验 3 个 .vst3 + 3 个 .component;
+# 验证前后各跑一次 `scvb_tests "[shm-leftover]"`,验证后不许有共享内存残段;带 GUI 的 pluginval 只记录。
+# 发行打包在 M10。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -63,10 +67,15 @@ jobs:
           set -euo pipefail
           juce=$(tr -d '[:space:]' < .juce-version)
           if [ -z "$juce" ]; then echo "::error::empty .juce-version"; exit 1; fi
+          # [M08] pluginval 版本同样只从 .pluginval-version 读(与 Windows 的 build-and-validate 同一真源),
+          # 给 11e 的下载与身份断言用。
+          pv=$(tr -d '[:space:]' < .pluginval-version)
+          if [ -z "$pv" ]; then echo "::error::empty .pluginval-version"; exit 1; fi
           built=$(git rev-parse HEAD)
           echo "JUCE_TAG=$juce" >> "$GITHUB_ENV"
+          echo "PLUGINVAL_TAG=$pv" >> "$GITHUB_ENV"
           echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
-          echo "built sha=$built juce=$juce"
+          echo "built sha=$built juce=$juce pluginval=$pv"
           artifact=""; retention=""
           case "$EVENT_NAME" in
             pull_request)
@@ -115,6 +124,7 @@ jobs:
             echo "| cmake | $(cmake --version | head -n 1) |"
             echo "| pwsh | $pwsh_ver |"
             echo "| JUCE | $JUCE_TAG |"
+            echo "| pluginval | $PLUGINVAL_TAG |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(与 macos-oop.yml 同一段,
@@ -557,36 +567,115 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      # 11) [M06b] auval 冒烟 —— **信息项,不作门**(auval / pluginval 的门在 M08)。只为提前看见「编过了
-      #     但 AU 加载不起来」这类编译期看不到的问题。照 bridge ci.yml:ditto 装进用户 Components、踢一次
-      #     注册器、轮询 auval -a 至多 30s、以输出里的 'AU VALIDATION SUCCEEDED' 为准(auval 退出码历史上
-      #     不可靠)。结果只进 step summary;本步 continue-on-error 且脚本自身不以非零退出。
-      #     注意 `shell: bash` 实际是 `bash --noprofile --norc -e -o pipefail`:脚本里只写 `set -uo pipefail`
-      #     关不掉 -e,某个组件的 `auval -v` 一旦非零退出,整步就停在那里,后面组件的 summary 行都没了
-      #     (一次性注入 run 实测过)。所以这里显式 `set +e`,auval 的退出码记进 summary,判定仍以输出为准。
-      #     三元组只读 8c 落下的 au-triples.txt(已与 Info.plist 核对过),不在这里再写一份 componentType:
-      #     哪个插件改了 AU_MAIN_TYPE,8c 跟着对上,这里也跟着走,不会悄悄轮询一个不存在的 aufx 三元组。
-      #     逐行读用 fd 3,auval 一律 </dev/null,免得它吃掉循环的输入。
-      - name: auval smoke (informational, not a gate)
+      # 11) [M08] mac 验证门。M06b 的 auval 冒烟(信息项)在这里升级为门,并补上 `auval -a` 唯一性、
+      #     pluginval ×6(3 个 .vst3 + 3 个 .component,非 GUI)与共享内存残段检查。顺序:
+      #       11a 残段基线 → 11b 装 AU → 11c auval 门 → 11d auval -a 唯一性 → 11e pluginval 门
+      #       → 11f 残段门 → 11g 带 GUI 的 pluginval(记录项)
+      #     各步只要求「编出来了 / 装上了」,不要求前一道门绿:auval 红的那一轮,唯一性、pluginval 与残段
+      #     照样跑完,一次往返看到全部结论(job 结论仍是红)。
+      #     共同纪律(照 bridge ci.yml):工具输出先落文件或变量再匹配 —— 不写 `auval -a | grep -q`
+      #     (grep 命中即退出,auval 收 SIGPIPE,pipefail 下整条管道判非零)、不写 `| head`;
+      #     逐行读清单用 fd 3,被调工具一律 </dev/null,免得它吃掉循环的输入。
+      #     `shell: bash` 实际是 `bash -e -o pipefail`:可能非零的命令一律 `|| rc=$?` 接住,
+      #     每格跑完再统一判,一格红不会让后面的格和 summary 行消失。
+
+      # 11a) 残段基线。`scvb_tests "[shm-leftover]"`(M05 的隐藏格)逐个只读探测 8 组全部真实段名
+      #      (macOS 没有枚举 POSIX shm 的接口,只能按名字探)。验证之前先探一次:基线干净,11f 的红
+      #      才能归到 auval / pluginval 头上;基线就脏,说明更早的步骤(ctest)用了真实段名又没清,
+      #      这里当场红并点名。判据:退出码 0,且汇总行恰好 1 个用例 —— 隐藏格被改名或改标签、
+      #      一个用例都没跑时,Catch2 的「没有匹配」不能被读成「没有残段」。
+      - name: Shared-memory leftover probe - baseline before auval / pluginval
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' && steps.bundles.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-baseline.log 2>&1 || rc=$?
+          cat shm-leftover-baseline.log
+          if grep -q 'No test cases matched' shm-leftover-baseline.log; then
+            echo "::error::scvb_tests has no test case tagged [shm-leftover] (M05 hidden case renamed or retagged?)"; exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::SCVB shared-memory segments exist BEFORE auval / pluginval ran (scvb_tests [shm-leftover] exit $rc; list above): an earlier step used the real segment names and left them, so 11f could not attribute leftovers to validation"
+            exit 1
+          fi
+          cases=$(sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' shm-leftover-baseline.log | tail -n 1)
+          if [ "${cases:-0}" != "1" ]; then echo "::error::scvb_tests [shm-leftover] ran ${cases:-0} test cases, expected exactly 1"; exit 1; fi
+          echo "- shm leftover probe, baseline before auval / pluginval: clean (1 test case)" >> "$GITHUB_STEP_SUMMARY"
+
+      # 11b) 装 AU:ditto 进用户 Components(cp -r 会丢符号链接与扩展属性,bundle 散架);装前先删旧的
+      #      (ditto 往已有目录里是合并,不删多余文件)。装完 killall -9 AudioComponentRegistrar,让它按需
+      #      重启并重扫;注册轮询放在 11c 每个三元组跟前。装好的路径落 au-installed.txt 给 11e:pluginval
+      #      按路径验 AU 时,JUCE 读 bundle 的 Info.plist 拿三元组、再去注册表里找组件
+      #      (AudioComponentFindNext),所以要验的是已装、已注册的那一份。
+      - name: Install AU components into ~/Library/Audio/Plug-Ins/Components
+        id: au_install
         if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
-        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$dest"
+          : > au-installed.txt
+          while IFS= read -r b; do
+            case "$b" in
+              *.component)
+                inst="$dest/$(basename "$b")"
+                rm -rf "$inst"
+                ditto "$b" "$inst"
+                printf '%s\n' "$inst" >> au-installed.txt ;;
+            esac
+          done < plugin-bundles.txt
+          n=$(grep -c . au-installed.txt || true)
+          if [ "${n:-0}" != "3" ]; then echo "::error::installed ${n:-0} .component bundle(s), expected 3"; exit 1; fi
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sed 's/^/installed: /' au-installed.txt
+
+      # 11c) auval 门(M06b 冒烟的升级,summary 行沿用)。对 ADR-001 冻结的三个三元组逐个跑 `auval -v`,
+      #      **以输出含 `AU VALIDATION SUCCEEDED` 且退出码 0** 判定(bridge 只看输出,理由是 auval 退出码
+      #      历史上不可靠;这里两样都要,哪样不对都红)。
+      #      - 期望三元组写死在这里,因为它是冻结值:ADR-001 冻结 PLUGIN_CODE(Scvi / Scvo / Scvm)与
+      #        厂商码 Snch;aufx 是三个插件 AU_MAIN_TYPE kAudioUnitType_Effect 的四字码;AU 三元组发布后
+      #        整体冻结(改了它,用户工程里的 AU 全部失联)。8c 的三元组从 CMakeLists 现读、与 Info.plist
+      #        对拍,改码时一路自洽、没有任何一步会红 —— 只有对着冻结值核,「subtype 写错」才红。
+      #        所以先核 8c 落下的 au-triples.txt 与冻结集逐行相等,再按冻结集逐个 auval。冻结集要变
+      #        是契约变更:先改 ADR,再改这里。
+      #      - 注册轮询照 bridge:killall 之后轮询 `auval -a` 至多 30 s,看三元组是否出现;**超时只出
+      #        warning、不判红**(正则依赖 auval -a 未文档化的排版,猜错时应退化为「直接验」),
+      #        判定交给 auval -v。
+      #      - `auval -strict -v` 是**记录项**:结果进 summary,不判红。注意 pluginval 在 strictness 5
+      #        自带一项 "auval" 测试,跑的正是 `auval -strict -v` 并看退出码,所以 11e 里 .component 那三格
+      #        实际上已把 -strict 带进了门;这里单列,是为了在 summary 里看得见 -strict 本身的结论。
+      #      - 判据先自测(合成输出,不调 auval):成功标记与退出码 0 缺一不可。
+      - name: auval gate (3 frozen AU triples; -strict recorded, not gated)
+        id: auval
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
         timeout-minutes: 10
         shell: bash
         run: |
-          set +e
-          set -uo pipefail
-          dest="$HOME/Library/Audio/Plug-Ins/Components"
-          mkdir -p "$dest"
+          set -euo pipefail
           mkdir -p auval-logs
-          while IFS= read -r b; do
-            case "$b" in *.component) ditto "$b" "$dest/$(basename "$b")" ;; esac
-          done < plugin-bundles.txt
-          killall -9 AudioComponentRegistrar 2>/dev/null || true
-          echo "### auval smoke (informational)" >> "$GITHUB_STEP_SUMMARY"
-          n=$(grep -c . au-triples.txt 2>/dev/null || true)
-          if [ "${n:-0}" != "3" ]; then
-            echo "::warning::au-triples.txt from the bundle step has ${n:-0} line(s), expected 3; auval smoke covers only those"
-            echo "- au-triples.txt has ${n:-0} line(s), expected 3" >> "$GITHUB_STEP_SUMMARY"
+          au_verdict() { # $1 = auval 退出码, $2 = auval 输出文件
+            if [ "$1" = "0" ] && grep -q 'AU VALIDATION SUCCEEDED' "$2"; then echo SUCCEEDED; else echo FAILED; fi
+          }
+          st="$RUNNER_TEMP/auval-verdict-selftest.log"
+          printf 'AU VALIDATION SUCCEEDED.\n' > "$st"
+          [ "$(au_verdict 0 "$st")" = SUCCEEDED ] || { echo "::error::auval verdict self-test: success marker + exit 0 must pass"; exit 1; }
+          [ "$(au_verdict 1 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: success marker with a non-zero exit must fail"; exit 1; }
+          printf 'AU VALIDATION FAILED.\n' > "$st"
+          [ "$(au_verdict 0 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: exit 0 without the success marker must fail"; exit 1; }
+          : > "$st"
+          [ "$(au_verdict 0 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: empty output must fail"; exit 1; }
+
+          frozen=$'aufx Scvi Snch\naufx Scvo Snch\naufx Scvm Snch'
+          echo "### auval gate" >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          declared=$(LC_ALL=C sort au-triples.txt)
+          want=$(printf '%s\n' "$frozen" | LC_ALL=C sort)
+          if [ "$declared" != "$want" ]; then
+            echo "::error::AU triples declared by the bundles (8c, au-triples.txt) [$(printf '%s' "$declared" | tr '\n' ',')] differ from the ADR-001 frozen set [$(printf '%s' "$want" | tr '\n' ',')]"
+            echo "- declared AU triples differ from the frozen set: [$(printf '%s' "$declared" | tr '\n' ',')]" >> "$GITHUB_STEP_SUMMARY"
+            fail=1
           fi
           while read -r type code mfr <&3; do
             [ -n "$type" ] || continue
@@ -596,16 +685,205 @@ jobs:
               if grep -qE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list"; then seen=1; break; fi
               sleep 1
             done
-            auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1
-            rc=$?
-            if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then verdict=SUCCEEDED; else verdict="did not succeed (see job log)"; fi
-            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen, exit $rc)"
-            tail -n 40 "auval-logs/auval-$code.log"
+            if [ "$seen" != "1" ]; then
+              echo "::warning::$type $code $mfr not seen in auval -a within 30 s; running auval -v anyway (auval -v is the judge)"
+            fi
+            rc=0
+            auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1 || rc=$?
+            verdict=$(au_verdict "$rc" "auval-logs/auval-$code.log")
+            src=0
+            auval -strict -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-strict-$code.log" 2>&1 || src=$?
+            sverdict=$(au_verdict "$src" "auval-logs/auval-strict-$code.log")
+            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen, exit $rc, $verdict)"
+            cat "auval-logs/auval-$code.log"
             echo "::endgroup::"
-            echo "- \`$type $code $mfr\`: registered=$seen, auval -v exit $rc, $verdict" >> "$GITHUB_STEP_SUMMARY"
+            echo "::group::auval -strict -v $type $code $mfr (record only: exit $src, $sverdict)"
+            cat "auval-logs/auval-strict-$code.log"
+            echo "::endgroup::"
+            echo "- \`$type $code $mfr\`: registered=$seen, auval -v exit $rc, $verdict; -strict (record only): exit $src, $sverdict" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$verdict" != "SUCCEEDED" ]; then
+              marker=absent
+              if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then marker=present; fi
+              echo "::error::auval -v $type $code $mfr: exit $rc, 'AU VALIDATION SUCCEEDED' $marker"
+              fail=1
+            fi
+          done 3<<< "$frozen"
+          exit "$fail"
+
+      # 11d) `auval -a` 唯一性:每个三元组恰好对应一个组件。两层:① 8c 落下的三元组(三个 bundle 各自
+      #      声明的)两两不同 —— 两个插件抄成同一个 subtype 时注册器只留一个,`auval -a` 里看着仍是
+      #      「一行」,只有这一层看得见;② 每个声明的三元组在 `auval -a` 里恰好一行(0 = 没注册上,
+      #      ≥2 = 一个三元组挂了不止一个组件)。厂商码相同的全部行另列进日志留痕。
+      - name: auval -a uniqueness gate (one component per AU triple)
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          n=$(grep -c . au-triples.txt || true)
+          if [ "${n:-0}" != "3" ]; then echo "::error::au-triples.txt has ${n:-0} line(s), expected 3"; fail=1; fi
+          dups=$(LC_ALL=C sort au-triples.txt | uniq -d)
+          if [ -n "$dups" ]; then
+            while IFS= read -r d; do echo "::error::AU triple '$d' is declared by more than one plugin bundle"; done <<< "$dups"
+            fail=1
+          fi
+          list="$(auval -a </dev/null 2>/dev/null || true)"
+          if [ -z "$list" ]; then echo "::error::auval -a printed nothing"; exit 1; fi
+          echo "### auval -a uniqueness" >> "$GITHUB_STEP_SUMMARY"
+          while read -r type code mfr <&3; do
+            [ -n "$type" ] || continue
+            k=$(grep -cE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list" || true)
+            echo "$type $code $mfr: ${k:-0} component(s) in auval -a"
+            echo "- \`$type $code $mfr\`: ${k:-0} component(s) in \`auval -a\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${k:-0}" != "1" ]; then
+              echo "::error::AU triple $type $code $mfr maps to ${k:-0} component(s) in auval -a, expected exactly 1"; fail=1
+            fi
           done 3< au-triples.txt
+          if [ -n "$dups" ]; then echo "- duplicated declared triple(s): $(printf '%s' "$dups" | tr '\n' ',')" >> "$GITHUB_STEP_SUMMARY"; fi
+          mfrs=$(awk '{ print $3 }' au-triples.txt | LC_ALL=C sort -u | tr '\n' ' ')
+          echo "::group::auval -a lines with manufacturer code(s): $mfrs"
+          awk -v m="$mfrs" 'BEGIN { k = split(m, a, " "); for (i = 1; i <= k; i++) want[a[i]] = 1 } ($3 in want)' <<< "$list"
+          echo "::endgroup::"
+          exit "$fail"
+
+      # 11e) pluginval 门:3 个 .vst3 + 3 个 .component 共 6 格,非 GUI。版本只从 .pluginval-version 读
+      #      (步骤 0 读进 PLUGINVAL_TAG,与 Windows 同一真源)。下载方式照 build-vst3.yml 的 Windows 侧与
+      #      bridge ci.yml:按版本取上游发行页的 pluginval_macOS.zip,解包后 chmod +x(上游 zip 不保证
+      #      可执行位)。Windows 侧同样只钉版本、不钉 sha,两边口径一致;要钉 sha 是另一件事(两个平台一起
+      #      加、进 CLAUDE.md §6 钉版清单与 build-vst3.yml 的副本),不在本步。下载后核一次
+      #      `pluginval --version` 含钉的版本号(身份断言,同 JUCE tag 那一步)。
+      #      参数与 Windows(build-vst3.yml 的 Validate all VST3 bundles、本机 gate 7)逐字对齐:
+      #      --strictness-level 5 --timeout-ms 60000 --skip-gui-tests。.vst3 验构建树里那份;.component
+      #      验 11b 装好的那份(理由见 11b)。每格判据三样都要:退出码 0;输出里有单独一行 SUCCESS;
+      #      恰好测到 1 个对应格式的插件(`Testing plugin: VST3-…` / `Testing plugin: AudioUnit-…`)——
+      #      最后一样防「扫到 0 个插件」或「.component 被当成别的格式」这类空转。6 格全跑完再统一判。
+      - name: pluginval gate (3 VST3 + 3 AU, strictness 5, no GUI)
+        id: pluginval
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/pluginval_macOS.zip"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$zip" "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_TAG/pluginval_macOS.zip"
+          rm -rf "$RUNNER_TEMP/pluginval"
+          mkdir -p "$RUNNER_TEMP/pluginval"
+          unzip -q "$zip" -d "$RUNNER_TEMP/pluginval"
+          exe="$RUNNER_TEMP/pluginval/pluginval.app/Contents/MacOS/pluginval"
+          if [ ! -f "$exe" ]; then echo "::error::pluginval_macOS.zip ($PLUGINVAL_TAG) has no pluginval.app/Contents/MacOS/pluginval"; exit 1; fi
+          chmod +x "$exe"
+          ver=$("$exe" --version </dev/null 2>&1 || true)
+          echo "pluginval --version: $ver; archs: $(lipo -archs "$exe")"
+          case "$ver" in
+            *"${PLUGINVAL_TAG#v}"*) ;;
+            *) echo "::error::downloaded pluginval reports '$ver', expected $PLUGINVAL_TAG from .pluginval-version"; exit 1 ;;
+          esac
+          echo "PLUGINVAL_EXE=$exe" >> "$GITHUB_ENV"
+
+          mkdir -p pluginval-logs
+          : > pluginval-targets.txt
+          while IFS= read -r b; do
+            case "$b" in *.vst3) printf 'VST3\t%s\n' "$b" >> pluginval-targets.txt ;; esac
+          done < plugin-bundles.txt
+          while IFS= read -r b; do printf 'AudioUnit\t%s\n' "$b" >> pluginval-targets.txt; done < au-installed.txt
+          n=$(grep -c . pluginval-targets.txt || true)
+          if [ "${n:-0}" != "6" ]; then echo "::error::pluginval targets: ${n:-0}, expected 6 (3 .vst3 + 3 installed .component)"; exit 1; fi
+          {
+            echo "### pluginval $PLUGINVAL_TAG (strictness 5, --skip-gui-tests)"
+            echo ""
+            echo "| bundle | format | exit | SUCCESS line | plugins tested | verdict |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          while IFS=$'\t' read -r fmt path <&3; do
+            name=$(basename "$path")
+            log="pluginval-logs/stdout-$name.log"
+            rc=0
+            "$exe" --strictness-level 5 --timeout-ms 60000 --skip-gui-tests \
+              --output-dir "$GITHUB_WORKSPACE/pluginval-logs" --validate "$path" </dev/null > "$log" 2>&1 || rc=$?
+            ok=no
+            if grep -qx 'SUCCESS' "$log"; then ok=yes; fi
+            tested=$(grep -c "^Testing plugin: $fmt-" "$log" || true)
+            verdict=PASS
+            if [ "$rc" != "0" ] || [ "$ok" != "yes" ] || [ "${tested:-0}" != "1" ]; then verdict=FAIL; fail=1; fi
+            echo "::group::pluginval $name ($fmt): exit $rc, SUCCESS line $ok, plugins tested ${tested:-0} -> $verdict"
+            cat "$log"
+            echo "::endgroup::"
+            echo "| \`$name\` | $fmt | $rc | $ok | ${tested:-0} | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$verdict" = "FAIL" ]; then
+              echo "::error::pluginval $name ($fmt): exit $rc, SUCCESS line $ok, plugins tested ${tested:-0} (want exit 0, a SUCCESS line, exactly 1)"
+            fi
+          done 3< pluginval-targets.txt
+          exit "$fail"
+
+      # 11f) 残段门:auval / pluginval 跑完,8 组的真实段名一个都不许还在。Output 在 auval 与 pluginval 里
+      #      会认领组并建段,进程正常退出时由最后一个离开者 shm_unlink(M05);这一格查的就是它。
+      #      auval / pluginval 本身红了也照跑(崩溃退出留下的段同样要报)。判据与 11a 相同。
+      - name: Shared-memory leftover gate - after auval / pluginval
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' && steps.au_install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-after.log 2>&1 || rc=$?
+          cat shm-leftover-after.log
+          if grep -q 'No test cases matched' shm-leftover-after.log; then
+            echo "::error::scvb_tests has no test case tagged [shm-leftover] (M05 hidden case renamed or retagged?)"; exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::SCVB shared-memory segments left behind after auval / pluginval (scvb_tests [shm-leftover] exit $rc; list above)"
+            echo "- shm leftover gate, after auval / pluginval: **leftovers found** (see job log)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cases=$(sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' shm-leftover-after.log | tail -n 1)
+          if [ "${cases:-0}" != "1" ]; then echo "::error::scvb_tests [shm-leftover] ran ${cases:-0} test cases, expected exactly 1"; exit 1; fi
+          echo "- shm leftover gate, after auval / pluginval: clean (1 test case)" >> "$GITHUB_STEP_SUMMARY"
+
+      # 11g) 带 GUI 的 pluginval —— **记录项,不作门**(continue-on-error,结论只进 summary)。Windows 的
+      #      GUI pluginval 是本机 gate 8;mac 没有本机,先在 runner 上看编辑器(WKWebView)能不能开、关、
+      #      边处理边开。只跑一个:SCVB Output.vst3(三个里 UI 最重的),参数同 11e 去掉 --skip-gui-tests。
+      #      headless runner 上编辑器测试可能挂住,所以 8 分钟封顶。跑完再只读探一次残段,同样只记录
+      #      (残段的门 11f 已在它之前判过)。
+      - name: pluginval with GUI - SCVB Output.vst3 (record only, not a gate)
+        if: ${{ !cancelled() && steps.pluginval.outcome != 'skipped' && env.PLUGINVAL_EXE != '' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' src/output/CMakeLists.txt)
+          b=""
+          while IFS= read -r p; do
+            if [ "$(basename "$p")" = "$name.vst3" ]; then b="$p"; fi
+          done < plugin-bundles.txt
+          echo "### pluginval with GUI (record only)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$b" ]; then
+            echo "::warning::no '$name.vst3' in plugin-bundles.txt; GUI pluginval record skipped"
+            echo "- no '$name.vst3' found; skipped" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p pluginval-logs
+          log="pluginval-logs/stdout-gui-$name.vst3.log"
+          "$PLUGINVAL_EXE" --strictness-level 5 --timeout-ms 60000 \
+            --output-dir "$GITHUB_WORKSPACE/pluginval-logs" --validate "$b" </dev/null > "$log" 2>&1
+          rc=$?
+          ok=no
+          if grep -qx 'SUCCESS' "$log"; then ok=yes; fi
+          echo "::group::pluginval (GUI) $name.vst3: exit $rc, SUCCESS line $ok"
+          cat "$log"
+          echo "::endgroup::"
+          left="not probed (scvb_tests not located)"
+          if [ -n "${SCVB_TESTS_EXE:-}" ]; then
+            "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-after-gui.log 2>&1
+            if [ "$?" = "0" ]; then left=clean; else left="leftovers found (see job log)"; cat shm-leftover-after-gui.log; fi
+          fi
+          echo "- \`$name.vst3\` with GUI tests: exit $rc, SUCCESS line $ok; shm leftover probe afterwards: $left" >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
+      # [M08] 验证门的现场一并带上:auval / -strict 的完整输出、pluginval 每格的 stdout 与它自己的日志、
+      # 三次残段探测的输出、两份三元组清单。全部写在工作区里,upload-artifact 按最近公共祖先展开时
+      # 不会出现 _temp/... 这类别扭层级(bridge ci.yml 踩过)。
       - name: Upload build log (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -615,5 +893,10 @@ jobs:
             build.log
             ipc-layout-compact.log
             plugin-bundles.txt
+            au-triples.txt
+            au-installed.txt
+            auval-logs/
+            pluginval-logs/
+            shm-leftover-*.log
           retention-days: 7
           if-no-files-found: ignore
