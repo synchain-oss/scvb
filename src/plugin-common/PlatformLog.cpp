@@ -192,7 +192,8 @@ bool RotatingLogFile::append(const juce::String& line)
     // POSIX:O_APPEND + 一行一次 write。同一份 <role>.log 可能有**多个写者**:同一宿主里同角色的 AU 与 VST3 是
     // 两个二进制(各有一把进程内锁),另有多个宿主进程 / AUHostingService 同时开着。juce::FileOutputStream 是
     // open + lseek 到文件尾 + 缓冲写,两个写者拿到同一个尾偏移就会互相覆盖整行;O_APPEND 让「移到文件尾 + 写」
-    // 由内核原子完成,行与行不交错、不覆盖(判据 = test_plugin_common.cpp 的 [mac] 多写者格)。
+    // 由内核原子完成,行与行不交错、不覆盖(短写重试除外,见 PlatformLog.h 头注;判据 = test_plugin_common.cpp
+    // 的 [mac] 多写者格)。
     // 轮转那两步(查大小 → 改名)跨写者不协调,见 PlatformLog.h 头注。
     const juce::String text = line + "\n";
     const char* data = text.toRawUTF8();
