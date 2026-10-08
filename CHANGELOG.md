@@ -21,6 +21,15 @@
   旧尺寸的残段会按新尺寸重建。权限 0600:同机另一个用户同时使用时拿不到段(打不开,不覆盖对方的段)。打不开的原因
   经一个诊断出口上报(默认不输出,mac 文件日志由后续卡接上)。三个插件在 mac 上的构建由后续卡落地;Windows 行为不变(#369)
 
+- **macOS 发行包(beta,Apple Silicon)**:新增 `scripts/package-macos.sh`,把三个插件的 VST3 与 AU(共 6 个 bundle,
+  只含 arm64)连同许可证文件打成 `SCVB-v<版本>-macos-arm64.zip`,另出与 Windows 同格式的 `.sha256` 和
+  `package-summary-macos.md`。包里的 `INSTALL.txt`(中英)写明:校验、解压、升级前先删旧 bundle、装到
+  `~/Library/Audio/Plug-Ins`、去掉隔离属性(未签名、未公证)、重新登记 AU 并在宿主里重扫(含 LUNA 的做法)、可选的
+  auval,以及系统与宿主要求(macOS 11+ 且系统 Safari/WebKit 15.4+;不支持 Intel Mac、Rosetta 下的宿主与 GarageBand;
+  Logic 为 beta、未在 Logic 实测)。mac CI 每次用当次构建实跑打包冒烟:连跑三次逐字节一致,并按 `INSTALL.txt` 的命令
+  实装一遍,包作为 artifact 上传。`THIRD-PARTY-NOTICES.md` 补登 AudioUnitSDK(Apache-2.0,只进 mac 的 AU),
+  「随二进制分发」表按平台注明;隐私门禁新增 macOS 家目录与 `.local` 主机名两条规则。Windows 包与插件行为不变(#374)
+
 ### 变更
 
 - **`v0.9.0-rc.1` 发布后收尾**:发版验证清单 `docs/validation/release-checklist-v0.9.0-rc.1.md` 按发布实况补完,
