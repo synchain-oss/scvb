@@ -632,7 +632,7 @@ TEST_CASE("IPC-7 段初始化竞态 15 claimer", "[ipc][contract]")
                 std::this_thread::sleep_for(std::chrono::milliseconds(3000)); // INJECT-M12a-J4: last competitor 3s late
             }
             guards[static_cast<std::size_t>(i)].pi = spawnPeer(
-                {"--role=holder", "--kind=input", "--group=1", "--ch=1", "--hold-ms=1500"}, &err); // INJECT-M12a-J4a: old timed release
+                {"--role=holder", "--kind=input", "--group=1", "--ch=1", "--release-file=" + releaseFile}, &err);
             REQUIRE(err == 0);
         }
 
