@@ -334,7 +334,7 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
             return;
         }
         lastAttachTryMs_ = nowMs;
-        switch (vizPlane_.open()) // INJECT-M12a-J2: Monitor creates the viz segment (was: attachReadOnly())
+        switch (vizPlane_.attachReadOnly())
         {
         case scvb::InitResult::kOk:
             vizState_ = VizState::kOnline;

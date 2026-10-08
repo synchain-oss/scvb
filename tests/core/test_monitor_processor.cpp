@@ -215,23 +215,23 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
         // 探针照样 kFailed。下面「松手之后」那一条照留;接住「Monitor 建了 viz 段」的是这一条。
         {
             scvb::VizPlane probeWhileAlive(backend, kGroup);
-            CHECK(probeWhileAlive.attachReadOnly() == scvb::InitResult::kFailed);
+            REQUIRE(probeWhileAlive.attachReadOnly() == scvb::InitResult::kFailed);
         }
 
-        CHECK(p.vizState() == ScvbMonitorAudioProcessor::VizState::kOffline);
-        CHECK_FALSE(p.vizFresh());
+        REQUIRE(p.vizState() == ScvbMonitorAudioProcessor::VizState::kOffline);
+        REQUIRE_FALSE(p.vizFresh());
         p.releaseResources();
 
         // Monitor 走了一圈之后,段仍然不存在 —— 只读方绝不创建段。
         scvb::VizPlane probe(backend, kGroup);
-        CHECK(probe.attachReadOnly() == scvb::InitResult::kFailed);
+        REQUIRE(probe.attachReadOnly() == scvb::InitResult::kFailed);
 
         // registry 段同理:Monitor 的 1Hz 跨组探测只走 openExistingReadOnly,不 claim、不建段。
         // 断言的是**增量**而不是「一个都不存在」:命名段是机器全局的,同机跑着的另一个测试
         // 二进制、残留的 peer 进程、甚至真装了 SCVB 的 DAW,都可能正持着某组 registry ——
         // 拿「全不存在」当判据,测的就成了机器状态而不是 Monitor 的行为(第一版就是这么写的,
         // 一个上一轮残留的 scvb_ipc_peer 就把它打红了)。
-        CHECK(registrySnapshot(backend) == registryBefore);
+        REQUIRE(registrySnapshot(backend) == registryBefore);
     }
 
     // ---- ② 写方建段 + 发布一帧 ----
