@@ -210,7 +210,7 @@ if [ "$n_vst3" != "3" ]; then
     sed 's/^/  found: /' "$WORK/found.txt" >&2
     die "expected exactly 3 .vst3 bundles (SCVB Input / Output / Monitor) under '$BUILD_DIR', found $n_vst3"
 fi
-if false && [ "$n_comp" != "3" ]; then  # [M10 临时注入 I1] 关掉 .component 计数断言
+if [ "$n_comp" != "3" ]; then
     sed 's/^/  found: /' "$WORK/found.txt" >&2
     die "expected exactly 3 .component bundles (SCVB Input / Output / Monitor) under '$BUILD_DIR', found $n_comp"
 fi
