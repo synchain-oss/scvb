@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // check-privacy.mjs —— 公开仓隐私门禁(零依赖,Node >= 18,ESM)。
 //   扫描 **git 跟踪的工作树**(不重写历史;历史里的旧 blob 见 SL-265 卡的说明),
-//   拦下四类会把维护者个人信息带进公开仓的内容:
+//   拦下六类会把维护者个人信息带进公开仓的内容:
 //     P1 项目代号禁词      —— 零容忍,无豁免(硬规:公开材料严禁该标识与其邮箱形态)
 //     P2 个人本机路径      —— C:\Users\<具体用户名>;占位符(<workspace> 等)豁免
 //     P3 个人邮箱域        —— gmail/qq/163/... ;仅 third_party/ 等 vendored 目录豁免
 //                             (对外邮箱 contact@synchain.ca 的域不在表内,本就不会命中)
 //     P4 个人主机名        —— DESKTOP-<序列号> / LAPTOP-<序列号>
+//     P5 macOS 家目录      —— /Users/<具体用户名>;GitHub macOS runner 的 runner、系统共享目录 Shared
+//                             与占位符豁免([B 线 M10])
+//     P6 macOS 局域网主机名 —— <名字>.local(Bonjour / mDNS 名;macOS 默认把「某人的 MacBook Pro」这类
+//                             电脑名转成带连字符的本地主机名)。只认带连字符的名字,或紧跟在 @ / // 之后
+//                             的名字;代码里的属性访问(web/ 里成片的 store 点 local 点 xxx)不算([B 线 M10])
 //
 //   **为什么所有针都从片段拼出来**:本脚本自己也是被扫的跟踪文件。若把禁词写成字面量,
 //   它会扫到自己 ⇒ 只能给自己开豁免 ⇒ 那个豁免就成了藏东西的地方。拼装后源码里不含任何
@@ -101,6 +106,33 @@ const RE_MAIL = new RegExp(
 );
 const RE_HOST = new RegExp(j("\\b(DESKTOP", "|LAPTOP)-[A-Z0-9]{5,}"), "gi"); // i:小写主机名同样拦
 
+// P5:macOS 家目录。前面不能是单词字符或冒号 —— `<盘符>:/Users/<名>`、MSYS 的 `/<盘符>/Users/<名>`、
+// WSL 的 `/mnt/<盘符>/Users/<名>` 都归 P2,这里不重复报;URL 路径(`<主机名>/Users/<名>`)前面是主机名字符,
+// 同样不算。
+// 用户名段按 macOS 短名的字符集取(字母、数字、`.` `_` `-`),所以 `(<家目录>)。` 这类句子里的括号、
+// 中文标点不会被吞进用户名、让豁免失配。区分大小写:系统生成的路径恒为大写 U,小写的多半是 URL 路径。
+const RE_MAC_HOME = new RegExp(
+    j("(?<![\\w:])/", "Users", "/([A-Za-z0-9._-]+)"),
+    "g",
+);
+// P5 豁免的用户名:runner = GitHub macOS runner 的固定账户(CI 日志与 workflow 里成片出现);
+// Shared = 系统自带的共享目录,不属于任何人。只放这两个,别的名字一律当成真人。
+const MAC_SHARED_HOMES = ["runner", "Shared"];
+
+// P6:<名字>.local。两种形态:名字带连字符(macOS 把电脑名转成本地主机名时用连字符连词),或名字
+// 紧跟在 `@` / `//` 之后(`<用户>@<主机>`、`smb://<主机>`)。`.local` 后面紧跟单词字符 / 连字符,
+// 或「点 + 单词字符」(`settings` 点 `local` 点 `json`、`.localhost`)都不算;句末的句点照样算。
+const LOCAL_TLD = j("\\.", "local", "(?![\\w-])(?!\\.\\w)");
+const RE_LOCAL_HOST = new RegExp(
+    j(
+        "(?<![\\w.-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+",
+        LOCAL_TLD,
+        "|(?<=@|//)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?",
+        LOCAL_TLD,
+    ),
+    "gi",
+);
+
 // 占位符用户名:<workspace> / <user> / <你的用户名> / %USERPROFILE% / $env:...
 const isPlaceholderUser = (s) =>
     s.startsWith("<") || s.startsWith("%") || s.startsWith("$") || s === "...";
@@ -143,6 +175,20 @@ const RULES = [
         re: RE_HOST,
         exempt: () => false,
     },
+    {
+        id: "P5",
+        name: j("macOS 家目录 /", "Users", "/<用户名>"),
+        re: RE_MAC_HOME,
+        // m[1] = 用户名段;runner / Shared 与占位符豁免。
+        exempt: (rel, m) =>
+            MAC_SHARED_HOMES.includes(m[1]) || isPlaceholderUser(m[1]),
+    },
+    {
+        id: "P6",
+        name: "macOS 局域网主机名(<名字>.local)",
+        re: RE_LOCAL_HOST,
+        exempt: () => false,
+    },
 ];
 
 if (listRules) {
@@ -153,6 +199,10 @@ if (listRules) {
     console.log("豁免:");
     console.log("  P2 占位符用户名:<...> / %...% / $...");
     console.log("  P3 vendored 目录:" + VENDORED.join(" "));
+    console.log(
+        "  P5 用户名:" + MAC_SHARED_HOMES.join(" ") + ",以及 P2 同一组占位符",
+    );
+    console.log("  P4 / P6:无豁免(主机名一律写成占位符)");
     process.exit(0);
 }
 
@@ -214,10 +264,78 @@ if (selfTest) {
         ["P4", j("DESKTOP", "-", "AB12CD3"), j("DESKTOP", "-", "短")],
         // 小写主机名:`i` 标志被去掉就红(复审 r1)。
         ["P4", j("laptop", "-", "z9y8x7w"), j("LAPTOP", "-", "abc")],
+        // P5([B 线 M10]):行首、file:// URL、括号里、赋值右侧、引号里、反引号里各一条命中;不命中的一侧分两类 ——
+        // 豁免(runner / Shared / 占位符 `...`,它们都真能匹配 RE_MAC_HOME,所以走到的是 exempt)与
+        // 根本不该匹配(Windows 形态归 P2、URL 路径、`<名>` 占位符)。
+        [
+            "P5",
+            j("/", "Users", "/", "someone", "/", "Library"),
+            j("/", "Users", "/", "runner", "/", "work"),
+        ],
+        [
+            "P5",
+            j("file://", "/", "Users", "/", "someone"),
+            j("/", "Users", "/", "Shared", "/", "x"),
+        ],
+        [
+            "P5",
+            j("(", "/", "Users", "/", "someone", ")"),
+            j("(", "/", "Users", "/", "runner", ")", "。"),
+        ],
+        [
+            "P5",
+            j("HOME=", "/", "Users", "/", "some.one"),
+            j("C:", "/", "Users", "/", "someone"),
+        ],
+        [
+            "P5",
+            j('"', "/", "Users", "/", "x_y-z", '"'),
+            j("https://example.com", "/", "Users", "/", "someone"),
+        ],
+        [
+            "P5",
+            j("`", "/", "Users", "/", "SomeOne", "/", "Music", "`"),
+            j("/", "Users", "/", "...", "/", "x"),
+        ],
+        ["P5", j("/", "Users", "/", "runner2"), j("/", "Users", "/", "<you>")],
+        // P6([B 线 M10]):带连字符的名字(含句末句点、全大写)、@ 之后、// 之后各来一条;不命中的一侧是
+        // 代码里的属性访问(web/ 里真实存在的形态)、带连字符的 .local.json 配置文件名(驱动尾部「点 + 单词字符」
+        // 那条否定)、家目录下的隐藏目录、.localhost。
+        [
+            "P6",
+            j("Johns", "-", "MacBook", "-", "Pro", ".", "local"),
+            j("app", "-", "settings", ".", "local", ".", "json"),
+        ],
+        [
+            "P6",
+            j("ssh someone", "@", "studio", ".", "local"),
+            j("store", ".", "local", ".", "pendingRe"),
+        ],
+        [
+            "P6",
+            j("smb:", "//", "nas", ".", "local", "/share"),
+            j("if (store", ".", "local", ") {"),
+        ],
+        [
+            "P6",
+            j("see Johns", "-", "Mac", ".", "local", "."),
+            j("~/", ".", "local", "/share"),
+        ],
+        [
+            "P6",
+            j("JOHNS", "-", "IMAC", ".", "LOCAL"),
+            j("my", "-", "host", ".", "localhost"),
+        ],
     ];
     let bad = 0;
     for (const [id, shouldHit, shouldMiss] of cases) {
         const rule = RULES.find((r) => r.id === id);
+        // 规则被整条删掉时这里报名,而不是在下一行抛 TypeError(那也会非零退出,但看不出是哪条没了)。
+        if (!rule) {
+            console.error("self-test: 规则 " + id + " 不存在 —— 被删掉了?");
+            bad++;
+            continue;
+        }
         const hit = [...shouldHit.matchAll(rule.re)].some(
             (m) => !rule.exempt("some/file.txt", m),
         );
@@ -274,6 +392,30 @@ if (selfTest) {
             );
             bad++;
         }
+    }
+    // ★ 规则表本身的独立真值([B 线 M10]):整条删掉一条规则时,上面依赖它的用例会报「不存在」,
+    //   这里再从规则表一侧报一次,两边对得上才算齐。
+    {
+        const RULE_IDS_TRUTH = ["P1", "P2", "P3", "P4", "P5", "P6"].join(",");
+        const ids = RULES.map((r) => r.id).join(",");
+        if (ids !== RULE_IDS_TRUTH) {
+            console.error(
+                "self-test: 规则表 [" +
+                    ids +
+                    "] 与独立真值 [" +
+                    RULE_IDS_TRUTH +
+                    "] 不符 —— 有规则被增删",
+            );
+            bad++;
+        }
+    }
+    // ★ P5 豁免名单逐字比对独立真值:往里加一个名字(比如维护者自己的短名),上面的用例照样全绿,
+    //   P5 对那个人就静默失效了 —— 与 MAIL_DOMAINS 同一个形态的漏洞。
+    if (MAC_SHARED_HOMES.join(",") !== ["runner", "Shared"].join(",")) {
+        console.error(
+            "self-test: MAC_SHARED_HOMES 与独立真值不符 —— P5 的豁免名单被改了",
+        );
+        bad++;
     }
     // 针的形态校验:与独立真值逐字比对(长度校验不够 —— 改坏后仍是 6 字符)。
     if (CODENAME !== CODENAME_TRUTH) {
@@ -369,7 +511,7 @@ if (findings.length === 0) {
     console.log(
         "check-privacy 通过: " +
             scanned +
-            " 个文本文件,四条规则零命中(P1 代号 / P2 本机路径 / P3 个人邮箱域 / P4 主机名)",
+            " 个文本文件,六条规则零命中(P1 代号 / P2 Windows 本机路径 / P3 个人邮箱域 / P4 主机名 / P5 macOS 家目录 / P6 局域网主机名)",
     );
     process.exit(0);
 }
@@ -399,7 +541,8 @@ if (findings.some((f) => f.rule.id === "P1")) {
 }
 if (findings.some((f) => f.rule.id !== "P1")) {
     console.error(
-        "P2/P3/P4 若确属误报,调对应豁免点(isPlaceholderUser / VENDORED),不要给整个文件开天窗。",
+        "P2/P3/P5 若确属误报,调对应豁免点(isPlaceholderUser / VENDORED / MAC_SHARED_HOMES),不要给整个文件开天窗;" +
+            "P4/P6 没有豁免点,主机名一律改写成占位符。",
     );
 }
 process.exit(1);
