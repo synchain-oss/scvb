@@ -48,7 +48,7 @@ path = "third_party/miniz/**"
 SPDX-FileCopyrightText = "2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC"
 SPDX-License-Identifier = "MIT"
 
-# ④ JUCE 静态链进 .vst3 的第三方库 + WebView2 静态 loader 的上游许可证原文(逐字副本,
+# ④ JUCE 静态链进 .vst3 / .component 的第三方库 + WebView2 静态 loader 的上游许可证原文(逐字副本,
 #    来源:JUCE 8.0.8 modules/ 与 Microsoft.Web.WebView2 1.0.2957.106 nupkg,Unicode 那份除外、见本节末块;清单与取舍见
 #    THIRD-PARTY-NOTICES.md)。这些库的源码不在本仓(JUCE 构建期取、nupkg 构建期取),
 #    这里只放它们的版权/许可声明,让 LICENSES/ 里对应的全文有据可查(reuse lint 不许有未被引用的全文)。
@@ -63,6 +63,14 @@ path = "third_party/notices/vst3sdk.*"
 precedence = "override"   # 以本块为准:原文里的 "Copyright notice:" 之类字样不是版权行
 SPDX-FileCopyrightText = "2024 Steinberg Media Technologies GmbH"
 SPDX-License-Identifier = "GPL-3.0-only"   # 上游双授权(Steinberg VST3 License 或 GPLv3),本项目取 GPLv3
+
+# [B 线 M10] AudioUnitSDK 只编进 macOS 的 AU(.component)。上游 LICENSE.txt 是不带版权行的 Apache-2.0 正文,
+# 版权行取自源文件头的 @copyright(27 个文件一致)。
+[[annotations]]
+path = "third_party/notices/audiounitsdk.*"
+precedence = "override"   # 以本块为准,与上下各块同一口径
+SPDX-FileCopyrightText = "2000-2021 Apple Inc."
+SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = "third_party/notices/zlib.*"
