@@ -10,11 +10,12 @@
 // 约定:
 //   · **默认空操作**:没有 sink 时 reportIpcDiag() 什么都不做,所以 scvb_core 的单测与没接日志的
 //     构建行为不变。
-//   · **只在消息线程(非实时线程)上调用**:reportIpcDiag() 只出现在段后端的 createOrOpen / openExisting /
+//   · **只在非实时线程上调用**(不保证是消息线程:M07 实测段后端会在 prepareToPlay / releaseResources
+//   里被调到,线程由宿主定):reportIpcDiag() 只出现在段后端的 createOrOpen / openExisting /
 //     openExistingReadOnly / unmap / tryLock 里,这些按 ISegmentBackend 的约定只在持 lifecycleMutex 的
 //     非实时线程调用(01 §3.1);音频线程从不经过这里。sink 在报告者的线程上**同步**调用。
 //   · **不在跨进程锁里调用**:POSIX 后端先放掉全局 lifecycle.lock,再把诊断交给 sink,所以 sink 里做文件
-//     I/O 卡不住别的进程的段操作;但它仍在调用方的消息线程上,应当尽快返回。sink 不得回调段后端。
+//     I/O 卡不住别的进程的段操作;但它仍在调用方(非实时)线程上,应当尽快返回。sink 不得回调段后端。
 //   · sink 是进程内(准确说是「每个链接了 scvb_core 的二进制内」)唯一的一个函数指针:三个插件是三个
 //     二进制,各有一份,互不影响。设置与读取都是原子的;换 sink 时正在进行的那一次报告可能仍落到旧 sink。
 //   · **同一事件可能高频重复,sink 要落盘就得自己限流或去重**:后端只给「全局 lifecycle.lock 超时」

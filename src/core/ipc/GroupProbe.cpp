@@ -11,7 +11,7 @@ namespace scvb
 
 namespace
 {
-// 与 Registry.cpp 的 registryFullName 同构:v1 仅 Windows,OS 前缀固定 "Local\"。
+// 与 Registry.cpp 的 registryFullName 同构:调用方统一传 Windows 形态的全名,OS 前缀固定 "Local\"(POSIX 后端内部再映射)。
 std::wstring registryFullName(u32 group)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kRegistry);
