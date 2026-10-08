@@ -1,14 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_ipc_contract.cpp —— L1 双进程 IPC 契约测试(T07b / J19,10-validation §2.3 的 IPC-1..20 共 26 条)。
-// 父进程(Catch2)经 CreateProcessW 拉起 tests/tools/scvb_ipc_peer 作对端;跨进程用例用真实共享内存 +
-// 真实 pid 探活 + TerminateProcess,绝不用 InProcess 模拟(J19 的价值所在)。纯逻辑用例(布局/覆盖判定/
-// fp_report 打包/内存序/J33 交错/双线程 flags)在本进程内直接驱动生产代码。
+// 父进程(Catch2)经 tests/support/peer_spawn.h 拉起 tests/tools/scvb_ipc_peer 作对端;跨进程用例用真实
+// 共享内存 + 真实 pid 探活 + 强杀(Windows TerminateProcess / POSIX SIGKILL),绝不用 InProcess 模拟
+// (J19 的价值所在)。纯逻辑用例(布局/覆盖判定/fp_report 打包/内存序/J33 交错/双线程 flags)在本进程内
+// 直接驱动生产代码。
+//
+// [B 线 M12a] 两平台同一份用例:段后端走 ipc/PlatformSegmentBackend.h(Windows = SegmentBackendWin32,
+// 与之前同一个类型;macOS = SegmentBackendPosix)。两种后端的段寿命口径不同,用例因此显式写出
+// 「谁在吊住段」:
+//   · Windows:段随最后一个句柄消失;而 Registry / CtrlPlane 析构时 SegmentHandle 还在 500ms 宽限期里,
+//     不 unmap —— 视图泄漏到进程退出,于是**本测试进程摸过的段都被它自己吊到整轮结束**。
+//   · POSIX:视图照样留到进程退出,但「离开」(放 flock、最后离开者 shm_unlink)在**后端析构**时补做
+//     (SegmentBackendPosix.h「视图没经 unmap 就被丢掉」)。段只活到最后一个后端实例析构。
+//   所以凡是「对端崩溃 / 退出之后,段里的状态还要被下一个读到」的用例(崩溃残段、强杀接管、优雅退出
+//   后接管、改组重连),都由一个**活到用例结束**的观察方 Registry 吊住段;Windows 上这只是把原来
+//   隐式的泄漏写成显式,断言一条不改。没人吊住时 POSIX 下一个创建者会把无主残段清掉重建 —— 那正是
+//   产品口径(崩溃之后没人在用的段不该复活),但会让「读到残段」类断言测到一份全新的段。
 //
 // 真源:masterPlan 10-validation §2.3(IPC-1..20 逐行实数)、ipc-contract v1.5、01-architecture §5、04 §3.2。
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -32,10 +47,11 @@
 
 #include "ipc/CtrlPlane.h"
 #include "ipc/FeatRing.h"
+#include "ipc/PlatformSegmentBackend.h"
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendInProcess.h"
-#include "ipc/SegmentBackendWin32.h"
 #include "ipc_contract_harness.h"
+#include "support/peer_spawn.h"
 
 using scvb::kMaxChannels;
 using scvb::kScvbAbi;
@@ -52,6 +68,18 @@ using scvb::ipctest::RingReaderState;
 using scvb::ipctest::ringWriteBlock;
 using scvb::ipctest::RingWriterState;
 using scvb::ipctest::TimelineModel;
+using scvb::ipctest::peer::csvLL;
+using scvb::ipctest::peer::deleteFile;
+using scvb::ipctest::peer::killPeer;
+using scvb::ipctest::peer::parseCsv;
+using scvb::ipctest::peer::PeerGuard;
+using scvb::ipctest::peer::peerPid;
+using scvb::ipctest::peer::PeerProcess;
+using scvb::ipctest::peer::peerRunning;
+using scvb::ipctest::peer::pollPeer;
+using scvb::ipctest::peer::readFile;
+using scvb::ipctest::peer::tempCsvPath;
+using scvb::ipctest::peer::waitPeer;
 
 using namespace scvb;
 
@@ -66,215 +94,13 @@ namespace
 // ---------------------------------------------------------------------------
 // 进程 spawn / 等待 / 杀进程 helper
 // ---------------------------------------------------------------------------
+// [B 线 M12a] 原先这里有一份与 tests/support/peer_spawn.h 等价的本地副本(当时为了不和 IPC-16
+// flake 修复那一路抢同一个文件);那一路早已合入,M12a 删掉副本、改用公共头,两平台各一份实现。
+// 本文件的对端固定是 scvb_ipc_peer,包一层省掉每个调用点的 exe 名。
 
-std::wstring peerExe()
+PeerProcess spawnPeer(const std::vector<std::string>& args, int* spawnErr)
 {
-    // 运行期解析对端进程路径:不编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发 MSVC
-    // C4129 或损坏转义,PR#46 复审)。从测试 exe 自身路径推导:
-    //   测试 exe = <build>/tests/ipc[/<Config>]/scvb_ipc_tests.exe
-    //   对端 exe = <build>/tests/tools[/<Config>]/scvb_ipc_peer.exe
-    wchar_t self[MAX_PATH];
-    const DWORD n = ::GetModuleFileNameW(nullptr, self, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
-    {
-        return L"";
-    }
-    std::wstring dir(self, self + n);
-    const std::size_t slash = dir.find_last_of(L"\\/");
-    if (slash == std::wstring::npos)
-    {
-        return L"";
-    }
-    dir.resize(slash); // 测试 exe 目录
-
-    // 候选链:Ninja 单配置 <build>/tests/tools/ 与 VS 多配置 <build>/tests/tools/<Config>/。
-    // (dir 末段为 <Config> 时须回退两层:dir/.. = <build>/tests/ipc,dir/../.. = <build>/tests。)
-    std::vector<std::wstring> candidates;
-    candidates.push_back(dir + L"/../tools/scvb_ipc_peer.exe"); // Ninja
-    const std::size_t lastSlash = dir.find_last_of(L"\\/");
-    if (lastSlash != std::wstring::npos)
-    {
-        const std::wstring config = dir.substr(lastSlash + 1);
-        candidates.push_back(dir + L"/../../tools/" + config + L"/scvb_ipc_peer.exe"); // VS 多配置
-    }
-
-    for (const auto& cand : candidates)
-    {
-        wchar_t full[MAX_PATH];
-        if (::GetFullPathNameW(cand.c_str(), MAX_PATH, full, nullptr) != 0 &&
-            ::GetFileAttributesW(full) != INVALID_FILE_ATTRIBUTES)
-        {
-            return std::wstring(full);
-        }
-    }
-    return L"";
-}
-
-std::wstring wide(const std::string& s)
-{
-    return std::wstring(s.begin(), s.end());
-}
-
-std::string quote(const std::string& s)
-{
-    if (s.find(' ') == std::string::npos && s.find('"') == std::string::npos)
-    {
-        return s;
-    }
-    std::string out = "\"";
-    for (const char c : s)
-    {
-        if (c == '"')
-        {
-            out += "\\\"";
-        }
-        else
-        {
-            out += c;
-        }
-    }
-    out += "\"";
-    return out;
-}
-
-PROCESS_INFORMATION spawnPeer(const std::vector<std::string>& args, int* spawnErr)
-{
-    PROCESS_INFORMATION pi{};
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-
-    const std::wstring exe = peerExe();
-    if (exe.empty())
-    {
-        if (spawnErr != nullptr)
-        {
-            *spawnErr = static_cast<int>(ERROR_FILE_NOT_FOUND); // 2(winerror.h 宏,勿加 :: 前缀)
-        }
-        return PROCESS_INFORMATION{};
-    }
-    std::wstring cmd = L"\"" + exe + L"\"";
-    for (const auto& a : args)
-    {
-        cmd += L" " + wide(quote(a));
-    }
-    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-    buf.push_back(L'\0');
-
-    if (!::CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
-    {
-        if (spawnErr != nullptr)
-        {
-            *spawnErr = static_cast<int>(::GetLastError());
-        }
-        return PROCESS_INFORMATION{};
-    }
-    if (spawnErr != nullptr)
-    {
-        *spawnErr = 0;
-    }
-    return pi;
-}
-
-int waitPeer(PROCESS_INFORMATION& pi, DWORD timeoutMs)
-{
-    if (pi.hProcess == nullptr)
-    {
-        return -1;
-    }
-    const DWORD r = ::WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (r != WAIT_OBJECT_0)
-    {
-        return -1;
-    }
-    DWORD code = 0;
-    ::GetExitCodeProcess(pi.hProcess, &code);
-    ::CloseHandle(pi.hProcess);
-    ::CloseHandle(pi.hThread);
-    pi.hProcess = nullptr;
-    pi.hThread = nullptr;
-    return static_cast<int>(code);
-}
-
-void killPeer(PROCESS_INFORMATION& pi)
-{
-    if (pi.hProcess != nullptr)
-    {
-        ::TerminateProcess(pi.hProcess, 9);
-        ::WaitForSingleObject(pi.hProcess, 5000);
-        ::CloseHandle(pi.hProcess);
-        ::CloseHandle(pi.hThread);
-        pi.hProcess = nullptr;
-        pi.hThread = nullptr;
-    }
-}
-
-struct PeerGuard
-{
-    PROCESS_INFORMATION pi{};
-    ~PeerGuard() { killPeer(pi); }
-    PeerGuard(const PeerGuard&) = delete;
-    PeerGuard& operator=(const PeerGuard&) = delete;
-    PeerGuard() = default;
-};
-
-std::atomic<int> g_csvCounter{0};
-
-std::string tempCsvPath()
-{
-    char buf[MAX_PATH];
-    const DWORD n = ::GetTempPathA(MAX_PATH, buf);
-    std::string p = std::string(buf, n);
-    p += "scvb_ipc_" + std::to_string(::GetCurrentProcessId()) + "_" + std::to_string(g_csvCounter.fetch_add(1)) +
-         ".csv";
-    return p;
-}
-
-std::string readFile(const std::string& path)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f.good())
-    {
-        return "";
-    }
-    std::ostringstream oss;
-    oss << f.rdbuf();
-    return oss.str();
-}
-
-void deleteFile(const std::string& path)
-{
-    ::DeleteFileA(path.c_str());
-}
-
-std::map<std::string, std::string> parseCsv(const std::string& text)
-{
-    std::map<std::string, std::string> m;
-    std::istringstream iss(text);
-    std::string line;
-    while (std::getline(iss, line))
-    {
-        if (!line.empty() && line.back() == '\r')
-        {
-            line.pop_back();
-        }
-        if (line.empty() || line[0] == '#')
-        {
-            continue;
-        }
-        const std::size_t sp = line.find(' ');
-        if (sp == std::string::npos)
-        {
-            continue;
-        }
-        m[line.substr(0, sp)] = line.substr(sp + 1);
-    }
-    return m;
-}
-
-long long csvLL(const std::map<std::string, std::string>& m, const std::string& k)
-{
-    const auto it = m.find(k);
-    return (it == m.end()) ? 0 : std::strtoll(it->second.c_str(), nullptr, 10);
+    return scvb::ipctest::peer::spawnPeer(scvb::ipctest::peer::kIpcPeerName, args, spawnErr);
 }
 
 u64 csvU64Hex(const std::map<std::string, std::string>& m, const std::string& k)
@@ -410,7 +236,7 @@ void initFeatHeader(scvb::FeatHeader* h)
 
 // 强制把某组 registry 段清零到「magic=SCVB / abi=1 / generation=1 / 全槽空闲」。
 // 段可能被此前测试的 SegmentHandle 宽限期保活(状态累积),本 helper 让每个 registry 用例互不串扰。
-void resetRegistry(scvb::SegmentBackendWin32& backend, u32 group)
+void resetRegistry(scvb::PlatformSegmentBackend& backend, u32 group)
 {
     scvb::SegmentView v;
     if (backend.createOrOpen(scvb::segmentRegistryName(group), scvb::kRegistrySegmentSize, v) != scvb::InitResult::kOk)
@@ -469,7 +295,7 @@ TEST_CASE("IPC-2 单进程 SPSC 时间线寻址(多块长逐样本一致)", "[ip
     g.ringFrames = scvb::kDefaultRingFrames;
     g.channels = 1;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView view;
     REQUIRE(backend.createOrOpen(scvb::segmentAudioName(1, 1), scvb::ipctest::audioSegmentBytes(g.ringFrames), view) ==
             scvb::InitResult::kOk);
@@ -572,7 +398,7 @@ TEST_CASE("IPC-5 覆盖判定三边界各自 gapCount+1 且静音", "[ipc][contr
     g.ringFrames = 64;
     g.channels = 1;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView view;
     REQUIRE(backend.createOrOpen(scvb::segmentAudioName(1, 4), scvb::ipctest::audioSegmentBytes(g.ringFrames), view) ==
             scvb::InitResult::kOk);
@@ -635,7 +461,7 @@ TEST_CASE("IPC-5b 读后 write_head 复查套圈弃块", "[ipc][contract]")
     g.ringFrames = 64;
     g.channels = 1;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView view;
     REQUIRE(backend.createOrOpen(scvb::segmentAudioName(1, 5), scvb::ipctest::audioSegmentBytes(g.ringFrames), view) ==
             scvb::InitResult::kOk);
@@ -672,7 +498,7 @@ TEST_CASE("IPC-5c 负 playhead 跨零点尾段写入且 gapCount 不增", "[ipc]
     g.ringFrames = 256;
     g.channels = 1;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView view;
     REQUIRE(backend.createOrOpen(scvb::segmentAudioName(1, 6), scvb::ipctest::audioSegmentBytes(g.ringFrames), view) ==
             scvb::InitResult::kOk);
@@ -712,11 +538,16 @@ TEST_CASE("IPC-6 崩溃残段 reader 判陈旧 + 新 writer 双阈值接管", "[
     int err = 0;
     holder.pi = spawnPeer({"--role=holder", "--kind=input", "--group=1", "--ch=7"}, &err);
     REQUIRE(err == 0);
+
+    // [B 线 M12a] 观察方活到用例结束、吊住 registry 段 —— 「崩溃残段」的前提是崩溃那一刻**还有别人**
+    // 持着段(真实场景:Input 崩溃时 Output 仍在)。Windows 上原先这一块在作用域末尾析构,靠宽限期泄漏的
+    // 视图隐式吊住;POSIX 上后端析构即离开,holder 被杀后段无主,下一个 open() 会清掉重建 ——
+    // 下面那几条读到的就成了一份全新的段(hb=0、槽空闲),断言测不到残段。
+    scvb::PlatformSegmentBackend keepBackend;
+    scvb::Registry keepReg(keepBackend, 1);
+    REQUIRE(keepReg.open() == scvb::Registry::ClaimResult::kClaimed);
     {
-        scvb::SegmentBackendWin32 backend;
-        scvb::Registry reg(backend, 1);
-        REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
-        auto* slot = reg.inputSlot(7);
+        auto* slot = keepReg.inputSlot(7);
         REQUIRE(slot != nullptr);
         for (int i = 0; i < 200 && slot->state.load() != kSlotActive; ++i)
         {
@@ -725,17 +556,17 @@ TEST_CASE("IPC-6 崩溃残段 reader 判陈旧 + 新 writer 双阈值接管", "[
         REQUIRE(slot->state.load() == kSlotActive);
     }
 
-    const u32 peerPid = holder.pi.dwProcessId;
-    killPeer(holder.pi);
+    const u32 holderPid = peerPid(holder.pi);
+    killPeer(holder.pi); // 强杀并收走(POSIX:收走之前对端是僵尸,isProcessAlive 仍会判活)
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     auto* slot = reg.inputSlot(7);
     REQUIRE(slot != nullptr);
     const u64 hb = slot->heartbeat_ms.load();
 
-    REQUIRE_FALSE(scvb::isProcessAlive(peerPid));
+    REQUIRE_FALSE(scvb::isProcessAlive(holderPid));
     REQUIRE(scvb::isStaleDisplay(hb, hb + 2100));
     REQUIRE(reg.claimInput(7, 9001, 48000, 512, hb + 4900) == scvb::Registry::ClaimResult::kConflict);
     REQUIRE(reg.claimInput(7, 9001, 48000, 512, hb + 5100) == scvb::Registry::ClaimResult::kClaimed);
@@ -769,7 +600,7 @@ TEST_CASE("IPC-7 段初始化竞态 15 claimer", "[ipc][contract]")
         }
         REQUIRE(claimed == 15);
 
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::Registry reg(backend, 1);
         REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
         REQUIRE(reg.header()->magic.load() == kScvbMagic);
@@ -783,19 +614,59 @@ TEST_CASE("IPC-7 段初始化竞态 15 claimer", "[ipc][contract]")
     SECTION("15 个 claimer 抢同一 channel → 恰好 1 个成功")
     {
         // 用 holder 持住 slot(claim 后不立即释放),15 个同时抢同号 → CAS 恰好 1 个胜者。
+        //
+        // [B 线 M12a] 胜者持槽到**其余 14 个都已报告结果**才释放:释放时机由本用例显式给(--release-file,
+        // 下面创建这个文件即「放」),不再由墙钟给。旧写法是 --hold-ms=1500 —— 胜者持槽 1.5–1.75s 后自己
+        // 退出、~Registry 把槽放回 Free;负载下只要有一个竞争者比胜者晚起 1.5s 以上,它就**合法地**认领到
+        // 已经放回的槽,claimed == 2(M04 #366 在本机重负载下撞到过,手工把起进程拖慢复刻 1/8)。那是用例的
+        // 时间窗被拉穿,不是 CAS 排他失效;握手之后,竞争者晚到多久都只会撞上一个仍被持着的槽。
+        // 断言一条没改:恰好 1 个 0(胜者)、14 个 2(冲突)。
+        const std::string releaseFile = tempCsvPath() + ".release";
+        deleteFile(releaseFile);
         std::vector<PeerGuard> guards(15);
         int err = 0;
         for (int i = 0; i < 15; ++i)
         {
-            guards[static_cast<std::size_t>(i)].pi =
-                spawnPeer({"--role=holder", "--kind=input", "--group=1", "--ch=1", "--hold-ms=1500"}, &err);
+            guards[static_cast<std::size_t>(i)].pi = spawnPeer(
+                {"--role=holder", "--kind=input", "--group=1", "--ch=1", "--release-file=" + releaseFile}, &err);
             REQUIRE(err == 0);
         }
+
+        // 收齐 14 份结果再放。胜者收到释放信号之前不会退出,所以这里最多收到 14 份;30s 只防挂死 ——
+        // 到点没收齐也照样放、照样往下数,由计数断言判红(比如出现两个胜者:两个都在等信号,永远只收到 13 份)。
+        constexpr int kPending = -1000;
+        std::vector<int> codes(15, kPending);
+        int reported = 0;
+        const auto collectDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (reported < 14 && std::chrono::steady_clock::now() < collectDeadline)
+        {
+            for (std::size_t i = 0; i < guards.size(); ++i)
+            {
+                if (codes[i] == kPending && pollPeer(guards[i].pi, &codes[i]))
+                {
+                    ++reported;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const int reportedBeforeRelease = reported;
+        {
+            std::ofstream releaseSignal(releaseFile, std::ios::binary);
+            releaseSignal << "release\n";
+        }
+        for (std::size_t i = 0; i < guards.size(); ++i)
+        {
+            if (codes[i] == kPending)
+            {
+                codes[i] = waitPeer(guards[i].pi, 15000);
+            }
+        }
+        deleteFile(releaseFile);
+
         int claimed = 0;
         int conflict = 0;
-        for (int i = 0; i < 15; ++i)
+        for (const int c : codes)
         {
-            const int c = waitPeer(guards[static_cast<std::size_t>(i)].pi, 15000);
             if (c == 0)
             {
                 ++claimed;
@@ -805,6 +676,7 @@ TEST_CASE("IPC-7 段初始化竞态 15 claimer", "[ipc][contract]")
                 ++conflict;
             }
         }
+        INFO("results reported before the release signal: " << reportedBeforeRelease);
         REQUIRE(claimed == 1);
         REQUIRE(conflict == 14);
     }
@@ -815,7 +687,7 @@ TEST_CASE("IPC-7 段初始化竞态 15 claimer", "[ipc][contract]")
 // ===========================================================================
 TEST_CASE("IPC-8 半初始化残段覆盖式重初始化", "[ipc][contract]")
 {
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     // 先正常打开(创建者路径 generation=1 或既有段),再把 magic 清零模拟「创建者死于 re-init」,
     // 但段仍被 reg1 保活(不 unmaps → 段不销毁)。新 owner 覆盖式重初始化 generation +1。
     scvb::Registry reg1(backend, 1);
@@ -836,7 +708,7 @@ TEST_CASE("IPC-8 半初始化残段覆盖式重初始化", "[ipc][contract]")
 TEST_CASE("IPC-9 ABI 不符拒连不崩溃", "[ipc][contract]")
 {
     // 用独立 group=3 承载 abi 异常段,避免污染 group=1(其余测试共享的默认组)。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView view;
     const std::wstring name = scvb::segmentRegistryName(3);
     REQUIRE(backend.createOrOpen(name, scvb::kRegistrySegmentSize, view) == scvb::InitResult::kOk);
@@ -857,7 +729,7 @@ TEST_CASE("IPC-9 ABI 不符拒连不崩溃", "[ipc][contract]")
 // ===========================================================================
 TEST_CASE("IPC-10 采样率不符该轨禁用不重采样", "[ipc][contract]")
 {
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(reg.claimInput(8, 1001, 44100, 512, scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed);
@@ -876,19 +748,19 @@ TEST_CASE("IPC-11a 第二 Output 优雅退出后接管", "[ipc][contract]")
     int err = 0;
     first.pi = spawnPeer({"--role=holder", "--kind=output", "--group=1", "--hold-ms=300"}, &err);
     REQUIRE(err == 0);
+    // [B 线 M12a] 观察方活到用例结束、吊住段(理由见文件头注):接管断言要测的是「第一个 Output 优雅退出时
+    // 把槽放回了」,而不是「段没了、重建出一份空的」。Windows 上原先靠作用域内 Registry 的宽限期泄漏隐式吊住。
+    scvb::PlatformSegmentBackend keepBackend;
+    scvb::Registry keepReg(keepBackend, 1);
+    REQUIRE(keepReg.open() == scvb::Registry::ClaimResult::kClaimed);
+    for (int i = 0; i < 200 && keepReg.outputSlot()->state.load() != kSlotActive; ++i)
     {
-        scvb::SegmentBackendWin32 backend;
-        scvb::Registry reg(backend, 1);
-        REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
-        for (int i = 0; i < 200 && reg.outputSlot()->state.load() != kSlotActive; ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        REQUIRE(reg.outputSlot()->state.load() == kSlotActive);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    REQUIRE(keepReg.outputSlot()->state.load() == kSlotActive);
     REQUIRE(waitPeer(first.pi, 15000) == 0);
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(reg.claimOutput(2002, scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed);
@@ -904,20 +776,21 @@ TEST_CASE("IPC-11b 第二 Output 强杀路径 ≥5s 才可接管", "[ipc][contra
     int err = 0;
     first.pi = spawnPeer({"--role=holder", "--kind=output", "--group=1"}, &err);
     REQUIRE(err == 0);
+    // [B 线 M12a] 观察方活到用例结束、吊住段(理由同 IPC-6):强杀之后槽里那份「活跃 + 死 pid + 旧心跳」
+    // 就是要测的残段。没人吊住时 POSIX 上它随 holder 一起变成无主段,下一个 open() 清掉重建,
+    // hb 读到 0、hb+4900 的认领直接成功,`kConflict` 那条就红了(测到的是一份新段,不是残段)。
+    scvb::PlatformSegmentBackend keepBackend;
+    scvb::Registry keepReg(keepBackend, 1);
+    REQUIRE(keepReg.open() == scvb::Registry::ClaimResult::kClaimed);
+    for (int i = 0; i < 200 && keepReg.outputSlot()->state.load() != kSlotActive; ++i)
     {
-        scvb::SegmentBackendWin32 backend;
-        scvb::Registry reg(backend, 1);
-        REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
-        for (int i = 0; i < 200 && reg.outputSlot()->state.load() != kSlotActive; ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        REQUIRE(reg.outputSlot()->state.load() == kSlotActive);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    const u32 pid = first.pi.dwProcessId;
-    killPeer(first.pi);
+    REQUIRE(keepReg.outputSlot()->state.load() == kSlotActive);
+    const u32 pid = peerPid(first.pi);
+    killPeer(first.pi); // 强杀并收走(POSIX:收走之前对端是僵尸,isProcessAlive 仍会判活)
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     const u64 hb = reg.outputSlot()->heartbeat_ms.load();
@@ -936,7 +809,7 @@ TEST_CASE("IPC-12a 心跳显示陈旧边界不授权接管", "[ipc][contract]")
     int err = 0;
     holder.pi = spawnPeer({"--role=holder", "--kind=input", "--group=1", "--ch=9"}, &err);
     REQUIRE(err == 0);
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     auto* slot = reg.inputSlot(9);
@@ -960,7 +833,7 @@ TEST_CASE("IPC-12b 心跳接管四格(J10 双条件)", "[ipc][contract]")
 {
     SECTION("4900ms × pid 存活 → 不接管")
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         resetRegistry(backend, 1);
         PeerGuard holder;
         int err = 0;
@@ -979,7 +852,7 @@ TEST_CASE("IPC-12b 心跳接管四格(J10 双条件)", "[ipc][contract]")
     }
     SECTION("4900ms × pid 已死 → 不接管(未过时限)")
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         resetRegistry(backend, 1);
         PeerGuard holder;
         int err = 0;
@@ -999,7 +872,7 @@ TEST_CASE("IPC-12b 心跳接管四格(J10 双条件)", "[ipc][contract]")
     }
     SECTION("5100ms × pid 存活 → 不接管(假死保护)")
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         resetRegistry(backend, 1);
         PeerGuard holder;
         int err = 0;
@@ -1019,7 +892,7 @@ TEST_CASE("IPC-12b 心跳接管四格(J10 双条件)", "[ipc][contract]")
     }
     SECTION("5100ms × pid 已死 → CAS 接管唯一胜者")
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         resetRegistry(backend, 1);
         PeerGuard holder;
         int err = 0;
@@ -1290,14 +1163,14 @@ TEST_CASE("IPC-16 ctrl 全局小节跨进程逐项一致", "[ipc][contract]")
 // ===========================================================================
 TEST_CASE("IPC-17 直通/静音健康仲裁信号", "[ipc][contract]")
 {
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     resetRegistry(backend, 1); // 清掉 IPC-11b 等可能残留的 OutputSlot 状态,消除残留态耦合
 
     PeerGuard holder;
     int err = 0;
     holder.pi = spawnPeer({"--role=holder", "--kind=output", "--group=1", "--ch=1"}, &err);
     REQUIRE(err == 0);
-    const u32 holderPid = holder.pi.dwProcessId;
+    const u32 holderPid = peerPid(holder.pi);
 
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
@@ -1311,7 +1184,7 @@ TEST_CASE("IPC-17 直通/静音健康仲裁信号", "[ipc][contract]")
     REQUIRE(reg.outputSlot()->state.load() == kSlotActive);
     REQUIRE(reg.connectedMask() == (1u << 0));
     // 校验 holder 未早退(claim 失败会 exit 2;成功则持住不退出)。
-    REQUIRE(::WaitForSingleObject(holder.pi.hProcess, 0) == WAIT_TIMEOUT);
+    REQUIRE(peerRunning(holder.pi));
 
     const u64 hbFresh = reg.outputSlot()->heartbeat_ms.load();
     REQUIRE_FALSE(scvb::isStaleDisplay(hbFresh, hbFresh));
@@ -1334,7 +1207,7 @@ TEST_CASE("IPC-18 flags 双线程混写无吞位", "[ipc][contract]")
     static_assert(std::is_same_v<decltype(scvb::InputSlot::flags), std::atomic<u32>>);
     static_assert(std::atomic<u32>::is_always_lock_free);
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(reg.claimInput(11, 1001, 48000, 512, scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed);
@@ -1560,26 +1433,27 @@ TEST_CASE("IPC-20b 改组释放-重连", "[ipc][contract]")
     int err = 0;
     h1.pi = spawnPeer({"--role=holder", "--kind=input", "--group=1", "--ch=5"}, &err);
     REQUIRE(err == 0);
+    // [B 线 M12a] 观察方活到用例结束、吊住 g1 registry(理由同 IPC-6):下面 hb+5100 那条认领要走的是
+    // 「死 pid + 心跳超时」的接管分支。没人吊住时 POSIX 上 holder 一死段就无主,下一个 open() 重建出空段,
+    // 那条认领在空槽上恒成功 —— 绿,但测的不是接管。
+    scvb::PlatformSegmentBackend keepBackend;
+    scvb::Registry keepReg(keepBackend, 1);
+    REQUIRE(keepReg.open() == scvb::Registry::ClaimResult::kClaimed);
+    for (int i = 0; i < 200 && keepReg.inputSlot(5)->state.load() != kSlotActive; ++i)
     {
-        scvb::SegmentBackendWin32 backend;
-        scvb::Registry reg(backend, 1);
-        REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
-        for (int i = 0; i < 200 && reg.inputSlot(5)->state.load() != kSlotActive; ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        REQUIRE(reg.inputSlot(5)->state.load() == kSlotActive);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    REQUIRE(keepReg.inputSlot(5)->state.load() == kSlotActive);
     u64 hb = 0;
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::Registry reg(backend, 1);
         REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
         hb = reg.inputSlot(5)->heartbeat_ms.load();
     }
     killPeer(h1.pi);
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry regG1(backend, 1);
     REQUIRE(regG1.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(scvb::isStaleDisplay(hb, hb + 2100));

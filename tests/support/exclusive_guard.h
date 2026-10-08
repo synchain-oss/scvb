@@ -66,7 +66,8 @@
 // windows.h,就会复现 `error C2062: 意外的类型「unknown-type」`,而且报在
 // `src/output/BridgeArgs.h` 那种**别人的文件**上,极难联想到是这里引起的(实测过)。
 //
-// [B 线 M06a] 下面整段实现只在 Windows 上编(命名互斥体 `CreateMutexW`)。非 Windows 分支见文件末尾。
+// [B 线 M06a] 下面整段实现只在 Windows 上编(命名互斥体 `CreateMutexW`)。非 Windows 分支见文件末尾
+// ([B 线 M12a] 起是真守卫:按 uid 分文件的 flock,见那里的注释)。
 #ifdef _WIN32
 
 #ifndef NOMINMAX
@@ -177,17 +178,129 @@ CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
 
 #else // !_WIN32
 
-// [B 线 M06a] 非 Windows:今天**不注册任何守卫**,POSIX 版(按 uid 区分的锁文件 + flock)归 M12a。
-// 这一刻它不放松任何保护,理由是可核对的:
-//   · 包含本头的四套里,非 Windows 上进构建集合的只有 scvb_tests(host / ipc / monitor 三套在
-//     tests/CMakeLists.txt 里都只在 WIN32 下定义);
-//   · scvb_tests 里用**固定组号**的 IPC 用例一律走 `SegmentBackendInProcess`(进程内模拟,不建任何
-//     机器级段);[B 线 M05] 的 POSIX 后端用例(tests/core/test_segment_backend_posix.cpp)虽然建
-//     **真的**段,但段名一律带本进程 pid("SCVBt<pid>.…" / "T<pid>s<n>.…",不用冻结前缀)、锁目录
-//     一律是各自的临时目录,两个测试进程之间没有同名对象 —— 本头头注里那张「组号重叠表」描述的
-//     跨进程互相打坏,在这里仍没有可打坏的对象。(那份文件里唯一碰真实段名的隐藏格 [shm-leftover]
-//     只做 shm_open(O_RDONLY) 探测,不建段。)
-// ⚠ 一旦有测试在非 Windows 上用**固定组号 / 真实段名**建段(M12a 把 ipc / monitor 套件搬上 mac),
-//   这里必须先换成真守卫,否则两个测试进程同机并发时会重演 SL-324 那一类「段被隔壁覆写」的假红。
+// [B 线 M12a] POSIX:与 Windows 分支同一条不变式 ——「同机同用户只允许一份 SCVB 测试进程」,
+// 判定同样在 `testRunStarting` 里做、同样 0 等待、拿不到同样 `std::exit(2)`。M12a 起 ipc / monitor
+// 两套在 mac 上用**固定组号 + 真实段名**建段(段名经 SegmentBackendPosix 映射成 `/SynchainSCVB.v1.…`,
+// POSIX shm 是全机命名空间),头注那张组号重叠表在这里同样成立,所以守卫必须是真的。
+//
+// 实现 = 对 `/tmp/scvb-tests-<uid>.lock` 取 `flock(LOCK_EX | LOCK_NB)`,fd 活到进程退出:
+//   · **flock 而不是 fcntl 记录锁**:flock 按「打开的文件描述」计,进程退出(含被 SIGKILL)时内核必然
+//     释放 —— 与 Windows 命名互斥体「进程没了锁就没了」同一个性质;没有 owner 文件、没有孤儿判定。
+//   · **O_CLOEXEC**:测试进程会 posix_spawn 对端(scvb_ipc_peer)。不带它,子进程继承这个 fd,
+//     而 flock 跟着「打开的文件描述」走 —— 父进程退出后锁仍被一个还活着的对端吊住,下一轮误判占用。
+//   · **O_NOFOLLOW**:/tmp 是全用户可写目录,不跟随别人预先摆好的符号链接。
+//   · **按 uid 分文件**:POSIX 后端的段权限是 0600,另一个用户的测试进程打不开、也清不掉本用户的段
+//     (SegmentBackendPosix.h「已知限制」),不同用户之间没有可打坏的对象;同一个文件给所有用户共用,
+//     反而会让一个用户的测试挡住另一个用户。
+//   · **锁文件不跟 SCVB_IPC_LOCK_DIR 走**(卡面给过「或放在 SCVB_IPC_LOCK_DIR 下」这个选项,这里有意
+//     不选):那个变量只改「段生命周期锁文件」放在哪,**段名本身仍是全机唯一的**。两轮测试若各设了
+//     不同的 SCVB_IPC_LOCK_DIR,它们的段照样同名互踩(而且各自的生命周期锁互不相见,彼此会把对方的
+//     活段当无主残段清掉)—— 把这把锁也放进那个目录,恰好让这种最坏的组合不再互斥。所以它钉在
+//     与段名同一个作用域(全机,按用户)的 /tmp 上。
+//   · 不碰 IPC 段、不看槽位 —— 理由与 Windows 分支头注「三条有意的边界」相同。
+
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
+
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
+namespace scvb::testsupport
+{
+
+// 取锁结果:owned = 本进程独占;fd < 0 表示锁文件**打不开**(与「已被占用」是两回事)。
+struct ExclusiveAcquire
+{
+    int fd = -1;
+    int error = 0; // 失败时的 errno(open 或 flock 的)
+    bool owned = false;
+    char path[64] = {};
+};
+
+// 每进程至多取一次(函数内 static)。fd 故意不关:活到进程退出,由内核释放 flock。
+inline const ExclusiveAcquire& acquireTestsExclusiveOnce()
+{
+    static const ExclusiveAcquire result = [] {
+        ExclusiveAcquire r;
+        std::snprintf(r.path, sizeof(r.path), "/tmp/scvb-tests-%lu.lock", static_cast<unsigned long>(::getuid()));
+        r.fd = ::open(r.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (r.fd < 0)
+        {
+            r.error = errno;
+            return r;
+        }
+        int rc = 0;
+        do
+        {
+            rc = ::flock(r.fd, LOCK_EX | LOCK_NB);
+        } while (rc != 0 && errno == EINTR);
+        if (rc == 0)
+        {
+            r.owned = true;
+        }
+        else
+        {
+            r.error = errno;
+        }
+        return r;
+    }();
+    return result;
+}
+
+struct TestsExclusiveListener : Catch::EventListenerBase
+{
+    using Catch::EventListenerBase::EventListenerBase;
+
+    // `TestRunInfo::name` 是 `Catch::StringRef`(不保证 NUL 结尾),用 `%.*s`,理由同 Windows 分支。
+    void testRunStarting(Catch::TestRunInfo const& info) override
+    {
+        const ExclusiveAcquire& a = acquireTestsExclusiveOnce();
+        if (a.owned)
+        {
+            return;
+        }
+
+        // 两种失败分开说(处方不同),与 Windows 分支同一口径。
+        if (a.fd < 0 || a.error != EWOULDBLOCK)
+        {
+            std::fprintf(stderr,
+                         "[SL-324] %.*s: cannot take the test lock %s (errno=%d: %s)."
+                         " This is NOT 'another test process is running' -- the lock file could not be"
+                         " opened or flock failed for another reason (permissions, a file left there by"
+                         " another user, a symlink at that path)."
+                         " SCVB test binaries use fixed IPC group ids whose segment names are"
+                         " machine-wide, so they must not run without proven exclusivity."
+                         "\n",
+                         static_cast<int>(info.name.size()), info.name.data(), a.path, a.error, std::strerror(a.error));
+        }
+        else
+        {
+            std::fprintf(stderr,
+                         "[SL-324] %.*s: another SCVB test process is already running on this"
+                         " machine (it holds flock on %s). All four test binaries (scvb_tests,"
+                         " scvb_monitor_tests, scvb_host_tests, scvb_ipc_tests) share fixed IPC group"
+                         " ids g1-g8 whose shared-memory names are machine-wide, so two of them"
+                         " clobber each other's segments -- including across different binaries."
+                         "\n  Run them one at a time (ctest without -j)."
+                         "\n  If nobody is running: look for a leftover scvb_*tests process --"
+                         " it keeps holding this lock until it exits."
+                         "\n",
+                         static_cast<int>(info.name.size()), info.name.data(), a.path);
+        }
+        std::fflush(stderr);
+        // 整轮不跑:再往下走就会建段,那正是要避免的加害。
+        std::exit(2);
+    }
+};
+
+} // namespace scvb::testsupport
+
+CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
 
 #endif // _WIN32

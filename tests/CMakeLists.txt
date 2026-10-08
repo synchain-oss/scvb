@@ -1,4 +1,4 @@
-# Catch2 冒烟(scvb_tests)+ L1 IPC 契约骨架(scvb_ipc_tests,仅 WIN32)。
+# Catch2 冒烟(scvb_tests)+ L1 IPC 契约测试(scvb_ipc_tests,Windows 与 macOS,[B 线 M12a] 起)。
 # 目标结构真源:10-validation §2.1(本卡只落 scvb_tests 冒烟 + scvb_ipc_tests 骨架)。
 enable_testing()
 
@@ -218,11 +218,13 @@ set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
 # scvb_monitor_tests:T45 Monitor 三铁律的 L0 断言(0 参数 / 直通按位相等 / 共享段零写入)。
 # 只编 MonitorProcessor.cpp,并定义 SCVB_MONITOR_HEADLESS —— MonitorEditor 依赖 WebViewHost 的
 # 真 WebView2 实例化,与 InputEditor/OutputEditor 同款留给 gate 8 的真机 GUI pluginval。
-# [B 线 M06a] 只在 WIN32 下定义:harness 直接用 SegmentBackendWin32 建真段、用 support/peer_spawn.h
-# (CreateProcessW)拉对端进程、用 support/exclusive_guard.h(CreateMutexW)取同机独占,三者今天都只有
-# Windows 实现,对端 scvb_ipc_peer 也只在 WIN32 下构建(tests/tools/CMakeLists.txt)。POSIX 化归
-# M12a,届时放开。Windows 上逐字不变。
-if(WIN32)
+# [B 线 M06a] 原先只在 WIN32 下定义(harness 直接用 SegmentBackendWin32、CreateProcessW、CreateMutexW)。
+# [B 线 M12a] Windows 与 macOS 都编都跑:段后端走 PlatformSegmentBackend(macOS = SegmentBackendPosix),
+# support/peer_spawn.h(posix_spawn / waitpid / kill)与 support/exclusive_guard.h(按 uid 的 flock)
+# 都有了 POSIX 实现,对端 scvb_ipc_peer 同样在 Apple 上构建(tests/tools/CMakeLists.txt)。
+# 只放开条件,块内一行不改,Windows 上的源集合与属性逐字不变。其余非 Windows 平台(没有真共享内存
+# 后端)仍不定义。
+if(WIN32 OR APPLE)
 add_executable(scvb_monitor_tests
   core/test_monitor_processor.cpp
   # [统筹加码] 全数据链双进程 harness:真 VizPublisher 对端进程 + 真 MonitorProcessor,
@@ -349,8 +351,10 @@ add_test(NAME scvb_input_bridge_tests COMMAND scvb_input_bridge_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_input_bridge_tests PROPERTIES TIMEOUT 30)
 
-# scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
-if(SCVB_BUILD_IPC_TESTS AND WIN32)
+# scvb_ipc_tests:L1 双进程 IPC 契约测试(实现由 T07b 填充)。
+# [B 线 M12a] 原先仅 WIN32;M12a 起 Windows 与 macOS 都编都跑(理由同上面 scvb_monitor_tests 那段)。
+# 其余非 Windows 平台没有真共享内存后端,仍不定义。
+if(SCVB_BUILD_IPC_TESTS AND (WIN32 OR APPLE))
   add_subdirectory(ipc)
 endif()
 

@@ -17,7 +17,7 @@
 #include "MonitorProcessor.h"
 #include "UiDefaultsStore.h"
 
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h"
 #include "ipc/VizPlane.h"
 
 namespace
@@ -190,7 +190,7 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
 {
     constexpr scvb::u32 kGroup = 6; // 与其它用例错开,避免残留段互踩
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
 
     // 先确认:该组的 viz 段此刻不存在 —— 后面才能证明「Monitor 没有建段」。
     {
@@ -208,6 +208,16 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
         {
             p.tickMessageThread(1000 + static_cast<std::uint64_t>(i) * 250);
         }
+
+        // [B 线 M12a] Monitor **还没松手**时先探一次 viz 段。Monitor 若误建了它,此刻是 Monitor 自己吊着,
+        // 探针必然 attach 成功。只在 releaseResources() 之后探测不到这件事:VizPlane 松手即 unmap,Monitor
+        // 建的段随这个唯一持有者一起消失 —— Windows 是句柄引用计数归零,POSIX 是最后一个离开者 shm_unlink ——
+        // 探针照样 kFailed。下面「松手之后」那一条照留;接住「Monitor 建了 viz 段」的是这一条。
+        {
+            scvb::VizPlane probeWhileAlive(backend, kGroup);
+            REQUIRE(probeWhileAlive.attachReadOnly() == scvb::InitResult::kFailed);
+        }
+
         REQUIRE(p.vizState() == ScvbMonitorAudioProcessor::VizState::kOffline);
         REQUIRE_FALSE(p.vizFresh());
         p.releaseResources();
@@ -309,7 +319,7 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
 {
     constexpr scvb::u32 kGroupA = 4;
     constexpr scvb::u32 kGroupB = 5;
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
 
     scvb::VizPlane writerA(backend, kGroupA);
     REQUIRE(writerA.open() == scvb::InitResult::kOk);
