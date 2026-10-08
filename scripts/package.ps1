@@ -27,8 +27,13 @@
   确定性:条目按序数排序,时间戳统一取 SOURCE_DATE_EPOCH / HEAD 提交时间(都取不到才用 1980-01-01),
   所以同一份输入在同一运行时下重跑,zip 的 sha256 不变。不同 .NET 运行时(PS 5.1 与 7)的 deflate
   实现不同,跨运行时不保证字节一致。
+  [B 线 M10] macOS 包由 scripts/package-macos.sh 打,但合规判据与 INSTALL.txt 的规则原文**仍只在本脚本**:
+  它调 `-Preflight -PreflightOut <文件>`,本脚本把 preflight 核过的结果(版本 / tag、要打进 zip 的
+  LICENSES/ 与 third_party/notices/ 文件、NOTICES 点名的声明文件路径、九条规则的前 3 条 en/zh)写成机读清单,
+  sh 只读这份清单,不在 sh 里重写第二套解析。不传 -PreflightOut 时行为与输出逐字不变。
 .EXAMPLE   pwsh scripts/package.ps1 -Version 1.2.3 -BuildDir build -OutDir dist
 .EXAMPLE   pwsh scripts/package.ps1 -Version 0.0.0-dryrun -BuildDir D:\artifacts -OutDir D:\out
+.EXAMPLE   pwsh scripts/package.ps1 -Preflight -PreflightOut /tmp/scvb-preflight.tsv
 #>
 param(
   # 缺省 = CMakeLists.txt 的 project(SCVB VERSION x.y.z)。tag 带 -rc.N / -beta.N 时由 release.yml 传整串(不含 v)。
@@ -43,7 +48,9 @@ param(
   # 并记进 summary,好让流水线演练不被合规缺口卡住。正式版 / rc / beta 不传,缺就红。
   [switch]$AllowMissingLicenseTexts,
   # 只跑不依赖构建产物的检查就退出(见下方 Preflight 段)。
-  [switch]$Preflight
+  [switch]$Preflight,
+  # 只能配合 -Preflight:把 preflight 核过的结果写成机读清单(格式见下方 Preflight 段),给 package-macos.sh 用。
+  [string]$PreflightOut
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,8 +114,11 @@ function Get-FirstThreeRules([string]$mdPath, [string]$heading) {
   return , @($rules | ForEach-Object { (($_ -replace '\*\*', '') -replace '`', '') -replace '(?<=[。；])[ ]+', '' })
 }
 
+# 清单只描述「preflight 核过的东西」;不带 -Preflight 时整条打包流程照跑、清单却没人写,调用方会读到旧文件。
+if ($PreflightOut -and -not $Preflight) { Fail '-PreflightOut 只能与 -Preflight 一起用' }
+
 # ── 版本与 tag ────────────────────────────────────────────────────────────────
-$cmakeVersion = Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoot 'CMakeLists.txt')))
+$cmakeVersion =Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoot 'CMakeLists.txt')))
 if (-not $cmakeVersion) { Fail 'CMakeLists.txt 里找不到 project(SCVB ... VERSION x.y.z)' }
 if (-not $Version) { $Version = $cmakeVersion }
 # 版本串会进文件名与 URL:只放行 semver 形态,挡住路径分隔符与空白。
@@ -341,7 +351,47 @@ $installText = (($install.ToArray() -join "`r`n") -replace '\*\*', '')
 # -Preflight:只做不依赖构建产物的检查(版本 / tag、许可证全文覆盖、NOTICES 点名的声明文件、
 # INSTALL.txt 的规则提取)就退出。
 # release.yml 的 verify-tag 在 20 分钟的构建之前先跑它,这几类问题不必等构建完才红。
+# -PreflightOut:[B 线 M10] 把上面核过的结果写成机读清单给 scripts/package-macos.sh。格式:UTF-8 无 BOM、LF,
+# 每行 `键<TAB>值`,同名键按出现顺序累积;首行 `format<TAB>scvb-package-preflight/1`(形态变了先改这个号,
+# sh 只认它认得的号)。值里不许有 TAB / CR / LF(规则原文是单行拼好的,这里再拦一道,免得 sh 读错行)。
+# 清单项与本脚本自己打 Windows 包时用的是同一批变量:mac 包的合规文件集合、NOTICES 点名路径与规则原文
+# 都从这里来,不在 sh 里另写一套。文件清单按序数排序,输出与运行环境无关。
 if ($Preflight) {
+  if ($PreflightOut) {
+    $outFull = Resolve-Full $PreflightOut
+    $outParent = Split-Path -Parent $outFull
+    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) { Fail "-PreflightOut 的目录不存在:$outParent" }
+    $manifest = New-Object System.Collections.Generic.List[string]
+    $addKv = {
+      param([string]$k, [string]$v)
+      if ($v -match "[`t`r`n]") { Fail "preflight 清单的 $k 值里有 TAB / 换行,清单格式容不下:$v" }
+      $manifest.Add("$k`t$v")
+    }
+    & $addKv 'format' 'scvb-package-preflight/1'
+    & $addKv 'version' $Version
+    & $addKv 'tag' $Tag
+    & $addKv 'cmakeVersion' $cmakeVersion
+    & $addKv 'sourceCommit' $SourceCommit
+    & $addKv 'sourceUrl' $sourceUrl
+    & $addKv 'sourceLine' $sourceLine
+    & $addKv 'guideEn' $guideEn
+    & $addKv 'guideZh' $guideZh
+    & $addKv 'issuesUrl' "https://github.com/$RepoSlug/issues"
+    foreach ($r in $rulesEn) { & $addKv 'ruleEn' ($r -replace '\*\*', '') }
+    foreach ($r in $rulesZh) { & $addKv 'ruleZh' ($r -replace '\*\*', '') }
+    foreach ($id in $spdxIds) { & $addKv 'spdx' $id }
+    $lic = [string[]]@($licenseFiles | ForEach-Object { 'LICENSES/' + $_.Name })
+    [Array]::Sort($lic, [StringComparer]::Ordinal)
+    foreach ($p in $lic) { & $addKv 'license' $p }
+    $ntc = [string[]]@($noticeFiles.Keys)
+    [Array]::Sort($ntc, [StringComparer]::Ordinal)
+    foreach ($p in $ntc) { & $addKv 'notice' $p }
+    $cit = [string[]]@($citedNoticePaths)
+    [Array]::Sort($cit, [StringComparer]::Ordinal)
+    foreach ($p in $cit) { & $addKv 'cited' $p }
+    foreach ($id in $missingLicenseTexts) { & $addKv 'missingLicenseText' $id }
+    [IO.File]::WriteAllText($outFull, (($manifest.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  }
   Write-Host "package.ps1: preflight OK(version $Version, tag $Tag, 许可证 $($spdxIds.Count) 个已核,LICENSES/ 全文 $($licenseFiles.Count) 份,NOTICES 点名的声明文件 $($citedNoticePaths.Count) 个已核,规则 en/zh 各 3 条)"
   exit 0
 }
