@@ -24,9 +24,9 @@ namespace scvb
 
 namespace
 {
-// v1 仅 Windows,OS 前缀固定 "Local\"(01 §9:逻辑段名不带 OS 前缀,前缀由 backend 侧全名函数加;
+// 调用方统一传 Windows 形态的全名,OS 前缀固定 "Local\"(01 §9:逻辑段名不带 OS 前缀,前缀由 backend 侧全名函数加;
 // Win32 见 SegmentBackendWin32::segmentRegistryName;此处为 Registry 的可移植等价实现,InProcess
-// 后端用同一字符串作键)。POSIX 前缀归 v2。
+// 后端用同一字符串作键;POSIX 后端在内部把 "Local\" 前缀映射成 "/<逻辑名>",见 SegmentBackendPosix.h)。
 std::wstring registryFullName(u32 group)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kRegistry);

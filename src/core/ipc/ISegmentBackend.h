@@ -2,7 +2,7 @@
 #pragma once
 
 // ISegmentBackend —— 共享内存段后端抽象接口(01 §9:逻辑段名不带 OS 前缀,由 backend 加前缀;
-// Win 实现 = SegmentBackendWin32,Posix 实现 = SegmentBackendPosix 归 v2)。
+// Win 实现 = SegmentBackendWin32,POSIX(macOS)实现 = SegmentBackendPosix)。
 // 只含「映射/打开/解映射/页锁定」四个平台差异点(纯虚)+ 平台无关的 01 §4.0 段初始化协议(非虚共用)。
 //
 // 释放协议(DeepSeek 复审【重要】1,替换 T06「故意泄漏」):映射视图经 SegmentHandle 引用计数共享;
@@ -150,7 +150,7 @@ public:
     virtual void unmap(SegmentView& view) = 0;
 
     // 创建者写触碰后锁定页(平台相关:Win32 = VirtualLock,失败降级为仅预触碰并记日志;
-    // POSIX v2 = mlock)。只读 attach 方不调用(仅创建者/写者锁,DeepSeek 复审【重要】4)。
+    // POSIX = mlock)。只读 attach 方不调用(仅创建者/写者锁,DeepSeek 复审【重要】4)。
     virtual void tryLock(const SegmentView& view) { (void)view; }
 
     // 只读 attach 方的非破坏性 magic/abi 校验(openExistingReadOnly 用,PR#54 R8):
@@ -282,7 +282,7 @@ struct SegmentMapping
 } // namespace detail
 
 // 稳态时钟毫秒(跨进程单调,01 §3 心跳/看门狗真源;定义在 Registry.cpp)。Windows = GetTickCount64;
-// 非 Windows 回退进程内 steady_clock(v1 仅 Windows)。
+// 其余平台 = CLOCK_MONOTONIC_RAW(没有该时钟的 POSIX 才退回 steady_clock,取舍见 Registry.cpp)。
 u64 steadyNowMs() noexcept;
 
 // 引用计数句柄(替换 T06「故意泄漏」策略;经三轮复审定型):

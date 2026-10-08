@@ -476,7 +476,8 @@ bool SidecarStore::refreshOwnerLock(const std::string& guid, const ProcessIdenti
         return false; // 盘上没有租约 → 不新建(见头文件闸②)
 
     // 归属判定与 copyOnWriteIfNeeded 逐字同口径:pid + 进程启动时间双元组,防 Windows PID 复用。
-    // pid==0 是「拿不到进程身份」的退化值(非 Windows),那种进程不该宣示占有任何 sidecar。
+    // pid==0 是「拿不到进程身份」的退化值(currentProcessIdentity 的 Windows / POSIX 分支现在都会填
+    // pid,这里只是防御),那种进程不该宣示占有任何 sidecar。
     if (self.pid == 0u || lock.pid != self.pid || lock.processStartEpochMs != self.processStartEpochMs)
         return false; // 锁归他人(或身份未知)→ 绝不覆盖(闸③)
 
