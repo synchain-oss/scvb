@@ -2,7 +2,7 @@
 #pragma once
 
 // ISegmentBackend —— 共享内存段后端抽象接口(01 §9:逻辑段名不带 OS 前缀,由 backend 加前缀;
-// Win 实现 = SegmentBackendWin32,macOS 实现 = SegmentBackendPosix)。
+// Win 实现 = SegmentBackendWin32,POSIX(macOS)实现 = SegmentBackendPosix)。
 // 只含「映射/打开/解映射/页锁定」四个平台差异点(纯虚)+ 平台无关的 01 §4.0 段初始化协议(非虚共用)。
 //
 // 释放协议(DeepSeek 复审【重要】1,替换 T06「故意泄漏」):映射视图经 SegmentHandle 引用计数共享;
