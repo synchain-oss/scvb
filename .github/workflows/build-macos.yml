@@ -358,6 +358,7 @@ jobs:
             if [ -z "$cases" ] || [ "$cases" -lt "$2" ]; then
               echo "::error::$1 lists ${cases:-0} test cases, expected at least $2"; return 1
             fi
+            echo "$1: $cases test cases compiled in on $(uname -m) (minimum $2)"
             echo "- \`$1\`: $cases test cases compiled in on $(uname -m) (minimum $2)" >> "$GITHUB_STEP_SUMMARY"
           }
           min_cases scvb_ipc_tests 40

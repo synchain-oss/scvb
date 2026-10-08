@@ -222,7 +222,8 @@ set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
 # [B 线 M12a] Windows 与 macOS 都编都跑:段后端走 PlatformSegmentBackend(macOS = SegmentBackendPosix),
 # support/peer_spawn.h(posix_spawn / waitpid / kill)与 support/exclusive_guard.h(按 uid 的 flock)
 # 都有了 POSIX 实现,对端 scvb_ipc_peer 同样在 Apple 上构建(tests/tools/CMakeLists.txt)。
-# 只放开条件,块内一行不改,Windows 上的源集合与属性逐字不变。其余非 Windows 平台(没有真共享内存
+# 只放开条件,块内一行不改,Windows 上的源集合与属性逐字不变;TIMEOUT 600 两平台共用(mac 实测 17.16s,
+# CI macos-15 arm64;Windows CI 实测 16s 量级,只拦挂死、不是性能预算)。其余非 Windows 平台(没有真共享内存
 # 后端)仍不定义。
 if(WIN32 OR APPLE)
 add_executable(scvb_monitor_tests

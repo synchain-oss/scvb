@@ -31,4 +31,6 @@ else()
 endif()
 
 add_test(NAME scvb_ipc_tests COMMAND scvb_ipc_tests)
+# [B 线 M12a] 900 两平台共用,不改:mac 实测 34.35s(CI macos-15 arm64,含 IPC-P1..P3),Windows CI 实测
+# 约 30s。上界只拦挂死,不是性能预算(口径见上一级 tests/CMakeLists.txt 的 [SL-320] 那段)。
 set_tests_properties(scvb_ipc_tests PROPERTIES TIMEOUT 900)
