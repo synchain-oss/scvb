@@ -543,7 +543,7 @@ grep -Fqx -- "$SOURCE_LINE" "$UNPACK/INSTALL.txt" || die "INSTALL.txt in the zip
 # ── 10) .sha256 与 summary(硬要求 3)──────────────────────────────────────────────────────────────
 HASH="$(shasum -a 256 "$ZIP_W" | awk '{ print $1 }')"
 SIZE_BYTES="$(wc -c < "$ZIP_W" | tr -d '[:space:]')"
-printf '%s  %s\n' "$HASH" "$ZIP_NAME" > "$WORK/$SHA_NAME"
+printf '%s  %s\n' "$(printf '%s' "$HASH" | tr 'a-f' 'A-F')" "$ZIP_NAME" > "$WORK/$SHA_NAME"  # [M10 临时注入 I2] .sha256 里的 hash 改成大写
 
 N_ENTRIES="$(grep -c . "$WORK/unpack-files.txt" || true)"
 N_NOTICES="$(grep -c . "$WORK/notice.txt" || true)"
