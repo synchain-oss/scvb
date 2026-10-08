@@ -238,7 +238,7 @@ inline const ExclusiveAcquire& acquireTestsExclusiveOnce()
         int rc = 0;
         do
         {
-            rc = ::flock(r.fd, LOCK_SH | LOCK_NB); // INJECT-M12a-J3: shared lock -- a second test process is let through (was: LOCK_EX)
+            rc = ::flock(r.fd, LOCK_EX | LOCK_NB);
         } while (rc != 0 && errno == EINTR);
         if (rc == 0)
         {
