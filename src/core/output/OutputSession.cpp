@@ -320,6 +320,12 @@ void OutputSession::evaluateChannels(u64 nowMs)
     // 约 5.5s,它还没等满滞回、没切直通。让位要防的是「直通原声 + 注入混音」叠在一起,而它现在没有原声,
     // 当拍接回不会叠加;排队只会让它白白多静音 (k−1)×200ms(15 轨时末轨约 2.8s)。已经切直通的轨
     // (muted 位已清)照旧排队、逐轨接回。
+    // ⚠ 残留上限(PR #379 第 2 轮评审):muted 位是 Input 的 [M] 按**目标档**近似发布的,切直通的同一拍就清
+    // (InputProcessor::timerCallback),与这里不同步。停调长度恰好 ≈5.5s、Input 切直通与 Output 恢复落在
+    // 同一两拍里时,这里可能读到旧的 muted=1 当拍放行注入、下一拍读到 0 又闩回去 —— ≤1~2 拍(40~80ms)的
+    // 「原声 + 混音」叠加加一次 connected 位抖动,之后照常排队接回;量级在 J32 的 200ms 窗之内。另:被放行的
+    // 轨仍在 CtrlPlane 的让位序列里占一个 200ms 的位,快照里 muted 轨与直通轨混在一起时直通轨要白等这些位 ——
+    // 各轨 Input 同一拍看到位被清、通常同时切换,混合形态基本只出现在上面那个边界上。
     const u32 hold = ctrl_.watchdogHoldMask();
     const bool tripped = ctrl_.watchdogTripped();
     u32 inject = 0;
