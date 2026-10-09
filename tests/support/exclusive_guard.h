@@ -189,6 +189,10 @@ CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
 //   · **O_CLOEXEC**:测试进程会 posix_spawn 对端(scvb_ipc_peer)。不带它,子进程继承这个 fd,
 //     而 flock 跟着「打开的文件描述」走 —— 父进程退出后锁仍被一个还活着的对端吊住,下一轮误判占用。
 //   · **O_NOFOLLOW**:/tmp 是全用户可写目录,不跟随别人预先摆好的符号链接。
+//   · **open 之后核「是普通文件、属主是我」**(#375 评审第 1 轮):锁文件名可预测(按 uid 拼),另一个用户
+//     可以先在 /tmp 建好同名普通文件、设成 0666 并长期持着它的 flock,本用户就每一轮都被误判成
+//     「另一份在跑」。不是本用户的普通文件一律按「拿不到锁(不是另一份在跑)」判负,提示里点名这一种;
+//     别人建的、权限不让本用户写的,open 本身就以 EACCES 失败,走同一条判负。
 //   · **按 uid 分文件**:POSIX 后端的段权限是 0600,另一个用户的测试进程打不开、也清不掉本用户的段
 //     (SegmentBackendPosix.h「已知限制」),不同用户之间没有可打坏的对象;同一个文件给所有用户共用,
 //     反而会让一个用户的测试挡住另一个用户。
@@ -209,17 +213,19 @@ CATCH_REGISTER_LISTENER(scvb::testsupport::TestsExclusiveListener);
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace scvb::testsupport
 {
 
-// 取锁结果:owned = 本进程独占;fd < 0 表示锁文件**打不开**(与「已被占用」是两回事)。
+// 取锁结果:owned = 本进程独占;fd < 0 表示锁文件**打不开 / 不可信**(与「已被占用」是两回事)。
 struct ExclusiveAcquire
 {
     int fd = -1;
-    int error = 0; // 失败时的 errno(open 或 flock 的)
+    int error = 0; // 失败时的 errno(open / fstat / flock 的;foreign 时是 EPERM)
     bool owned = false;
+    bool foreign = false; // 那个路径上是别人的文件,或者不是普通文件
     char path[64] = {};
 };
 
@@ -233,6 +239,22 @@ inline const ExclusiveAcquire& acquireTestsExclusiveOnce()
         if (r.fd < 0)
         {
             r.error = errno;
+            return r;
+        }
+        struct stat st; // fstat 填满它
+        if (::fstat(r.fd, &st) != 0)
+        {
+            r.error = errno;
+            ::close(r.fd);
+            r.fd = -1;
+            return r;
+        }
+        if (!S_ISREG(st.st_mode) || st.st_uid != ::getuid())
+        {
+            r.error = EPERM;
+            r.foreign = true;
+            ::close(r.fd);
+            r.fd = -1;
             return r;
         }
         int rc = 0;
@@ -266,8 +288,21 @@ struct TestsExclusiveListener : Catch::EventListenerBase
             return;
         }
 
-        // 两种失败分开说(处方不同),与 Windows 分支同一口径。
-        if (a.fd < 0 || a.error != EWOULDBLOCK)
+        // 两种失败分开说(处方不同),与 Windows 分支同一口径;「路径上是别人的文件」再单列一句处方。
+        if (a.foreign)
+        {
+            std::fprintf(stderr,
+                         "[SL-324] %.*s: cannot take the test lock %s: it is not a regular file owned by"
+                         " this user (uid %lu) -- somebody else created it, and they could hold its flock"
+                         " forever. This is NOT 'another test process is running'. Remove that file"
+                         " (it needs its owner or root) and rerun."
+                         " SCVB test binaries use fixed IPC group ids whose segment names are"
+                         " machine-wide, so they must not run without proven exclusivity."
+                         "\n",
+                         static_cast<int>(info.name.size()), info.name.data(), a.path,
+                         static_cast<unsigned long>(::getuid()));
+        }
+        else if (a.fd < 0 || a.error != EWOULDBLOCK)
         {
             std::fprintf(stderr,
                          "[SL-324] %.*s: cannot take the test lock %s (errno=%d: %s)."

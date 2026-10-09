@@ -227,7 +227,9 @@ inline bool pollPeer(PeerProcess& pi, int* exitCode)
 }
 
 // 非阻塞:对端此刻是否仍在运行(不收走、不改句柄)。
-inline bool peerRunning(const PeerProcess& pi)
+// 参数故意是非 const 引用,与 POSIX 分支同一个签名(那边会顺手收走已退出的子进程,必须能改句柄):
+// 签名不一致时,对 const 对象的调用在 Windows 本地 gates 上编得过、到 mac 才红(#375 评审第 1 轮)。
+inline bool peerRunning(PeerProcess& pi)
 {
     return pi.hProcess != nullptr && ::WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT;
 }
