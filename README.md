@@ -10,6 +10,8 @@
 
 > Automatic pan and level balancing across a multi-singer vocal arrangement, as a pair of VST3 plugins.
 
+<p align="center"><img src="docs/images/readme/hero-en.jpg" alt="SCVB analyses all your vocal tracks together, works out a pan and a volume curve for each one, and writes them into your DAW as automation" width="100%"></p>
+
 SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it under the terms of the [GPL-3.0-or-later](LICENSE). If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
 
 > **Status: pre-release (rc).** Pre-release builds are on the [Releases page](https://github.com/synchain-oss/scvb/releases). Features and the interface may still change before the first stable release; known limitations are listed in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md).
@@ -20,7 +22,22 @@ Mixing engineers routinely spend hours drawing volume and pan automation across 
 
 SCVB exists to solve exactly that and give you those hours back: it captures every vocal track, analyses them together, and gives each one a pan curve and a level curve, so the parts sit apart from one another instead of competing for the same spot, and so loudness stays close to consistent from passage to passage.
 
+<p align="center"><img src="docs/images/readme/how-it-works-en.jpg" alt="How it works: 01 Capture, play the song once; 02 Analyze, one click; 03 Write, play it again with the DAW in Latch or Write" width="100%"></p>
+
 **Two plugins, one system.** **SCVB Input** sits on each vocal track and captures it; **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and replaces the bus input. A third, optional plugin, **SCVB Monitor**, is a read-only window for watching a whole group's pan and level movement. The interface is described tab by tab in the [User Guide](docs/USER_GUIDE.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/shot-master-en.jpg" alt="SCVB Output, Master tab"><br><sub><b>Output · Master</b> — capture, analyze, write; every track's pan and volume at a glance</sub></td>
+    <td width="50%"><img src="docs/images/readme/shot-tracks-en.jpg" alt="SCVB Output, Tracks tab"><br><sub><b>Output · Tracks</b> — lead, pairs, freeze and live meters for every track</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/shot-waveform-en.jpg" alt="SCVB Output, Waveform and Segments tab"><br><sub><b>Output · Waveform &amp; Segments</b> — phrase segments, each one editable and lockable</sub></td>
+    <td width="50%"><img src="docs/images/readme/shot-monitor-en.jpg" alt="SCVB Monitor"><br><sub><b>Monitor</b> — read-only view of the group's pan distribution and trajectories</sub></td>
+  </tr>
+</table>
+
+<sub>Screens show demo data.</sub>
 
 Not sold on what the engine came up with, or want it arranged differently? No problem. Much like the workflow around Waves' Vocal Rider — print first, then tune by hand — you can use the automation-write feature to print the engine's analysis into your host as automation, then fine-tune from there by hand — starting from a finished pass rather than a blank one should still save you a lot of time.
 
