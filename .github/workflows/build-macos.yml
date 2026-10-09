@@ -1,9 +1,13 @@
 name: Build macOS (reusable)
 
 # ── B 线 macOS 构建 ────────────────────────────────────────────────────────────────────────
-# 只有 `on: workflow_call`,不新增任何事件触发。由 build-vst3.yml 的 caller job `macos-build` 调用,
-# 跑不跑完全继承 build-vst3.yml 的触发规则;被 release.yml 经 build-vst3.yml 调起时,caller 的
-# tag 守卫让它跳过(mac 发版另由 release.yml 自己的 build-mac 调本文件,见 M16)。
+# 只有 `on: workflow_call`,不新增任何事件触发。两个调用方:
+#   - build-vst3.yml 的 caller job `macos-build`(PR / push→dev / dispatch),跑不跑完全继承 build-vst3.yml
+#     的触发规则;release.yml 的 `build` 经 build-vst3.yml 调起时,那个 caller 的 tag 守卫让它跳过;
+#   - [M16] release.yml 的 `build-mac`(推 v* tag),带 release-tag / release-version / release-kind 三个输入,
+#     即「release 档」:构建与全部验证门照跑,最后按 tag 的版本号正式打一次包,传成 artifact
+#     SCVB-macos-arm64-release-<tag>,由 release.yml 的 `release-macos` 取走传到 Windows 建好的草稿 Release 上。
+#   所以一次 tag push 里本文件恰好跑一次(build-mac 那一路)。
 # 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16。
 # 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
 # org 白名单之外的 action 会让整个 run startup_failure。
@@ -21,6 +25,9 @@ name: Build macOS (reusable)
 # 验证前后各跑一次 `scvb_tests "[shm-leftover]"`,验证后不许有共享内存残段;带 GUI 的 pluginval 只记录。
 # [M10] 发行打包冒烟(步骤 12):用本 run 的 6 个 bundle 实跑 scripts/package-macos.sh —— dry run、负对照、连跑 3 次
 # 逐字节相同、.sha256 形态、zip 内容清单、INSTALL.txt 命令在假 HOME 下实跑(全新安装 + 升级);产物另传一个 package artifact。
+# [M16] release 档(步骤 13):只在 release.yml 的 build-mac 调用时跑 —— 前面每一步都绿之后,用 tag 的版本号
+# (verify-tag 的输出)再跑一次 package-macos.sh,演练 tag 才加 --allow-missing-license-texts;核对三件产物后
+# 上传 artifact,并经 workflow_call 的 outputs 把 artifact 名 / zip 名 / sha256 交给 release.yml。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -31,6 +38,36 @@ on:
         type: string
         required: false
         default: ""
+      # [M16] release 档的三个输入。只有 release.yml 的 build-mac 传,而且三个一起传;build-vst3.yml 的
+      # caller 一个都不传(= 非 release 档,行为与 M16 之前逐字相同)。只传一半在第一步就判红。
+      # 取值都来自 verify-tag(tag 的形态在那里已按 scripts/lib/release-version.ps1 核过),这里不再解析 tag,
+      # 只核三者互相对得上、与本次 run 的 ref 对得上。
+      release-tag:
+        description: "[M16] release 档:tag 名(= github.ref_name);空 = 非 release 档"
+        type: string
+        required: false
+        default: ""
+      release-version:
+        description: "[M16] release 档:verify-tag 输出的 version(tag 去掉前导 v),打包用它定 zip 名"
+        type: string
+        required: false
+        default: ""
+      release-kind:
+        description: "[M16] release 档:verify-tag 输出的 kind(final / rc / beta / test);只有 test 放行缺许可证全文"
+        type: string
+        required: false
+        default: ""
+    # [M16] 交给 release.yml 的 release-macos。非 release 档三个都是空串。
+    outputs:
+      release-artifact:
+        description: "release 档产物的 artifact 名(SCVB-macos-arm64-release-<tag>)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-artifact }}
+      release-zip:
+        description: "release 档的 zip 文件名(SCVB-v<version>-macos-arm64.zip)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-zip }}
+      release-sha256:
+        description: "release 档 zip 的 sha256(package-macos.sh 写进 GITHUB_OUTPUT 的那个值)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-sha256 }}
 
 permissions:
   contents: read
@@ -42,6 +79,10 @@ jobs:
     # [M06b] 实测(macos-15 arm64,JUCE 源码缓存命中、无编译缓存):configure 35 s,全量构建 541 步
     # 384 s,整个 job 约 8 分钟。45 分钟留约 5 倍余量,只拦挂死,不是性能预算。
     timeout-minutes: 45
+    outputs:
+      release-artifact: ${{ steps.release_package.outputs.artifact }}
+      release-zip: ${{ steps.release_package.outputs.zip-name }}
+      release-sha256: ${{ steps.release_package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -56,6 +97,9 @@ jobs:
       #    reusable workflow 里的 `github` 上下文属于调用方,所以事件名 / PR 号 / head sha 与 Windows
       #    那边看到的是同一组值。全部经 env 传入、不直接插值进脚本(分支名可含 `$` `;`,插值即注入面)。
       #    其余事件(今天的 caller 不会出现)不上传,只在日志里说明。
+      #    [M16] release 档(push v* tag,由 release.yml 的 build-mac 调起)不在上面三档里:bundle 不单独上传,
+      #    上传的是步骤 13 按 tag 版本号打的正式包(artifact 名 SCVB-macos-arm64-release-<tag>,与 Windows 的
+      #    SCVB-VST3-win64-release-<tag> 平行)。三个 release 输入在这里先核一遍,对不上就在 8 分钟构建之前红。
       - name: Resolve pinned versions & artifact name
         shell: bash
         env:
@@ -64,6 +108,10 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           INPUT_REF: ${{ inputs.ref }}
           REF_NAME: ${{ github.ref_name }}
+          REF_FULL: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          RELEASE_KIND: ${{ inputs.release-kind }}
         run: |
           set -euo pipefail
           juce=$(tr -d '[:space:]' < .juce-version)
@@ -77,6 +125,34 @@ jobs:
           echo "PLUGINVAL_TAG=$pv" >> "$GITHUB_ENV"
           echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
           echo "built sha=$built juce=$juce pluginval=$pv"
+          # [M16] release 档的输入核对。判据只核「互相对得上」,不重新解析 tag(那是 verify-tag 的事):
+          #   三个输入要么全空、要么全有;事件是 push 且 ref 正是 refs/tags/<release-tag>(构建的就是这个 tag);
+          #   ref 输入为空(checkout 取 tag 指向的提交,不许被改指别处);release-tag == "v" + release-version
+          #   (package.ps1 由 version 推出 tag,两边不等时 INSTALL.txt 的源码链接会指错);kind 是四种之一;
+          #   tag 只含 artifact 名里合法的字符(verify-tag 已经更严,这里是纵深防御)。
+          if [ -n "$RELEASE_TAG$RELEASE_VERSION$RELEASE_KIND" ]; then
+            if [ -z "$RELEASE_TAG" ] || [ -z "$RELEASE_VERSION" ] || [ -z "$RELEASE_KIND" ]; then
+              echo "::error::release-tag / release-version / release-kind must be given together (got tag='$RELEASE_TAG' version='$RELEASE_VERSION' kind='$RELEASE_KIND')"; exit 1
+            fi
+            if [ "$EVENT_NAME" != "push" ] || [ "$REF_FULL" != "refs/tags/$RELEASE_TAG" ]; then
+              echo "::error::release mode must run on the push of tag '$RELEASE_TAG' (got event '$EVENT_NAME', ref '$REF_FULL')"; exit 1
+            fi
+            if [ -n "$INPUT_REF" ]; then
+              echo "::error::release mode builds the tag itself; the ref input must be empty (got '$INPUT_REF')"; exit 1
+            fi
+            if [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]; then
+              echo "::error::release-tag '$RELEASE_TAG' is not 'v' + release-version '$RELEASE_VERSION'"; exit 1
+            fi
+            case "$RELEASE_KIND" in
+              final | rc | beta | test) ;;
+              *) echo "::error::release-kind '$RELEASE_KIND' is not one of final / rc / beta / test"; exit 1 ;;
+            esac
+            if ! printf '%s' "$RELEASE_TAG" | LC_ALL=C grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'; then
+              echo "::error::release-tag '$RELEASE_TAG' has characters an artifact name cannot carry"; exit 1
+            fi
+            echo "RELEASE_ARTIFACT_NAME=SCVB-macos-arm64-release-$RELEASE_TAG" >> "$GITHUB_ENV"
+            echo "release mode: tag $RELEASE_TAG, version $RELEASE_VERSION, kind $RELEASE_KIND; release package artifact SCVB-macos-arm64-release-$RELEASE_TAG (step 13)"
+          fi
           artifact=""; retention=""
           case "$EVENT_NAME" in
             pull_request)
@@ -96,7 +172,11 @@ jobs:
           else
             # 照样打包并核可执行位(那一步的判据不该因事件而缺席),只是不上传。
             echo "MAC_ZIP=SCVB-macos-arm64-unpublished-${built}.zip" >> "$GITHUB_ENV"
-            echo "event '$EVENT_NAME' on '$REF_NAME' has no artifact channel; bundles are packed and checked but not uploaded"
+            if [ -n "$RELEASE_TAG" ]; then
+              echo "release mode: the bundles zip is packed and checked but not uploaded; step 13 uploads the release package instead"
+            else
+              echo "event '$EVENT_NAME' on '$REF_NAME' has no artifact channel; bundles are packed and checked but not uploaded"
+            fi
           fi
 
       # 1) 工具链留痕。runner 镜像会轮换,哪天 clang 升了一版多出一条警告,第一件要对的就是这几行。
@@ -917,8 +997,8 @@ jobs:
           echo "- \`$name.vst3\` with GUI tests: exit $rc, SUCCESS line $ok; shm leftover probe afterwards: $left" >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
-      # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release.yml 的 mac 出包由 M16 接
-      #     同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,
+      # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release 档的正式出包,步骤 13,
+      #     调的是同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,
       #     负对照删文件、注入都碰不到 build/。判据:
       #       ① --dry-run 不带 --version:走 CMakeLists.txt 的 BSD sed 回落(脚本自己与 package.ps1 读到的版本对拍),
       #          什么都不写;
@@ -1122,6 +1202,78 @@ jobs:
           path: package-smoke/out1/
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # 13) [M16] release 档正式出包(只在 release.yml 的 build-mac 调用时跑)。
+      #     `success()`:**前面每一步都绿**才打 —— 构建、零警告、ctest、bundle 断言、auval、pluginval、残段门、
+      #     打包冒烟任何一道红,就不产出 release 包,build-mac 整体红,release-macos 因 needs 不满足而跳过;
+      #     Windows 的 release job 不 needs 本 job,草稿照常生成(裁定「mac 失败不挡 Windows 发版」)。
+      #     与冒烟的区别只有版本号:冒烟用 CMakeLists.txt 的版本,这里用 tag 的版本(rc / beta / test 的 zip 名
+      #     与 INSTALL.txt 的源码链接都要带预发布段)。输入照冒烟的做法从 plugin-bundles.txt ditto 到独立目录。
+      #     打完核四件事,任一不符即红:输出目录恰好 zip / .sha256 / package-summary-macos.md 三件且 zip 名由
+      #     version 算出;`shasum -a 256 -c` 通过;summary 的 tag 行 = release-tag、sourceCommit 行 = 本次 checkout
+      #     的提交、sha256 行 = .sha256 里的值;package-macos.sh 写进 GITHUB_OUTPUT 的 sha256 与 .sha256 相同。
+      #     sha256 只取 package-macos.sh 自己报的那个(不在这里另写一份同名输出);artifact / zip-name 由本步写。
+      - name: Release package (release.yml build-mac only) - scripts/package-macos.sh --version <tag version>
+        id: release_package
+        if: ${{ success() && inputs.release-tag != '' }}
+        timeout-minutes: 10
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          RELEASE_KIND: ${{ inputs.release-kind }}
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/release-package"
+          rm -rf "$root"
+          mkdir -p "$root/input"
+          while IFS= read -r b; do ditto "$b" "$root/input/$(basename "$b")"; done < plugin-bundles.txt
+          # 不展开可能为空的数组(macOS 自带 bash 3.2 在 set -u 下会报 unbound variable):参数用 set -- 拼。
+          set -- --version "$RELEASE_VERSION" --build-dir "$root/input" --out-dir "$root/dist"
+          if [ "$RELEASE_KIND" = "test" ]; then set -- "$@" --allow-missing-license-texts; fi
+          echo "bash scripts/package-macos.sh $*"
+          bash scripts/package-macos.sh "$@"
+          zip="SCVB-v$RELEASE_VERSION-macos-arm64.zip"
+          summary="$root/dist/package-summary-macos.md"
+          got=$(cd "$root/dist" && ls -1A | LC_ALL=C sort)
+          want=$(printf '%s\n' "$zip" "$zip.sha256" package-summary-macos.md | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            printf '%s\n' "$got" | sed 's/^/  out: /'
+            echo "::error::release package output is not exactly $zip, $zip.sha256 and package-summary-macos.md"; exit 1
+          fi
+          (cd "$root/dist" && shasum -a 256 -c "$zip.sha256")
+          hash=$(awk '{ print $1 }' "$root/dist/$zip.sha256")
+          fail=0
+          for row in "| tag | $RELEASE_TAG |" "| sourceCommit | $BUILT_SHA |" "| sha256 | $hash |"; do
+            if ! grep -Fqx -- "$row" "$summary"; then echo "::error::package-summary-macos.md lacks the row '$row'"; fail=1; fi
+          done
+          # 每一步拿到的 GITHUB_OUTPUT 都是一个新的空文件,所以这里读到的只有 package-macos.sh 刚写的那几行。
+          reported=$(sed -n 's/^sha256=//p' "$GITHUB_OUTPUT")
+          if [ "$reported" != "$hash" ]; then
+            echo "::error::package-macos.sh reported sha256 '$reported' in GITHUB_OUTPUT, the .sha256 file says '$hash'"; fail=1
+          fi
+          if [ "$fail" != "0" ]; then exit 1; fi
+          {
+            echo "artifact=$RELEASE_ARTIFACT_NAME"
+            echo "zip-name=$zip"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### release package (scripts/package-macos.sh --version $RELEASE_VERSION, kind $RELEASE_KIND)"
+            echo ""
+            echo "- artifact \`$RELEASE_ARTIFACT_NAME\`: \`$zip\`, \`$zip.sha256\`, \`package-summary-macos.md\`"
+            echo ""
+            sed '/^## zip contents/,$d' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS release package (release.yml build-mac only)
+        if: ${{ success() && inputs.release-tag != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.RELEASE_ARTIFACT_NAME }}
+          path: release-package/dist/
+          if-no-files-found: error
+          # 与 Windows 的 SCVB-VST3-win64-release-<tag> 同为 7 天:Release 资产才是长期保存的那份。
+          retention-days: 7
 
       # [M08] 验证门的现场一并带上:auval / -strict 的完整输出、pluginval 每格的 stdout 与它自己的日志、
       # 三次残段探测的输出、两份三元组清单。全部写在工作区里,upload-artifact 按最近公共祖先展开时

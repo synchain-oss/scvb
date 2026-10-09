@@ -1,16 +1,32 @@
 name: Release
 
-# ── 发版流水线(T40;06 §3.8 / 07 T40)─────────────────────────────────────────
-# 推一个 v* tag ⇒ 三个 job 串行:
+# ── 发版流水线(T40;06 §3.8 / 07 T40;[B 线 M16] 并行出 macOS 包)─────────────────────
+# 推一个 v* tag ⇒ Windows 三个 job 串行,mac 两个 job 与之并行:
 #   1. verify-tag  tag 与 CMakeLists.txt 的 project(SCVB VERSION x.y.z) 对得上才往下走(排在 20 分钟的
 #                  构建之前,对不上立刻红)。规则见 scripts/lib/release-version.ps1:vX.Y.Z、vX.Y.Z-rc.N 与
 #                  vX.Y.Z-beta.N 的 X.Y.Z 必须等于 CMake 版本;v0.0.0-test[.N] 是演练专用,不比对版本。
 #                  判据先自测再实判。outputs.prerelease 对 rc / beta / test 为 true(草稿勾 pre-release)。
 #   2. build       **调用 build-vst3.yml**(workflow_call),与出包硬门同一份配方:构建(/W4 零 warning)
 #                  → ctest → 三个 bundle 的 pluginval,最后把 .vst3 按 tag 名上传成 artifact。
+#                  build-vst3.yml 里的两个 mac caller(macos-build / macos-oop)带 tag 守卫,在这里一律 skipped ——
+#                  mac 构建只走下面的 build-mac 这一路,一次 tag push 不会编两遍 mac。
 #   3. release     取回 artifact → scripts/package.ps1 打 zip / .sha256 / package-summary.md →
 #                  用 gh CLI 建**草稿** Release(不发布;维护者核对后在网页上手动发布)。
-# 权限:workflow 级只给 contents: read;只有 release job 拿 contents: write。
+#   mac(裁定「mac 失败不挡 Windows 发版」:Windows 的 build / release **不 needs 任何 mac job**):
+#   4. build-mac      needs verify-tag;**调用 build-macos.yml** 的 release 档(release-tag / -version / -kind 三个输入):
+#                     与 PR / dispatch 同一份 mac 配方(构建、零警告、ctest、auval、pluginval、打包冒烟),全绿后按
+#                     tag 的版本号用 scripts/package-macos.sh 正式打包,传成 artifact SCVB-macos-arm64-release-<tag>。
+#   5. release-macos  needs [verify-tag, build-mac, release]:等 Windows 草稿建好之后,取回 mac 的三件产物,核过
+#                     sha256 再传到**同一个草稿** Release 上,读回比对,最后把标题从「(Windows x64)」补成
+#                     「(Windows x64 · macOS arm64 beta)」。所以 mac 一红,草稿照样只有 Windows 三件、标题照样是
+#                     「(Windows x64)」—— 正常路径下标题与草稿里实际有的资产一致。两个例外(都不影响发布前的人工
+#                     核对):① 上传已成功、读回那一步红了 ⇒ 草稿上已有 mac 三件,标题仍是「(Windows x64)」;
+#                     ② 同一个 tag 第二次整条重跑时 mac 红了 ⇒ Windows 只覆盖自己的三件、不改标题,上一次的 mac
+#                     三件与合并标题留在草稿上(同一个 tag 编的是同一个提交,核 summary 的 sourceCommit 即可)。
+#                     两个 job 改同一个草稿,但 mac 总在 Windows 之后,顺序是确定的。mac 那两 job 红在偶发原因上时,对这次 run 点「Re-run failed jobs」
+#                     按设计只重跑 mac、补传到已有草稿(Windows 已成功的 job 不重跑;这条路径还没实跑过)。
+# 权限:workflow 级只给 contents: read;只有 release 与 release-macos 两个 job 拿 contents: write。
+#       release-macos 不 checkout、不执行仓库里的任何脚本:持写权限的 mac job 只跑 shasum 与 gh。
 # 不用 softprops/action-gh-release:runner 上自带 gh CLI,少一个持写权限的第三方依赖(06 §3.8 的替代方案)。
 # 不设 workflow_dispatch:手动跑既没有 tag 可比对,也没有 tag 可挂 Release。演练用 v0.0.0-test(docs/RELEASE.md)。
 on:
@@ -135,3 +151,161 @@ jobs:
           gh release create "$env:TAG_NAME" @assets @flags
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Write-Host "::notice::草稿 Release 已建:$env:TAG_NAME。核对资产后按 docs/RELEASE.md 的模板改写正文,再在网页上手动发布。"
+
+  # ── macOS 两个 job([B 线 M16])──────────────────────────────────────────────────────────────
+  # 上面 Windows 的 build / release 一行都没改,也不 needs 这里的任何 job:mac 红了,Windows 草稿照常生成。
+  build-mac:
+    name: build-mac
+    needs: verify-tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      # 三个值都来自 verify-tag(tag 形态已核过);build-macos.yml 第一步再核它们互相对得上、与本次 ref 对得上。
+      release-tag: ${{ github.ref_name }}
+      release-version: ${{ needs.verify-tag.outputs.version }}
+      release-kind: ${{ needs.verify-tag.outputs.kind }}
+
+  release-macos:
+    name: release-macos
+    # needs release:草稿由 Windows 那一路建,mac 只往已有的草稿上补传。Windows 红了(没有草稿),这里跟着跳过,
+    # 不会单独建一个只有 mac 包的 Release。
+    needs: [verify-tag, build-mac, release]
+    # macos-15 是 B 线计划定的(与 build-mac 同一种 runner):核对用的 `shasum -a 256 -c` 与 INSTALL.txt 教用户
+    # 在 mac 上跑的是同一条命令、同一个实现;本 job 只跑一两分钟,公开仓的标准 runner 不计费。脚本全是
+    # `shell: bash` + shasum / cmp / awk / gh,换 ubuntu-latest 不用改脚本 —— 要省 mac 队列时可以换。
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: write # 往草稿 Release 上传 mac 资产、补标题;本 job 不 checkout、不执行仓库里的脚本
+    steps:
+      # 先核 build-mac 交过来的三个值,再下载:artifact 名若是空串,download-artifact 会把本次 run 的**全部**
+      # artifact 都下下来,后面的「恰好三件」会红,但错因就说偏了。artifact 名的拼法在 build-macos.yml,
+      # 这里按同一个规则核一遍,两个文件之间的约定写成显式断言。
+      - name: Check build-mac outputs
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          ARTIFACT: ${{ needs.build-mac.outputs.release-artifact }}
+          ZIP_NAME: ${{ needs.build-mac.outputs.release-zip }}
+          WANT_SHA: ${{ needs.build-mac.outputs.release-sha256 }}
+        run: |
+          set -euo pipefail
+          fail=0
+          if [ "$ARTIFACT" != "SCVB-macos-arm64-release-$TAG_NAME" ]; then
+            echo "::error::build-mac reported artifact '$ARTIFACT', expected 'SCVB-macos-arm64-release-$TAG_NAME'"; fail=1
+          fi
+          if [ "$ZIP_NAME" != "SCVB-v$VERSION-macos-arm64.zip" ]; then
+            echo "::error::build-mac reported zip '$ZIP_NAME', expected 'SCVB-v$VERSION-macos-arm64.zip'"; fail=1
+          fi
+          if ! printf '%s' "$WANT_SHA" | LC_ALL=C grep -Eqx '[0-9a-f]{64}'; then
+            echo "::error::build-mac reported sha256 '$WANT_SHA', not 64 lowercase hex digits"; fail=1
+          fi
+          exit "$fail"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.build-mac.outputs.release-artifact }}
+          path: mac-dist
+
+      # 传之前核:artifact 里恰好三件;`shasum -a 256 -c`(INSTALL.txt 教用户的同一条);zip 实算的 sha256 等于
+      # build-mac 打包时报的那个(artifact 传输前后是同一份字节);summary 的 tag 行与 sha256 行对得上。
+      - name: Verify macOS release package (shasum -c, cross-check with build-mac)
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          ZIP_NAME: ${{ needs.build-mac.outputs.release-zip }}
+          WANT_SHA: ${{ needs.build-mac.outputs.release-sha256 }}
+        run: |
+          set -euo pipefail
+          got=$(cd mac-dist && ls -1A | LC_ALL=C sort)
+          want=$(printf '%s\n' "$ZIP_NAME" "$ZIP_NAME.sha256" package-summary-macos.md | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            printf '%s\n' "$got" | sed 's/^/  artifact: /'
+            echo "::error::artifact is not exactly $ZIP_NAME, $ZIP_NAME.sha256 and package-summary-macos.md"; exit 1
+          fi
+          (cd mac-dist && shasum -a 256 -c "$ZIP_NAME.sha256")
+          actual=$(shasum -a 256 "mac-dist/$ZIP_NAME" | awk '{ print $1 }')
+          if [ "$actual" != "$WANT_SHA" ]; then
+            echo "::error::$ZIP_NAME sha256 is '$actual' after download, build-mac packed '$WANT_SHA'"; exit 1
+          fi
+          fail=0
+          for row in "| tag | $TAG_NAME |" "| sha256 | $actual |"; do
+            if ! grep -Fqx -- "$row" mac-dist/package-summary-macos.md; then echo "::error::package-summary-macos.md lacks the row '$row'"; fail=1; fi
+          done
+          if [ "$fail" != "0" ]; then exit 1; fi
+          sed '/^## zip contents/,$d' mac-dist/package-summary-macos.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS assets to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          KIND: ${{ needs.verify-tag.outputs.kind }}
+          ZIP_NAME: ${{ needs.build-mac.outputs.release-zip }}
+        run: |
+          set -euo pipefail
+          assets=("mac-dist/$ZIP_NAME" "mac-dist/$ZIP_NAME.sha256" "mac-dist/package-summary-macos.md")
+
+          # 三态判定,与 release job 同一套口径:已发布 ⇒ 有意判红,一个字节都不动;读不懂 ⇒ 判红;草稿 ⇒ --clobber
+          # 覆盖上传(同一个 tag 重跑时换成本次的产物)。多出来的一态是「读不到 Release」:草稿该由 release job
+          # 建,走到这里却读不到,说明前面出了预期之外的事 —— 判红,本 job 不自己建 Release。
+          rc=0
+          is_draft=$(gh release view "$TAG_NAME" --json isDraft -q .isDraft 2>/dev/null) || rc=$?
+          if [ "$rc" != "0" ]; then
+            echo "::error::cannot read the release of tag $TAG_NAME (gh exit $rc); the draft is created by the release job, release-macos never creates one"; exit 1
+          fi
+          if [ "$is_draft" = "false" ]; then
+            echo "::error::the release of tag $TAG_NAME is already published; the pipeline does not touch a published release"; exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::cannot make sense of isDraft='$is_draft' from gh release view; not touching it"; exit 1
+          fi
+          gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+
+          # 读回:从草稿上把三件再下载一遍,与本地逐字节比对,再跑一次 shasum -c。
+          rb="$RUNNER_TEMP/mac-readback"
+          rm -rf "$rb"
+          mkdir -p "$rb"
+          gh release download "$TAG_NAME" --dir "$rb" \
+            --pattern "$ZIP_NAME" --pattern "$ZIP_NAME.sha256" --pattern package-summary-macos.md
+          for a in "${assets[@]}"; do
+            if ! cmp -s "$a" "$rb/$(basename "$a")"; then
+              echo "::error::$(basename "$a") read back from the draft differs from what was uploaded"; exit 1
+            fi
+          done
+          (cd "$rb" && shasum -a 256 -c "$ZIP_NAME.sha256")
+
+          # 标题:只在 mac 三件确实上了草稿之后才补。只改「Windows 那一路建出来的原样标题」;已经是合并标题
+          # (同一个 tag 重跑)就不动;两者都不是(维护者手改过)就留着并出 warning,不覆盖人改的东西。
+          # Windows 标题的拼法抄自 release job 的 Create draft release 步,改那边要一起改。
+          # 「beta」写死:mac 包目前是 beta(B 线裁定);哪天 mac 不再是 beta,改这一行。
+          win="Synchain Vocal Balancer v$VERSION (Windows x64)"
+          both="Synchain Vocal Balancer v$VERSION (Windows x64 · macOS arm64 beta)"
+          if [ "$KIND" = "test" ]; then
+            win="[pipeline test - delete me] $win"
+            both="[pipeline test - delete me] $both"
+          fi
+          cur=$(gh release view "$TAG_NAME" --json name -q .name)
+          if [ "$cur" = "$both" ]; then
+            echo "title is already '$both'"
+          elif [ "$cur" = "$win" ]; then
+            gh release edit "$TAG_NAME" --title "$both"
+            now=$(gh release view "$TAG_NAME" --json name -q .name)
+            if [ "$now" != "$both" ]; then echo "::error::title reads back as '$now' after the edit, expected '$both'"; exit 1; fi
+            echo "title: '$win' -> '$both'"
+          else
+            echo "::warning::release title '$cur' is neither the Windows-only nor the combined pipeline title (edited by hand?); left as is"
+          fi
+
+          {
+            echo "### draft release assets ($TAG_NAME)"
+            echo ""
+            echo "| asset | bytes |"
+            echo "| --- | --- |"
+            gh release view "$TAG_NAME" --json assets -q '.assets[] | "| \(.name) | \(.size) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::macOS assets uploaded to draft release $TAG_NAME; check all six assets and both .sha256 files before publishing."

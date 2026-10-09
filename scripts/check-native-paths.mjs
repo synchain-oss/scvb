@@ -160,9 +160,12 @@ const HIT = [
     // [B 线 M01] build-vst3.yml 的两个 mac caller 所调的 reusable 配方:改配方要自己跑一遍。
     ".github/workflows/build-macos.yml",
     ".github/workflows/macos-oop.yml",
-    // [B 线 M01 预登记,M10 落地] mac 打包脚本,由 build-macos.yml 消费。文件今天还不存在,
-    // 这条正例让删除式验证照样兜住它那条分支;落地时 ④ 的 NON_NATIVE_PINNED 放行它。
+    // [B 线 M01 预登记,M10 落地] mac 打包脚本,由 build-macos.yml 消费;④ 的 NON_NATIVE_PINNED 放行它。
     "scripts/package-macos.sh",
+    // [B 线 M16] package-macos.sh 调 package.ps1 -Preflight(合规判据与 INSTALL.txt 规则原文的唯一真源),
+    // package.ps1 又 dot-source release-version.ps1(版本解析)。只改这两个的 PR 也要跑 mac 打包冒烟。
+    "scripts/package.ps1",
+    "scripts/lib/release-version.ps1",
 ];
 // 不命中 = 不进构建,跳过是对的。
 const MISS = [
@@ -186,9 +189,16 @@ const MISS = [
     ".github/workflows/build-macos.yaml",
     ".github/workflows/build-macosXyml",
     ".github/workflows/macos-oop.yml.bak",
-    // scripts/ 里只有 package-macos.sh 一个文件进 native 面;Windows 侧的打包脚本与同名备份都不进。
-    "scripts/package.ps1",
+    // scripts/ 里只有 package-macos.sh、package.ps1、lib/release-version.ps1 三个文件进 native 面:
+    // 同名备份不进(钉住每条分支尾部的 `$`),点号写漏转义时的近邻名不进(钉住 `\.`),
+    // 同目录的兄弟脚本不进(check-release-tag.ps1 只被 release.yml 的 verify-tag 调,不进构建)。
     "scripts/package-macos.sh.orig",
+    "scripts/package.ps1.bak",
+    "scripts/packageXps1",
+    "scripts/lib/release-version.ps1.orig",
+    "scripts/lib/release-versionXps1",
+    "scripts/check-release-tag.ps1",
+    "scripts/lib/other.ps1",
     ".clang-format",
 ];
 
@@ -376,14 +386,20 @@ const MIXED_EXPECT = {
     ],
 };
 // **non-native 顶层条目里逐个钉死的 native 例外**([B 线 M01])。`scripts/` 整体仍是 non-native
-// (计划明确不把它挪进 MIXED_TOP:今天它一个命中文件都没有,挪过去会被「MIXED_TOP 里一个都不命中」
+// (计划明确不把它挪进 MIXED_TOP:M01 当时它一个命中文件都没有,挪过去会被「MIXED_TOP 里一个都不命中」
 // 那条当场判红),但 M10 会新增 `scripts/package-macos.sh` 并让 build-macos.yml 消费它 ——
-// NATIVE_RE 已在 M01 一次登记好这条分支,这里同步登记「scripts/ 里只允许这一个文件命中」。
+// NATIVE_RE 已在 M01 一次登记好这条分支,这里同步登记「scripts/ 里只允许钉死的这几个文件命中」。
+// [B 线 M16] 再钉两个:package-macos.sh 调的 `package.ps1`(-Preflight)与它 dot-source 的
+// `lib/release-version.ps1`。
 // 判据与 MIXED_EXPECT 同一口径:non-native 条目里**多出**任何一个命中文件照样红;钉了的例外必须
 // 真命中 NATIVE_RE、必须有正例(否则删除式验证管不到它的分支)、key 必须在 NON_NATIVE_TOP 里。
 // 例外文件**允许暂不存在**(预登记),但会打印出来,不静默。
 const NON_NATIVE_PINNED = {
-    "scripts/": ["scripts/package-macos.sh"],
+    "scripts/": [
+        "scripts/package-macos.sh",
+        "scripts/package.ps1",
+        "scripts/lib/release-version.ps1",
+    ],
 };
 
 function topLevelOf(file) {
