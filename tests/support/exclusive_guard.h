@@ -249,7 +249,7 @@ inline const ExclusiveAcquire& acquireTestsExclusiveOnce()
             r.fd = -1;
             return r;
         }
-        if (!S_ISREG(st.st_mode) || st.st_uid == ::getuid()) // INJECT-M12a-J5: own lock file judged foreign (was: st_uid != getuid())
+        if (!S_ISREG(st.st_mode) || st.st_uid != ::getuid())
         {
             r.error = EPERM;
             r.foreign = true;
