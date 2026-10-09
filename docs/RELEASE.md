@@ -14,6 +14,8 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 **铁律:除真源外,任何地方都不得硬编码版本号** —— README、docs、UI HTML、脚本、workflow 一律不写死。README 里的版本靠 badge 动态显示(shields.io 读 GitHub Release,带 `include_prereleases`,所以 rc 发布后显示的是 rc 的版本号;徽章链到 Releases 列表页而不是 `releases/latest`,后者只认正式版)。
 
+README 的配图(`docs/images/readme/`)同样不带版本号:它们是用官网复刻界面加演示数据渲染的示意图,不是插件实机截图,版本号变了不用重出;**界面有看得见的改动**(tab、表格列、页脚文案之类)时才要重出,由维护者用官网的复刻界面出图后整组替换。
+
 下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag;官网下载页上线后再加上它的常量。
 
 **三个插件(Input / Output / Monitor)共用同一个版本号、同一次发布、同一个 zip。** Input 与 Output 必须配对,分开编号的直接后果是用户装出不匹配的组合:IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然连得上,混装也不受支持 —— 新 Output 配旧 Input 做离线渲染,人声可能被双路叠加(SL-260,发布说明模板「升级须知」第一条就是它)。Monitor 是可选的只读观察窗,可以不装,但版本号与另两个相同、在同一个 zip 里发布。
