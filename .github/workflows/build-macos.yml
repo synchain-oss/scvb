@@ -19,7 +19,8 @@ name: Build macOS (reusable)
 # `auval -v`(输出含 AU VALIDATION SUCCEEDED 且退出码 0;-strict 只记录);`auval -a` 唯一性;
 # pluginval(版本读 .pluginval-version,参数与 Windows gate 7 对齐)验 3 个 .vst3 + 3 个 .component;
 # 验证前后各跑一次 `scvb_tests "[shm-leftover]"`,验证后不许有共享内存残段;带 GUI 的 pluginval 只记录。
-# 发行打包在 M10。
+# [M10] 发行打包冒烟(步骤 12):用本 run 的 6 个 bundle 实跑 scripts/package-macos.sh —— dry run、负对照、连跑 3 次
+# 逐字节相同、.sha256 形态、zip 内容清单、INSTALL.txt 命令在假 HOME 下实跑(全新安装 + 升级);产物另传一个 package artifact。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -890,6 +891,212 @@ jobs:
           echo "- \`$name.vst3\` with GUI tests: exit $rc, SUCCESS line $ok; shm leftover probe afterwards: $left" >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
+      # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release.yml 的 mac 出包由 M16 接
+      #     同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,
+      #     负对照删文件、注入都碰不到 build/。判据:
+      #       ① --dry-run 不带 --version:走 CMakeLists.txt 的 BSD sed 回落(脚本自己与 package.ps1 读到的版本对拍),
+      #          什么都不写;
+      #       ② 负对照:输入里少一个 .component,脚本必须 exit 1,而且红在「恰好 3 个 .component」那条断言上,不留 zip;
+      #       ③ 正式跑 3 次(各自的输出目录),三份 zip 与 .sha256 逐字节相同(确定性);
+      #       ④ .sha256 形态:恰好一行 `<64 位小写 hex><两个空格><zip 名>` + LF(按字节数核,CR / BOM 都会让它变长),
+      #          hash 等于 zip 实算值,`shasum -a 256 -c` 通过;
+      #       ⑤ zip 内容清单:根目录恰好 6 个 bundle + INSTALL.txt / LICENSE.txt / THIRD-PARTY-NOTICES.md / LICENSES/ /
+      #          third_party/(其下只有 notices/);Contents/MacOS/ 恰好 6 个文件且带 x 位;INSTALL.txt 中英两段的命令行
+      #          (缩进 7 格的行)逐字相同,且逐行等于下面写死的跨仓契约清单(网站安装弹窗照它生成命令,改这里要通知网站同步);
+      #       ⑥ INSTALL.txt 实跑:命令行去掉 killall / auval(它们动的是 runner 的 AU 注册,11b–11e 已验),在假 HOME 下跑两遍。
+      #          zip 先打上 com.apple.quarantine 模拟浏览器下载。第一遍用 zsh(macOS 默认 shell)全新安装;第二遍用 /bin/bash
+      #          (系统自带 3.2)模拟升级 —— 先往已装的两个 bundle 里各放一个「旧版本留下的文件」,跑完必须没了(「先 rm -rf」
+      #          那步真起作用)。每遍:xattr 之前已装文件上必须带着 quarantine(模拟真的成立,否则下一条恒真),跑完
+      #          6 个 bundle 装到位、与输入逐文件相同、可执行、arm64,已装文件上没有 quarantine。
+      #     产物(第 1 次的 zip / .sha256 / package-summary-macos.md)上传为 artifact,名字与上面的 bundle artifact 平行,
+      #     多一段 `package-`。
+      - name: Packaging smoke - scripts/package-macos.sh (dry run, negative control, 3 identical runs, INSTALL.txt replay)
+        id: package_smoke
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/package-smoke"
+          rm -rf "$root"
+          mkdir -p "$root/input" "$root/neg"
+          while IFS= read -r b; do
+            ditto "$b" "$root/input/$(basename "$b")"
+            if [ "$(basename "$b")" != "SCVB Monitor.component" ]; then ditto "$b" "$root/neg/$(basename "$b")"; fi
+          done < plugin-bundles.txt
+          n=$(find "$root/input" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')
+          if [ "$n" != "6" ]; then echo "::error::package-smoke input holds $n bundles, expected 6 (from plugin-bundles.txt)"; exit 1; fi
+          echo "### packaging smoke (scripts/package-macos.sh)" >> "$GITHUB_STEP_SUMMARY"
+
+          # ① dry run
+          rc=0
+          bash scripts/package-macos.sh --dry-run --out-dir "$root/out-dry" > "$root/dry-run.log" 2>&1 || rc=$?
+          cat "$root/dry-run.log"
+          if [ "$rc" != "0" ]; then echo "::error::package-macos.sh --dry-run exited $rc"; exit 1; fi
+          if [ -e "$root/out-dry" ]; then echo "::error::package-macos.sh --dry-run created its output directory"; exit 1; fi
+          ver=$(sed -nE 's/^\[DryRun\] Version  : ([^ ]+) \(from CMakeLists\.txt;.*$/\1/p' "$root/dry-run.log")
+          if [ -z "$ver" ]; then echo "::error::--dry-run did not report a version read from CMakeLists.txt"; exit 1; fi
+          zip="SCVB-v$ver-macos-arm64.zip"
+          echo "- ① dry run without --version (BSD sed fallback, cross-checked with package.ps1): \`$ver\`, nothing written" >> "$GITHUB_STEP_SUMMARY"
+
+          # ② negative control
+          rc=0
+          bash scripts/package-macos.sh --version "$ver" --build-dir "$root/neg" --out-dir "$root/out-neg" > "$root/neg.log" 2>&1 || rc=$?
+          cat "$root/neg.log"
+          if [ "$rc" != "1" ]; then echo "::error::negative control: with one .component missing package-macos.sh exited $rc, expected 1"; exit 1; fi
+          if ! grep -q 'expected exactly 3 .component bundles' "$root/neg.log"; then
+            echo "::error::negative control: exit 1, but not from the bundle-count assertion"; exit 1
+          fi
+          if [ -e "$root/out-neg/$zip" ]; then echo "::error::negative control left a zip behind"; exit 1; fi
+          echo "- ② negative control (one .component removed): exit 1 from the bundle-count assertion, no zip" >> "$GITHUB_STEP_SUMMARY"
+
+          # ③ three runs, byte-identical
+          for i in 1 2 3; do
+            rc=0
+            bash scripts/package-macos.sh --version "$ver" --build-dir "$root/input" --out-dir "$root/out$i" > "$root/run$i.log" 2>&1 || rc=$?
+            if [ "$rc" != "0" ]; then cat "$root/run$i.log"; echo "::error::package-macos.sh run $i exited $rc"; exit 1; fi
+          done
+          cat "$root/run1.log"
+          for i in 2 3; do
+            for f in "$zip" "$zip.sha256"; do
+              if ! cmp -s "$root/out1/$f" "$root/out$i/$f"; then echo "::error::run $i produced a different $f than run 1 (packaging is not deterministic)"; exit 1; fi
+            done
+          done
+          echo "- ③ 3 runs: \`$zip\` and its .sha256 byte-identical across runs" >> "$GITHUB_STEP_SUMMARY"
+
+          # ④ .sha256 shape
+          shaf="$root/out1/$zip.sha256"
+          fail=0
+          want_bytes=$((64 + 2 + ${#zip} + 1))
+          got_bytes=$(wc -c < "$shaf" | tr -d '[:space:]')
+          if [ "$got_bytes" != "$want_bytes" ]; then
+            echo "::error::$zip.sha256 is $got_bytes bytes, expected $want_bytes (one line: 64 hex + 2 spaces + file name + LF; no CR, no BOM)"; fail=1
+          fi
+          if [ "$(tail -c 1 "$shaf" | od -An -c | tr -d ' ')" != '\n' ]; then echo "::error::$zip.sha256 does not end with LF"; fail=1; fi
+          line=$(cat "$shaf")
+          hash="${line%%  *}"
+          name="${line#*  }"
+          if ! printf '%s' "$hash" | LC_ALL=C grep -Eqx '[0-9a-f]{64}'; then echo "::error::hash field '$hash' is not 64 lowercase hex digits"; fail=1; fi
+          if [ "$name" != "$zip" ]; then echo "::error::file name field '$name' is not '$zip'"; fail=1; fi
+          actual=$(shasum -a 256 "$root/out1/$zip" | awk '{ print $1 }')
+          if [ "$hash" != "$actual" ]; then echo "::error::hash field '$hash' differs from the zip's sha256 '$actual'"; fail=1; fi
+          if ! (cd "$root/out1" && shasum -a 256 -c "$zip.sha256"); then echo "::error::shasum -a 256 -c $zip.sha256 failed"; fail=1; fi
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "- ④ \`$zip.sha256\`: one line, lowercase hex, two spaces, LF; \`shasum -a 256 -c\` OK" >> "$GITHUB_STEP_SUMMARY"
+
+          # ⑤ zip contents
+          unzip -Z1 "$root/out1/$zip" > "$root/entries.txt"
+          tops=$(awk -F/ '{ print $1 }' "$root/entries.txt" | LC_ALL=C sort -u)
+          want=$(printf '%s\n' 'SCVB Input.vst3' 'SCVB Output.vst3' 'SCVB Monitor.vst3' \
+            'SCVB Input.component' 'SCVB Output.component' 'SCVB Monitor.component' \
+            INSTALL.txt LICENSE.txt THIRD-PARTY-NOTICES.md LICENSES third_party | LC_ALL=C sort)
+          if [ "$tops" != "$want" ]; then
+            printf '%s\n' "$tops" | sed 's/^/  zip root: /'
+            echo "::error::zip root is not exactly the 6 bundles + INSTALL.txt, LICENSE.txt, THIRD-PARTY-NOTICES.md, LICENSES/, third_party/"; exit 1
+          fi
+          stray=$(grep '^third_party/' "$root/entries.txt" | grep -v '^third_party/$' | grep -v '^third_party/notices/' || true)
+          if [ -n "$stray" ]; then echo "::error::zip has entries under third_party/ outside notices/: $stray"; exit 1; fi
+          macho=$(unzip -Z "$root/out1/$zip" | grep -E '/Contents/MacOS/[^/]+$' || true)
+          nmacho=$(printf '%s\n' "$macho" | grep -c . || true)
+          if [ "$nmacho" != "6" ]; then printf '%s\n' "$macho"; echo "::error::zip holds $nmacho Contents/MacOS/ files, expected 6"; exit 1; fi
+          if printf '%s\n' "$macho" | grep -vE '^[-l]rwx'; then echo "::error::zip lost the executable bit on Contents/MacOS/*"; exit 1; fi
+          unzip -p "$root/out1/$zip" INSTALL.txt > "$root/INSTALL.txt"
+          awk '/^== English ==$/ { f = 1; next } /^== / { f = 0 } f && /^       [^ ]/ { sub(/^       /, ""); print }' "$root/INSTALL.txt" > "$root/cmds-en.txt"
+          awk '/^== 中文 ==$/ { f = 1; next } /^== / { f = 0 } f && /^       [^ ]/ { sub(/^       /, ""); print }' "$root/INSTALL.txt" > "$root/cmds-zh.txt"
+          if ! cmp -s "$root/cmds-en.txt" "$root/cmds-zh.txt"; then
+            diff "$root/cmds-en.txt" "$root/cmds-zh.txt" || true
+            echo "::error::the English and Chinese sections of INSTALL.txt give different commands"; exit 1
+          fi
+          d="${zip%.zip}"
+          printf '%s\n' \
+            'cd ~/Downloads' \
+            "shasum -a 256 -c $zip.sha256" \
+            "shasum -a 256 $zip" \
+            "ditto -x -k $zip $d && cd $d" \
+            'rm -rf ~/Library/Audio/Plug-Ins/VST3/SCVB\ {Input,Output,Monitor}.vst3' \
+            'rm -rf ~/Library/Audio/Plug-Ins/Components/SCVB\ {Input,Output,Monitor}.component' \
+            'for b in SCVB\ *.vst3; do ditto "$b" ~/Library/Audio/Plug-Ins/VST3/"$b"; done' \
+            'for b in SCVB\ *.component; do ditto "$b" ~/Library/Audio/Plug-Ins/Components/"$b"; done' \
+            'xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/SCVB\ *.vst3' \
+            'xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SCVB\ *.component' \
+            'killall -9 AudioComponentRegistrar' \
+            'auval -v aufx Scvi Snch' \
+            'auval -v aufx Scvo Snch' \
+            'auval -v aufx Scvm Snch' > "$root/cmds-contract.txt"
+          if ! cmp -s "$root/cmds-en.txt" "$root/cmds-contract.txt"; then
+            diff "$root/cmds-contract.txt" "$root/cmds-en.txt" || true
+            echo "::error::INSTALL.txt commands differ from the cross-repo contract list in this step (the website install dialog mirrors it)"; exit 1
+          fi
+          echo "- ⑤ zip root = 6 bundles + INSTALL.txt / LICENSE.txt / THIRD-PARTY-NOTICES.md / LICENSES/ / third_party/notices/; 6 executables keep x; INSTALL.txt commands (en = zh) match the contract list" >> "$GITHUB_STEP_SUMMARY"
+
+          # ⑥ INSTALL.txt replay under a fake HOME
+          home="$root/home"
+          mkdir -p "$home/Downloads"
+          cp "$root/out1/$zip" "$root/out1/$zip.sha256" "$home/Downloads/"
+          xattr -w com.apple.quarantine '0081;00000000;Safari;' "$home/Downloads/$zip"
+          grep -vE '^(killall|auval) ' "$root/cmds-en.txt" | grep -v '^xattr ' > "$root/replay-install.sh"
+          grep '^xattr ' "$root/cmds-en.txt" > "$root/replay-xattr.sh"
+          vst3_dir="$home/Library/Audio/Plug-Ins/VST3"
+          au_dir="$home/Library/Audio/Plug-Ins/Components"
+          replay() { # $1 = label, $2 = shell
+            local rc q b inst exe opts
+            # 不读任何 rc 文件(zsh -f;bash 非交互本来不读),出错即停,未定义变量即红。
+            case "$2" in *zsh) opts="-f -e -u" ;; *) opts="-e -u" ;; esac
+            rc=0
+            HOME="$home" "$2" $opts "$root/replay-install.sh" > "$root/replay-$1-install.log" 2>&1 </dev/null || rc=$?
+            cat "$root/replay-$1-install.log"
+            if [ "$rc" != "0" ]; then echo "::error::INSTALL.txt replay ($1, $2): install commands exited $rc"; return 1; fi
+            q=$(xattr -lr "$vst3_dir" "$au_dir" 2>/dev/null | grep -c 'com.apple.quarantine' || true)
+            echo "quarantine attributes on installed files before the xattr step ($1): $q"
+            # 模拟必须真的成立:已装文件上一个隔离属性都没有,下面「xattr 之后为 0」就是恒真。
+            if [ "${q:-0}" -lt 1 ]; then
+              echo "::error::INSTALL.txt replay ($1): no com.apple.quarantine on the installed files before the xattr step; the browser-download simulation did not take effect, so the after-xattr check would be vacuous"; return 1
+            fi
+            rc=0
+            HOME="$home" "$2" $opts "$root/replay-xattr.sh" > "$root/replay-$1-xattr.log" 2>&1 </dev/null || rc=$?
+            cat "$root/replay-$1-xattr.log"
+            if [ "$rc" != "0" ]; then echo "::error::INSTALL.txt replay ($1, $2): xattr commands exited $rc"; return 1; fi
+            if xattr -lr "$vst3_dir" "$au_dir" 2>/dev/null | grep -q 'com.apple.quarantine'; then
+              echo "::error::INSTALL.txt replay ($1): com.apple.quarantine is still set on installed files"; return 1
+            fi
+            for b in "SCVB Input" "SCVB Output" "SCVB Monitor"; do
+              for inst in "$vst3_dir/$b.vst3" "$au_dir/$b.component"; do
+                if ! diff -rq "$root/input/$(basename "$inst")" "$inst"; then
+                  echo "::error::INSTALL.txt replay ($1): installed '$inst' differs from the bundle that was packed"; return 1
+                fi
+                exe="$inst/Contents/MacOS/$b"
+                if [ ! -x "$exe" ] || [ "$(lipo -archs "$exe")" != "arm64" ]; then
+                  echo "::error::INSTALL.txt replay ($1): '$exe' is not an executable arm64 binary"; return 1
+                fi
+              done
+            done
+            echo "- ⑥ INSTALL.txt replay ($1, \`$2\`): 6 bundles installed under a fake HOME, identical to the packed ones, executable, arm64; quarantine before xattr: $q file(s), after: 0" >> "$GITHUB_STEP_SUMMARY"
+          }
+          replay fresh-install zsh
+          stale_v="$vst3_dir/SCVB Input.vst3/Contents/Resources/left-over-from-an-older-version"
+          stale_a="$au_dir/SCVB Output.component/Contents/Resources/left-over-from-an-older-version"
+          mkdir -p "$(dirname "$stale_v")" "$(dirname "$stale_a")"
+          echo old > "$stale_v"
+          echo old > "$stale_a"
+          replay upgrade /bin/bash
+          if [ -e "$stale_v" ] || [ -e "$stale_a" ]; then
+            echo "::error::INSTALL.txt replay (upgrade): files from the previous install survived; the rm -rf step did not take effect"; exit 1
+          fi
+
+          sed '/^## zip contents/,$d' "$root/out1/package-summary-macos.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${ARTIFACT_NAME:-}" ]; then
+            echo "PACKAGE_ARTIFACT_NAME=SCVB-macos-arm64-package-${ARTIFACT_NAME#SCVB-macos-arm64-}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload macOS package (pr / dev / preview, named like the bundles artifact)
+        if: ${{ !cancelled() && steps.package_smoke.outcome == 'success' && env.PACKAGE_ARTIFACT_NAME != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.PACKAGE_ARTIFACT_NAME }}
+          path: package-smoke/out1/
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
       # [M08] 验证门的现场一并带上:auval / -strict 的完整输出、pluginval 每格的 stdout 与它自己的日志、
       # 三次残段探测的输出、两份三元组清单。全部写在工作区里,upload-artifact 按最近公共祖先展开时
       # 不会出现 _temp/... 这类别扭层级(bridge ci.yml 踩过)。
@@ -907,5 +1114,8 @@ jobs:
             auval-logs/
             pluginval-logs/
             shm-leftover-*.log
+            package-smoke/*.log
+            package-smoke/*.txt
+            package-smoke/*.sh
           retention-days: 7
           if-no-files-found: ignore
