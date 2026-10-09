@@ -37,7 +37,7 @@ SCVB exists to solve exactly that and give you those hours back: it captures eve
   </tr>
 </table>
 
-<sub>Screens show demo data.</sub>
+<sub>Illustrative screens with demo data.</sub>
 
 Not sold on what the engine came up with, or want it arranged differently? No problem. Much like the workflow around Waves' Vocal Rider — print first, then tune by hand — you can use the automation-write feature to print the engine's analysis into your host as automation, then fine-tune from there by hand — starting from a finished pass rather than a blank one should still save you a lot of time.
 

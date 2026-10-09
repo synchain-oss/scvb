@@ -29,7 +29,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 <table>
   <tr>
     <td width="50%"><img src="docs/images/readme/shot-master-zh.jpg" alt="SCVB Output 整体调整页"><br><sub><b>Output · 整体调整</b> —— 采集、分析、写入;每一轨的声像和音量一眼看清</sub></td>
-    <td width="50%"><img src="docs/images/readme/shot-tracks-zh.jpg" alt="SCVB Output 轨道页"><br><sub><b>Output · 轨道</b> —— 每一轨的主唱锁定、配对、冻结和实时电平</sub></td>
+    <td width="50%"><img src="docs/images/readme/shot-tracks-zh.jpg" alt="SCVB Output 轨道页"><br><sub><b>Output · 轨道</b> —— 每一轨的主唱、配对、冻结和实时电平</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/images/readme/shot-waveform-zh.jpg" alt="SCVB Output 波形与分段页"><br><sub><b>Output · 波形与分段</b> —— 按乐句分段,每一段都能单独改、单独锁</sub></td>
@@ -37,7 +37,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
   </tr>
 </table>
 
-<sub>界面为演示数据。</sub>
+<sub>界面为示意图,使用演示数据。</sub>
 
 觉得引擎分析的效果一般、跟你想象中的安排不符,想要微调?没问题!你可以参考 Waves 的 Vocal Rider 那种「先打印自动化、再手工微调」的工作流,使用自动化写入功能把引擎的分析结果写成自动化记录到宿主中,再在宿主里基于这些结果微调 —— 相信这能省下你不少时间。
 
