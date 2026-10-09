@@ -695,6 +695,9 @@ TEST_CASE("HOST 手动写回:改 vol 不动 pan、改 pan 不动 vol,值真实�
 
 // ---------------------------------------------------------------------------
 // 时间线跳变(A 族):定位/跳转不得被当成失准。
+// [A-4] 只断言 misalign 是判据盲区(设计稿 §2 T1):定位后这一轨若一直读不到(H1 / LS-6 那一族的
+// 形状 —— 读方锚错了本代起点,读失败又不计数),失准计数照样是 0、本用例照样绿。所以补一条
+// 「定位后若干块内在场」:逐块推、逐块看本轨电平(电平按 Output 块发布,读失败的那一块就是 0)。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
 {
@@ -703,10 +706,30 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
     REQUIRE(r.waitUntilInjected());
     r.runBlocks(40);
     REQUIRE(r.out.misalignCount(kTestChannel) == 0);
+    // [A-4] 定位前本轨已在混音里(电平量得到):下面「定位后在场」才有对照。
+    REQUIRE(r.waitUntilAudioFlowing());
 
     // 宿主定位到远处(epoch 跳变):两侧都会重置代际,追赶期不该计失准。
     r.ph.timeSamples = 48000 * 30;
-    r.runBlocks(60);
+    // [A-4] 本台 Input 与 Output 同块跳变(Δ = 0):定位后第一块就该读得到,给 2 块余量;
+    // 读到之后每一块都要在场。
+    constexpr int kSeekPresenceBlocks = 16;
+    int firstPresent = -1;
+    int presentBlocks = 0;
+    for (int b = 0; b < kSeekPresenceBlocks; ++b)
+    {
+        r.runBlocks(1, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/2);
+        if (r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f)
+        {
+            firstPresent = firstPresent < 0 ? b : firstPresent;
+            ++presentBlocks;
+        }
+    }
+    INFO("first present block after the seek " << firstPresent << ", present blocks " << presentBlocks);
+    REQUIRE(firstPresent >= 0); // 一块都没读到时下面两条没有意义,别重复红
+    CHECK(firstPresent <= 2);
+    CHECK(presentBlocks == kSeekPresenceBlocks - firstPresent);
+    r.runBlocks(60 - kSeekPresenceBlocks);
 
     for (int waited = 0; waited < 3000; waited += 40)
     {
@@ -723,21 +746,123 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
 // N2:宿主先渲染 Output 再渲染 Input。
 // 这是 A-3 primed 门的两大动机场景之一(另一条是空环冷启动),默认顺序覆盖不到 ——
 // Output 读 t0 时 Input 本块还没写,covered 判据必然不成立。primed 门必须对它免疫。
+// [A-4] 拆成两条(设计稿 §4.2 A-4):
+//   · N2a(本条,主条目):只有头几块是 Output-first(已注入却读不到的那段 < A-6 的 200 ms 宽限),之后
+//     恢复源轨先算 —— 不报警,且恢复后即刻在场;
+//   · N2b(`[.][sched]`,见下):Output-first 一直持续 —— 读方永远领先写头、本代永远 primed 不了,
+//     每次读失败都不计失准:这一轨无声且不报警(H3)。目标「≤ 0.5 s 告警」,修复前 `[!shouldfail]`。
+// 原 N2 末尾的 `CHECK(trackPeak >= 0.0f)` 恒真(峰值不可能是负数),它旁边那句「Output 读到的是上一块
+// 的数据」也不成立:Output-first 下 Output 要的 [t0, t0+n) 恰是 Input 这一块还没写的那段,一块都读不到
+// —— 这一轨的真实状态是 trackPeak == 0。N2a 拿它当前提,N2b 的前提用例直接断言它。
 // ---------------------------------------------------------------------------
-TEST_CASE("HOST N2:Output-first 渲染顺序不误报失准", "[host][t37][L6][N2]")
+namespace
+{
+// 等到本轨确实交给了 Output:Input 侧 connected_mask 本位已置、目标档已是静音(muted 确认位随之置位),
+// 再泵约 120 ms,让 Output 走完 [J32] 注入(见到 muted 位的下一拍即注入)。只等不断言。
+bool waitUntilHandedOver(Rig& r, int maxMs = 3000)
+{
+    const auto handedOver = [&r]() {
+        const auto snap = r.in.bridgeTickSnapshot();
+        return snap.conn.maskBit && !snap.passthrough;
+    };
+    for (int waited = 0; waited < maxMs && !handedOver(); waited += 40)
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+    }
+    if (!handedOver())
+    {
+        return false;
+    }
+    r.runBlocks(12, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+    return true;
+}
+} // namespace
+
+TEST_CASE("HOST N2a: Output-first only for the first blocks - present right after the order recovers, no misalign",
+          "[host][t37][L6][N2]")
 {
     Rig r;
     r.outputFirst_ = true;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
-    r.runBlocks(80);
+    REQUIRE(waitUntilHandedOver(r));
+    // 「头几块」= 交接前后这一段:Output 的注入发生在 waitUntilHandedOver 最后那 12 块里,所以「已注入却读
+    // 不到」最多约 14 块 × 512 ≈ 150 ms 音频。故意压在 A-6 计划的宽限(200 ms 读方时间线,设计稿 §3.4)
+    // 之内 —— 换代之初短暂领先是正常的,修复之后这一条照样不该报警;持续领先(N2b)才该报。
+    r.runBlocks(2);
+    // 前提:Output-first 期间读方确实读不到这一轨(本块要的数据 Input 还没写)。
+    REQUIRE(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
 
+    // 恢复源轨先算:下一块起就读得到(本代第一次读成功 ⇒ primed;此前的失败不计失准)。
+    r.outputFirst_ = false;
+    int firstPresent = -1;
+    for (int b = 0; b < 8 && firstPresent < 0; ++b)
+    {
+        r.runBlocks(1, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/2);
+        if (r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f)
+        {
+            firstPresent = b;
+        }
+    }
+    CHECK(firstPresent == 0);
+    r.runBlocks(80);
+    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
     for (int ch = 1; ch <= 15; ++ch)
     {
         CHECK(r.out.misalignCount(ch) == 0);
     }
-    // 顺序反转不影响电平链:Output 读到的是上一块的数据,依然是真实音频。
-    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] >= 0.0f);
+}
+
+// N2b:Output-first 一直持续(H3)。目标(A-6):交给 Output 之后 0.5 s 内亮「路由失准」,持续期间不灭。
+// 计时起点 = waitUntilHandedOver 返回(Input 侧静音之后再过约 120 ms)。
+TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on",
+          "[.][sched][host][N2][!shouldfail]")
+{
+    Rig r;
+    r.outputFirst_ = true;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(waitUntilHandedOver(r));
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    double firstAlarmMs = -1.0;
+    int offAfterOn = 0;
+    for (double now = t0; now - t0 < 1500.0; now = juce::Time::getMillisecondCounterHiRes())
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+        const bool alarm = r.out.misalignCount(kTestChannel) > 0;
+        if (alarm && firstAlarmMs < 0.0)
+        {
+            firstAlarmMs = juce::Time::getMillisecondCounterHiRes() - t0;
+        }
+        else if (!alarm && firstAlarmMs >= 0.0)
+        {
+            ++offAfterOn;
+        }
+    }
+    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn);
+    CHECK(firstAlarmMs >= 0.0);
+    CHECK(firstAlarmMs <= 500.0);
+    CHECK(offAfterOn == 0);
+}
+
+TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
+          "precondition",
+          "[.][sched][host][N2]")
+{
+    Rig r;
+    r.outputFirst_ = true;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(waitUntilHandedOver(r));
+    r.runBlocks(80, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/10);
+    // 这一轨已交给 Output(Input 侧静音)……
+    const auto snap = r.in.bridgeTickSnapshot();
+    REQUIRE(snap.conn.maskBit);
+    REQUIRE_FALSE(snap.passthrough);
+    // ……而 Output 一块都读不到它:真实状态是 trackPeak == 0(原 N2 那条 `>= 0.0f` 恒真,把这一点盖住了)。
+    // 修复前后都成立:A-6 让它报警,但 Output-first 下这段数据在 Output 读的那一刻还没写。
+    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
+    WARN("N2b: misalignCount " << r.out.misalignCount(kTestChannel) << " gapCount " << r.out.gapCount(kTestChannel));
 }
 
 // ---------------------------------------------------------------------------

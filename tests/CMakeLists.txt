@@ -64,6 +64,8 @@ add_executable(scvb_tests
   core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
+  core/test_mix_source_provenance.cpp # [A-1] 读环出处判据落点(A-3 的 oracle 模糊测试在此展开)
+  core/test_presence_meter.cpp # [A-1] 在场判据仪器 tests/support/presence_meter.h 的自测
   core/test_panlaw.cpp # [SL-575] 10 §4.4.1 PANLAW-2..5 渲染层对拍(发版验证清单 D3)
   core/test_output_session.cpp
   core/test_feature_fingerprint.cpp
@@ -376,6 +378,10 @@ add_executable(scvb_host_tests
   host/test_host_harness.cpp
   host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
+  # [A-1] 宿主调度模拟器两份落点,用例一律打 `[.][sched]`:主条目默认不跑,由下面的
+  # `scvb_host_sched_tests` 显式选中。
+  host/test_host_sched.cpp # 框架自测(A-2 展开)
+  host/test_host_sched_scenarios.cpp # 复现场景 LS-1…15(A-4 展开)
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
@@ -448,4 +454,48 @@ add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # 确实杀掉了被测进程,返回后立刻数与 5 秒后再数都是 0;但另一次真实场景里残留确实出现过,
 # 成因还没查清。兜底在 `scripts/gates.ps1` gate 6 前后那两次孤儿扫描,不在这里。
 set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
+
+# [A-1] scvb_host_sched_tests:宿主调度模拟器(A 线)的独立条目。同一个二进制,只靠 Catch2 的
+# 过滤串 `[sched]` 选出 `host/test_host_sched*.cpp` 里打 `[.][sched]` 的用例:
+#   · `[.]` 隐藏 ⇒ 上面的主条目 `scvb_host_tests` 命令行不变、默认**不跑**它们,主条目
+#     那个量过的 900s 上界和它的基线都不受影响;
+#   · 过滤串里显式写出 `[sched]` 时,Catch2 会选中带这个标签的隐藏用例(实测见下);
+#   · 过滤不到任何用例时 Catch2 以**非零**退出(实测见下)—— 所以两份 sched 文件各放了一条
+#     最小用例,模拟器场景落地之前这条也不会红;
+#   · `[sched]` 这个标签在 `scvb_tests` 里另有一条(`[j146][sched]` 那条,`core/test_vad_preview.cpp`)。
+#     过滤是按二进制生效的,这里只选 `scvb_host_tests` 里的,互不影响。
+# 为什么单开一条、不并进主条目:模拟器场景要按墙钟节拍跑(500ms / 5s 那几道门限只能实时等),
+# 整套会长,上界要单独量;并进主条目会把 900s 那个量过的数冲掉。
+# 与主条目一样持 `support/exclusive_guard.h` 的进程互斥,两条串行跑(gates 与 CI 的 ctest 都不带 -j)。
+#
+# **观测**(A-1 落地时只有两条脚手架用例;本机,经 with-ipc-lock 手跑 ctest 三轮):
+#     scvb_host_sched_tests       0.03 0.04 0.04 (s,`Passed` 那一列)
+# 同一份二进制直接跑 `"[sched]"`:2 例全过,三轮墙钟 0.04–0.05s;过滤串换成不存在的标签时
+# 打印 `No tests ran`、退出码 2。
+# **观测**(A-2 落框架自测之后,10 例;本机经构建槽 + with-ipc-lock 手跑 ctest 六轮,CI 一轮):
+#     本机 8.91 8.82 8.88 / 8.98 8.97 8.93 s;CI(build-and-validate)8.46 s。
+# 数字取 120,不按 `max(最慢观测 × 3, 30s)` 落回 30 那一档 —— 这一套**失败的跑比通过的跑慢**
+#(与上面主条目 `HOST L-6b` 同一形态):交接走不完时,每台 rig 的 settle() 要等满 8s 墙钟上限才放弃。
+# ①②③ 各建一台;⑥ 建三台,但 `REQUIRE(rig.settle())` 第一次失败就中止整个用例,所以 ⑥ 只计一次 ——
+# 合计四次等待约 32s,加上 ⑤ 的 2s 实时与其余用例,约 35s。若以后把 ⑥ 改成 CHECK、或给每次 once()
+# 单开 SECTION,三台都会等满,失败路径涨到约 51s,120 仍够。30s 会把这种最该被看见的失败改判成
+# Timeout,超时之后那几台的断言原文都来不及打出来。
+# 120 = 失败路径约 35s 的 3 倍余量、通过路径约 9s 的 13 倍,仍远低于 ctest 默认的 1500s。
+# ⚠ A-4 落场景后**重新量**并只改这个数 —— 本文件里 A 线的源文件与 ctest 条目由 A-1 一次登记完,
+#   之后不再增删,只改这里的 TIMEOUT 与观测。
+# **观测**(A-4 落场景 LS-1…15 与 harness 里的 N2b 两条之后,49 例;本机经构建槽 + with-ipc-lock 手跑,
+#   同机有别的 agent 在构建 / 跑 gates):
+#     ctest 三轮:187.58 / 190.27 / 186.80 s(Passed);CI(build-and-validate,48 例时)187.59 s。
+#   其中按墙钟实时跑的格(pace=1:LS-11a/b、LS-12 实时格、LS-14、LS-15、LS-13 几何格的改布局段、N2b)
+#   合计约 90 s,是下限,机器再快也省不掉;其余按 pace=16 跑,CPU 跟不上时会变慢。
+#   ⚠ 纯时间线格早先用 pace=0(每周期 runDispatchLoopUntil(1))时,开发中整套量到过 193 s / 210 s /
+#   660 s(其间用例略有增减);推断是每周期那一次睡眠吃系统计时器粒度(未单独验证),改成 pace=16 之后
+#   三轮相差不到 1 s(见场景文件 kFastPace 的注释)。
+# 数字取 600,不是 120:
+#   · 通过路径:最慢观测(190 s)的约 3.2 倍,给负载下的纯时间线格留余量;
+#   · 失败路径:场景台交接的等待预算 8 s,第一台走不完之后其余台只给 1.5 s(test_host_sched_scenarios.cpp
+#     的 runScenario),一百多台 ⇒ 交接全坏时多出约 3 min,仍在 600 s 内、断言原文打得出来;
+#   · 仍远低于 ctest 默认的 1500 s。设计稿的整套目标 ≤ 5 分钟(300 s),现在约 190 s。
+add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
+set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 600)
 endif()
