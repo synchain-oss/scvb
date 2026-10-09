@@ -41,10 +41,10 @@ git rebase --signoff      # 一段区间
 
 ## 3. 分支模型
 
-默认主干是 `dev`(研发分支);`prod` 是稳定正式版分支,只由维护者在发正式版时前移(`v0.9.0-rc.1` 这一次例外,也前移到 rc.1,J180),插件里的文档链接固定指向它(J149,见 [docs/RELEASE.md](docs/RELEASE.md));`staging` 跟最新一个已发布版本(含预发布 rc),同样只由维护者前移,一般在发布之后(J163 / J163a;`v0.9.0-rc.1` 这一次在推 tag 之前,J180)。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
+默认主干是 `dev`(研发分支);`prod` 跟最新一个已发布版本(含预发布 rc),插件里的文档链接固定指向它(J149,见 [docs/RELEASE.md](docs/RELEASE.md));`staging` 是 `prod` 之前的预演一级(J163a)。这两个分支只由维护者在发版时经 PR 前移:`dev` → `staging` → `prod`,tag 打在 `prod` 的合并提交上,rc 与正式版一样(J184,取代 J163 / J180)。SCVB 的主支线是 `feature/v1`(ADR-013 / J13)。
 
 - **内部贡献者**:从 `feature/v1` 开 `feat/<TASK-ID>-<slug>` 子支线,PR 回 `feature/v1`。一张卡一条子支线一个 PR。same-repo 提到 `dev` 的 PR 只接受 `feat/*` / `feature/*`(外加 `dependabot/*`)。
-- **外部贡献者(J31 / J41)**:fork 本仓 → 用**任意分支名**(请不要用 `dev` / `stage` / `prod` / `feature/v1` / `feature/extraction`)→ PR 到 `dev`。
+- **外部贡献者(J31 / J41)**:fork 本仓 → 用**任意分支名**(请不要用 `dev` / `stage` / `staging` / `prod` / `feature/v1` / `feature/extraction`)→ PR 到 `dev`。
 
 **fork PR 的门禁政策**(与 [CLAUDE.md](./CLAUDE.md) §1 同一份,不存在第二套):
 
@@ -109,7 +109,7 @@ npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md do
 
 四份冻结文档(`docs/PARAMETERS.md` / `docs/IPC_CONTRACT.md` / `docs/STATE_SCHEMA.md` / `docs/SCVB_CONTRACT.md`)与 `tests/golden/` 由 `branch-gate` 的「冻结契约 path guard」看守:碰了它们而同一个 PR 里没有对应的 `docs/contract-changes/<YYYYMMDD>-<slug>.md` 变更文档(模板见 `docs/contract-changes/TEMPLATE.md`),`branch-gate` 直接红 —— 这条对 same-repo 与 fork PR **一视同仁**,fork 豁免的只有分支命名规则,不豁免本条。
 
-> **这道机器守卫只覆盖 base = `dev` 的 PR**(`branch-gate` 的触发面就是 `pull_request: branches: [dev]`)。base 为 `feature/v1` 的子 PR **不触发 branch-gate**,那一层靠评审与 CODEOWNERS 把关 —— 所以在子 PR 上碰冻结契约同样要自觉补变更文档,别等 CI 提醒你。
+> **这道机器守卫只覆盖 base = `dev` 的 PR 与维护者的发版晋升 PR**(`branch-gate` 的触发面是 `pull_request: branches: [dev, staging, prod]`,后两者只收 `dev` → `staging` → `prod`)。base 为 `feature/v1` 的子 PR **不触发 branch-gate**,那一层靠评审与 CODEOWNERS 把关 —— 所以在子 PR 上碰冻结契约同样要自觉补变更文档,别等 CI 提醒你。
 
 `docs/constitution/` 下是宪法原文的**只读副本**,只能随上游同步(`pwsh scripts/check-constitution-sync.ps1` 比对 sha256),不要就地编辑。
 
