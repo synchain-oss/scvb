@@ -63,7 +63,7 @@ semver 语义(音频插件特化):
 
 - 权限:workflow 级只读;只有 `release` 与 `release-macos` 两个 job 拿 `contents: write`(`release-macos` 不 checkout、不执行仓库里的脚本)。所有 action 都 pin 到 40 位 SHA。
 - **mac 失败不挡 Windows**:Windows 的 `build` / `release` 不 needs 任何 mac job。mac 那两 job 红在偶发原因(runner、网络)上时,对同一个 run 点「Re-run failed jobs」按设计只重跑 mac 两 job、把三件补传到已有的草稿上(Windows 已成功的 job 不重跑;这条路径还没实跑过,第一次用时核一下)。草稿没建成(Windows 红)时 `release-macos` 跟着跳过,不会单独建一个只有 mac 包的 Release。
-- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);mac 资产同样 `--clobber` 覆盖,标题只在仍是流水线原样标题时才改(手改过的标题不覆盖,只出 warning);**已发布的 Release 流水线一律不碰**(两个写权限 job 都按「已发布 ⇒ 判红」处理)。
+- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);mac 资产同样 `--clobber` 覆盖,标题只在仍是流水线原样标题时才改(手改过的标题不覆盖,只出 warning)。重跑时 mac 红了,草稿上会留着**上一次**的 mac 三件和合并标题(Windows 那一路只覆盖自己的三件、不改标题);`release-macos` 上传成功但读回那一步红了,草稿上会有 mac 三件而标题仍是「(Windows x64)」—— 所以发布前按 `package-summary.md` / `package-summary-macos.md` 的 `sourceCommit` 与 sha256 逐件核一遍,不要只看标题;**已发布的 Release 流水线一律不碰**(两个写权限 job 都按「已发布 ⇒ 判红」处理)。
 - 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。反过来,`LICENSES/` 里的每份全文也都必须有这张表的一行(或本项目的 GPL-3.0-or-later)点名它 —— 删了表里一行却留着全文、或只放全文不登记组件,都红,演练 tag 也不放行。这两项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
 - 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。

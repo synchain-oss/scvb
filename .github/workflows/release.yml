@@ -19,8 +19,11 @@ name: Release
 #   5. release-macos  needs [verify-tag, build-mac, release]:等 Windows 草稿建好之后,取回 mac 的三件产物,核过
 #                     sha256 再传到**同一个草稿** Release 上,读回比对,最后把标题从「(Windows x64)」补成
 #                     「(Windows x64 · macOS arm64 beta)」。所以 mac 一红,草稿照样只有 Windows 三件、标题照样是
-#                     「(Windows x64)」—— 标题永远与草稿里实际有的资产一致。两个 job 改同一个草稿,但 mac 总在
-#                     Windows 之后,顺序是确定的。mac 那两 job 红在偶发原因上时,对这次 run 点「Re-run failed jobs」
+#                     「(Windows x64)」—— 正常路径下标题与草稿里实际有的资产一致。两个例外(都不影响发布前的人工
+#                     核对):① 上传已成功、读回那一步红了 ⇒ 草稿上已有 mac 三件,标题仍是「(Windows x64)」;
+#                     ② 同一个 tag 第二次整条重跑时 mac 红了 ⇒ Windows 只覆盖自己的三件、不改标题,上一次的 mac
+#                     三件与合并标题留在草稿上(同一个 tag 编的是同一个提交,核 summary 的 sourceCommit 即可)。
+#                     两个 job 改同一个草稿,但 mac 总在 Windows 之后,顺序是确定的。mac 那两 job 红在偶发原因上时,对这次 run 点「Re-run failed jobs」
 #                     按设计只重跑 mac、补传到已有草稿(Windows 已成功的 job 不重跑;这条路径还没实跑过)。
 # 权限:workflow 级只给 contents: read;只有 release 与 release-macos 两个 job 拿 contents: write。
 #       release-macos 不 checkout、不执行仓库里的任何脚本:持写权限的 mac job 只跑 shasum 与 gh。
@@ -168,6 +171,9 @@ jobs:
     # needs release:草稿由 Windows 那一路建,mac 只往已有的草稿上补传。Windows 红了(没有草稿),这里跟着跳过,
     # 不会单独建一个只有 mac 包的 Release。
     needs: [verify-tag, build-mac, release]
+    # macos-15 是 B 线计划定的(与 build-mac 同一种 runner):核对用的 `shasum -a 256 -c` 与 INSTALL.txt 教用户
+    # 在 mac 上跑的是同一条命令、同一个实现;本 job 只跑一两分钟,公开仓的标准 runner 不计费。脚本全是
+    # `shell: bash` + shasum / cmp / awk / gh,换 ubuntu-latest 不用改脚本 —— 要省 mac 队列时可以换。
     runs-on: macos-15
     timeout-minutes: 15
     permissions:
