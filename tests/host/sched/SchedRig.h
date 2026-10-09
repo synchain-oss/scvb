@@ -59,6 +59,10 @@
 //   · inputSilenceSuspend(on):Cubase 式,本块源信号静音就不调用 Input(输出静音)。
 //   · outputSilenceTail(T):Logic / FL 式,总线输入连续静音超过 T 个样本就不调用 Output,
 //     Output 那一路原样直通总线输入。
+//   · suspendOutput(on):[A-4] 宿主无条件停调 Output(Live 停用设备 / FL smart disable 一类,
+//     与总线有没有声无关),Output 那一路同样原样直通总线输入;Input 照常调用。KI-6 / H5(LS-11a)
+//     要的就是「Output 停、Input 照写」这一个形状 —— 用 outputSilenceTail 去凑会把 H2 的振荡
+//     (总线一出声 Output 就被叫回来)混进来。
 //   · chainSuspend(T, by=in|out|both):整条链停调,**只做表征**(by=in:所有 lane 源信号静音 > T;
 //     by=out:总线输入静音 > T;both:两者同时)。停调期间 Input 与 Output 都不调用,宿主原样直通。
 //   · 两个静音计时(总线输入连续静音 / 全部 lane 源信号连续静音)**每个周期都更新**,与策略开没开
@@ -508,7 +512,8 @@ enum class CallReason
     Bypassed, // 宿主旁路,源信号直通
     ChainSuspended, // 整链停调,源信号直通
     SilenceSuspended, // 源信号静音被停调,输出静音
-    OutputSilenceTail // (只用于 Output)总线静音尾巴后停调,总线输入直通
+    OutputSilenceTail, // (只用于 Output)总线静音尾巴后停调,总线输入直通
+    HostSuspended // (只用于 Output)[A-4] 宿主无条件停调 Output(suspendOutput),总线输入直通
 };
 
 inline const char* toString(CallReason r)
@@ -527,6 +532,8 @@ inline const char* toString(CallReason r)
         return "silenceSuspended";
     case CallReason::OutputSilenceTail:
         return "outputSilenceTail";
+    case CallReason::HostSuspended:
+        return "hostSuspended";
     }
     return "?";
 }
@@ -542,6 +549,10 @@ struct LaneBlock
     bool contentActive = false;
     bool quirked = false;
     CallReason reason = CallReason::Called;
+    // [A-4] 全台处理顺序号(lane 块与 Output 块共用一个计数器,先处理的号小)。场景卡的环可用性
+    // oracle 靠它把各 lane 的写环与 Output 的读环按真实先后重放;游标顺序推不出这个先后(预取轨
+    // 同一游标的块在 Output 之前很久就处理了,冲刷后还会按更早的游标重新处理)。
+    std::int64_t seq = 0;
 };
 
 struct LaneInterval
@@ -565,6 +576,7 @@ struct OutBlock
     CallReason reason = CallReason::Called;
     bool violation = false; // 本周期图依赖不变式不成立
     bool declared = false; // ……且是标注过的故意违反
+    std::int64_t seq = 0; // [A-4] 处理顺序号,见 LaneBlock::seq
 };
 
 struct LaneBeat
@@ -1011,6 +1023,8 @@ public:
     void silentRegion(int lane, std::int64_t g0, std::int64_t g1) { laneAt(lane).cfg.silent.push_back(Range{g0, g1}); }
     void inputSilenceSuspend(bool on) { inputSilenceSuspend_ = on; }
     void outputSilenceTail(std::int64_t tSamples) { outputSilenceTail_ = tSamples; }
+    // [A-4] 宿主无条件停调 Output(见头注「停调策略」);停调区间同样记进 outputSuspendLog()。
+    void suspendOutput(bool on) { outputHostSuspended_ = on; }
     void chainSuspend(std::int64_t tSamples, ChainBy by)
     {
         chainSuspendT_ = tSamples;
@@ -1300,8 +1314,8 @@ private:
             l.proc->processBlock(l.buf, midi_);
         }
         l.fifo.write(bp.cursor, l.buf.getReadPointer(0), n);
-        l.log.push_back(
-            LaneBlock{bp.cursor, n, bp.bus.t, bp.tReported, bp.bus.playing, l.live, active, bp.quirked, reason});
+        l.log.push_back(LaneBlock{bp.cursor, n, bp.bus.t, bp.tReported, bp.bus.playing, l.live, active, bp.quirked,
+                                  reason, seq_++});
         l.head.advance(n);
     }
 
@@ -1395,12 +1409,18 @@ private:
         {
             reason = CallReason::ChainSuspended;
         }
+        else if (outputHostSuspended_)
+        {
+            reason = CallReason::HostSuspended;
+        }
         else if (outputSilenceTail_ >= 0 && busSilentRun_ > outputSilenceTail_)
         {
             reason = CallReason::OutputSilenceTail;
         }
-        noteEpisode(outputSuspendLog_, reason == CallReason::OutputSilenceTail, bp.cursor, nOut);
+        noteEpisode(outputSuspendLog_, reason == CallReason::OutputSilenceTail || reason == CallReason::HostSuspended,
+                    bp.cursor, nOut);
 
+        ob.seq = seq_++;
         if (reason == CallReason::Called)
         {
             outHead_.arm(bp);
@@ -1675,6 +1695,8 @@ private:
 
     bool inputSilenceSuspend_ = false;
     std::int64_t outputSilenceTail_ = -1;
+    bool outputHostSuspended_ = false; // [A-4] suspendOutput
+    std::int64_t seq_ = 0; // [A-4] 处理顺序号计数器(LaneBlock::seq / OutBlock::seq)
     std::int64_t chainSuspendT_ = -1;
     ChainBy chainBy_ = ChainBy::Both;
     bool chainSuspended_ = false;
