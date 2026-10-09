@@ -30,6 +30,14 @@
   实装一遍,包作为 artifact 上传。`THIRD-PARTY-NOTICES.md` 补登 AudioUnitSDK(Apache-2.0,只进 mac 的 AU),
   「随二进制分发」表按平台注明;隐私门禁新增 macOS 家目录与 `.local` 主机名两条规则。Windows 包与插件行为不变(#374)
 
+- **发版流水线并行出 macOS 包(beta)**:推 `v*` tag 时,`release.yml` 在 Windows 那一路之外并行构建 mac 版,mac 的全部
+  CI 门禁(构建、零警告、ctest、auval、pluginval、打包冒烟)都过了之后,按 tag 的版本号打出
+  `SCVB-v<版本>-macos-arm64.zip`、`.sha256` 和 `package-summary-macos.md`;等 Windows 草稿 Release 建好,再把这三件
+  校验后补传到同一个草稿上,并把标题从「(Windows x64)」补成「(Windows x64 · macOS arm64 beta)」。mac 这一路红了不影响
+  Windows:草稿照常生成,只有 Windows 三件,标题保持「(Windows x64)」;已发布的 Release 两路都不碰。另外,只改
+  `scripts/package.ps1` 或 `scripts/lib/release-version.ps1` 的 PR 现在也会在 CI 上跑全量构建与 mac 打包冒烟。
+  插件本身没有变化(#377)
+
 ### 变更
 
 - **`v0.9.0-rc.1` 发布后收尾**:发版验证清单 `docs/validation/release-checklist-v0.9.0-rc.1.md` 按发布实况补完,
