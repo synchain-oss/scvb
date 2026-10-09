@@ -96,6 +96,7 @@ std::size_t utf8PrefixBytes(const std::string& s, std::size_t maxBytes)
 // 停摆看门狗阈值(01 §4.2 / §4.3-b)。
 inline constexpr u64 kWatchdogStallMs = 500; // 自身 blockCounter 停滞 ≥0.5s
 inline constexpr u64 kReacquireIntervalMs = 200; // §4.3-b 让位协议:置位后延迟 ≥200ms(或 muted 回执先到者)
+inline constexpr u32 kWatchdogAllChannels = (1u << kMaxChannels) - 1u; // hold 掩码的「全部 15 轨」
 
 CtrlPlane::CtrlPlane(ISegmentBackend& backend, u32 group) : backend_(backend), group_(group) {}
 
@@ -572,28 +573,34 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     }
 
     // 1) 恢复:tripped 状态下 blockCounter 恢复推进 → 按 §4.3-b 让位协议逐轨重置信位(不得硬切)。
+    //    停摆期间 hold 一直是全部 15 轨(每拍都 return 在这里,hold 不会被谁放开 —— H5 的修法就是这一条:
+    //    清 mask 不再是一次性动作)。恢复这一拍 hold 收窄为停摆快照,并当拍释放最小号那一轨;快照之外的
+    //    轨(停摆时本来就不在线)不再闩,按常规上线路径走。
     if (tripped_)
     {
         if (blockAdvanced)
         {
             tripped_ = false;
+            holdMask_ = onlineMaskAtTrip_;
             reacquireNext_ = lowestOnlineChannel(onlineMaskAtTrip_);
             lastReacquireMs_ = nowMs;
             if (reacquireNext_ != 0)
             {
                 r.action = WatchdogAction::kReacquireBit;
                 r.channel = reacquireNext_;
+                holdMask_ &= ~(1u << (reacquireNext_ - 1));
                 reacquireNext_ = nextOnlineChannel(onlineMaskAtTrip_, reacquireNext_);
             }
         }
         return r; // 仍停摆(或已开始重置信位);本 tick 不再检测其它
     }
 
-    // 2) 让位协议重置信位序列推进(每 ≥200ms 一个在线轨,channel 升序)。
+    // 2) 让位协议重置信位序列推进(每 ≥200ms 一个在线轨,channel 升序):每步放开一轨的 hold。
     if (reacquireNext_ != 0 && nowMs - lastReacquireMs_ >= kReacquireIntervalMs)
     {
         r.action = WatchdogAction::kReacquireBit;
         r.channel = reacquireNext_;
+        holdMask_ &= ~(1u << (reacquireNext_ - 1));
         reacquireNext_ = nextOnlineChannel(onlineMaskAtTrip_, reacquireNext_);
         lastReacquireMs_ = nowMs;
         return r;
@@ -605,7 +612,12 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     if (blockStalledMs >= kWatchdogStallMs && anyOnlineWriteHeadAdvanced())
     {
         tripped_ = true;
-        onlineMaskAtTrip_ = connectedMaskSource_ ? connectedMaskSource_() : 0;
+        // 让位序列没走完又停摆(Output 刚被叫回又被停掉,H2 那种振荡):还没轮到的轨此刻不在 mask 里,
+        // 但它们停摆前是在线的 —— 并进新快照,下次恢复照样逐轨接回,而不是被当成「本来就不在线」放掉。
+        const u32 mask = connectedMaskSource_ ? connectedMaskSource_() : 0;
+        onlineMaskAtTrip_ = (mask | holdMask_) & kWatchdogAllChannels;
+        holdMask_ = kWatchdogAllChannels;
+        reacquireNext_ = 0;
         r.action = WatchdogAction::kClearMask;
         return r;
     }

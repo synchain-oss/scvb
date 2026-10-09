@@ -1292,8 +1292,10 @@ int verdictMismatchesByT(const Run& a, const Run& b, int lane)
 // 3 条 live,pace=1。放 1 s → 宿主停调 Output 7 s(Live 停用设备 / FL smart disable 一类,总线直通)→
 // 恢复调用 2.5 s。停调期间 Output 的录音就是总线输入(直通):Input 若切回直通,这里听得到原声(Raw)。
 // KI-6 文档写「约 5.5 s 后转未平衡原声」:看门狗 0.5 s 判停摆清 connected_mask,Input 再按 5 s 滞回
-// 切直通。H5 推演:看门狗只清一拍,下一拍 evaluateChannels 又把位置回(OutputSession.cpp:528-539 /
-// CtrlPlane.cpp:574-590),Input 永远等不满 5 s ⇒ 停调期间一直无声。
+// 切直通。H5(A-4 证实):看门狗只清一拍,下一拍 evaluateChannels 又把位置回,Input 永远等不满 5 s
+// ⇒ 停调期间一直无声(修前 329/329 帧缺席)。A-7 修法:CtrlPlane 的 hold 掩码在停摆期间闩住全部位,
+// evaluateChannels 的在线与注入都服从它;恢复后按 §4.3-b 每 >= 200 ms 放一轨(逐轨接回)。判据未改,
+// 只摘掉 [!shouldfail];接回顺序与 J32 叠加窗由 test_output_session.cpp 的 [KI6] 端到端用例钉。
 constexpr double kLs11SuspendS = 7.0;
 
 const Run& ls11a()
@@ -2457,7 +2459,7 @@ TEST_CASE("SCHED LS-10: offline export with blocks 1024-4096 matches the realtim
 // ---------------------------------------------------------------------------
 TEST_CASE("SCHED LS-11a (H5): with the Output not called the vocals fall back to raw passthrough after 5.5 +/- 0.5 s "
           "and rejoin lane by lane",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
     const Run& r = ls11a();
     const std::int64_t susp = r.mark.at("suspend");

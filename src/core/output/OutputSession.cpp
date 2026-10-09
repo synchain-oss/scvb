@@ -309,6 +309,13 @@ void OutputSession::pullFeatures()
 
 void OutputSession::evaluateChannels(u64 nowMs)
 {
+    // [KI-6] 停摆看门狗的 hold:被闩住的轨本拍不上线 —— connected_mask 不置位、不注入(online 与 inject
+    // 同一个闸,inject 只在 online 分支里算)。修前 tick() 先在这里按在线判据把位置回去、再让看门狗清,
+    // 看门狗进入 tripped 后每拍直接返回,于是 mask 只空一拍、下一拍又被置回(H5):Input 的 5s 滞回永远
+    // 等不满,宿主停调 Output 期间人声一直无声。被闩期间走 else 分支清 onlinePrev_,所以 hold 释放后
+    // 这一轨按「新上线」重走 [J32] 握手(等 muted 确认位或 200ms 才注入)—— 这就是 §4.3-b 让位协议的
+    // 「重新静音 + 注入」;CtrlPlane 每 ≥200ms 只放一轨,所以各轨是逐轨接回的。
+    const u32 hold = ctrl_.watchdogHoldMask();
     u32 inject = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
@@ -389,7 +396,8 @@ void OutputSession::evaluateChannels(u64 nowMs)
             misalignBaseline_[idx] = gc;
         }
 
-        const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended;
+        const bool held = (hold & (1u << (ch - 1))) != 0;
+        const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended && !held;
         if (online)
         {
             registry_.setConnectedMaskBit(ch);
@@ -531,16 +539,15 @@ void OutputSession::tick(u64 nowMs)
     pullFeatures(); // 在 evaluateChannels 之后:activeMask 用本拍刚算出的 connected_mask
 
     // 停摆看门狗(§4.2 [J52]):自身 blockCounter 停滞 + 在线轨 write_head 推进 → 清 mask。
+    // 清是当拍做(evaluateChannels 本拍已按在线判据置过位);此后由 hold 闩住,见 evaluateChannels 头注。
     const WatchdogResult wr = ctrl_.tickWatchdog(nowMs);
     if (wr.action == WatchdogAction::kClearMask)
     {
         registry_.clearConnectedMask();
         injectMask_.store(0, std::memory_order_release);
     }
-    else if (wr.action == WatchdogAction::kReacquireBit)
-    {
-        registry_.setConnectedMaskBit(wr.channel);
-    }
+    // kReacquireBit:CtrlPlane 已放开这一轨的 hold。这里**不**直接置位 —— 置位只有 evaluateChannels 一个
+    // 口子:下一拍它按与其它上线同一套判据置位(停摆期间掉线的轨不会被硬置一拍),并重走 [J32] 握手。
 
     refreshGlobalInfo(nowMs);
     consumeCommands(nowMs);

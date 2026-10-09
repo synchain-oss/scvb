@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "analysis/LoudnessMode.h"
 #include "input/InputSession.h"
+#include "input/OutputStage.h"
 #include "ipc/SegmentBackendInProcess.h"
 #include "ipc/Registry.h"
 #include "output/OutputSession.h"
@@ -1731,11 +1733,15 @@ std::uint32_t relayFpReports(scvb::FeatRing& ring, scvb::CtrlPlane& ctrl, scvb::
 
 // 每拍推进一次音频写头再 tick。evaluateChannels 的在线判据含「最近 500ms 内确有新帧写入」,
 // 只在开头写一次的话该轨几拍之后就掉出 connected_mask,pullTick 会整轨跳过。
+// Output 自己也要「在被宿主调用」(bumpBlockCounter = processBlock 首行,[J52]):只推 Input 写头、
+// Output 的块计数一动不动,正是 KI-6 的停调形状 —— 看门狗 0.5 s 后会闩住全部轨。修 H5 之前这里
+// 不推也照样绿,只是因为那时看门狗清 mask 只清一拍。
 void fpTickOnline(OutputSession& out, InputSession& in, scvb::u64 nowMs, std::int64_t& audioPos)
 {
     float chunk[64] = {};
     scvb::AudioRing::write(in.audioRing().acquire(), audioPos, chunk, 64);
     audioPos += 64;
+    out.bumpBlockCounter();
     in.heartbeat(nowMs);
     out.tick(nowMs);
 }
@@ -2044,4 +2050,319 @@ TEST_CASE("[SL-482] 反向:attach 到几何相同的存活段不换代", "[outpu
     CHECK(h->epoch.load() == e0); // 几何没变 → 不换代
     CHECK(h->channels == 2);
     CHECK(h->sample_rate == 48000);
+}
+
+// ===========================================================================
+// [KI-6] 停摆看门狗闩锁(修 H5)端到端:InProcess 后端 + 3 个 InputSession + OutputSession,
+// 虚拟时钟逐 10 ms 推进。宿主停调 Output 7 s(Input 照写、两边心跳都由 [M] 写着)→ Input 不健康满 5 s
+// 转直通(从停调起算 5.5 ± 0.5 s);恢复调用后逐轨接回,接回时重走 [J32] 握手,双路叠加不超出 J32 窗。
+//
+// Input 那一侧的 [M] 逐行照 InputProcessor::timerCallback:isHealthy → StageSwitchStateMachine(5 s 滞回)
+// → muted 确认位 = 「目标档是静音」。[A] 的 80 ms 等功率 ramp 记成「目标档转静音后 kStageRampMs 内仍有原声」。
+// 拍点相位:Output [M] 在 t%40==0、Input [M] 在 t%40==20(两个 25Hz 定时器互不对齐);每一步先「音频」
+// (各 Input 写一块、Output 没被停调就 bumpBlockCounter)再「[M]」,与宿主「先人声轨后总线」同序。
+// ===========================================================================
+namespace
+{
+using scvb::u64;
+using scvb::input::OutputStageMode;
+using scvb::input::StageSwitchStateMachine;
+
+constexpr u64 kKi6StepMs = 10; // 一步 = 一块 = 10 ms(480 帧 @48k)
+constexpr int kKi6BlockFrames = 480;
+constexpr int kKi6Lanes = 3;
+constexpr u64 kKi6ReacquireMs = 200; // CtrlPlane.cpp kReacquireIntervalMs(§4.3-b 让位间隔)
+
+struct Ki6Lane
+{
+    Ki6Lane(scvb::SegmentBackendInProcess& backend, u32 pid, u32 ch) : session(backend, pid), channel(ch) {}
+
+    InputSession session;
+    StageSwitchStateMachine sm;
+    u32 channel;
+    OutputStageMode target = OutputStageMode::kPassthrough;
+    u64 silenceSinceMs = 0; // 目标档最近一次转静音的时刻(ramp 起点)
+    std::int64_t pos = 0;
+
+    void writeBlock()
+    {
+        float buf[kKi6BlockFrames] = {};
+        scvb::AudioRing::write(session.audioRing().acquire(), pos, buf, kKi6BlockFrames);
+        pos += kKi6BlockFrames;
+    }
+
+    void tickM(u64 now)
+    {
+        const bool healthy = session.isHealthy(now);
+        const OutputStageMode t = sm.evaluate(healthy, now);
+        if (t == OutputStageMode::kSilence && target != OutputStageMode::kSilence)
+        {
+            silenceSinceMs = now;
+        }
+        target = t;
+        session.setMuted(t == OutputStageMode::kSilence);
+    }
+
+    // 本轨此刻在总线上是否还有 Input 直通出来的原声(直通档,或转静音的 80 ms ramp 还没走完)。
+    bool rawAudible(u64 now) const
+    {
+        if (target == OutputStageMode::kPassthrough)
+        {
+            return true;
+        }
+        return static_cast<double>(now - silenceSinceMs) < scvb::input::kStageRampMs;
+    }
+};
+
+struct Ki6Sample
+{
+    u64 t = 0;
+    bool outputCalled = false;
+    bool outputTick = false; // 本步 Output [M] 跑了一拍
+    u32 mask = 0;
+    u32 inject = 0;
+    bool raw[kKi6Lanes] = {};
+    bool muted[kKi6Lanes] = {};
+    bool healthy[kKi6Lanes] = {};
+};
+
+struct Ki6Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    std::vector<std::unique_ptr<Ki6Lane>> lanes;
+    OutputSession out{backend, 2001};
+    scvb::Registry probe{backend, 1};
+    std::vector<Ki6Sample> log;
+    u64 now = 1000;
+
+    Ki6Rig()
+    {
+        for (u32 i = 0; i < static_cast<u32>(kKi6Lanes); ++i)
+        {
+            lanes.push_back(std::make_unique<Ki6Lane>(backend, 1001 + i, i + 1)); // channel 1..3
+            lanes.back()->session.setChannelId(i + 1);
+            REQUIRE(lanes.back()->session.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+            lanes.back()->session.heartbeat(now);
+        }
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        out.setTransportPlaying(true);
+    }
+
+    // 推进到 untilMs(不含);outputCalled = 宿主这段时间里调不调 Output 的 processBlock。
+    void runUntil(u64 untilMs, bool outputCalled)
+    {
+        for (; now < untilMs; now += kKi6StepMs)
+        {
+            for (auto& l : lanes)
+            {
+                l->writeBlock();
+            }
+            if (outputCalled)
+            {
+                out.bumpBlockCounter(); // processBlock 首行([J52])
+            }
+            Ki6Sample s;
+            s.t = now;
+            s.outputCalled = outputCalled;
+            if (now % 250 == 0)
+            {
+                out.heartbeat(now); // 心跳在 [M]:宿主停调 Output 不停它
+                for (auto& l : lanes)
+                {
+                    l->session.heartbeat(now);
+                }
+            }
+            if (now % 40 == 0)
+            {
+                out.tick(now);
+                s.outputTick = true;
+            }
+            if (now % 40 == 20)
+            {
+                for (auto& l : lanes)
+                {
+                    l->tickM(now);
+                }
+            }
+            s.mask = probe.connectedMask();
+            s.inject = out.injectMask();
+            for (int i = 0; i < kKi6Lanes; ++i)
+            {
+                const Ki6Lane& l = *lanes[static_cast<std::size_t>(i)];
+                s.raw[i] = l.rawAudible(now);
+                s.muted[i] = l.target == OutputStageMode::kSilence;
+                s.healthy[i] = l.session.isHealthy(now);
+            }
+            log.push_back(s);
+        }
+    }
+};
+
+constexpr u32 ki6Bit(int lane)
+{
+    return 1u << static_cast<u32>(lane);
+}
+} // namespace
+
+TEST_CASE("[KI-6] Output not called: lanes fall back to raw after 5.5 +/- 0.5 s and rejoin lane by lane",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000; // 宿主从这一刻起不调 Output(Live 停用设备 / FL smart disable 一类)
+    constexpr u64 kResume = 10000; // 停调 7 s 后恢复
+    constexpr u64 kEnd = 13000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+
+    // 前提:停调前三轨都已接管(在 mask、在注入、Input 在静音档)。
+    {
+        const Ki6Sample& s = rig.log.back();
+        REQUIRE(s.mask == 0x7u);
+        REQUIRE(s.inject == 0x7u);
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            REQUIRE(s.muted[i]);
+        }
+    }
+
+    rig.runUntil(kResume, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // ---- 停调段 ------------------------------------------------------------
+    // 看门狗触发:停调 0.5 s(+ 至多一拍)后 mask 清空。
+    u64 tripMs = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.t < kResume && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0);
+    CHECK(tripMs >= kStall + 500);
+    CHECK(tripMs <= kStall + 540);
+
+    // H5 的修法:触发之后整个停调段,Output 的每一拍都**不得**再把位置回去、也不得注入(修前下一拍就置回)。
+    int relatchedTicks = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= tripMs && s.t < kResume && s.outputTick && (s.mask != 0 || s.inject != 0))
+        {
+            ++relatchedTicks;
+        }
+    }
+    CHECK(relatchedTicks == 0);
+
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        u64 unhealthySince = 0;
+        u64 passthroughAt = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t < kStall || s.t >= kResume)
+            {
+                continue;
+            }
+            if (unhealthySince == 0 && !s.healthy[i])
+            {
+                unhealthySince = s.t;
+            }
+            if (passthroughAt == 0 && !s.muted[i])
+            {
+                passthroughAt = s.t;
+            }
+        }
+        REQUIRE(unhealthySince != 0);
+        REQUIRE(passthroughAt != 0);
+        // Input 不健康满 5 s 才转直通(J12 滞回),从停调起算落在 5.5 ± 0.5 s(LS-11a 同一判据)。
+        CHECK(passthroughAt - unhealthySince >= 5000);
+        CHECK(passthroughAt >= kStall + 5000);
+        CHECK(passthroughAt <= kStall + 6000);
+        // 转直通之后一直直通到恢复(没有被下一拍置回的 mask 又拉回静音)。
+        int backToSilence = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= passthroughAt && s.t < kResume && s.muted[i])
+            {
+                ++backToSilence;
+            }
+        }
+        CHECK(backToSilence == 0);
+    }
+
+    // ---- 恢复段:逐轨接回 ---------------------------------------------------
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        CHECK(rejoinAt[i] <= kResume + 2000); // LS-11a:恢复后 2 s 内接回
+        CHECK(injectAt[i] >= rejoinAt[i]); // 不在 mask 里的轨不注入
+    }
+    // 接回顺序:channel 升序,相邻两轨间隔 ≥ 200 ms(§4.3-b 让位,不得硬切)。
+    CHECK(rejoinAt[0] < rejoinAt[1]);
+    CHECK(rejoinAt[1] < rejoinAt[2]);
+    CHECK(rejoinAt[1] - rejoinAt[0] >= kKi6ReacquireMs);
+    CHECK(rejoinAt[2] - rejoinAt[1] >= kKi6ReacquireMs);
+
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        // [J32] 握手:置位之后要等这一轨 Input 的 muted 确认位、或满 200 ms,才开始注入。
+        bool mutedBeforeInject = false;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= rejoinAt[i] && s.t < injectAt[i] && s.muted[i])
+            {
+                mutedBeforeInject = true;
+            }
+        }
+        CHECK((mutedBeforeInject || injectAt[i] - rejoinAt[i] >= scvb::output::kInjectDelayMs));
+
+        // 双路叠加(Output 在出混音 ∧ 这一轨 Input 还在直通原声)不超出 J32 窗。
+        u64 overlapMs = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= kResume && s.outputCalled && (s.inject & ki6Bit(i)) != 0 && s.raw[i])
+            {
+                overlapMs += kKi6StepMs;
+            }
+        }
+        CHECK(overlapMs <= scvb::output::kInjectDelayMs);
+        WARN("KI-6 e2e lane " << i << ": trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[i] - kResume)
+                              << " ms, inject +" << (injectAt[i] - kResume) << " ms, overlap " << overlapMs << " ms");
+    }
+
+    // 收尾:三轨都回到「在 mask、在注入、Input 静音」。
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        CHECK(last.muted[i]);
+    }
 }

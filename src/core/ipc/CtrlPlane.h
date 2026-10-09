@@ -12,7 +12,8 @@
 // 字符串型 op 不进 v1(记录只有标量 value,需 abi+1 变长区)。
 //
 // 停摆看门狗(01 §4.2):[M] 25Hz 检测「自身 blockCounter 停滞 ≥0.5s ∧ 任一在线轨 write_head
-// 仍推进」→ 清 connected_mask;blockCounter 恢复推进后按 §4.3-b 让位协议逐轨重置信位(不得硬切)。
+// 仍推进」→ 清 connected_mask **并闩住**(hold 掩码,见 watchdogHoldMask);blockCounter 恢复推进后
+// 按 §4.3-b 让位协议逐轨释放(不得硬切)。
 // blockCounter 是 Output 进程内成员([A] fetch_add(relaxed)/[M] load(relaxed)),绝不放共享段;
 // 本类用注入源(std::function<u64()>)接入,时间可注入(virtual clock),便于单测。
 
@@ -229,8 +230,10 @@ struct OutputGlobalInfoSnapshot
 enum class WatchdogAction
 {
     kNone, // 无动作
-    kClearMask, // 停摆:清空 connected_mask(Inputs 按 J12 走 5s 滞回转直通)
-    kReacquireBit // 让位协议(§4.3-b):逐轨按序重置信位(不得硬切);channel 字段生效
+    kClearMask, // 停摆:清空 connected_mask 并闩住(hold = 全部 15 轨;Inputs 按 J12 走 5s 滞回转直通)
+    // 让位协议(§4.3-b):逐轨按序释放 hold(不得硬切);channel 字段生效。只是「这一轨可以回来了」——
+    // 置位与注入仍由执行方按常规在线判据做,并重走 [J32] 握手(见 watchdogHoldMask)。
+    kReacquireBit
 };
 
 struct WatchdogResult
@@ -299,6 +302,17 @@ public:
     void setConnectedMaskSource(std::function<u32()> source) { connectedMaskSource_ = std::move(source); }
     WatchdogResult tickWatchdog(u64 nowMs);
 
+    // [KI-6] 看门狗 hold 掩码(bit{N-1} = channel N):置位的轨,执行方(OutputSession::evaluateChannels)
+    // **不得**置 connected_mask 位、也不得注入,不管这一轨别的条件多健康。
+    //   · 停摆期间(tripped)= 全部 15 轨;
+    //   · 恢复后的让位序列期间 = 停摆快照里**还没轮到**的轨(每 ≥200ms 释放一轨,channel 升序);
+    //   · 其余时刻 = 0。
+    // 为什么要闩:kClearMask 只是一次动作,而执行方每拍都会按在线判据重新置位 —— 停调 Output 不影响
+    // 那些判据(Input 照写、心跳由 [M] 写着),于是下一拍位就回来了,Input 的 5s 滞回永远等不满,
+    // 人声在停调期间一直无声(H5,LS-11a 实测 329/329 帧缺席)。只在 [M] 读写,进程内状态,不进共享段。
+    u32 watchdogHoldMask() const noexcept { return holdMask_; }
+    bool watchdogTripped() const noexcept { return tripped_; }
+
     // ---- 广播区(Output→Input 配置只读镜像,契约 §4.3)----
     // Output [M] 写(seqlock 奇偶);值变化才调用,不必每拍写。未打开则静默不写。
     void writeBroadcast(const CtrlBroadcastSnapshot& s);
@@ -351,6 +365,7 @@ private:
     u32 onlineMaskAtTrip_ = 0; // 停摆时快照的在线轨集合(bit{N-1}),恢复时逐轨重置信位
     u32 reacquireNext_ = 0; // 下一个待重置信位的 channel(1..15;0 = 无)
     u64 lastReacquireMs_ = 0;
+    u32 holdMask_ = 0; // 见 watchdogHoldMask():tripped 期间全 15 轨;让位序列期间 = 快照里未释放的轨
     u64 lastWriteHead_[kMaxChannels] = {};
 };
 
