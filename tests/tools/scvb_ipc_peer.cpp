@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // scvb_ipc_peer —— T07b L1 双进程 IPC 契约测试的对端进程(10-validation §2.1/§2.3)。
-// 由 test_ipc_contract.cpp 经 CreateProcessW 拉起;argv 决定角色,共享 tests/ipc/ipc_contract_harness.h
-// 的环读写语义。所有角色只做一件事并退出(holder 除外:持 slot + 心跳直到被 TerminateProcess)。
+// 由测试进程经 tests/support/peer_spawn.h 拉起(Windows CreateProcessW / POSIX posix_spawn);argv 决定
+// 角色,共享 tests/ipc/ipc_contract_harness.h 的环读写语义。所有角色只做一件事并退出(holder 除外:
+// 持 slot + 心跳,直到被强杀、--hold-ms 到点,或 --release-file 出现)。
+// [B 线 M12a] 段后端走 ipc/PlatformSegmentBackend.h(Windows = SegmentBackendWin32,与之前同一个类型;
+// macOS = SegmentBackendPosix),本文件另外只剩下面三个平台差异点:sleepMs / crashNow / openForWrite。
 //
 // 角色:
 //   writer       写音频环斜坡(--blocks/--blocksize/--channels/--seek-at/--seek-to/--negative-start)
 //   reader       读音频环 → CSV(--out;--decode-channels 触发 channels 不匹配拒读;--wrong-units 错位解码)
 //   claimer      抢一个 Input channel(IPC-7;--kind=output 改抢 Output;退出码 0=成功/2=冲突/3=不可用/4=abi)
-//   holder       claim Input(--kind=input)或 Output(--kind=output)+ 250ms 心跳,持住直到被杀
+//   holder       claim Input(--kind=input)或 Output(--kind=output)+ 250ms 心跳,持住直到被杀;
+//                --hold-ms=N 到点退出;--release-file=P 持到文件 P 出现才退出(IPC-7 的握手,见那里)
 //   ctrl-writer  Input [M] 向命令环 enqueue(IPC-13/13b)
 //   ctrl-reader  Output [M] 从命令环 dequeue(IPC-13/13b)
 //   globalinfo-writer / globalinfo-reader  ctrl 全局小节(IPC-16;reader 握手超时退出码 5)
@@ -17,14 +21,19 @@
 //   viz-reader   [T44] Monitor 侧只读 attach viz 段 + 一致性读 → CSV(--out)
 //   viz-publisher[T44] 走**真 VizPublisher**(CRVS 分段 + CurveEvaluator 求值)发布,而非手搓快照
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <unistd.h> // _exit
+#endif
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -33,8 +42,8 @@
 
 #include "ipc/CtrlPlane.h"
 #include "ipc/FeatRing.h"
+#include "ipc/PlatformSegmentBackend.h"
 #include "ipc/Registry.h"
-#include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
 #include "output/VizPublisher.h"
 #include "ipc_contract_harness.h"
@@ -76,6 +85,8 @@ struct Args
     // registry
     int kindInput = 1; // 1=input 0=output
     long long holdMs = -1;
+    // holder:持槽直到这个文件出现(由测试进程在「所有竞争者都已报告结果」之后创建;IPC-7)。
+    std::string releaseFile;
     // ctrl
     long long enqueueCount = 0;
     unsigned long long valueBase = 0;
@@ -158,6 +169,7 @@ Args parse(int argc, char** argv)
     a.dieAt = static_cast<int>(ll(argValue(argc, argv, "--die-at"), -1));
     a.kindInput = (argValue(argc, argv, "--kind", "input") == "output") ? 0 : 1;
     a.holdMs = ll(argValue(argc, argv, "--hold-ms"), -1);
+    a.releaseFile = argValue(argc, argv, "--release-file");
     a.enqueueCount = ll(argValue(argc, argv, "--enqueue-count"), 0);
     a.valueBase = static_cast<unsigned long long>(ll(argValue(argc, argv, "--value-base"), 0));
     a.opValue = static_cast<int>(ll(argValue(argc, argv, "--op"), 1));
@@ -171,6 +183,51 @@ Args parse(int argc, char** argv)
     return a;
 }
 
+// ---- 平台差异点(B 线 M12a)----
+
+// 让出时间片 ms 毫秒。Windows 上仍是 ::Sleep(行为与 M12a 之前逐字相同,下面 viz-publisher 那段
+// 关于默认定时器分辨率的注释说的就是它);POSIX 上 sleep_for 的实际粒度接近请求值。
+void sleepMs(unsigned ms)
+{
+#ifdef _WIN32
+    ::Sleep(static_cast<DWORD>(ms));
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+#endif
+}
+
+// 模拟崩溃:立刻结束本进程,不跑析构、不做任何清理(01 §5.2 / IPC-6)。
+// POSIX 上 `_exit` 同样不跑析构与 atexit;内核随进程回收映射、关闭 fd、放掉 flock ——
+// 与 TerminateProcess 下内核关闭句柄是同一件事。段本身(POSIX shm 名)不会被撤,留给下一个创建者清理。
+[[noreturn]] void crashNow(int code)
+{
+#ifdef _WIN32
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(code));
+    std::abort(); // 不可达:TerminateProcess 不返回(只为满足 [[noreturn]])
+#else
+    ::_exit(code);
+#endif
+}
+
+FILE* openForWrite(const std::string& path)
+{
+#ifdef _WIN32
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "wb") != 0)
+    {
+        return nullptr;
+    }
+    return f;
+#else
+    return std::fopen(path.c_str(), "wb");
+#endif
+}
+
+bool fileExists(const std::string& path)
+{
+    return std::ifstream(path, std::ios::binary).good();
+}
+
 void writeCsv(const std::string& path, const std::string& content)
 {
     if (path.empty())
@@ -179,8 +236,8 @@ void writeCsv(const std::string& path, const std::string& content)
         std::fflush(stdout);
         return;
     }
-    FILE* f = nullptr;
-    if (fopen_s(&f, path.c_str(), "wb") != 0 || f == nullptr)
+    FILE* f = openForWrite(path);
+    if (f == nullptr)
     {
         return;
     }
@@ -204,7 +261,7 @@ std::string hex64(u64 v)
 }
 
 // ---- 音频环 attach ----
-InitResult openAudio(u32 group, u32 ch, const AudioGeometry& g, bool create, SegmentBackendWin32& backend,
+InitResult openAudio(u32 group, u32 ch, const AudioGeometry& g, bool create, PlatformSegmentBackend& backend,
                      SegmentView& view, AudioRingHeader*& hdr)
 {
     hdr = nullptr;
@@ -252,7 +309,7 @@ int runWriter(const Args& a)
     g.ringFrames = static_cast<u32>(a.ringFrames);
     g.channels = static_cast<u32>(a.channels);
 
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     SegmentView view;
     AudioRingHeader* hdr = nullptr;
     if (openAudio(static_cast<u32>(a.group), static_cast<u32>(a.ch), g, true, backend, view, hdr) != InitResult::kOk)
@@ -294,7 +351,7 @@ int runWriter(const Args& a)
         if (a.dieAt >= 0 && bi == static_cast<long long>(a.dieAt))
         {
             // 写满 K 块后自杀(模拟崩溃,无清理机会;01 §5.2 / IPC-6)。
-            ::TerminateProcess(::GetCurrentProcess(), 7);
+            crashNow(7);
         }
     }
     linger(a.lingerMs); // 保活:让 reader 有时间 attach(段在最后句柄关闭时销毁)
@@ -308,7 +365,7 @@ int runReader(const Args& a)
     g.ringFrames = static_cast<u32>(a.ringFrames);
     g.channels = static_cast<u32>(a.channels);
 
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     SegmentView view;
     AudioRingHeader* hdr = nullptr;
     const auto r = openAudio(static_cast<u32>(a.group), static_cast<u32>(a.ch), g, false, backend, view, hdr);
@@ -366,14 +423,14 @@ int runReader(const Args& a)
     // 时机触发,而不是依赖「写方是否恰好先写完」的进程调度时序。
     if (a.waitWriteHead > 0)
     {
-        const u64 deadline = ::GetTickCount64() + 10000;
+        const u64 deadline = steadyNowMs() + 10000;
         while (hdr->write_head_samples.load(std::memory_order_acquire) < static_cast<u64>(a.waitWriteHead))
         {
-            if (::GetTickCount64() >= deadline)
+            if (steadyNowMs() >= deadline)
             {
                 break;
             }
-            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+            sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -391,15 +448,15 @@ int runReader(const Args& a)
 
         // 等写方覆盖本块(超时 10s 判 gap)。
         bool timedOut = false;
-        const u64 deadline = ::GetTickCount64() + 10000;
+        const u64 deadline = steadyNowMs() + 10000;
         while (hdr->write_head_samples.load(std::memory_order_acquire) < static_cast<u64>(t0 + n))
         {
-            if (::GetTickCount64() >= deadline)
+            if (steadyNowMs() >= deadline)
             {
                 timedOut = true;
                 break;
             }
-            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让) //
+            sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让) //
                         // 让出时间片给写方进程(跨进程比 SwitchToThread 更可靠)
         }
         if (timedOut)
@@ -435,14 +492,14 @@ int runReader(const Args& a)
 
 int runClaimer(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     Registry reg(backend, static_cast<u32>(a.group));
     const auto open = reg.open();
     if (open != Registry::ClaimResult::kClaimed)
     {
         return (open == Registry::ClaimResult::kAbiMismatch) ? 4 : 3;
     }
-    const u32 pid = ::GetCurrentProcessId();
+    const u32 pid = currentProcessId();
     const u64 now = steadyNowMs();
     Registry::ClaimResult r;
     if (a.kindInput == 0)
@@ -462,13 +519,13 @@ int runClaimer(const Args& a)
 
 int runHolder(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     Registry reg(backend, static_cast<u32>(a.group));
     if (reg.open() != Registry::ClaimResult::kClaimed)
     {
         return 3;
     }
-    const u32 pid = ::GetCurrentProcessId();
+    const u32 pid = currentProcessId();
     if (a.kindInput == 0)
     {
         if (reg.claimOutput(pid, steadyNowMs()) != Registry::ClaimResult::kClaimed)
@@ -486,9 +543,7 @@ int runHolder(const Args& a)
         }
     }
 
-    const long long deadline = (a.holdMs >= 0) ? static_cast<long long>(steadyNowMs()) + a.holdMs : -1;
-    while (deadline < 0 || static_cast<long long>(steadyNowMs()) < deadline)
-    {
+    const auto heartbeat = [&] {
         if (a.kindInput == 0)
         {
             reg.heartbeatOutput(steadyNowMs());
@@ -497,6 +552,36 @@ int runHolder(const Args& a)
         {
             reg.heartbeatInput(static_cast<u32>(a.ch), steadyNowMs());
         }
+    };
+
+    if (!a.releaseFile.empty())
+    {
+        // [B 线 M12a] 显式释放(IPC-7 第二节的握手):持槽直到测试进程创建 releaseFile 才退出 ——
+        // 释放时机由测试决定,不再由墙钟决定。心跳仍按 250ms 一拍;文件每 10ms 查一次。
+        // 兜底上界 60s:测试进程若在发信号之前就死了,本进程不至于永远挂着(退出码 6 = 没等到信号)。
+        const u64 capMs = steadyNowMs() + 60000;
+        u64 nextBeatMs = 0;
+        while (!fileExists(a.releaseFile))
+        {
+            const u64 now = steadyNowMs();
+            if (now >= capMs)
+            {
+                return 6;
+            }
+            if (now >= nextBeatMs)
+            {
+                heartbeat();
+                nextBeatMs = now + 250;
+            }
+            sleepMs(10);
+        }
+        return 0; // ~Registry → releaseOwnedSlot():槽在这里才放回 Free
+    }
+
+    const long long deadline = (a.holdMs >= 0) ? static_cast<long long>(steadyNowMs()) + a.holdMs : -1;
+    while (deadline < 0 || static_cast<long long>(steadyNowMs()) < deadline)
+    {
+        heartbeat();
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     return 0;
@@ -504,7 +589,7 @@ int runHolder(const Args& a)
 
 int runCtrlWriter(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     CtrlPlane plane(backend, static_cast<u32>(a.group));
     if (plane.open() != InitResult::kOk)
     {
@@ -524,7 +609,7 @@ int runCtrlWriter(const Args& a)
 
 int runCtrlReader(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     CtrlPlane plane(backend, static_cast<u32>(a.group));
     if (plane.open() != InitResult::kOk)
     {
@@ -538,15 +623,15 @@ int runCtrlReader(const Args& a)
     // 握手(IPC-13):writer 先 enqueue;reader 带超时轮询到第一条记录再继续,避免 writer 被抢占时
     // 读到空环(count==0 误判)。
     bool got = false;
-    const u64 deadline = ::GetTickCount64() + 10000;
+    const u64 deadline = steadyNowMs() + 10000;
     for (;;)
     {
         got = plane.dequeue(static_cast<u32>(a.ch), rec);
-        if (got || ::GetTickCount64() >= deadline)
+        if (got || steadyNowMs() >= deadline)
         {
             break;
         }
-        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+        sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     while (got)
@@ -573,7 +658,7 @@ int runCtrlReader(const Args& a)
 
 int runGlobalInfoWriter(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     CtrlPlane plane(backend, static_cast<u32>(a.group));
     if (plane.open() != InitResult::kOk)
     {
@@ -596,7 +681,7 @@ int runGlobalInfoWriter(const Args& a)
 
 int runGlobalInfoReader(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     CtrlPlane plane(backend, static_cast<u32>(a.group));
     if (plane.open() != InitResult::kOk)
     {
@@ -605,15 +690,15 @@ int runGlobalInfoReader(const Args& a)
     // 握手(IPC-16):writer refreshGlobalInfo 前 capture_enabled 保持 0;带超时轮询到非零再读全量,
     // 避免 writer 被抢占时读到全零快照。
     OutputGlobalInfoSnapshot s;
-    const u64 deadline = ::GetTickCount64() + 10000;
+    const u64 deadline = steadyNowMs() + 10000;
     for (;;)
     {
         s = plane.readGlobalInfo();
-        if (s.capture_enabled != 0 || ::GetTickCount64() >= deadline)
+        if (s.capture_enabled != 0 || steadyNowMs() >= deadline)
         {
             break;
         }
-        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+        sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     // 握手超时(capture_enabled 仍 0)→ 不写 CSV,返回独立退出码 5:writer 未在 10s 内发布快照
@@ -636,7 +721,7 @@ int runGlobalInfoReader(const Args& a)
 }
 
 // ---- 特征环(IPC-14)----
-bool openFeat(u32 group, u32 ch, bool create, SegmentBackendWin32& backend, SegmentView& view, FeatHeader*& hdr,
+bool openFeat(u32 group, u32 ch, bool create, PlatformSegmentBackend& backend, SegmentView& view, FeatHeader*& hdr,
               FeatFrame*& ring, u32& mappedCapacity)
 {
     hdr = nullptr;
@@ -700,7 +785,7 @@ bool openFeat(u32 group, u32 ch, bool create, SegmentBackendWin32& backend, Segm
 
 int runFeatWriter(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     SegmentView view;
     FeatHeader* hdr = nullptr;
     FeatFrame* ring = nullptr;
@@ -741,7 +826,7 @@ int runFeatWriter(const Args& a)
 
 int runFeatReader(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     SegmentView view;
     FeatHeader* hdr = nullptr;
     FeatFrame* ring = nullptr;
@@ -761,14 +846,14 @@ int runFeatReader(const Args& a)
     // 握手(建议 4):先带超时等 writer 开写(write_hop > base_hop),再进入稳定收敛计数;否则 writer
     // 尚未开写时连续 3 拍无进展会提前退出(空 coverage)。
     {
-        const u64 deadline = ::GetTickCount64() + 10000;
+        const u64 deadline = steadyNowMs() + 10000;
         while (hdr->write_hop.load(std::memory_order_acquire) <= hdr->base_hop.load(std::memory_order_acquire))
         {
-            if (::GetTickCount64() >= deadline)
+            if (steadyNowMs() >= deadline)
             {
                 break;
             }
-            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+            sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -821,7 +906,7 @@ int runFeatReader(const Args& a)
 
 int runVizWriter(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     VizPlane plane(backend, static_cast<u32>(a.group));
     if (plane.open() != InitResult::kOk)
     {
@@ -877,7 +962,7 @@ int runVizWriter(const Args& a)
 // 与手搓快照的 viz-writer 互补 —— 这条路把「引擎曲线 → 降采样 → 段」整段接线也验了。
 int runVizPublisher(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     scvb::output::VizPublisher pub(backend, static_cast<u32>(a.group));
     if (pub.open() != InitResult::kOk)
     {
@@ -962,10 +1047,10 @@ int runVizPublisher(const Args& a)
     // 「所有字段都恒定」的对端根本测不出撕裂:拼接出来的帧与正确帧逐字节相同。
     const auto step = static_cast<std::int64_t>(sr / 30.0); // 每帧约 1/30 秒
     pub.tick(scvb::steadyNowMs(), in);
-    const u64 deadline = ::GetTickCount64() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
-    while (::GetTickCount64() < deadline)
+    const u64 deadline = steadyNowMs() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
+    while (steadyNowMs() < deadline)
     {
-        ::Sleep(driveMs);
+        sleepMs(driveMs);
         in.playhead.timeSamples += step;
         pub.tick(scvb::steadyNowMs(), in);
     }
@@ -974,10 +1059,10 @@ int runVizPublisher(const Args& a)
 
 int runVizReader(const Args& a)
 {
-    SegmentBackendWin32 backend;
+    PlatformSegmentBackend backend;
     VizPlane plane(backend, static_cast<u32>(a.group));
     // 握手:writer 可能尚未建段/发布,带超时轮询到 attach 成功且 lane_revision 非零。
-    const u64 deadline = ::GetTickCount64() + 10000;
+    const u64 deadline = steadyNowMs() + 10000;
     auto snap = std::make_unique<VizSnapshot>();
     InitResult ir = InitResult::kFailed;
     bool got = false;
@@ -996,11 +1081,11 @@ int runVizReader(const Args& a)
             got = true;
             break;
         }
-        if (::GetTickCount64() >= deadline)
+        if (steadyNowMs() >= deadline)
         {
             break;
         }
-        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+        sleepMs(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     std::string csv;

@@ -9,28 +9,39 @@
 //
 // 对端 = tests/tools/scvb_ipc_peer 的 viz-publisher / viz-writer 角色(真共享内存、真进程退出)。
 // 编译时定义 SCVB_MONITOR_HEADLESS —— 不实例化 WebView2(真机 GUI 归 gate 8)。
+//
+// [B 线 M12a] 两平台同一份用例:段后端走 PlatformSegmentBackend,对端经 support/peer_spawn.h 拉起。
+// 用例收尾时**先强杀还在 linger 的对端、再 releaseResources()**:Monitor 此刻仍吊着 viz 段,于是它是
+// 最后一个离开者,段随它的 unmap 撤掉。反过来(先放 Monitor、再由 PeerGuard 析构强杀对端)在 Windows 上
+// 没有区别(内核随句柄关闭回收),在 POSIX 上会留下一个无主的 `/SynchainSCVB.v1.gN.viz` —— 强杀的对端
+// 没机会 shm_unlink,而 mac CI 在 ctest 之后用 `scvb_tests "[shm-leftover]"` 查残段,这一条会红在那里。
 
 #include <catch2/catch_test_macros.hpp>
 
-// [SL-324] 同机独占守卫(四套共用一把 `Local\SCVB-tests-proc`)——本套也建段:
-// 见该头注的组号重叠表。每个二进制只需在任意一个 TU 里包含它。
+// [SL-324] 同机独占守卫(四套共用一把:Windows `Local\SCVB-tests-proc` / POSIX 按 uid 的 flock)——
+// 本套也建段:见该头注的组号重叠表。每个二进制只需在任意一个 TU 里包含它。
 #include "support/exclusive_guard.h"
 
+#include <chrono>
+#include <cstring>
 #include <memory>
+#include <string>
+#include <thread>
 
 #include "MonitorProcessor.h"
 
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h"
 #include "ipc/VizPlane.h"
 #include "support/peer_spawn.h"
 
+using scvb::ipctest::peer::killPeer;
 using scvb::ipctest::peer::PeerGuard;
 using scvb::ipctest::peer::spawnPeer;
 using scvb::ipctest::peer::waitPeer;
 
 namespace
 {
-const std::wstring kPeer = L"scvb_ipc_peer.exe";
+const std::string kPeer = scvb::ipctest::peer::kIpcPeerName;
 
 // 驱动 Monitor 的 [M] 直到条件成立或超时。**必须用真实时钟** —— 对端是真进程,按真实的 4Hz
 // 发布;若这里推一个跑得更快的虚拟钟,Monitor 的「帧陈旧」判据(2s 没新帧)会被自己的假时间
@@ -50,7 +61,7 @@ bool pumpUntil(ScvbMonitorAudioProcessor& p, Fn&& fn, int timeoutMs = 6000)
         {
             return false;
         }
-        ::Sleep(20);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
 
@@ -60,7 +71,8 @@ void pumpTicks(ScvbMonitorAudioProcessor& p, int ticks)
     for (int i = 0; i < ticks; ++i)
     {
         p.tickMessageThread(scvb::steadyNowMs());
-        ::Sleep(60); // > kVizPollIntervalMs/4,确保 attach 重试闸门真的开过
+        // > kVizPollIntervalMs/4,确保 attach 重试闸门真的开过
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
     }
 }
 
@@ -188,6 +200,7 @@ TEST_CASE("MON-CHAIN 全数据链:发布→读到→组切换→退出空态→�
     REQUIRE(mon.vizSnapshot().windowSpanSamples == 44100ull * 120);
     REQUIRE(mon.vizFresh());
 
+    killPeer(pub2.pi); // [B 线 M12a] 先杀对端、再放 Monitor:Monitor 是最后一个离开者(见文件头注)
     mon.releaseResources();
 }
 
@@ -198,7 +211,7 @@ TEST_CASE("MON-CHAIN 写方停摆 → 帧判陈旧(不假装在线)", "[monitor]
     REQUIRE(mon.setObservedGroup(4));
 
     // 写方发一帧就退出;段由本进程的探针句柄吊住,模拟「段还在但写方不再发布」。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane keepAlive(backend, 4);
     {
         PeerGuard w;
@@ -287,7 +300,7 @@ TEST_CASE("MON-CHAIN 30Hz 持续读写:帧序单调、seq 恒偶、零撕裂", "
         lastPublishMs = v.publishMs;
         lastPlayhead = v.playheadSamples;
         lastSeq = v.seq;
-        ::Sleep(1000 / 60);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000 / 60));
     }
 
     INFO("distinct frames observed in 1.5s = " << distinctFrames);
@@ -298,5 +311,6 @@ TEST_CASE("MON-CHAIN 30Hz 持续读写:帧序单调、seq 恒偶、零撕裂", "
     REQUIRE(distinctFrames >= 15);
     REQUIRE(mon.vizFresh());
 
+    killPeer(pub.pi); // [B 线 M12a] 先杀对端、再放 Monitor:Monitor 是最后一个离开者(见文件头注)
     mon.releaseResources();
 }

@@ -3,21 +3,32 @@
 
 // peer_spawn —— 双进程测试的对端进程 spawn / 等待 / 杀进程 + CSV 回收 helper。
 //
-// 为什么是一份**新**头而不是把 test_ipc_contract.cpp 里的同名 helper 抽出来共用:
-// 那个文件正被另一路(DS 侧 IPC-16 flake 修复)系统性改动,任何抽取都会造出大片合并冲突。
-// 本头是新文件、零冲突面;`test_ipc_contract.cpp` 里那份等价的匿名命名空间副本**保持不动**
-// (它是内部链接,与本头的 `scvb::ipctest::peer` 命名空间不打架)。
-// **待办**:IPC-16 那路合并后,把 test_ipc_contract.cpp 改为包含本头、删掉它的本地副本。
+// 消费方:scvb_ipc_tests(test_ipc_contract.cpp、test_ipc_viz.cpp、test_ipc_posix.cpp)与
+// scvb_monitor_tests(test_monitor_harness.cpp)。[B 线 M12a] 之前 test_ipc_contract.cpp 留着一份
+// 等价的匿名命名空间副本(当时是为了不和 IPC-16 flake 修复那一路抢同一个文件);那一路早已合入,
+// M12a 把那份副本删掉、改为包含本头 —— 两份 spawn 实现各自 POSIX 化一遍,只会造出第二个分叉点。
 //
-// 与 test_ipc_contract.cpp 那份的唯一实质差别:`peerExe()` 接受对端 exe 名并把候选链放宽到
-// 「测试 exe 目录的若干相对位置」—— 因为消费方不止 `<build>/tests/ipc/`(scvb_ipc_tests),
-// 还有 `<build>/tests/`(scvb_monitor_tests)。
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+// [B 线 M12a] 两个平台一份接口:
+//   · Windows:CreateProcessW / WaitForSingleObject / TerminateProcess,代码与 M12a 之前逐行同义;
+//   · POSIX  :posix_spawn / waitpid / kill(SIGKILL)。
+//   `PeerProcess` 是平台句柄(Windows 上就是 PROCESS_INFORMATION),`peerPid()` 取对端 pid,
+//   `peerRunning()` 非阻塞判「还活着」,`pollPeer()` 非阻塞收退出码。
+//
+// POSIX 上两条与 Windows 不同、但调用方必须知道的事实:
+//   · **退出的子进程在被 waitpid 收走之前是僵尸,`kill(pid, 0)` 对僵尸照样成功** —— 也就是说
+//     `scvb::isProcessAlive(pid)` 会把一个已经退出、还没被收走的对端判成「活着」。所以凡是
+//     「对端已死」的断言(陈旧接管、J10 双条件)之前,对端必须先经 `waitPeer` / `killPeer` /
+//     `pollPeer` 收走。本头的三个函数都在拿到退出状态的同一刻收走子进程。
+//   · **对端退出码**:正常退出 = `exit()` 的值;被信号杀死 = 128 + 信号号(shell 口径)。
+//     Windows 上 `killPeer` 用 TerminateProcess(…, 9),退出码 9;POSIX 上是 SIGKILL,128 + 9 = 137。
+//     今天没有用例断言被杀对端的退出码。
+//
+// 对端 exe 路径运行期解析,不编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发
+// MSVC C4129 或损坏转义,PR#46 复审):从测试 exe 自身路径出发试若干相对位置 —— 消费方不止
+// `<build>/tests/ipc/`(scvb_ipc_tests),还有 `<build>/tests/`(scvb_monitor_tests)。
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -25,11 +36,48 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <chrono>
+#include <climits>
+#include <cstdio>
+#include <thread>
+
+#include <signal.h>
+#include <spawn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h> // _NSGetExecutablePath
+#endif
+extern char** environ;
+#endif
+
 namespace scvb::ipctest::peer
 {
 
-// 运行期解析对端 exe 路径:不编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发
-// MSVC C4129 或损坏转义,PR#46 复审)。从测试 exe 自身路径出发试若干相对位置。
+// 对端可执行文件的基本名(不带扩展名;Windows 上 spawnPeer 自己补 ".exe")。
+inline constexpr const char* kIpcPeerName = "scvb_ipc_peer";
+
+inline std::atomic<int>& csvCounter()
+{
+    static std::atomic<int> c{0};
+    return c;
+}
+
+#ifdef _WIN32
+
+using PeerProcess = PROCESS_INFORMATION;
+
 inline std::wstring peerExe(const std::wstring& exeName)
 {
     wchar_t self[MAX_PATH];
@@ -98,14 +146,14 @@ inline std::string quote(const std::string& s)
     return out;
 }
 
-// spawnErr:0 = 成功;ERROR_FILE_NOT_FOUND = 找不到对端 exe(多半是 -DSCVB_BUILD_TOOLS=OFF)。
-inline PROCESS_INFORMATION spawnPeer(const std::wstring& exeName, const std::vector<std::string>& args, int* spawnErr)
+// spawnErr:0 = 成功;ERROR_FILE_NOT_FOUND(2)= 找不到对端 exe(多半是 -DSCVB_BUILD_TOOLS=OFF)。
+inline PeerProcess spawnPeer(const std::string& exeBaseName, const std::vector<std::string>& args, int* spawnErr)
 {
     PROCESS_INFORMATION pi{};
     STARTUPINFOW si{};
     si.cb = sizeof(si);
 
-    const std::wstring exe = peerExe(exeName);
+    const std::wstring exe = peerExe(wide(exeBaseName) + L".exe");
     if (exe.empty())
     {
         if (spawnErr != nullptr)
@@ -137,14 +185,19 @@ inline PROCESS_INFORMATION spawnPeer(const std::wstring& exeName, const std::vec
     return pi;
 }
 
+inline std::uint32_t peerPid(const PeerProcess& p)
+{
+    return static_cast<std::uint32_t>(p.dwProcessId);
+}
+
 // 返回对端退出码;超时或句柄无效返回 -1。
-inline int waitPeer(PROCESS_INFORMATION& pi, DWORD timeoutMs)
+inline int waitPeer(PeerProcess& pi, std::uint32_t timeoutMs)
 {
     if (pi.hProcess == nullptr)
     {
         return -1;
     }
-    const DWORD r = ::WaitForSingleObject(pi.hProcess, timeoutMs);
+    const DWORD r = ::WaitForSingleObject(pi.hProcess, static_cast<DWORD>(timeoutMs));
     if (r != WAIT_OBJECT_0)
     {
         return -1;
@@ -158,7 +211,30 @@ inline int waitPeer(PROCESS_INFORMATION& pi, DWORD timeoutMs)
     return static_cast<int>(code);
 }
 
-inline void killPeer(PROCESS_INFORMATION& pi)
+// 非阻塞:对端已退出 → 收走、*exitCode 写退出码、返回 true;仍在跑(或句柄无效)→ false。
+inline bool pollPeer(PeerProcess& pi, int* exitCode)
+{
+    if (pi.hProcess == nullptr || ::WaitForSingleObject(pi.hProcess, 0) != WAIT_OBJECT_0)
+    {
+        return false;
+    }
+    const int code = waitPeer(pi, 0);
+    if (exitCode != nullptr)
+    {
+        *exitCode = code;
+    }
+    return true;
+}
+
+// 非阻塞:对端此刻是否仍在运行(不收走、不改句柄)。
+// 参数故意是非 const 引用,与 POSIX 分支同一个签名(那边会顺手收走已退出的子进程,必须能改句柄):
+// 签名不一致时,对 const 对象的调用在 Windows 本地 gates 上编得过、到 mac 才红(#375 评审第 1 轮)。
+inline bool peerRunning(PeerProcess& pi)
+{
+    return pi.hProcess != nullptr && ::WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT;
+}
+
+inline void killPeer(PeerProcess& pi)
 {
     if (pi.hProcess != nullptr)
     {
@@ -171,21 +247,6 @@ inline void killPeer(PROCESS_INFORMATION& pi)
     }
 }
 
-struct PeerGuard
-{
-    PROCESS_INFORMATION pi{};
-    PeerGuard() = default;
-    ~PeerGuard() { killPeer(pi); }
-    PeerGuard(const PeerGuard&) = delete;
-    PeerGuard& operator=(const PeerGuard&) = delete;
-};
-
-inline std::atomic<int>& csvCounter()
-{
-    static std::atomic<int> c{0};
-    return c;
-}
-
 inline std::string tempCsvPath()
 {
     char buf[MAX_PATH];
@@ -195,6 +256,271 @@ inline std::string tempCsvPath()
          ".csv";
     return p;
 }
+
+inline void deleteFile(const std::string& path)
+{
+    ::DeleteFileA(path.c_str());
+}
+
+#else // !_WIN32
+
+// POSIX 句柄:pid 与「已经收走时的退出码」(peerRunning 可能先一步收走子进程,结果要留给 waitPeer)。
+struct PeerProcess
+{
+    pid_t pid = -1;
+    bool exited = false; // 已被 waitpid 收走,exitCode 有效
+    int exitCode = -1;
+};
+
+// waitpid 状态 → 退出码(正常退出 = exit 值;被信号杀死 = 128 + 信号号)。
+inline int peerExitCodeFromStatus(int status)
+{
+    if (WIFEXITED(status))
+    {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status))
+    {
+        return 128 + WTERMSIG(status);
+    }
+    return -1;
+}
+
+// 非阻塞收一次:已退出 → 记下退出码并返回 true。子进程已被别人收走(ECHILD)也按「已退出」处理,
+// 退出码记 -1(本头之外没有人 waitpid 这些 pid,正常不会走到)。
+inline bool reapPeerNoHang(PeerProcess& p)
+{
+    if (p.exited)
+    {
+        return true;
+    }
+    if (p.pid <= 0)
+    {
+        return false;
+    }
+    int status = 0;
+    pid_t r = 0;
+    do
+    {
+        r = ::waitpid(p.pid, &status, WNOHANG);
+    } while (r < 0 && errno == EINTR);
+    if (r == p.pid)
+    {
+        p.exited = true;
+        p.exitCode = peerExitCodeFromStatus(status);
+        return true;
+    }
+    if (r < 0)
+    {
+        p.exited = true;
+        p.exitCode = -1;
+        return true;
+    }
+    return false;
+}
+
+// 本进程可执行文件的绝对路径(符号链接已解开);取不到返回空串。
+inline std::string selfExePath()
+{
+    std::string raw;
+#if defined(__APPLE__)
+    std::uint32_t size = 0;
+    (void)::_NSGetExecutablePath(nullptr, &size); // 只问长度
+    std::vector<char> buf(static_cast<std::size_t>(size) + 1, '\0');
+    if (::_NSGetExecutablePath(buf.data(), &size) != 0)
+    {
+        return "";
+    }
+    raw = buf.data();
+#else
+    std::vector<char> buf(PATH_MAX + 1, '\0');
+    const ssize_t n = ::readlink("/proc/self/exe", buf.data(), PATH_MAX);
+    if (n <= 0)
+    {
+        return "";
+    }
+    raw.assign(buf.data(), static_cast<std::size_t>(n));
+#endif
+    char resolved[PATH_MAX];
+    if (::realpath(raw.c_str(), resolved) == nullptr)
+    {
+        return "";
+    }
+    return std::string(resolved);
+}
+
+inline std::string peerExe(const std::string& exeName)
+{
+    std::string dir = selfExePath();
+    const std::size_t slash = dir.find_last_of('/');
+    if (slash == std::string::npos)
+    {
+        return "";
+    }
+    dir.resize(slash); // 测试 exe 目录
+
+    // 与 Windows 分支同一条候选链(单配置生成器;多配置时目录末段是 <Config>)。
+    std::vector<std::string> candidates;
+    candidates.push_back(dir + "/../tools/" + exeName); // <build>/tests/ipc → <build>/tests/tools
+    candidates.push_back(dir + "/tools/" + exeName); // <build>/tests      → <build>/tests/tools
+    const std::size_t lastSlash = dir.find_last_of('/');
+    if (lastSlash != std::string::npos)
+    {
+        const std::string config = dir.substr(lastSlash + 1);
+        candidates.push_back(dir + "/../../tools/" + config + "/" + exeName);
+        candidates.push_back(dir + "/../tools/" + config + "/" + exeName);
+    }
+
+    for (const auto& cand : candidates)
+    {
+        char resolved[PATH_MAX];
+        if (::realpath(cand.c_str(), resolved) != nullptr && ::access(resolved, X_OK) == 0)
+        {
+            return std::string(resolved);
+        }
+    }
+    return "";
+}
+
+// 按绝对路径拉起一个进程(环境原样继承 —— 锁目录覆盖 SCVB_IPC_LOCK_DIR 必须两边一致,
+// 见 SegmentBackendPosix.h「测试钩子」)。spawnErr:0 = 成功;否则是 posix_spawn 的错误码。
+inline PeerProcess spawnProcess(const std::string& exe, const std::vector<std::string>& args, int* spawnErr)
+{
+    PeerProcess p;
+    std::vector<std::string> storage;
+    storage.reserve(args.size() + 1);
+    storage.push_back(exe);
+    storage.insert(storage.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    argv.reserve(storage.size() + 1);
+    for (auto& s : storage)
+    {
+        argv.push_back(s.data());
+    }
+    argv.push_back(nullptr);
+
+    pid_t pid = -1;
+    const int rc = ::posix_spawn(&pid, exe.c_str(), nullptr, nullptr, argv.data(), environ);
+    if (spawnErr != nullptr)
+    {
+        *spawnErr = rc;
+    }
+    if (rc == 0)
+    {
+        p.pid = pid;
+    }
+    return p;
+}
+
+// spawnErr:0 = 成功;ENOENT(2,与 Windows 的 ERROR_FILE_NOT_FOUND 同值)= 找不到对端 exe
+// (多半是 -DSCVB_BUILD_TOOLS=OFF);其余是 posix_spawn 的错误码。
+inline PeerProcess spawnPeer(const std::string& exeBaseName, const std::vector<std::string>& args, int* spawnErr)
+{
+    const std::string exe = peerExe(exeBaseName);
+    if (exe.empty())
+    {
+        if (spawnErr != nullptr)
+        {
+            *spawnErr = ENOENT;
+        }
+        return PeerProcess{};
+    }
+    return spawnProcess(exe, args, spawnErr);
+}
+
+inline std::uint32_t peerPid(const PeerProcess& p)
+{
+    return p.pid > 0 ? static_cast<std::uint32_t>(p.pid) : 0u;
+}
+
+// 返回对端退出码;超时或句柄无效返回 -1。拿到退出码的同时收走子进程(不留僵尸)。
+inline int waitPeer(PeerProcess& p, std::uint32_t timeoutMs)
+{
+    if (p.pid <= 0)
+    {
+        return -1;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!reapPeerNoHang(p))
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return -1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const int code = p.exitCode;
+    p = PeerProcess{};
+    return code;
+}
+
+// 非阻塞:对端已退出 → 收走、*exitCode 写退出码、返回 true;仍在跑(或句柄无效)→ false。
+inline bool pollPeer(PeerProcess& p, int* exitCode)
+{
+    if (p.pid <= 0 || !reapPeerNoHang(p))
+    {
+        return false;
+    }
+    if (exitCode != nullptr)
+    {
+        *exitCode = p.exitCode;
+    }
+    p = PeerProcess{};
+    return true;
+}
+
+// 非阻塞:对端此刻是否仍在运行。已退出的会被顺手收走(结果留给随后的 waitPeer / pollPeer)。
+inline bool peerRunning(PeerProcess& p)
+{
+    return p.pid > 0 && !reapPeerNoHang(p);
+}
+
+// 强杀(模拟崩溃:对端没有任何清理机会,与 Windows 的 TerminateProcess 同一语义)并收走。
+inline void killPeer(PeerProcess& p)
+{
+    if (p.pid <= 0)
+    {
+        return;
+    }
+    if (!reapPeerNoHang(p))
+    {
+        ::kill(p.pid, SIGKILL);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+        while (!reapPeerNoHang(p) && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    p = PeerProcess{};
+}
+
+inline std::string tempCsvPath()
+{
+    const char* tmp = std::getenv("TMPDIR");
+    std::string p = (tmp != nullptr && tmp[0] != '\0') ? std::string(tmp) : std::string("/tmp");
+    if (p.back() != '/')
+    {
+        p += '/';
+    }
+    p += "scvb_peer_" + std::to_string(::getpid()) + "_" + std::to_string(csvCounter().fetch_add(1)) + ".csv";
+    return p;
+}
+
+inline void deleteFile(const std::string& path)
+{
+    ::unlink(path.c_str());
+}
+
+#endif // _WIN32
+
+struct PeerGuard
+{
+    PeerProcess pi{};
+    PeerGuard() = default;
+    ~PeerGuard() { killPeer(pi); }
+    PeerGuard(const PeerGuard&) = delete;
+    PeerGuard& operator=(const PeerGuard&) = delete;
+};
 
 inline std::string readFile(const std::string& path)
 {
@@ -206,11 +532,6 @@ inline std::string readFile(const std::string& path)
     std::ostringstream oss;
     oss << f.rdbuf();
     return oss.str();
-}
-
-inline void deleteFile(const std::string& path)
-{
-    ::DeleteFileA(path.c_str());
 }
 
 // 「key value」逐行;# 开头为注释。
