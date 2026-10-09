@@ -2366,3 +2366,86 @@ TEST_CASE("[KI-6] Output not called: lanes fall back to raw after 5.5 +/- 0.5 s 
         CHECK(last.muted[i]);
     }
 }
+
+// 短停调(看门狗已触发、Input 还没等满 5 s 滞回):恢复时各 Input 仍报 muted、没有原声可叠,让位不必排队 ——
+// 三轨在恢复后的同一拍接回。修 H5 之前这种短停调本来就是立即接回的(mask 根本没真断过);hold 若对它们也
+// 逐轨排队,排第 k 的轨会白白多静音 (k−1)×200 ms(PR #379 第 1 轮评审)。
+TEST_CASE("[KI-6] short Output stall: lanes whose Input is still muted rejoin together, without queueing",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000;
+    constexpr u64 kResume = 5000; // 停调 2 s:> 0.5 s(看门狗触发),< 5.5 s(Input 还没切直通)
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.runUntil(kResume, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // 前提:停调期间看门狗确实触发、闩住了(mask 空过,且之后再没回来),Input 一直没切直通。
+    u64 tripMs = 0;
+    int relatched = 0;
+    int passthroughSamples = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kStall || s.t >= kResume)
+        {
+            continue;
+        }
+        if (tripMs == 0 && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+        }
+        if (tripMs != 0 && s.outputTick && s.mask != 0)
+        {
+            ++relatched;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            passthroughSamples += s.muted[i] ? 0 : 1;
+        }
+    }
+    REQUIRE(tripMs != 0);
+    REQUIRE(relatched == 0);
+    REQUIRE(passthroughSamples == 0);
+
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        // 恢复后一到两拍内接回(恢复那一拍 evaluateChannels 先跑、看门狗后跑,所以是下一拍),muted 已在 ⇒ 当拍注入。
+        CHECK(rejoinAt[i] <= kResume + 80);
+        CHECK(injectAt[i] == rejoinAt[i]);
+    }
+    CHECK(rejoinAt[1] == rejoinAt[0]);
+    CHECK(rejoinAt[2] == rejoinAt[0]);
+    WARN("KI-6 short stall: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[0] - kResume) << "/+"
+                                    << (rejoinAt[1] - kResume) << "/+" << (rejoinAt[2] - kResume) << " ms");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}

@@ -1672,6 +1672,114 @@ TEST_CASE("[KI-6] watchdog hold: latched for the whole stall, released lane by l
         CHECK(cp.watchdogHoldMask() == 0u);
     }
 
+    SECTION("让位途中 Output 又停住、写头也停(走带停):停住满 0.5s 起暂停放轨,Output 回来接着放")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        for (u32 ch = 1; ch <= 5; ++ch)
+        {
+            out.setConnectedMaskBit(ch);
+        }
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+
+        // 700 恢复一块(放 1),之后 Output 与写头都不动(走带停住、宿主也不再调 Output)。
+        block = 1;
+        auto r = cp.tickWatchdog(700);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r.channel == 1);
+        r = cp.tickWatchdog(900); // 停住 200ms(< 0.5s):照放
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 2);
+        r = cp.tickWatchdog(1100); // 停住 400ms:照放
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 3);
+
+        // 1300 起停住 ≥ 0.5s:该放 4 了,但不放;写头也没动 ⇒ 不是停摆,也不清 —— hold 原样闩着 4、5。
+        int released = 0;
+        for (u64 t = 1300; t <= 3000; t += 100)
+        {
+            if (cp.tickWatchdog(t).action != scvb::WatchdogAction::kNone)
+            {
+                ++released;
+            }
+        }
+        CHECK(released == 0);
+        CHECK_FALSE(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == (ki6Bit(4) | ki6Bit(5)));
+
+        // Output 回来:接着放 4,再 ≥200ms 放 5。
+        block = 2;
+        r = cp.tickWatchdog(3040);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 4);
+        CHECK(cp.watchdogHoldMask() == ki6Bit(5));
+        block = 3;
+        CHECK(cp.tickWatchdog(3140).action == scvb::WatchdogAction::kNone);
+        block = 4;
+        r = cp.tickWatchdog(3240);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 5);
+        CHECK(cp.watchdogHoldMask() == 0u);
+    }
+
+    SECTION("让位途中 Output 又停调,而在写的只剩还被闩着的轨:照样判停摆(被闩的轨也算停摆证据)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        for (u32 ch = 1; ch <= 5; ++ch)
+        {
+            out.setConnectedMaskBit(ch);
+        }
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 5 ? wh : 0; }); // 只有 5 在写
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+
+        // 700 恢复一块后又停调;放出去的 1、2、3 都不健康(执行方没给它们置位 ⇒ mask 一直是空的)。
+        block = 1;
+        REQUIRE(cp.tickWatchdog(700).action == scvb::WatchdogAction::kReacquireBit);
+        wh += 100;
+        REQUIRE(cp.tickWatchdog(900).action == scvb::WatchdogAction::kReacquireBit);
+        wh += 100;
+        REQUIRE(cp.tickWatchdog(1100).action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(out.connectedMask() == 0u);
+        REQUIRE(cp.watchdogHoldMask() == (ki6Bit(4) | ki6Bit(5)));
+
+        // 1200:Output 停住 0.5s,mask 里一条都没有,但还被闩着的 5 在写 ⇒ 判停摆,4、5 并进新快照。
+        wh += 100;
+        const auto r = cp.tickWatchdog(1200);
+        CHECK(r.action == scvb::WatchdogAction::kClearMask);
+        CHECK(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == kKi6AllChannels);
+    }
+
     SECTION("工程整体停止播放(写头也停)不闩;未注入源时 hold 恒 0")
     {
         scvb::SegmentBackendInProcess::resetAll();

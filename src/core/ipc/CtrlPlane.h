@@ -305,7 +305,9 @@ public:
     // [KI-6] 看门狗 hold 掩码(bit{N-1} = channel N):置位的轨,执行方(OutputSession::evaluateChannels)
     // **不得**置 connected_mask 位、也不得注入,不管这一轨别的条件多健康。
     //   · 停摆期间(tripped)= 全部 15 轨;
-    //   · 恢复后的让位序列期间 = 停摆快照里**还没轮到**的轨(每 ≥200ms 释放一轨,channel 升序);
+    //   · 恢复后的让位序列期间 = 停摆快照里**还没轮到**的轨(每 ≥200ms 释放一轨,channel 升序;
+    //     Output 又停住 ≥0.5s 就暂停放轨);执行方对其中 Input 仍报 muted 的轨放行(它没有原声可叠,
+    //     不必排队,见 OutputSession::evaluateChannels);
     //   · 其余时刻 = 0。
     // 为什么要闩:kClearMask 只是一次动作,而执行方每拍都会按在线判据重新置位 —— 停调 Output 不影响
     // 那些判据(Input 照写、心跳由 [M] 写着),于是下一拍位就回来了,Input 的 5s 滞回永远等不满,

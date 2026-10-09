@@ -315,7 +315,13 @@ void OutputSession::evaluateChannels(u64 nowMs)
     // 等不满,宿主停调 Output 期间人声一直无声。被闩期间走 else 分支清 onlinePrev_,所以 hold 释放后
     // 这一轨按「新上线」重走 [J32] 握手(等 muted 确认位或 200ms 才注入)—— 这就是 §4.3-b 让位协议的
     // 「重新静音 + 注入」;CtrlPlane 每 ≥200ms 只放一轨,所以各轨是逐轨接回的。
+    //
+    // 例外(只在恢复后的让位序列里,停摆期间一律闩):这一轨的 Input 此刻仍报 muted 确认位 —— 停调短于
+    // 约 5.5s,它还没等满滞回、没切直通。让位要防的是「直通原声 + 注入混音」叠在一起,而它现在没有原声,
+    // 当拍接回不会叠加;排队只会让它白白多静音 (k−1)×200ms(15 轨时末轨约 2.8s)。已经切直通的轨
+    // (muted 位已清)照旧排队、逐轨接回。
     const u32 hold = ctrl_.watchdogHoldMask();
+    const bool tripped = ctrl_.watchdogTripped();
     u32 inject = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
@@ -396,7 +402,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
             misalignBaseline_[idx] = gc;
         }
 
-        const bool held = (hold & (1u << (ch - 1))) != 0;
+        const bool inHold = (hold & (1u << (ch - 1))) != 0;
+        const bool inputStillMuted = slot != nullptr && (slot->flags.load(std::memory_order_acquire) & kFlagMuted) != 0;
+        const bool held = inHold && (tripped || !inputStillMuted);
         const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended && !held;
         if (online)
         {

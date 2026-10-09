@@ -496,7 +496,10 @@ bool CtrlPlane::anyOnlineWriteHeadAdvanced() const
     {
         return false;
     }
-    const u32 mask = connectedMaskSource_ ? connectedMaskSource_() : 0;
+    // 在线轨 = connected_mask ∪ 让位序列里还被闩着的轨(KI-6):后者停摆前在线、此刻只是还没轮到,
+    // 不算进来的话,恢复后放出去的轨恰好都不健康时,Output 再次停调就判不出来(mask 里一条都没有)。
+    // tripped 期间不走到这里(tickWatchdog 第 1 步就返回),那时 holdMask_ 是全 15 轨,不能拿来当证据。
+    const u32 mask = (connectedMaskSource_ ? connectedMaskSource_() : 0) | holdMask_;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         if ((mask & (1u << (ch - 1))) == 0)
@@ -596,7 +599,11 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     }
 
     // 2) 让位协议重置信位序列推进(每 ≥200ms 一个在线轨,channel 升序):每步放开一轨的 hold。
-    if (reacquireNext_ != 0 && nowMs - lastReacquireMs_ >= kReacquireIntervalMs)
+    //    只在 Output 还在被调用时放:恢复一下又被停掉(H2 那种振荡)时,把轨放进一个已经不再被调用的
+    //    Output 只会让那条 Input 转回静音、5s 滞回重新计。停住 ≥0.5s 就暂停放轨 —— 写头还在推进的话
+    //    下面第 3 步当拍就判停摆(还没放的轨并进新快照);写头也停了(走带停)就原样闩着,等 Output 回来接着放。
+    if (reacquireNext_ != 0 && nowMs - lastReacquireMs_ >= kReacquireIntervalMs &&
+        nowMs - lastBlockAdvanceMs_ < kWatchdogStallMs)
     {
         r.action = WatchdogAction::kReacquireBit;
         r.channel = reacquireNext_;
