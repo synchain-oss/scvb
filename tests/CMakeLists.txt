@@ -428,19 +428,19 @@ set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
 # 120 = 失败路径约 35s 的 3 倍余量、通过路径约 9s 的 13 倍,仍远低于 ctest 默认的 1500s。
 # ⚠ A-4 落场景后**重新量**并只改这个数 —— 本文件里 A 线的源文件与 ctest 条目由 A-1 一次登记完,
 #   之后不再增删,只改这里的 TIMEOUT 与观测。
-# **观测**(A-4 落场景 LS-1…15 与 harness 里的 N2b 两条之后,48 例;本机经构建槽 + with-ipc-lock 手跑,
+# **观测**(A-4 落场景 LS-1…15 与 harness 里的 N2b 两条之后,49 例;本机经构建槽 + with-ipc-lock 手跑,
 #   同机有别的 agent 在构建 / 跑 gates):
-#     ctest 三轮:186.85 / 187.51 / 187.76 s(Passed)。
+#     ctest 三轮:187.58 / 190.27 / 186.80 s(Passed);CI(build-and-validate,48 例时)187.59 s。
 #   其中按墙钟实时跑的格(pace=1:LS-11a/b、LS-12 实时格、LS-14、LS-15、LS-13 几何格的改布局段、N2b)
 #   合计约 90 s,是下限,机器再快也省不掉;其余按 pace=16 跑,CPU 跟不上时会变慢。
 #   ⚠ 纯时间线格早先用 pace=0(每周期 runDispatchLoopUntil(1))时,开发中整套量到过 193 s / 210 s /
 #   660 s(其间用例略有增减);推断是每周期那一次睡眠吃系统计时器粒度(未单独验证),改成 pace=16 之后
 #   三轮相差不到 1 s(见场景文件 kFastPace 的注释)。
 # 数字取 600,不是 120:
-#   · 通过路径:最慢观测的约 3.2 倍,给负载下的纯时间线格留余量;
+#   · 通过路径:最慢观测(190 s)的约 3.2 倍,给负载下的纯时间线格留余量;
 #   · 失败路径:场景台交接的等待预算 8 s,第一台走不完之后其余台只给 1.5 s(test_host_sched_scenarios.cpp
 #     的 runScenario),一百多台 ⇒ 交接全坏时多出约 3 min,仍在 600 s 内、断言原文打得出来;
-#   · 仍远低于 ctest 默认的 1500 s。设计稿的整套目标 ≤ 5 分钟(300 s),现在约 188 s。
+#   · 仍远低于 ctest 默认的 1500 s。设计稿的整套目标 ≤ 5 分钟(300 s),现在约 190 s。
 add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
 set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 600)
 endif()

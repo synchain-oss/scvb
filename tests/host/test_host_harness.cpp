@@ -747,7 +747,8 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
 // 这是 A-3 primed 门的两大动机场景之一(另一条是空环冷启动),默认顺序覆盖不到 ——
 // Output 读 t0 时 Input 本块还没写,covered 判据必然不成立。primed 门必须对它免疫。
 // [A-4] 拆成两条(设计稿 §4.2 A-4):
-//   · N2a(本条,主条目):只有头几块是 Output-first,之后恢复源轨先算 —— 不报警,且恢复后即刻在场;
+//   · N2a(本条,主条目):只有头几块是 Output-first(已注入却读不到的那段 < A-6 的 200 ms 宽限),之后
+//     恢复源轨先算 —— 不报警,且恢复后即刻在场;
 //   · N2b(`[.][sched]`,见下):Output-first 一直持续 —— 读方永远领先写头、本代永远 primed 不了,
 //     每次读失败都不计失准:这一轨无声且不报警(H3)。目标「≤ 0.5 s 告警」,修复前 `[!shouldfail]`。
 // 原 N2 末尾的 `CHECK(trackPeak >= 0.0f)` 恒真(峰值不可能是负数),它旁边那句「Output 读到的是上一块
@@ -785,7 +786,10 @@ TEST_CASE("HOST N2a: Output-first only for the first blocks - present right afte
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(waitUntilHandedOver(r));
-    r.runBlocks(40);
+    // 「头几块」= 交接前后这一段:Output 的注入发生在 waitUntilHandedOver 最后那 12 块里,所以「已注入却读
+    // 不到」最多约 14 块 × 512 ≈ 150 ms 音频。故意压在 A-6 计划的宽限(200 ms 读方时间线,设计稿 §3.4)
+    // 之内 —— 换代之初短暂领先是正常的,修复之后这一条照样不该报警;持续领先(N2b)才该报。
+    r.runBlocks(2);
     // 前提:Output-first 期间读方确实读不到这一轨(本块要的数据 Input 还没写)。
     REQUIRE(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
 

@@ -2585,8 +2585,11 @@ namespace
 //   · syncRealtime:同步实时(含单轨)—— 写头冻结 ≥ 500 ms ⇒ 挂起、退出注入集,恢复时句首缺席(E2-a);
 //   · syncOfflineLong:同步离线 6 s(墙钟约 1.2 s)—— 同上,按倍速放大(E2-b);
 //   · syncOfflineShort:同步离线 1 s(墙钟约 0.2 s,跨不过门限)—— 一直在注入集里,实测无损;
-//   · leadDeterministic:领先实时 1 s / 6 s(恢复那一拍必然落在读方到 g1 之前)与领先离线 1 s(跨不过
-//     门限、一直在注入集里)—— 读方锚在自己的 t0,把 [t0, g1) 的旧环槽当新数据读出(H4);句首本身在场;
+//   · leadShortGap:领先实时 1 s(Input 还在静音档、muted 位一直在,恢复那一拍即注入,必然落在读方到 g1
+//     之前)与领先离线 1 s(跨不过门限、一直在注入集里)—— 读方锚在自己的 t0,把 [t0, g1) 的旧环槽当新
+//     数据读出(H4);句首本身在场;
+//   · leadRealtimeLong:领先实时 6 s —— 错读同上(必然);但间隙 > 5.5 s 时 Input 已切直通,重新注入要等
+//     muted 握手(最多两拍),80 ms 淡入可能压到 g1 上:句首丢 0–2 帧取决于拍点相位(E2-a 那一族);
 //   · leadOfflineLong:领先离线 6 s —— 错读还是缺席取决于恢复那一拍落在读方到 g1 之前还是之后(写方领先
 //     ≈ 34 ms 墙钟,与 [M] 一拍同量级),两种结果都是缺陷,单独一条用例按全部判据断言。
 enum class Ls12Group
@@ -2594,7 +2597,8 @@ enum class Ls12Group
     SyncRealtime,
     SyncOfflineLong,
     SyncOfflineShort,
-    LeadDeterministic,
+    LeadShortGap,
+    LeadRealtimeLong,
     LeadOfflineLong
 };
 
@@ -2606,7 +2610,11 @@ Ls12Group ls12Group(const Ls12Cell& c)
         return !c.offline ? Ls12Group::SyncRealtime
                           : (longGap ? Ls12Group::SyncOfflineLong : Ls12Group::SyncOfflineShort);
     }
-    return c.offline && longGap ? Ls12Group::LeadOfflineLong : Ls12Group::LeadDeterministic;
+    if (!longGap)
+    {
+        return Ls12Group::LeadShortGap;
+    }
+    return c.offline ? Ls12Group::LeadOfflineLong : Ls12Group::LeadRealtimeLong;
 }
 
 double ls12GapWall(const Ls12Cell& c)
@@ -2696,13 +2704,13 @@ void ls12Precondition(const Ls12Cell& c)
 TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are present on the first frame after it",
           "[.][sched]")
 {
-    // 同步离线 1 s(全部判据)与领先的确定格(只看句首 —— 它们的错音归 H4 那条)。
+    // 同步离线 1 s(全部判据)与领先的短间隙格(只看句首 —— 它们的错音归 H4 那条)。
     REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
-    REQUIRE(ls12Count(Ls12Group::LeadDeterministic) == 3);
+    REQUIRE(ls12Count(Ls12Group::LeadShortGap) == 2);
     for (const Ls12Cell& c : ls12Cells())
     {
         const Ls12Group g = ls12Group(c);
-        if (g != Ls12Group::SyncOfflineShort && g != Ls12Group::LeadDeterministic)
+        if (g != Ls12Group::SyncOfflineShort && g != Ls12Group::LeadShortGap)
         {
             continue;
         }
@@ -2720,8 +2728,8 @@ TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are pre
     }
 }
 
-TEST_CASE("SCHED LS-12 (E2-a): a synchronous realtime lane is present on the first frame after a no-region gap, "
-          "with no raw transition",
+TEST_CASE("SCHED LS-12 (E2-a): a realtime lane suspended over a no-region gap is present on the first frame after "
+          "it, with no raw transition",
           "[.][sched][!shouldfail]")
 {
     for (const Ls12Cell& c : ls12Cells())
@@ -2729,6 +2737,10 @@ TEST_CASE("SCHED LS-12 (E2-a): a synchronous realtime lane is present on the fir
         if (ls12Group(c) == Ls12Group::SyncRealtime)
         {
             checkLs12(c);
+        }
+        else if (ls12Group(c) == Ls12Group::LeadRealtimeLong)
+        {
+            checkLs12Head(c); // 错音归 H4 那条
         }
     }
 }
@@ -2738,7 +2750,8 @@ TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads
 {
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (ls12Group(c) == Ls12Group::LeadDeterministic)
+        const Ls12Group g = ls12Group(c);
+        if (g == Ls12Group::LeadShortGap || g == Ls12Group::LeadRealtimeLong)
         {
             const Ls12Metrics m = ls12Metrics(c);
             INFO(str(c, m));
@@ -2778,7 +2791,8 @@ TEST_CASE("SCHED LS-12: no-region gaps (E2-a / E2-b / H4) - precondition", "[.][
     REQUIRE(ls12Count(Ls12Group::SyncRealtime) == 3);
     REQUIRE(ls12Count(Ls12Group::SyncOfflineLong) == 1);
     REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
-    REQUIRE(ls12Count(Ls12Group::LeadDeterministic) == 3);
+    REQUIRE(ls12Count(Ls12Group::LeadShortGap) == 2);
+    REQUIRE(ls12Count(Ls12Group::LeadRealtimeLong) == 1);
     REQUIRE(ls12Count(Ls12Group::LeadOfflineLong) == 1);
     for (const Ls12Cell& c : cells)
     {
