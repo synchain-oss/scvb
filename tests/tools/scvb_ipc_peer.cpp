@@ -186,7 +186,10 @@ Args parse(int argc, char** argv)
 // ---- 平台差异点(B 线 M12a)----
 
 // 让出时间片 ms 毫秒。Windows 上仍是 ::Sleep(行为与 M12a 之前逐字相同,下面 viz-publisher 那段
-// 关于默认定时器分辨率的注释说的就是它);POSIX 上 sleep_for 的实际粒度接近请求值。
+// 关于默认定时器分辨率的注释说的就是它);POSIX 上是 sleep_for,但它**不保证**接近请求值:
+// [B 线 M12a-fix] CI macos-15 arm64 实测 sleep_for(1ms) p50 约 9ms、sleep_for(16ms) p50 约 90-110ms。
+// viz-publisher 用 1ms 驱动 + 发布器自己的 25ms 闸门,驱动一拍平均 5.3-9.0ms,发布率仍是 33.9-36.8Hz;
+// 观察方那一侧被拉长的后果见 test_monitor_harness.cpp 里 MON-CHAIN 30Hz 用例的头注。
 void sleepMs(unsigned ms)
 {
 #ifdef _WIN32
