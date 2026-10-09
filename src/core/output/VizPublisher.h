@@ -146,7 +146,7 @@ public:
     // 关键事实:段是 64KB,**但稳态一帧只写约 380 B**(15 个帧头标量 + 15×3 个每轨当前值);
     // 整块 64KB 只在 `writeLanes` 那一帧写。按「64KB × 30Hz ≈ 2MB/s」估预算会高估三个数量级,
     // 实际稳态写入量 ≈ 11 KB/s。
-    static constexpr scvb::u64 kPublishIntervalMs = 250; // TEMP M12a-fix D1: publisher gate back to 250ms (4Hz)
+    static constexpr scvb::u64 kPublishIntervalMs = 25; // 闸门下限;实得 30 Hz(60Hz 驱动的两拍)
 
     // 驱动本发布器的定时器频率(`OutputProcessor` 的独立 `vizTimer_` 取它)。
     // **必须 ≥2× 发布频率**:驱动与闸门同频不同相时,抖动会周期性把整帧丢掉 ——
