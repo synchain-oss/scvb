@@ -353,15 +353,6 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
         }
     }
 
-    // TEMP M12a-fix D3: reader-side read gate back to 4Hz (one read per 250ms)
-    static std::uint64_t xLastReadMs = 0;
-    if (nowMs - xLastReadMs < 250)
-    {
-        vizFresh_ = sawVizFrame_ && (nowMs - lastVizChangeMs_) < kVizStaleMs;
-        return;
-    }
-    xLastReadMs = nowMs;
-
     // 一致性读;撕裂(连续 8 次)则沿用上帧,不清空、不闪烁。
     if (vizPlane_.read(*viz_))
     {
