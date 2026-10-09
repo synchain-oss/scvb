@@ -28,7 +28,7 @@
 - `branch-gate` 除分支命名外还承担两条断言:**DCO**(每个 commit 必须有 `Signed-off-by:`,内联 `gh api` 实现,不引第三方 action)与**冻结契约 path guard**(见 §5)。
 - **fork PR 门禁政策(J31/J41,唯一政策)**:
   - fork → **任意分支名**(不要用 `dev`/`stage`/`staging`/`prod`/`feature/v1`/`feature/extraction`)→ PR 到 `dev`;开到 `staging` / `prod` 的 PR 不论来源一律红(这两个分支只收发版晋升 `dev` → `staging` → `prod`,J184,见 `docs/RELEASE.md`);
-  - `branch-gate` 对 fork **不 exit 1**,只校验 head 分支名不在上述长期分支名集合(防同名伪装晋升),**不强制 `feat/*` 命名**;换句话说 branch-gate 的命名规则**仅约束 same-repo 分支**;
+  - `branch-gate` 对开到 `dev` 的 fork PR **不 exit 1**,只校验 head 分支名不在上述长期分支名集合(防同名伪装晋升),**不强制 `feat/*` 命名**;换句话说 branch-gate 的命名规则**仅约束 same-repo 分支**;
   - fork PR 只跑**无 secrets** 的构建/测试(`build-vst3` / `format` / `branch-gate` / `compliance`),且需维护者批准 workflow run 后才开始跑;
   - 三个 review bot(`claude-review` / `deepseek-review` / `pr-agent`)都带 `head.repo.full_name == base.repo.full_name` 条件,**仅 same-repo PR** 会自动跑,fork PR 一律不自动跑;
   - `external` label 由**维护者手工添加**(fork PR 的 `GITHUB_TOKEN` 只读,workflow 内加不了标签;**不要用 `pull_request_target` 绕**,见 §0 铁律第 4 条);

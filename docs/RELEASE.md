@@ -243,6 +243,8 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 ### 历史:`v0.9.0-rc.1` 及以前(已废止的做法)
 
+本小节取代原先的「`v0.9.0-rc.1` 这一次的顺序(J180)」一节;`docs/validation/release-checklist-v0.9.0-rc.1.md` 是历史记录,仍按那个旧节名引用,说的就是这里。那一节当时的全文(含临时关 `enforce_admins` 的命令组)留在 tag `v0.9.0-rc.1` 上的本文件里,只作查证用。
+
 J163 原定 `staging` 跟每个已发布版本、`prod` 只跟正式版,两者都在发布之后由仓库管理员临时关掉 `enforce_admins`、直推快进、推完恢复(J172)。`v0.9.0-rc.1` 按 J180 改成发布之前先后快进 `staging` 与 `prod`,所以 rc.1 的 tag、`dev`、`staging`、`prod` 是同一个提交 `d5ff014c`。这两种做法都已由 J184 取代:**不要再临时放开分支保护,不要再直推快进**。从下一版起,`prod` 与 tag 指向的是合并提交,与 `dev` 上的里程碑提交 sha 不同、树相同。
 
 ## 文档链接:插件里指向 `prod`,发布说明指向 tag
