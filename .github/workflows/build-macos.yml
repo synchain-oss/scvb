@@ -906,7 +906,8 @@ jobs:
       #       ⑥ INSTALL.txt 实跑:命令行去掉 killall / auval(它们动的是 runner 的 AU 注册,11b–11e 已验),在假 HOME 下跑两遍。
       #          zip 先打上 com.apple.quarantine 模拟浏览器下载。第一遍用 zsh(macOS 默认 shell)全新安装;第二遍用 /bin/bash
       #          (系统自带 3.2)模拟升级 —— 先往已装的两个 bundle 里各放一个「旧版本留下的文件」,跑完必须没了(「先 rm -rf」
-      #          那步真起作用)。每遍跑完:6 个 bundle 装到位、与输入逐文件相同、可执行、arm64,已装文件上没有 quarantine。
+      #          那步真起作用)。每遍:xattr 之前已装文件上必须带着 quarantine(模拟真的成立,否则下一条恒真),跑完
+      #          6 个 bundle 装到位、与输入逐文件相同、可执行、arm64,已装文件上没有 quarantine。
       #     产物(第 1 次的 zip / .sha256 / package-summary-macos.md)上传为 artifact,名字与上面的 bundle artifact 平行,
       #     多一段 `package-`。
       - name: Packaging smoke - scripts/package-macos.sh (dry run, negative control, 3 identical runs, INSTALL.txt replay)
@@ -1047,6 +1048,10 @@ jobs:
             if [ "$rc" != "0" ]; then echo "::error::INSTALL.txt replay ($1, $2): install commands exited $rc"; return 1; fi
             q=$(xattr -lr "$vst3_dir" "$au_dir" 2>/dev/null | grep -c 'com.apple.quarantine' || true)
             echo "quarantine attributes on installed files before the xattr step ($1): $q"
+            # 模拟必须真的成立:已装文件上一个隔离属性都没有,下面「xattr 之后为 0」就是恒真。
+            if [ "${q:-0}" -lt 1 ]; then
+              echo "::error::INSTALL.txt replay ($1): no com.apple.quarantine on the installed files before the xattr step; the browser-download simulation did not take effect, so the after-xattr check would be vacuous"; return 1
+            fi
             rc=0
             HOME="$home" "$2" $opts "$root/replay-xattr.sh" > "$root/replay-$1-xattr.log" 2>&1 </dev/null || rc=$?
             cat "$root/replay-$1-xattr.log"

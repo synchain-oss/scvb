@@ -368,6 +368,7 @@ Install (in Terminal)
   7. (Optional) Validate the Audio Units (Input, Output, Monitor). Each run must end with
      "AU VALIDATION SUCCEEDED":
 $AUVAL_BLOCK
+     If you did not install Monitor, skip the last line (Scvm): without it that check can only fail.
 
 Installing for every user of this Mac: in steps 3-5 use /Library/Audio/Plug-Ins/VST3 and
 /Library/Audio/Plug-Ins/Components instead of the ~/Library/... folders, and put sudo in front of
@@ -437,6 +438,7 @@ Input 与 Output 是一对,共用一个版本号,请从同一个 zip 里一起�
      先在 Plug-In Manager 里启用 VST3,再重新扫描。
   7. (可选)验证三个 Audio Unit(依次是 Input、Output、Monitor),每条都应以 AU VALIDATION SUCCEEDED 结尾:
 $AUVAL_BLOCK
+     没装 Monitor 的话跳过最后一条(Scvm):没装它,那一条只会报错。
 
 给这台 Mac 的所有用户安装:第 3-5 步里的 ~/Library/... 换成 /Library/Audio/Plug-Ins/VST3 与
 /Library/Audio/Plug-Ins/Components,并在每条 rm、ditto、xattr 命令前加 sudo(需要输入管理员密码)。

@@ -118,7 +118,7 @@ function Get-FirstThreeRules([string]$mdPath, [string]$heading) {
 if ($PreflightOut -and -not $Preflight) { Fail '-PreflightOut 只能与 -Preflight 一起用' }
 
 # ── 版本与 tag ────────────────────────────────────────────────────────────────
-$cmakeVersion =Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoot 'CMakeLists.txt')))
+$cmakeVersion = Get-ScvbCMakeVersion ([IO.File]::ReadAllText((Join-Path $RepoRoot 'CMakeLists.txt')))
 if (-not $cmakeVersion) { Fail 'CMakeLists.txt 里找不到 project(SCVB ... VERSION x.y.z)' }
 if (-not $Version) { $Version = $cmakeVersion }
 # 版本串会进文件名与 URL:只放行 semver 形态,挡住路径分隔符与空白。
