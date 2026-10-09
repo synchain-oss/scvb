@@ -10,7 +10,8 @@ name: Build & Validate
 #         check-privacy / 设计盒)与三个 review bot。
 #         **[SL-283] 修正**:碰了 native 路径(src / tests / cmake / CMakeLists.txt /
 #         **web** / third_party / 钉版文件 / 本文件 / 两个 mac reusable workflow /
-#         scripts/package-macos.sh)的子 PR **照跑全量** —— 判定见下面
+#         scripts/package-macos.sh 及它调用的 scripts/package.ps1、scripts/lib/release-version.ps1)
+#         的子 PR **照跑全量** —— 判定见下面
 #         `detect-native` job。[J96] 原来一刀切跳过,结果是「动了 C++ 的子 PR 在 CI 侧
 #         一次都不编译」,「CI 全绿」不再等价「native 编过」,下一张就可能把没编过的
 #         C++ 合进去。本地 `scripts/gates.ps1`(CLAUDE.md §2)仍是第一道,但它靠人记得跑。
@@ -135,8 +136,13 @@ jobs:
           #                                         而不是写成一个分组:删除式验证逐分支有牙,且
           #                                         check-native-paths.mjs 的拆法不认嵌套组
           #   scripts/package-macos.sh           —— [B 线 M01 预登记,M10 落地] mac 打包脚本,
-          #                                         由 build-macos.yml 消费;scripts/ 其余仍是 non-native
-          NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$|\.github/workflows/build-macos\.yml$|\.github/workflows/macos-oop\.yml$|scripts/package-macos\.sh$)'
+          #                                         由 build-macos.yml 消费
+          #   scripts/package.ps1                —— [B 线 M16] package-macos.sh 调它的 -Preflight(合规判据、
+          #   scripts/lib/release-version.ps1       INSTALL.txt 规则原文、版本解析的唯一真源;后者被前者
+          #                                         dot-source)。只改它们的 PR 也要跑一遍 mac 打包冒烟,
+          #                                         否则 mac 包的判据变了却没人验。两条各占一个顶层分支,
+          #                                         理由同上(删除式逐分支有牙);scripts/ 其余仍是 non-native
+          NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$|\.github/workflows/build-macos\.yml$|\.github/workflows/macos-oop\.yml$|scripts/package-macos\.sh$|scripts/package\.ps1$|scripts/lib/release-version\.ps1$)'
 
           # 两个开关都是**堵静默跳过**用的(PR#180 复审采纳),不是风格问题:
           #  `--no-renames`:改名检测默认开,`--name-only` 对一次改名只打印**目标**路径。
@@ -631,7 +637,9 @@ jobs:
   #                                       空串,`!= 'false'` 为真 ⇒ 照跑,不因探测坏了而静默跳过。
   #   `!startsWith(github.ref, 'refs/tags/')` —— 被 release.yml 调起时 ref 是 refs/tags/v…,两个
   #                                       mac caller 都跳过(显示为 skipped);mac 发版另走
-  #                                       release.yml 自己的路(M16),与 Windows 的 release 互不 needs。
+  #                                       release.yml 自己的 build-mac → release-macos(M16;Windows 的
+  #                                       build / release 不 needs 任何 mac job),一次 tag push 里
+  #                                       build-macos.yml 只跑那一次。
   #   标签事件不跑 —— 与 build-and-validate 的「标签事件只认 ci:full」不同,mac 这两路不吃任何标签:
   #                                       bot 每改一次 `Review effort N/5` 就是一次 labeled 事件,
   #                                       而标签事件不取消在跑的 run(见上面 concurrency),放行就是

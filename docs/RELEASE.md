@@ -51,24 +51,27 @@ semver 语义(音频插件特化):
 
 ## 发版流水线现状
 
-推一个 `v*` tag,`.github/workflows/release.yml` 依次跑三个 job:
+推一个 `v*` tag,`.github/workflows/release.yml` 跑五个 job:Windows 三个依次跑,mac 两个(B 线 M16)与之并行。
 
 | job | 做什么 | 失败时 |
 |---|---|---|
-| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
-| `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
-| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc、beta 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
+| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建(Windows 与 mac 都不跑) |
+| `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact。那份配方里的两个 mac caller(`macos-build` / `macos-oop`)在 tag 上一律 skipped | 红,不打包 |
+| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc、beta 与演练 tag 自动勾 pre-release),标题「… (Windows x64)」;summary 同时写进 job summary | 红,不建 Release |
+| `build-mac` | needs `verify-tag`;**调用 `build-macos.yml` 的 release 档**(与 PR / dispatch 同一份 mac 配方:构建、零警告、ctest、auval、pluginval、打包冒烟),全部绿之后用 `scripts/package-macos.sh` 按 tag 的版本号打 `SCVB-v<版本>-macos-arm64.zip` / `.sha256` / `package-summary-macos.md`,传成 artifact `SCVB-macos-arm64-release-<tag>` | 红,不影响 Windows 草稿 |
+| `release-macos` | needs `verify-tag`、`build-mac`、`release`:取回 mac 三件,`shasum -a 256 -c` 并与 `build-mac` 报的 sha256 对拍 → 只往 Windows 已建好的**草稿**上传(`--clobber`),读回逐字节比对 → 标题从「… (Windows x64)」补成「… (Windows x64 · macOS arm64 beta)」 | 红,草稿里只有 Windows 三件、标题保持「(Windows x64)」 |
 
-- 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
-- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
+- 权限:workflow 级只读;只有 `release` 与 `release-macos` 两个 job 拿 `contents: write`(`release-macos` 不 checkout、不执行仓库里的脚本)。所有 action 都 pin 到 40 位 SHA。
+- **mac 失败不挡 Windows**:Windows 的 `build` / `release` 不 needs 任何 mac job。mac 那两 job 红在偶发原因(runner、网络)上时,对同一个 run 点「Re-run failed jobs」按设计只重跑 mac 两 job、把三件补传到已有的草稿上(Windows 已成功的 job 不重跑;这条路径还没实跑过,第一次用时核一下)。草稿没建成(Windows 红)时 `release-macos` 跟着跳过,不会单独建一个只有 mac 包的 Release。
+- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);mac 资产同样 `--clobber` 覆盖,标题只在仍是流水线原样标题时才改(手改过的标题不覆盖,只出 warning);**已发布的 Release 流水线一律不碰**(两个写权限 job 都按「已发布 ⇒ 判红」处理)。
 - 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。反过来,`LICENSES/` 里的每份全文也都必须有这张表的一行(或本项目的 GPL-3.0-or-later)点名它 —— 删了表里一行却留着全文、或只放全文不登记组件,都红,演练 tag 也不放行。这两项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
 - 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
-- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
+- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过第 0 步列的那几处文件之后,先做下面第 0 步。
 
 ## 发版清单
 
-0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `scripts/package.ps1` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
+0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `build-macos.yml` / `scripts/package.ps1` / `scripts/package-macos.sh` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。新的对比链接指向第 6 步才推的 tag,推之前 GitHub 回 404,CI 的死链检查会红 —— 同一个 PR 在 `.markdown-link-check.json` 里给这两个确切地址加一条临时放行,tag 推上去之后删掉。
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc、beta 与正式版用同一个 X.Y.Z)。
