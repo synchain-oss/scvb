@@ -726,7 +726,7 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
         }
     }
     INFO("first present block after the seek " << firstPresent << ", present blocks " << presentBlocks);
-    CHECK(firstPresent >= 0);
+    REQUIRE(firstPresent >= 0); // 一块都没读到时下面两条没有意义,别重复红
     CHECK(firstPresent <= 2);
     CHECK(presentBlocks == kSeekPresenceBlocks - firstPresent);
     r.runBlocks(60 - kSeekPresenceBlocks);

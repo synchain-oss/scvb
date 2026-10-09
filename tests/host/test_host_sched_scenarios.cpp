@@ -195,6 +195,9 @@ Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Scrip
     const double w0 = sched::wallMs();
     script(rig, run);
     run.scriptWallMs = sched::wallMs() - w0;
+    // sampleInputs 的自续闭包按引用捕获了本函数里的 run;Run 随后按值返回、被搬进各缓存,闭包里的引用就
+    // 失效了。脚本跑完立刻清掉,免得以后有人在用例里复用它(那就是悬垂引用)。
+    run.sampler = nullptr;
     run.c1 = rig.outCursor();
     run.out = rig.analyzeOutput(run.c0, run.c1, th);
     run.outBlocks = rig.outBlocks();
@@ -2578,25 +2581,86 @@ TEST_CASE("SCHED LS-11b: bus-silence Output suspension and whole-chain suspensio
 // ---------------------------------------------------------------------------
 namespace
 {
-bool ls12Pick(const Ls12Cell& c, bool lead, bool offline)
+// 按格分组(每组的归属都是实测确定的;墙钟门限两侧的余量由前提用例 REQUIRE):
+//   · syncRealtime:同步实时(含单轨)—— 写头冻结 ≥ 500 ms ⇒ 挂起、退出注入集,恢复时句首缺席(E2-a);
+//   · syncOfflineLong:同步离线 6 s(墙钟约 1.2 s)—— 同上,按倍速放大(E2-b);
+//   · syncOfflineShort:同步离线 1 s(墙钟约 0.2 s,跨不过门限)—— 一直在注入集里,实测无损;
+//   · leadDeterministic:领先实时 1 s / 6 s(恢复那一拍必然落在读方到 g1 之前)与领先离线 1 s(跨不过
+//     门限、一直在注入集里)—— 读方锚在自己的 t0,把 [t0, g1) 的旧环槽当新数据读出(H4);句首本身在场;
+//   · leadOfflineLong:领先离线 6 s —— 错读还是缺席取决于恢复那一拍落在读方到 g1 之前还是之后(写方领先
+//     ≈ 34 ms 墙钟,与 [M] 一拍同量级),两种结果都是缺陷,单独一条用例按全部判据断言。
+enum class Ls12Group
 {
-    return c.lead == lead && c.offline == offline;
+    SyncRealtime,
+    SyncOfflineLong,
+    SyncOfflineShort,
+    LeadDeterministic,
+    LeadOfflineLong
+};
+
+Ls12Group ls12Group(const Ls12Cell& c)
+{
+    const bool longGap = c.gapS >= 2.0;
+    if (!c.lead)
+    {
+        return !c.offline ? Ls12Group::SyncRealtime
+                          : (longGap ? Ls12Group::SyncOfflineLong : Ls12Group::SyncOfflineShort);
+    }
+    return c.offline && longGap ? Ls12Group::LeadOfflineLong : Ls12Group::LeadDeterministic;
 }
 
-// 实测无损的格(离线、同步、1 s 间隙:墙钟只过了约 0.2 s,写头冻结跨不过 500 ms 门限,该轨一直在注入集里)。
-bool ls12Lossless(const Ls12Cell& c)
+double ls12GapWall(const Ls12Cell& c)
 {
-    return !c.lead && c.offline && c.gapS < 2.0;
+    return c.run.wall.at("g1") - c.run.wall.at("g0");
 }
 
-void checkLs12(const Ls12Cell& c)
+// 格的归属依赖墙钟门限(500 ms 停滞判定)落在哪一侧:跨不过门限的离线格墙钟必须 < 400 ms,该跨过的
+// 必须 >= 600 ms,实时格必须按实时走。机器一慢、某格翻到门限另一侧时,这里先红,而不是在判据用例里
+// 红得像一次回归。判据用例与前提用例都调它。
+void requireLs12WallSide(const Ls12Cell& c)
+{
+    INFO(c.run.name << " gapWall " << ls12GapWall(c) << " ms");
+    if (!c.offline)
+    {
+        REQUIRE(ls12GapWall(c) >= 0.8 * 1000.0 * c.gapS);
+    }
+    else if (c.gapS < 2.0)
+    {
+        REQUIRE(ls12GapWall(c) < 400.0);
+    }
+    else
+    {
+        REQUIRE(ls12GapWall(c) >= 600.0);
+    }
+}
+
+// 句首判据:恢复后第一帧就是 Mix 在场,没有原声过渡,之后也不丢。
+void checkLs12Head(const Ls12Cell& c)
 {
     const Ls12Metrics m = ls12Metrics(c);
     INFO(str(c, m));
-    CHECK(m.headLostFrames == 0); // 恢复后第一帧就在场
-    CHECK(m.rawAfter == 0); // 不出现原声过渡
-    CHECK(m.wrongNear == 0); // 不出现错音
+    CHECK(m.headLostFrames == 0);
+    CHECK(m.rawAfter == 0);
     CHECK(m.lostAfter == 0);
+}
+
+// 全部判据:句首 + 不出现错音(间隙尾段与恢复之后)。
+void checkLs12(const Ls12Cell& c)
+{
+    checkLs12Head(c);
+    const Ls12Metrics m = ls12Metrics(c);
+    INFO(str(c, m));
+    CHECK(m.wrongNear == 0);
+}
+
+int ls12Count(Ls12Group g)
+{
+    int n = 0;
+    for (const Ls12Cell& c : ls12Cells())
+    {
+        n += ls12Group(c) == g ? 1 : 0;
+    }
+    return n;
 }
 
 void ls12Precondition(const Ls12Cell& c)
@@ -2624,29 +2688,36 @@ void ls12Precondition(const Ls12Cell& c)
             REQUIRE(t.mixPresent == t.total);
         }
     }
-    // 实时格:节拍确实是实时的(500 ms 停滞门限只有按墙钟跑才跨得过)。
-    if (!c.offline)
-    {
-        const double gapWall = c.run.wall.at("g1") - c.run.wall.at("g0");
-        REQUIRE(gapWall >= 0.8 * 1000.0 * c.gapS);
-    }
+    requireLs12WallSide(c);
     WARN(str(c, ls12Metrics(c)));
 }
 } // namespace
 
-TEST_CASE("SCHED LS-12: an offline export loses nothing after a short no-region gap", "[.][sched]")
+TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are present on the first frame after it",
+          "[.][sched]")
 {
-    int n = 0;
+    // 同步离线 1 s(全部判据)与领先的确定格(只看句首 —— 它们的错音归 H4 那条)。
+    REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
+    REQUIRE(ls12Count(Ls12Group::LeadDeterministic) == 3);
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (ls12Lossless(c))
+        const Ls12Group g = ls12Group(c);
+        if (g != Ls12Group::SyncOfflineShort && g != Ls12Group::LeadDeterministic)
         {
-            ++n;
-            REQUIRE(c.run.settled);
+            continue;
+        }
+        INFO(c.run.name);
+        REQUIRE(c.run.settled);
+        requireLs12WallSide(c);
+        if (g == Ls12Group::SyncOfflineShort)
+        {
             checkLs12(c);
         }
+        else
+        {
+            checkLs12Head(c);
+        }
     }
-    CHECK(n == 1);
 }
 
 TEST_CASE("SCHED LS-12 (E2-a): a synchronous realtime lane is present on the first frame after a no-region gap, "
@@ -2655,7 +2726,7 @@ TEST_CASE("SCHED LS-12 (E2-a): a synchronous realtime lane is present on the fir
 {
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (ls12Pick(c, false, false))
+        if (ls12Group(c) == Ls12Group::SyncRealtime)
         {
             checkLs12(c);
         }
@@ -2667,7 +2738,7 @@ TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads
 {
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (c.lead)
+        if (ls12Group(c) == Ls12Group::LeadDeterministic)
         {
             const Ls12Metrics m = ls12Metrics(c);
             INFO(str(c, m));
@@ -2680,7 +2751,20 @@ TEST_CASE("SCHED LS-12 (E2-b): an offline export loses nothing after a long no-r
 {
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (ls12Pick(c, false, true) && !ls12Lossless(c))
+        if (ls12Group(c) == Ls12Group::SyncOfflineLong)
+        {
+            checkLs12(c);
+        }
+    }
+}
+
+TEST_CASE("SCHED LS-12 (H4 / E2-b): a leading offline lane after a long gap neither reads stale audio nor misses "
+          "its head",
+          "[.][sched][!shouldfail]")
+{
+    for (const Ls12Cell& c : ls12Cells())
+    {
+        if (ls12Group(c) == Ls12Group::LeadOfflineLong)
         {
             checkLs12(c);
         }
@@ -2691,6 +2775,11 @@ TEST_CASE("SCHED LS-12: no-region gaps (E2-a / E2-b / H4) - precondition", "[.][
 {
     const std::vector<Ls12Cell>& cells = ls12Cells();
     REQUIRE(cells.size() == 9u);
+    REQUIRE(ls12Count(Ls12Group::SyncRealtime) == 3);
+    REQUIRE(ls12Count(Ls12Group::SyncOfflineLong) == 1);
+    REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
+    REQUIRE(ls12Count(Ls12Group::LeadDeterministic) == 3);
+    REQUIRE(ls12Count(Ls12Group::LeadOfflineLong) == 1);
     for (const Ls12Cell& c : cells)
     {
         ls12Precondition(c);
@@ -2947,7 +3036,14 @@ TEST_CASE("SCHED LS-15: stopping and restarting the transport with leading write
         REQUIRE(c.run.settled);
         const std::int64_t stop = c.run.mark.at("stop");
         const std::int64_t start = c.run.mark.at("start");
-        REQUIRE(c.run.wall.at("start") - c.run.wall.at("stop") >= 0.8 * 1000.0 * c.stopS);
+        const double stopWall = c.run.wall.at("start") - c.run.wall.at("stop");
+        INFO("stop wall " << stopWall << " ms");
+        REQUIRE(stopWall >= 0.8 * 1000.0 * c.stopS);
+        // 短停格成立的前提是停走带墙钟跨不过 500 ms 的停滞门限:机器一慢翻到另一侧时这里先红。
+        if (c.stopS < 1.0)
+        {
+            REQUIRE(stopWall < 400.0);
+        }
         REQUIRE(c.run.inputs.size() >= 20u);
         const bool longStop = c.stopS >= 1.0;
         std::ostringstream os;
