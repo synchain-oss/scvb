@@ -2624,7 +2624,8 @@ double ls12GapWall(const Ls12Cell& c)
 
 // 格的归属依赖墙钟门限(500 ms 停滞判定)落在哪一侧:跨不过门限的离线格墙钟必须 < 400 ms,该跨过的
 // 必须 >= 600 ms,实时格必须按实时走。机器一慢、某格翻到门限另一侧时,这里先红,而不是在判据用例里
-// 红得像一次回归。判据用例与前提用例都调它。
+// 红得像一次回归。普通判据用例与前提用例调它;`[!shouldfail]` 的判据用例**不调** —— 在那里 REQUIRE 失败会被
+// 当成「预期失败」吞掉,前提没成立反而看不出来。
 void requireLs12WallSide(const Ls12Cell& c)
 {
     INFO(c.run.name << " gapWall " << ls12GapWall(c) << " ms");
@@ -2740,7 +2741,10 @@ TEST_CASE("SCHED LS-12 (E2-a): a realtime lane suspended over a no-region gap is
         }
         else if (ls12Group(c) == Ls12Group::LeadRealtimeLong)
         {
-            checkLs12Head(c); // 错音归 H4 那条
+            // 错音归 H4 那条。⚠ 这一格的句首丢 0–2 帧取决于拍点相位(见 Ls12Group 注释),同组的同步实时格
+            // 每次都红,所以它混在这里不影响本条现在的结论;修复卡摘掉本条标记时,要单独确认这一格也过了
+            // (看 WARN 摘要里它那一行),不要只看整条用例绿了没有。
+            checkLs12Head(c);
         }
     }
 }
