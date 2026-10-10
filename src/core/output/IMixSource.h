@@ -29,9 +29,23 @@ public:
     virtual u32 ringFrames() const noexcept = 0;
 
     // 读 [t0, t0+n) 到 interleaved dst(n × channels 个 float)。
-    // 返回 true = 本块有有效数据;false = 缺口(该轨该块静音,gapCount +1,dst 不改)。
+    // 返回 true = 本块有有效数据;false = 缺口(该轨该块静音;dst 内容不可用)。
     // 调用方保证 t0>=0。
-    virtual bool read(int64_t t0, float* dst, int n) noexcept = 0;
+    // readerEpoch = 读方**自身**时间线代号(OutputProcessor 的 podEpoch_,§5.2 步骤 2):读方自己的
+    // 时间线跳变(定位 / 循环回绕 / 起播)时 +1,停走带静止重读同一个 t0 时不变。
+    // 读方靠它分清「我自己跳了」与「我只是中间有几块没读(该轨暂时不在注入集)」—— 后者不能当跳变,
+    // 否则轨被移出注入集一段时间就会被误判成跳变(A-5 规则 1)。
+    // hostBlockEnd = 读方这一宿主块的尾(时间线位置)。宿主块长超过 prepare 预算(SL-523)时 Output 按段读,
+    // 同一宿主块里后面几段读的时候写方早已写完整块:写头相对本段多领先 hostBlockEnd − (t0+n),判「写头相对
+    // 读方不超过实测提前量上界」时要把这一截算进去。不分段时 = t0+n。
+    virtual bool read(int64_t t0, float* dst, int n, u64 readerEpoch, int64_t hostBlockEnd) noexcept = 0;
+
+    // 宿主块不分段的调用方(单测 / 工具):hostBlockEnd = t0+n。
+    bool read(int64_t t0, float* dst, int n, u64 readerEpoch) noexcept { return read(t0, dst, n, readerEpoch, t0 + n); }
+
+    // 不知道自身时间线代号的调用方(单测 / 工具;生产路径 OutputProcessor 不走这里):代号恒为 0,
+    // 读方因此永远看不到「自己跳了」,时间线不连续一律按「中间少读了几块」处理(只走保守规则)。
+    bool read(int64_t t0, float* dst, int n) noexcept { return read(t0, dst, n, 0, t0 + n); }
 
     // 失准计数(atomic,供 [M] 聚合到 ctrl 全局小节)。
     virtual u32 gapCount() const noexcept = 0;

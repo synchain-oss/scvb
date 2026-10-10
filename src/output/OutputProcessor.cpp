@@ -829,6 +829,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         // 每块都会被误判成时间线跳变(epoch 连跳 ⇒ 打印器每块 endAllGestures)。
         expectedNextOut_ = t0 + total;
     }
+    readerBlockEnd_ = t0 + total; // [A-5] 超长块按段读时,读环要知道这一宿主块写方写到哪(IMixSource::read)
     publishPlayhead(pos, haveT0, playing);
 
     // [SL-216 / J136] 记下这一块的 lead_select —— 分析据此知道「这段时间谁是主唱」。
@@ -959,7 +960,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         {
             continue;
         }
-        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_, readerBlockEnd_))
         {
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
@@ -1056,7 +1057,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         {
             continue;
         }
-        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_, readerBlockEnd_))
         {
             continue; // 缺口 → 该轨该块静音(失准计数已在 read 内)
         }
@@ -1140,6 +1141,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
         publishSilentMeters(); // 与 processBlock 三条早退同口径:不发就冻在最后一次有声的高度
         return; // 无时间线:直通(不替换)
     }
+    readerBlockEnd_ = t0 + total; // [A-5] 同 processBlock
     // 宿主 bypass 期间同样要更新电平表 —— 否则液柱冻在 bypass 前那一刻。
     // renderBypassedUnity 是 unity 求和(不 gain/pan/width),故每轨增益按 1.0 报。
     std::array<float, 15> unityGain{};

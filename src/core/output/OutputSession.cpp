@@ -186,7 +186,8 @@ void OutputSession::refreshAudioGeometry(std::size_t idx)
     //
     // 重绑在 [M] 线程做是安全的:ShmRingMixSource::bind 是「不可变快照 + release-store」发布,
     // 旧绑定由 owned_ 保活到进程结束,音频线程 read() 每块 acquire 一次、靠**绑定指针变化**
-    // 自己重置代际状态 —— 音频线程仍然只读快照、一次都不回读段头几何(几何纪律未被放宽)。
+    // 自己重置代际状态 —— 音频线程仍然只按快照寻址、从不按段头几何寻址(几何纪律未被放宽;[A-5] 起
+    // 音频线程每块按值比对段头 channels、不一致整块不读,只比对不寻址,见 ShmRingMixSource::read)。
     const AudioRingBinding* b = sources_[idx].acquire();
     if (b == nullptr || !b->bound || b->header == nullptr || b->data == nullptr)
     {

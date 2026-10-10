@@ -30,6 +30,11 @@
 //   普通用例:REQUIRE 场景确实跑到,且只断言**修复前后都成立**的事实,修复卡去掉标记时它不用动。
 //   同一族里只有部分格出错时按格拆开:[!shouldfail] 只收实测出错的格,其余格进普通用例 —— 否则族里
 //   现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
+//   [A-5] E1 读方换代处理落地后去掉了标记的(现在是必须绿的普通用例):LS-3 跳跃组、LS-4、LS-6 k≥1、
+//   LS-8 垃圾值、LS-12 的错音(H4,含领先离线 6 s 格)、LS-13 的两次定位 / ε<0 / 几何三条。仍留着标记的:
+//   N2b 与 LS-14(H3,归 A-6)、LS-12 的句首(E2-a / E2-b,归 A-8);LS-11a(H5)已由 A-7 翻转。LS-12 领先轨的
+//   句首判据随 A-5 改成「最多丢一个写方块」(checkLs12LeadHead,设计稿 §8 第 4 条),领先实时 1 s 格挪进 E2-a。
+//   下面各场景注释里描述的「修前」现象指 A-5 之前的读方,保留作证据。
 //
 // ## 场景结果缓存与节拍
 //
@@ -1995,8 +2000,7 @@ TEST_CASE("SCHED LS-3: smooth live/prefetch switches (rewind, drain) lose at mos
     CHECK(maxMisalignAll(r.tested) == 0);
 }
 
-TEST_CASE("SCHED LS-3: jumping a lane's cursor ahead (host skips its render) reads no stale ring audio",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-3: jumping a lane's cursor ahead (host skips its render) reads no stale ring audio", "[.][sched]")
 {
     const Ls3Run& r = ls3Jump();
     for (int lane = 0; lane < 3; ++lane)
@@ -2048,7 +2052,7 @@ TEST_CASE("SCHED LS-3: jumping a lane's cursor ahead (host skips its render) rea
 // ---------------------------------------------------------------------------
 TEST_CASE("SCHED LS-4 (H1): with Cycle and mixed leads every lap of a led lane loses at most one frame and reads no "
           "stale audio",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
     for (const Ls4Cell& c : ls4().cells)
     {
@@ -2189,8 +2193,7 @@ TEST_CASE("SCHED LS-6: a back seek in the same block as the writer's (k=0 stale 
     }
 }
 
-TEST_CASE("SCHED LS-6: a back seek with stale Output blocks and a leading writer loses at most one frame",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-6: a back seek with stale Output blocks and a leading writer loses at most one frame", "[.][sched]")
 {
     const SeekFamily& f = ls6();
     for (const SeekCell& c : f.cells)
@@ -2339,8 +2342,7 @@ TEST_CASE("SCHED LS-8: start quirks that leave the Output's first position sane 
     CHECK(n == 4);
 }
 
-TEST_CASE("SCHED LS-8 (H1'): a garbage start position on the Output loses at most two frames",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-8 (H1'): a garbage start position on the Output loses at most two frames", "[.][sched]")
 {
     const Ls8Family& f = ls8();
     for (const Ls8Cell& c : f.cells)
@@ -2589,19 +2591,22 @@ namespace
 //   · syncRealtime:同步实时(含单轨)—— 写头冻结 ≥ 500 ms ⇒ 挂起、退出注入集,恢复时句首缺席(E2-a);
 //   · syncOfflineLong:同步离线 6 s(墙钟约 1.2 s)—— 同上,按倍速放大(E2-b);
 //   · syncOfflineShort:同步离线 1 s(墙钟约 0.2 s,跨不过门限)—— 一直在注入集里,实测无损;
-//   · leadShortGap:领先实时 1 s(Input 还在静音档、muted 位一直在,恢复那一拍即注入,必然落在读方到 g1
-//     之前)与领先离线 1 s(跨不过门限、一直在注入集里)—— 读方锚在自己的 t0,把 [t0, g1) 的旧环槽当新
-//     数据读出(H4);句首本身在场;
+//   · leadRealtimeShort:领先实时 1 s —— Input 还在静音档、muted 位一直在,恢复那一拍即注入,必然落在读方到
+//     g1 之前;但间隙 ≥ 500 ms 期间它被判挂起、退出了注入集(E2-a),读方断读之后重新接上;
+//   · leadOfflineShort:领先离线 1 s —— 跨不过门限、一直在注入集里;
+//     这两格在 A-5 之前读方锚在自己的 t0,把 [t0, g1) 的旧环槽当新数据读出(H4),句首「在场」是连旧带新一起读的;
 //   · leadRealtimeLong:领先实时 6 s —— 错读同上(必然);但间隙 > 5.5 s 时 Input 已切直通,重新注入要等
 //     muted 握手(最多两拍),80 ms 淡入可能压到 g1 上:句首丢 0–2 帧取决于拍点相位(E2-a 那一族);
 //   · leadOfflineLong:领先离线 6 s —— 错读还是缺席取决于恢复那一拍落在读方到 g1 之前还是之后(写方领先
-//     ≈ 34 ms 墙钟,与 [M] 一拍同量级),两种结果都是缺陷,单独一条用例按全部判据断言。
+//     ≈ 34 ms 墙钟,与 [M] 一拍同量级),两种结果都是缺陷。
+// [A-5] 领先四格的错音都并进 H4 那条(已翻转);句首改按领先轨判据 checkLs12LeadHead(见那里的注释)。
 enum class Ls12Group
 {
     SyncRealtime,
     SyncOfflineLong,
     SyncOfflineShort,
-    LeadShortGap,
+    LeadRealtimeShort,
+    LeadOfflineShort,
     LeadRealtimeLong,
     LeadOfflineLong
 };
@@ -2616,7 +2621,7 @@ Ls12Group ls12Group(const Ls12Cell& c)
     }
     if (!longGap)
     {
-        return Ls12Group::LeadShortGap;
+        return c.offline ? Ls12Group::LeadOfflineShort : Ls12Group::LeadRealtimeShort;
     }
     return c.offline ? Ls12Group::LeadOfflineLong : Ls12Group::LeadRealtimeLong;
 }
@@ -2655,6 +2660,21 @@ void checkLs12Head(const Ls12Cell& c)
     CHECK(m.headLostFrames == 0);
     CHECK(m.rawAfter == 0);
     CHECK(m.lostAfter == 0);
+}
+
+// 领先轨的句首判据(A-5 起)。写方领先时从间隙恢复,读方本地不知道写方新一代从哪一帧开始写(b_new):
+// 新一代第一段发布之后,写头之下哪一段是本代写的、哪一段是间隙里没写过的旧环槽,单看 epoch 与写头分不出来,
+// 读方只能锚在确认过的写头上(设计稿 §3.3 保守规则 / 残余风险 R4、§8 第 4 条)—— 句首最多丢一个写方块
+// (本台预取块 1024 样本 = 一个分析帧),不出原声、之后不再丢。A-5 之前领先短间隙两格的句首「在场」,
+// 是因为读方锚在自己的 t0、连同 [t0, g1) 的旧环槽一起读了(那就是 H4 的错音)。
+void checkLs12LeadHead(const Ls12Cell& c)
+{
+    const Ls12Metrics m = ls12Metrics(c);
+    INFO(str(c, m));
+    CHECK(m.headLostFrames >= 0);
+    CHECK(m.headLostFrames <= 1);
+    CHECK(m.rawAfter == 0);
+    CHECK(m.lostAfter <= 1);
 }
 
 // 全部判据:句首 + 不出现错音(间隙尾段与恢复之后)。
@@ -2706,16 +2726,19 @@ void ls12Precondition(const Ls12Cell& c)
 }
 } // namespace
 
-TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are present on the first frame after it",
+TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are present right after it (a leading "
+          "lane at most one writer block late)",
           "[.][sched]")
 {
-    // 同步离线 1 s(全部判据)与领先的短间隙格(只看句首 —— 它们的错音归 H4 那条)。
+    // 同步离线 1 s(全部判据:第一帧就在场)与领先离线 1 s(领先轨句首判据;错音归 H4 那条)。
+    // [A-5] 领先实时 1 s 原先也在这里(只看句首),现挪进 E2-a 那条:它在间隙里被判挂起、退出注入集,
+    // 重新接上时多丢的那几帧归 E2-a(A-8);只剩一个写方块的那部分是领先轨固有的(checkLs12LeadHead)。
     REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
-    REQUIRE(ls12Count(Ls12Group::LeadShortGap) == 2);
+    REQUIRE(ls12Count(Ls12Group::LeadOfflineShort) == 1);
     for (const Ls12Cell& c : ls12Cells())
     {
         const Ls12Group g = ls12Group(c);
-        if (g != Ls12Group::SyncOfflineShort && g != Ls12Group::LeadShortGap)
+        if (g != Ls12Group::SyncOfflineShort && g != Ls12Group::LeadOfflineShort)
         {
             continue;
         }
@@ -2728,7 +2751,7 @@ TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are pre
         }
         else
         {
-            checkLs12Head(c);
+            checkLs12LeadHead(c);
         }
     }
 }
@@ -2743,29 +2766,35 @@ TEST_CASE("SCHED LS-12 (E2-a): a realtime lane suspended over a no-region gap is
         {
             checkLs12(c);
         }
-        else if (ls12Group(c) == Ls12Group::LeadRealtimeLong)
+        else if (ls12Group(c) == Ls12Group::LeadRealtimeLong || ls12Group(c) == Ls12Group::LeadRealtimeShort)
         {
-            // 错音归 H4 那条。⚠ 这一格的句首丢 0–2 帧取决于拍点相位(见 Ls12Group 注释),同组的同步实时格
-            // 每次都红,所以它混在这里不影响本条现在的结论;修复卡摘掉本条标记时,要单独确认这一格也过了
-            // (看 WARN 摘要里它那一行),不要只看整条用例绿了没有。
-            checkLs12Head(c);
+            // 错音归 H4 那条;句首按领先轨判据(最多丢一个写方块,见 checkLs12LeadHead)。⚠ 领先实时 6 s 格的
+            // 句首另有 0–2 帧取决于拍点相位(见 Ls12Group 注释);领先实时 1 s 格 A-5 实测丢 4 帧,多出来的是
+            // 挂起退出注入集、重新接上那几拍(E2-a)。同组的同步实时格每次都红,所以它们混在这里不影响本条现在的
+            // 结论;修复卡摘掉本条标记时,要单独确认这两格也过了(看 WARN 摘要里它们那两行),不要只看整条用例绿了没有。
+            checkLs12LeadHead(c);
         }
     }
 }
 
-TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads no stale ring audio",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads no stale ring audio", "[.][sched]")
 {
+    // [A-5] 翻转:读方不再把恢复点之前的旧环槽当新数据(设计稿 §3.3 保守规则)。领先离线 6 s 那一格的
+    // 错音判据也并到这里 —— 它原先和句首判据捆在下面那条 [!shouldfail] 里;句首归 E2-b(A-8),留在那条。
+    int n = 0;
     for (const Ls12Cell& c : ls12Cells())
     {
         const Ls12Group g = ls12Group(c);
-        if (g == Ls12Group::LeadShortGap || g == Ls12Group::LeadRealtimeLong)
+        if (g == Ls12Group::LeadRealtimeShort || g == Ls12Group::LeadOfflineShort || g == Ls12Group::LeadRealtimeLong ||
+            g == Ls12Group::LeadOfflineLong)
         {
+            ++n;
             const Ls12Metrics m = ls12Metrics(c);
             INFO(str(c, m));
             CHECK(m.wrongNear == 0);
         }
     }
+    CHECK(n == 4);
 }
 
 TEST_CASE("SCHED LS-12 (E2-b): an offline export loses nothing after a long no-region gap", "[.][sched][!shouldfail]")
@@ -2779,15 +2808,16 @@ TEST_CASE("SCHED LS-12 (E2-b): an offline export loses nothing after a long no-r
     }
 }
 
-TEST_CASE("SCHED LS-12 (H4 / E2-b): a leading offline lane after a long gap neither reads stale audio nor misses "
-          "its head",
+TEST_CASE("SCHED LS-12 (E2-b): a leading offline lane after a long gap does not miss its head",
           "[.][sched][!shouldfail]")
 {
+    // A-4 时这条连错音带句首一起判(H4 / E2-b 二者必居其一);[A-5] 修掉了错音(并进上面 H4 那条),
+    // 这里只留句首 —— 归 E2-b(A-8),按领先轨判据(最多丢一个写方块,见 checkLs12LeadHead)。
     for (const Ls12Cell& c : ls12Cells())
     {
         if (ls12Group(c) == Ls12Group::LeadOfflineLong)
         {
-            checkLs12(c);
+            checkLs12LeadHead(c);
         }
     }
 }
@@ -2799,7 +2829,8 @@ TEST_CASE("SCHED LS-12: no-region gaps (E2-a / E2-b / H4) - precondition", "[.][
     REQUIRE(ls12Count(Ls12Group::SyncRealtime) == 3);
     REQUIRE(ls12Count(Ls12Group::SyncOfflineLong) == 1);
     REQUIRE(ls12Count(Ls12Group::SyncOfflineShort) == 1);
-    REQUIRE(ls12Count(Ls12Group::LeadShortGap) == 2);
+    REQUIRE(ls12Count(Ls12Group::LeadRealtimeShort) == 1);
+    REQUIRE(ls12Count(Ls12Group::LeadOfflineShort) == 1);
     REQUIRE(ls12Count(Ls12Group::LeadRealtimeLong) == 1);
     REQUIRE(ls12Count(Ls12Group::LeadOfflineLong) == 1);
     for (const Ls12Cell& c : cells)
@@ -2825,8 +2856,7 @@ TEST_CASE("SCHED LS-13: near-ring seeks with a leading writer read no stale audi
     }
 }
 
-TEST_CASE("SCHED LS-13: two seeks within the lead, the first nearly a ring forward, read no stale audio",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-13: two seeks within the lead, the first nearly a ring forward, read no stale audio", "[.][sched]")
 {
     for (const Ls13Cell& c : ls13().twoSeeks)
     {
@@ -2887,7 +2917,7 @@ TEST_CASE("SCHED LS-13: reader/writer target mismatch reads no stale audio where
 
 TEST_CASE("SCHED LS-13: reader/writer target mismatch with the Output target before the writer's reads no stale "
           "audio",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
     for (const Ls13Cell& c : ls13().mismatch)
     {
@@ -2941,8 +2971,7 @@ TEST_CASE("SCHED LS-13: reader/writer target mismatch with the Output target bef
     REQUIRE(n == 5);
 }
 
-TEST_CASE("SCHED LS-13: re-preparing a lane mono<->stereo mid-cycle reads no stale or mis-strided audio",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-13: re-preparing a lane mono<->stereo mid-cycle reads no stale or mis-strided audio", "[.][sched]")
 {
     const Ls13Cell& c = ls13().geometry;
     INFO(c.run.name);
