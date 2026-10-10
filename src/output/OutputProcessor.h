@@ -1087,6 +1087,8 @@ private:
     int64_t lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     uint32_t podEpoch_ = 0;
+    // [A-5] 当前宿主块的尾(时间线位置):超长块按段读(SL-523)时传给 IMixSource::read,见那里。
+    int64_t readerBlockEnd_ = 0;
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数(超长块按段计,见 renderSpan)/ [M] 仅 DBG
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
     std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)

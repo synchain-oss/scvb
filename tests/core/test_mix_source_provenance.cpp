@@ -711,7 +711,8 @@ private:
 using legacy::LegacyReader;
 
 // 被测读方的唯一调用点。readerEpoch = Output 自身时间线代号(OutputProcessor.cpp:820-831 的 podEpoch_),
-// A-5 起由 read() 的第四个参数接收(读方据此分清「自己跳了」与「中间少读了几块」)。
+// A-5 起由 read() 的第四个参数接收(读方据此分清「自己跳了」与「中间少读了几块」;本模型读方块不分段,
+// 宿主块尾 = t0+n,用四参数便捷版)。
 bool readUnderTest(scvb::output::ShmRingMixSource& src, int64_t t0, float* dst, int n, u64 readerEpoch) noexcept
 {
     return src.read(t0, dst, n, readerEpoch);

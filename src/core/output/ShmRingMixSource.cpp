@@ -2,6 +2,7 @@
 #include "output/ShmRingMixSource.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 
 namespace scvb::output
@@ -25,6 +26,13 @@ int64_t floorMod(int64_t a, int64_t m) noexcept
     return r < 0 ? r + m : r;
 }
 
+// read() 每块 volatile 读一次段头 channels(只比对、不寻址)。它是 plain u32(布局冻结,不能改成 atomic),
+// 靠「对齐的 32 位读写在 x86 / ARMv8 上是单次访问原子的」。把这个前提钉在编译期(偏移 16 本身由
+// SegmentLayout.h 的 static_assert 钉住)。
+static_assert(sizeof(AudioRingHeader::channels) == 4, "header channels must be a 32-bit field");
+static_assert(offsetof(AudioRingHeader, channels) % alignof(u32) == 0, "header channels must be 4-byte aligned");
+static_assert(alignof(AudioRingHeader) >= alignof(u32), "AudioRingHeader alignment must cover u32");
+
 } // namespace
 
 void ShmRingMixSource::bind(AudioRingHeader* header, float* data) noexcept
@@ -35,7 +43,8 @@ void ShmRingMixSource::bind(AudioRingHeader* header, float* data) noexcept
         return;
     }
 
-    // 构造不可变绑定:magic/abi 校验 + 几何快照(bind 时读一次,此后只读快照,绝不回读段头几何)。
+    // 构造不可变绑定:magic/abi 校验 + 几何快照(bind 时读一次,此后寻址只用快照,绝不按段头几何寻址;
+    // [A-5] read() 每块只按值比对段头 channels,见那里)。
     auto b = std::make_unique<AudioRingBinding>();
     b->header = header;
     b->data = data;
@@ -147,6 +156,7 @@ void ShmRingMixSource::onRebind() noexcept
     genSeen_ = false;
     gen_ = 0;
     headConfirmed_ = false;
+    headTentative_ = false;
     headZero_ = false;
     headMonotonic_ = true;
     firstSeen_ = false;
@@ -204,8 +214,12 @@ void ShmRingMixSource::firstObservation(int64_t w, bool jumped, bool skipped, in
     }
     else if (refHiValid_ && !jumped && !skipped && w > refHi_ + stepMaxPrev_)
     {
-        // 上一次观测就在一块之前,上一代在一块之内走不了这么远 ⇒ 这也一定是新一代的头。
-        confirmHead(w, prevN, ring);
+        // 上一次观测就在一块之前,上一代在一块之内一般走不了这么远 ⇒ 多半是新一代的头。但 stepMaxPrev_
+        // 只是观测到的最大步长、不是上界:新一代第一段发布之前(R1)看到的也可能是上一代在最后一次观测
+        // 之后又多写了一大笔的旧头(R5)。所以只「暂定」:保守规则可以先按它锚,写头第一次动时复核
+        // (sameGeneration,与锚在未确认写头上同一套);别名判的跨度照样按它估(certify)。
+        headTentative_ = true;
+        curHi_ = w;
     }
     else
     {
@@ -260,6 +274,7 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
     curVf_ = 0;
     anchorOnUnconfirmed_ = false;
     headConfirmed_ = false;
+    headTentative_ = false;
     headZero_ = false;
     firstSeen_ = false;
     curHi_ = 0;
@@ -309,6 +324,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
             clearWindows();
             headZero_ = true;
             headConfirmed_ = true;
+            headTentative_ = false;
             curHi_ = 0;
         }
         lastW_ = 0;
@@ -320,7 +336,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
     }
     if (headZero_ || !headConfirmed_)
     {
-        // 换代(或归零)之后写头第一次动:此后的写头一定是本代写的。
+        // 换代(或归零)之后写头第一次动:此后的写头一定是本代写的。暂定的头(R5)也在这里复核。
         if (curAnchored_ && anchorOnUnconfirmed_ && (w < lastW_ || w - lastW_ > spanBound(prevN, ring)))
         {
             // 锚是对着一个可能属于上一代的写头下的,写头这一动(往回、或一下子远远超过提前量上界)
@@ -331,6 +347,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
         anchorOnUnconfirmed_ = false;
         // 确认之前记下的写头(firstObservation 的 curHi_ = w)可能是上一代的旧头,不能算进本代的最大写头。
         curHi_ = 0;
+        headTentative_ = false;
         confirmHead(w, prevN, ring);
     }
     else if (w < lastW_)
@@ -356,13 +373,14 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
     lastW_ = w;
 }
 
-void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t ring) noexcept
+void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, int64_t ring) noexcept
 {
     // 「写头相对读方的位置不超过实测提前量上界」:读方跳到的位置就是写方本代的起点时,写头只能领先
     // 它一个提前量;领先得更多,说明写方本代起点在读方前面(读写目标不一致)或者这个头根本不是本代的。
-    // 没量到过提前量(刚绑定)时退到旧实现的套圈界(一个环长)。
+    // 没量到过提前量(刚绑定)时退到旧实现的套圈界(一个环长)。slack = 本段之后这一宿主块还剩的长度
+    // (超长块分段读,SL-523):写方已经写完整个宿主块,写头相对本段自然多领先这一截。
     const int64_t lim = leadHiRef();
-    const bool near = t0 <= w && (w - t0) <= (lim >= 0 ? lim : ring);
+    const bool near = t0 <= w && (w - t0) <= (lim >= 0 ? lim : ring) + slack;
     // 锁步 = 上一代里写头从不领先读方超过一块(写方一次产出或读方一块,取大者),且曾恰好停在读方块尾。
     // 两条都要:写方领先时停调,读方追上冻住的写头那几块里「停在块尾」也会成立(那是追上,不是锁步)。
     // 锁步写方每次只比读方多写一块,「写头不超过上界」对它是精确的:写头领先读方 ≤ 上界 ⇔ 本代起点 ≤ t0。
@@ -400,12 +418,12 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t ring) noe
         return;
     }
     // 规则 3 保守规则:写头已确认是本代写的,就锚在它上面(它之下的本代数据从哪开始无从得知,
-    // 能接住的由上一代窗接)。
-    if (headConfirmed_ && !headZero_)
+    // 能接住的由上一代窗接)。只是暂定的头(R5)也先锚,但记成「锚在未确认写头上」,写头第一次动时复核。
+    if ((headConfirmed_ || headTentative_) && !headZero_)
     {
         curVf_ = w;
         curAnchored_ = true;
-        anchorOnUnconfirmed_ = false;
+        anchorOnUnconfirmed_ = !headConfirmed_;
     }
 }
 
@@ -443,7 +461,7 @@ bool ShmRingMixSource::prevAliasFree(int64_t a0, int64_t a1, int64_t bLow, int64
     return clear(a0, a1);
 }
 
-ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_t w, int64_t guard,
+ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t prevN,
                                                   int64_t ring) const noexcept
 {
     Cover c;
@@ -469,7 +487,16 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
     }
     // 新一代已发布过的最高写头:停走带静止重写会让写头退回,但退回之前写到过的位置照样换掉了同槽内容。
     const int64_t newHi = std::max(w, curHi_);
-    const auto prevCovers = [this, newHi, guard, ring](int64_t p0, int64_t p1) {
+    // 新一代可能写过的跨度下界(别名判据用)。写头已确认:confirmHead 记下的界。还没确认(R1 / 暂定的头 R5):
+    //   · 写头还停在上一代最后观测到的头(prevHi_)上:新一代一段都还没发布 —— 就算恰好发布到同一个值,它写的
+    //     位置也都在这个头之下,与上一代窗里同位置同槽,换不掉别的位置 ⇒ 只剩在途那第一段落点不明(R1),不判;
+    //   · 写头变了:可能是新一代发布了(也可能是上一代最后又多写了一笔),按「眼前这个写头就是新一代的」暂定
+    //     估 —— 它若其实是上一代的旧头,这样估只会更保守;不估就会放过新一代已经换掉的槽。
+    // 读方中间漏读过块时界定不了新一代写了多少,上一代窗不可用。
+    const bool r1Trust = !prevBLowKnown_ && w == prevHi_;
+    const bool bLowOk = prevBLowKnown_ || contiguousInGen_;
+    const int64_t bLow = prevBLowKnown_ ? prevBLow_ : w - spanBound(prevN, ring) - framesSinceGen_;
+    const auto prevCovers = [this, newHi, r1Trust, bLowOk, bLow, guard, ring](int64_t p0, int64_t p1) {
         if (p1 <= p0)
         {
             return true;
@@ -478,8 +505,7 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
         {
             return false;
         }
-        // 写头还没确认(R1):新一代已发布的跨度为 0,只可能有在途的第一段,落点不明 —— 不做别名判。
-        return !prevBLowKnown_ || prevAliasFree(p0, p1, prevBLow_, newHi + guard, ring);
+        return r1Trust || (bLowOk && prevAliasFree(p0, p1, bLow, newHi + guard, ring));
     };
     if (!prevCovers(rest0, rest1) || !prevCovers(restB0, restB1))
     {
@@ -538,7 +564,7 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
     }
 }
 
-bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch) noexcept
+bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int64_t hostBlockEnd) noexcept
 {
     // 硬约束:本方法 acquire 的绑定裸指针只在「本块」内有效 —— 底层共享内存段由 OutputSession 的
     // SegmentHandle 500ms 宽限期(kReleaseGraceMs > 单块 wall-clock)保活,不得跨块持有裸指针(S1 验收)。
@@ -612,11 +638,11 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch) noex
     }
     if (!flux && w > 0)
     {
-        tryAnchor(t0, w, n, ring);
+        tryAnchor(t0, w, n, hostBlockEnd > t1 ? hostBlockEnd - t1 : 0, ring);
     }
 
     const int64_t guard = inflightGuard();
-    const Cover c = certify(t0, t1, w, guard, ring);
+    const Cover c = certify(t0, t1, w, guard, prevN, ring);
     if (!c.ok)
     {
         countFailure(t0, t1, w, guard, ring);
@@ -651,21 +677,15 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch) noex
     const bool prevUsed = c.prevA1 > c.prevA0 || c.prevB1 > c.prevB0;
     if (ok && prevUsed)
     {
-        int64_t bLow = prevBLow_;
-        bool known = prevBLowKnown_;
-        if (!known && w2 != w)
-        {
-            // 写头在拷贝期间动了:新一代刚发布了第一段,用它界定一次(只用于这一块的复核)。
-            known = true;
-            bLow = w2 - spanBound(prevN, ring) - framesSinceGen_;
-        }
-        if (known)
-        {
-            // 写头已确认时 curHi_ 是本代发布过的最高写头(见 certify);没确认时它可能是上一代的旧头,不算。
-            const int64_t hi2 = prevBLowKnown_ ? std::max(w2, curHi_) : w2;
-            ok = prevAliasFree(c.prevA0, c.prevA1, bLow, hi2 + guard, ring) &&
-                 prevAliasFree(c.prevB0, c.prevB1, bLow, hi2 + guard, ring);
-        }
+        // 上一代窗认领的段在拷贝之后的写头 w2 下重判一次别名(写头没确认时同 certify:w2 还停在上一代最后
+        // 观测到的头上就不判,变了就按 w2 暂定)。写头已确认时 curHi_ 是本代发布过的最高写头;没确认时它可能是
+        // 上一代的旧头,不算。
+        const bool r1Trust2 = !prevBLowKnown_ && w2 == prevHi_;
+        const int64_t bLow = prevBLowKnown_ ? prevBLow_ : w2 - spanBound(prevN, ring) - framesSinceGen_;
+        const int64_t hi2 = prevBLowKnown_ ? std::max(w2, curHi_) : w2;
+        ok = r1Trust2 ||
+             ((prevBLowKnown_ || contiguousInGen_) && prevAliasFree(c.prevA0, c.prevA1, bLow, hi2 + guard, ring) &&
+              prevAliasFree(c.prevB0, c.prevB1, bLow, hi2 + guard, ring));
     }
     framesSinceGen_ += n;
     if (!ok)

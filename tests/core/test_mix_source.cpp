@@ -492,6 +492,50 @@ TEST_CASE("ShmRingMixSource A-5 换代后先看到旧写头、随后新一代往
     CHECK(src.gapCount() == 0);
 }
 
+TEST_CASE("ShmRingMixSource A-5 「远超一步」只是暂定:换代后看到的高写头其实是上一代的旧头时,写头一动就撤锚",
+          "[mix][ring][a5]")
+{
+    // 设计稿残余风险 R1 / 头注 R5。上一代每块写 64 帧(读方量到的最大步长 64);读方最后一次观测之后,上一代又
+    // 多写了一大笔 [1640, 2040)(读方没看到),随后写方单独往前跳、换代,新一代第一段还没发布 —— 读方看到
+    // 「新一代、写头 2040」:比上一代最后观测到的头 1640 多走了 400 > 64,「远超一步」会把它当成新一代的头。
+    // 它其实是上一代的旧头;新一代从 3000 开始写。锚若就此下在 2040 且不复核,[2040, 3000) 这些从没写过的槽
+    // 会在新一代写头越过它们之后被当成本代数据交出去。
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 1000, 512); // 写方领先 512:读方在 1000 时写头已到 1512
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(1000, out.data(), 64, 1));
+    writePositions(f, 1512, 64);
+    REQUIRE(src.read(1064, out.data(), 64, 1));
+    writePositions(f, 1576, 64); // 写头 1640;上一代步长 64 从这一块起量到
+    REQUIRE(src.read(1128, out.data(), 64, 1));
+
+    writePositions(f, 1640, 400); // 读方没看到的一大笔尾段:写头 2040
+    f.header.epoch.fetch_add(1, std::memory_order_release); // 写方单独往前跳:换代,新一代第一段还没发布
+    REQUIRE(src.read(1192, out.data(), 64, 1)); // 上一代窗照读
+    CHECK(holdsPositions(out, 1192, 64));
+
+    writePositions(f, 3000, 64); // 新一代第一段:写头 2040 → 3064,一步 1024,远超 spanBound(576)⇒ 撤锚
+    for (int64_t t0 = 1256; t0 < 1640; t0 += 64)
+    {
+        INFO("t0=" << t0);
+        CHECK(src.read(t0, out.data(), 64, 1));
+        CHECK(holdsPositions(out, t0, 64));
+    }
+    // [1640, 2040) 是上一代读方没观测到的尾段(数据其实是对的,只是读方证明不了),读不到不算错。
+    for (int64_t t0 = 1640; t0 < 2040; t0 += 64)
+    {
+        static_cast<void>(src.read(t0, out.data(), 64, 1));
+    }
+    // [2040, 3000) 两代都没写过。锚若还在 2040,当前窗 [2040, 3064) 会把它们交出去。
+    CHECK_FALSE(src.read(2040, out.data(), 64, 1));
+    CHECK_FALSE(src.read(2104, out.data(), 64, 1));
+    CHECK(src.gapCount() == 0);
+}
+
 TEST_CASE("MixMath ms_balance 端点语义", "[mix][math]")
 {
     SECTION("ms_balance=0 → 矩阵恒等(逐位透传)")
@@ -590,14 +634,18 @@ TEST_CASE("ShmRingMixSource bind/unbind 与 read 并发不崩(原子快照)", "[
     stop.store(true, std::memory_order_relaxed);
     reader.join();
 
-    // 重新稳定绑定,确认仍可读(无永久损坏)。
+    // 重新稳定绑定,确认仍可读(无永久损坏)。[A-5] 同一条环重绑 = 代际从头来:读方要等自己的时间线
+    // 跳一次(或写头动一次)才重新锚定 —— 重绑多半是写方几何改写,写方领先时读方锚在自己的 t0 会按新步长
+    // 读旧布局的数据(A-3 geometry 族)。这里环是静止的、写头不动,所以让读方的时间线跳一次(代号 0 → 1)。
+    // 跳到 56:写头 64 只领先它 8 帧,不超过 reader 线程那边量到过的任何提前量(同步规则的上界判据),
+    // 结果与两个线程的交错无关。
     src.unbind();
     src.bind(&f.header, f.data.data());
     REQUIRE(src.bound());
     std::vector<float> out(8 * 2);
-    REQUIRE(src.read(0, out.data(), 8));
-    REQUIRE(out[0] == 0.0f);
-    REQUIRE(out[1] == 0.0f);
+    REQUIRE(src.read(56, out.data(), 8, 1));
+    REQUIRE(out[0] == 56.0f);
+    REQUIRE(out[1] == 56.0f);
 }
 
 TEST_CASE("BusXfade 直通⇄混音等功率交叉(无别名/无 +3dB 泵感)", "[mix][busxfade]")

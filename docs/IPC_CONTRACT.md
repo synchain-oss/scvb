@@ -68,7 +68,7 @@ float32 ring[ring_frames*channels]; // v1.4/J57:channels=1|2,stereo 为 interlea
 ```
 
 - 写(Input 音频线程):按块以 playhead `timeInSamples` 为地址写入;transport 非线性跳变 → epoch+1 后继续
-- **几何纪律**([SL-505] 按已实现行为订正,见 SL-482 / SL-486):几何字段(`sample_rate` / `ring_frames` / `channels`)由 claim 方在 prepareToPlay 写定,**运行期可原地改写** —— 同一 channel 重新 prepare 时采样率或声道布局变了,或 attach 到一个几何与本次请求不符的存活旧段时,写方就地写新几何、`write_head_samples` 归零、`epoch`+1。段恒按 stereo 容量创建(`ring_frames`×2 个 float),改写不重开段、不扩容;mono 只用前半。读方的音频线程只用 attach 时发布的不可变几何快照,**不每块回读段头几何**;由读方非实时线程周期性按值比对段头几何,不一致即重绑、发布新快照(旧注释口径与订正理由见 `docs/contract-changes/20260926-j106-j107-sl505-contract-supplement.md`)
+- **几何纪律**([SL-505] 按已实现行为订正,见 SL-482 / SL-486):几何字段(`sample_rate` / `ring_frames` / `channels`)由 claim 方在 prepareToPlay 写定,**运行期可原地改写** —— 同一 channel 重新 prepare 时采样率或声道布局变了,或 attach 到一个几何与本次请求不符的存活旧段时,写方就地写新几何、`write_head_samples` 归零、`epoch`+1。段恒按 stereo 容量创建(`ring_frames`×2 个 float),改写不重开段、不扩容;mono 只用前半。读方的音频线程只用 attach 时发布的不可变几何快照寻址,**不按段头几何寻址**([A-5] 起音频线程每块按值比对段头 `channels`,只比对、不寻址,见下「读」);由读方非实时线程周期性按值比对段头几何,不一致即重绑、发布新快照(旧注释口径与订正理由见 `docs/contract-changes/20260926-j106-j107-sl505-contract-supplement.md`)
 - 读(Output 音频线程):按自身块的 [t0,t1) 读取;区间未被覆盖(write_head 落后或 epoch 不符)→ 该轨该块静音 + 失准计数(UI 警告)。[A-5] 措辞补充(读方语义,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261009-a5-reader-generation-handover.md`):
   - 「覆盖」按**代**判:读方只交出能确认「每一帧都是写方为该时间线位置写下的数据」的块(哪一代写的都可以),否则整块静音;
   - **当前一代**:从读方能确认的本代起点(不早于写方本代真实的第一帧)到 `write_head`;读方确认不了本代起点时(写方单独换代、读方自己没跳,例如写方领先时从停调恢复)只从已确认是本代的写头起读,之前的部分该块静音;

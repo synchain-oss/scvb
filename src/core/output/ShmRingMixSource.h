@@ -4,7 +4,7 @@
 // ShmRingMixSource —— IMixSource 的共享内存实现(01 §5.2 读环语义)。
 // bind() 一次性几何快照(sample_rate / ring_frames / channels,Registry.h 几何纪律);
 // read() 寻址只用快照,绝不按段头几何寻址(宿主编排 mono⇄stereo 重建环时的撕裂防护)。
-// [A-5] read() 唯一回读的段头几何字段是 channels,而且**只比对、不寻址**:与快照不一致 = 写方已按
+// [A-5] read() 每块回读的段头几何字段只有 channels,而且**只比对、不寻址**:与快照不一致 = 写方已按
 // 新布局重写这条环、[M] 还没来得及换绑,整块不读(见 read() 里的注释)。
 // [SL-486] 上面那句「一次性」是**对音频线程**说的:段头几何被 Input 侧原地改写后,[M] 线程会
 // 拿同一个 header/data 再 bind 一次(OutputSession::refreshAudioGeometry),发布一份新的不可变
@@ -43,7 +43,8 @@
 //
 // 已知的残余风险(读方手里只有 epoch 与写头两个数,下面几种情形在信息上就分不出来,如实写明):
 //   R1 换代之后、写方第一段数据发布之前(epoch 已 +1、写头仍是上一代的值),新一代正写在哪里读方
-//      无从得知;这段时间里 prev 窗照读(设计稿规则 2 允许),不做别名判。若写方这第一段恰好写到
+//      无从得知;这段时间里 prev 窗照读(设计稿规则 2 允许),别名判按「眼前这个写头就是新一代的」
+//      暂定(它其实是上一代的旧头时只会更保守),在途的那第一段落点仍不明。若写方这第一段恰好写到
 //      读方要读的同一批环槽(概率约 (块长+段长)/环长),拷出的可能是新一代的数据。只出现在 Input
 //      与 Output 真正并发处理的宿主上,窗口为写方一次 processBlock 的时长;图依赖成立的宿主
 //      (先 Input 后 Output)看不到这个状态。
@@ -54,6 +55,15 @@
 //      确认是新一代的之后再按同一判据锚定;写方最后一次跳变恰好就在读方眼前时仍可能锚早。
 //   R4 写方领先时从停调 / 无 region 恢复(H4):读方不知道恢复点,只能锚在确认过的写头上,
 //      句首最多丢一个写方突发块(计入 handoverLossCount,不报警;设计稿 §8 第 4 条)。
+//   R5 「远超一步」只是暂定(firstObservation):换代后第一次看到的写头比上一代最后观测到的头多走了
+//      超过上一代观测到的最大步长,多半是新一代的头,先按它锚;但最大步长是观测值、不是上界,R1 那段
+//      窗口里它也可能是上一代在读方最后一次观测之后又多写了一大笔的旧头。所以这样下的锚要等写头
+//      第一次动时复核(往回走、或一步超过 spanBound 就撤锚重来,与锚在未确认写头上同一套);写方单独
+//      往前跳、跳距加第一笔不超过 spanBound 时复核分不出来,[旧头, 新一代起点) 可能被当成本代数据。
+//      只在 R1 窗口里出现。
+//   R6 读方自己的跳变只看 podEpoch_(规则 1),而 OutputProcessor 在跨零点的块与 bypass 路径上不更新它
+//      (它的口径归打印器 / playhead,本卡不动):这两处读方那一次跳变读环看不到。同步宿主上由锁步规则接住
+//      (SL-523 跨零点用例);写方领先时退到保守规则,那一圈 / 那一次定位多丢至多一个写方块。
 
 #include <atomic>
 #include <cstdint>
@@ -89,8 +99,8 @@ public:
     u32 stallFailCount() const noexcept { return stallFailCount_.load(std::memory_order_relaxed); }
     u32 sampleRate() const noexcept override;
     u32 ringFrames() const noexcept override;
-    using IMixSource::read; // 三参数便捷版(代号恒 0),见 IMixSource
-    bool read(int64_t t0, float* dst, int n, u64 readerEpoch) noexcept override;
+    using IMixSource::read; // 三 / 四参数便捷版,见 IMixSource
+    bool read(int64_t t0, float* dst, int n, u64 readerEpoch, int64_t hostBlockEnd) noexcept override;
     u32 gapCount() const noexcept override { return gapCount_.load(std::memory_order_relaxed); }
     u64 writeHead() const noexcept override;
     u64 epoch() const noexcept override;
@@ -103,7 +113,8 @@ public:
     // stuckBelowAnchor:块起点在锚点之下(t0 < vf ≤ 写头)、上一代窗也接不住,且写方在推进(设计稿 (b))。
     u32 stuckBelowAnchorCount() const noexcept { return stuckBelowAnchorCount_.load(std::memory_order_relaxed); }
     // handoverLoss:换代交接期读不出的块(当前窗还没能锚定、上一代窗别名判据不过、
-    // 段头 channels 与快照不一致等)。
+    // 段头 channels 与快照不一致等)。段头 channels 不一致那一类最多持续一个 [M] 换绑周期(约 40 ms),
+    // A-6 拿它做告警时要与真正的交接丢失分开看。
     u32 handoverLossCount() const noexcept { return handoverLossCount_.load(std::memory_order_relaxed); }
 
 private:
@@ -131,8 +142,8 @@ private:
     void sameGeneration(int64_t w, bool flux, bool jumped, bool skipped, int64_t prevN, int64_t ring) noexcept;
     void firstObservation(int64_t w, bool jumped, bool skipped, int64_t prevN, int64_t ring) noexcept;
     void confirmHead(int64_t w, int64_t prevN, int64_t ring) noexcept;
-    void tryAnchor(int64_t t0, int64_t w, int n, int64_t ring) noexcept;
-    Cover certify(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring) const noexcept;
+    void tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, int64_t ring) noexcept;
+    Cover certify(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t prevN, int64_t ring) const noexcept;
     bool prevAliasFree(int64_t a0, int64_t a1, int64_t bLow, int64_t wN, int64_t ring) const noexcept;
     void countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring) noexcept;
     int64_t leadHiRef() const noexcept; // 实测提前量上界(没量到过 → -1)
@@ -157,6 +168,7 @@ private:
     bool genSeen_ = false;
     u64 gen_ = 0;
     bool headConfirmed_ = false; // 本代写头已确认是本代写的(不是 bump 之后、写之前的旧头)
+    bool headTentative_ = false; // 本代写头按「远超一步」暂定是本代的(没有证明,R5):可以先锚,写头第一次动时复核
     bool headZero_ = false; // 本代写头为 0(几何改写 / 新段:还一帧没写)
     bool headMonotonic_ = true; // 本代写头没被观测到回退过(停走带静止重写换短块会让写头回退,见 sameGeneration)
     bool firstSeen_ = false; // 本代已有过一次写头归属明确(e1==e1b)的观测

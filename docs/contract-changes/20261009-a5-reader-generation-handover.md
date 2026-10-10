@@ -8,8 +8,8 @@
 ## 变更了哪个冻结契约
 
 - [ ] docs/PARAMETERS.md(自动化参数)—— **不动**。
-- [x] docs/IPC_CONTRACT.md(共享内存段名/布局)—— 只改 §2 列表里「读」那一条的**说明文字**(原句保留,
-      后接「[A-5] 措辞补充」五个子条目)。段名、字段、偏移、大小、对齐、abi、`AudioRingHeader` 代码块
+- [x] docs/IPC_CONTRACT.md(共享内存段名/布局)—— 只改 §2 列表里两条的**说明文字**:「读」那一条(原句保留,
+      后接「[A-5] 措辞补充」五个子条目),以及「几何纪律」那一条里描述读方音频线程的半句(见下「几何纪律半句」)。段名、字段、偏移、大小、对齐、abi、`AudioRingHeader` 代码块
       **零变化**(`node scripts/check-ipc-doc-parity.mjs --strict-missing` 退 0)。
 - [ ] docs/STATE_SCHEMA.md(state schema)—— **不动**。
 - [ ] docs/SCVB_CONTRACT.md(桥面契约)—— **不动**(失准计数的新成因归 A-6,措辞随 A-6 落地)。
@@ -37,10 +37,20 @@
 | 「覆盖」按代判 | 只交出每一帧都能确认是写方为该位置写下的块(哪一代都行),否则整块静音 | `ShmRingMixSource::read` → `certify`(当前窗 ∪ 上一代窗逐帧认领) |
 | 当前一代 | 从能确认的本代起点(≥ 写方本代真实第一帧)到 `write_head`;确认不了起点时只从已确认是本代的写头起读 | `tryAnchor`:同步规则 / 推迟锚定 / 锁步写方单独换代 / 保守规则 |
 | 上一代未被覆盖的尾段可读 | epoch 只差 1 时,上一代已确认写过、新一代写不到同一环槽的那一段可读;`write_head` 归 0(几何改写)时上一代一律不读 | `newGeneration` 降级当前窗;`prevAliasFree` 别名判据;`firstObservation` / `sameGeneration` 的归零清窗 |
-| 段头 `channels` 比对 | 与读方几何快照不一致 → 该块不读;段头值只比对、不寻址 | `read` 里 volatile 读 `header->channels`(对齐 32 位单次访问原子的说明见代码注释) |
+| 段头 `channels` 比对 | 与读方几何快照不一致 → 该块不读;段头值只比对、不寻址 | `read` 里 volatile 读 `header->channels`(对齐 32 位单次访问原子的说明见代码注释,4 字节对齐由 `static_assert` 钉住) |
 | 失准口径不变 | 本代已读到过数据之后、写方仍在推进却读不到或被套圈才计;交接期与写头停滞不计 | `countFailure`(旧实现 P1-7 判别逐字保留) |
 
-**不属于契约、因此没写进 IPC_CONTRACT 的**:`IMixSource::read` 新增的「读方自身时间线代号」参数(进程内接口)、
+### 几何纪律半句
+
+§2「几何纪律」原写「读方的音频线程只用 attach 时发布的不可变几何快照,**不每块回读段头几何**」。A-5 起音频线程
+每块按值比对一次段头 `channels`(上表「段头 `channels` 比对」),原句字面上与之冲突。改为:
+
+> 读方的音频线程只用 attach 时发布的不可变几何快照寻址,**不按段头几何寻址**([A-5] 起音频线程每块按值比对段头
+> `channels`,只比对、不寻址,见下「读」);由读方非实时线程周期性按值比对段头几何,不一致即重绑、发布新快照
+
+纪律的实质不变:寻址只用快照,换绑仍只在非实时线程做;多出来的只是一次「只比对」的回读。
+
+**不属于契约、因此没写进 IPC_CONTRACT 的**:`IMixSource::read` 新增的「读方自身时间线代号」与「宿主块尾」两个参数(进程内接口)、
 读方内部的提前量测量与四个进程内计数(`readOk` / `unprimedFail` / `stuckBelowAnchor` / `handoverLoss`,
 A-5 只计数、不报警,告警口径归 A-6 并随 A-6 补 SCVB_CONTRACT §2.3 的措辞)。
 
