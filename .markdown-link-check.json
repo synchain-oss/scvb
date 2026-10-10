@@ -15,10 +15,6 @@
     {
       "comment": "本地开发服务器地址(web-preview/README.md 与 docs/CONTRIBUTOR_ONBOARDING.md 的 127.0.0.1:8823),按设计在 CI 上不可达。",
       "pattern": "^https?://(localhost|127\\.0\\.0\\.1)"
-    },
-    {
-      "comment": "【临时】CHANGELOG.md 文末两条指向 v0.9.0-rc.1 的对比链接。发版清单先切 CHANGELOG(第 2 步)后推 tag(第 6 步),tag 推上去之前 GitHub 对这两个地址回 404。只放行这两个确切地址;v0.9.0-rc.1 推上去之后删掉本条(docs/RELEASE.md 发版清单第 2 步有同一句)。",
-      "pattern": "^https://github\\.com/synchain-oss/scvb/compare/(v0\\.9\\.0-rc\\.1\\.\\.\\.HEAD|ae61f5f\\.\\.\\.v0\\.9\\.0-rc\\.1)$"
     }
   ],
   "timeout": "20s",
