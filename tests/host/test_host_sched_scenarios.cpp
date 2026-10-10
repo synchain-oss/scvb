@@ -2516,8 +2516,10 @@ TEST_CASE("SCHED LS-11a (H5): with the Output not called the vocals fall back to
         const std::pair<int, int> m = maskOffSamples(r, lane, susp, resume);
         const std::pair<int, int> p = passthroughSamples(r, lane, susp, resume);
         const Tally during = tally(r, lane, susp, resume);
+        const std::int64_t firstRaw = firstFrame(r, lane, susp, resume, isRaw);
         os << " | lane" << lane << " during[" << str(during) << "] input maskBit off " << m.first << "/" << m.second
-           << " passthrough " << p.first << "/" << p.second << " firstRaw " << firstFrame(r, lane, susp, resume, isRaw)
+           << " passthrough " << p.first << "/" << p.second << " firstRaw " << firstRaw << " (+"
+           << (firstRaw >= 0 ? toSec(firstRaw - susp) : -1.0) << " s after suspend)"
            << " firstMixAfterResume " << firstFrame(r, lane, resume, kBig, isMix) - resume;
     }
     WARN(os.str());
