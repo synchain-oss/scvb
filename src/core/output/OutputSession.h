@@ -11,6 +11,7 @@
 // per-channel 子状态(§4.2,[M] 25Hz 评估):CH_OFFLINE / CH_SR_MISMATCH / CH_SUSPENDED /
 // CH_MISALIGNED / CH_ONLINE。CH_ONLINE 才置 connected_mask 位;注入经 [J32] 延迟 ——
 // 置位后等该轨 muted 确认位或延迟 ≥200ms(先到者)才置 injectMask 位([A] 只读 injectMask 混音)。
+// 停摆看门狗的 hold 掩码(KI-6,CtrlPlane::watchdogHoldMask)里的轨一律不算 CH_ONLINE:不置位、不注入。
 //
 // 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调);音频线程只经
 // mixSource()/injectMask() 拿裸指针做原子读写。
