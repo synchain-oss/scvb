@@ -959,7 +959,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         {
             continue;
         }
-        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_))
         {
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
@@ -1056,7 +1056,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         {
             continue;
         }
-        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_))
         {
             continue; // 缺口 → 该轨该块静音(失准计数已在 read 内)
         }
