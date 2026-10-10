@@ -32,7 +32,7 @@
 //   现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
 //   [A-5] E1 读方换代处理落地后去掉了标记的(现在是必须绿的普通用例):LS-3 跳跃组、LS-4、LS-6 k≥1、
 //   LS-8 垃圾值、LS-12 的错音(H4,含领先离线 6 s 格)、LS-13 的两次定位 / ε<0 / 几何三条。仍留着标记的:
-//   N2b 与 LS-14(H3,归 A-6)、LS-11a(H5,归 A-7)、LS-12 的句首(E2-a / E2-b,归 A-8)。LS-12 领先轨的
+//   N2b 与 LS-14(H3,归 A-6)、LS-12 的句首(E2-a / E2-b,归 A-8);LS-11a(H5)已由 A-7 翻转。LS-12 领先轨的
 //   句首判据随 A-5 改成「最多丢一个写方块」(checkLs12LeadHead,设计稿 §8 第 4 条),领先实时 1 s 格挪进 E2-a。
 //   下面各场景注释里描述的「修前」现象指 A-5 之前的读方,保留作证据。
 //
@@ -1297,8 +1297,10 @@ int verdictMismatchesByT(const Run& a, const Run& b, int lane)
 // 3 条 live,pace=1。放 1 s → 宿主停调 Output 7 s(Live 停用设备 / FL smart disable 一类,总线直通)→
 // 恢复调用 2.5 s。停调期间 Output 的录音就是总线输入(直通):Input 若切回直通,这里听得到原声(Raw)。
 // KI-6 文档写「约 5.5 s 后转未平衡原声」:看门狗 0.5 s 判停摆清 connected_mask,Input 再按 5 s 滞回
-// 切直通。H5 推演:看门狗只清一拍,下一拍 evaluateChannels 又把位置回(OutputSession.cpp:528-539 /
-// CtrlPlane.cpp:574-590),Input 永远等不满 5 s ⇒ 停调期间一直无声。
+// 切直通。H5(A-4 证实):看门狗只清一拍,下一拍 evaluateChannels 又把位置回,Input 永远等不满 5 s
+// ⇒ 停调期间一直无声(修前 329/329 帧缺席)。A-7 修法:CtrlPlane 的 hold 掩码在停摆期间闩住全部位,
+// evaluateChannels 的在线与注入都服从它;恢复后按 §4.3-b 每 >= 200 ms 放一轨(逐轨接回)。判据未改,
+// 只摘掉 [!shouldfail];接回顺序与 J32 叠加窗由 test_output_session.cpp 的 [KI6] 端到端用例钉。
 constexpr double kLs11SuspendS = 7.0;
 
 const Run& ls11a()
@@ -2459,7 +2461,7 @@ TEST_CASE("SCHED LS-10: offline export with blocks 1024-4096 matches the realtim
 // ---------------------------------------------------------------------------
 TEST_CASE("SCHED LS-11a (H5): with the Output not called the vocals fall back to raw passthrough after 5.5 +/- 0.5 s "
           "and rejoin lane by lane",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
     const Run& r = ls11a();
     const std::int64_t susp = r.mark.at("suspend");
@@ -2516,8 +2518,10 @@ TEST_CASE("SCHED LS-11a (H5): with the Output not called the vocals fall back to
         const std::pair<int, int> m = maskOffSamples(r, lane, susp, resume);
         const std::pair<int, int> p = passthroughSamples(r, lane, susp, resume);
         const Tally during = tally(r, lane, susp, resume);
+        const std::int64_t firstRaw = firstFrame(r, lane, susp, resume, isRaw);
         os << " | lane" << lane << " during[" << str(during) << "] input maskBit off " << m.first << "/" << m.second
-           << " passthrough " << p.first << "/" << p.second << " firstRaw " << firstFrame(r, lane, susp, resume, isRaw)
+           << " passthrough " << p.first << "/" << p.second << " firstRaw " << firstRaw << " (+"
+           << (firstRaw >= 0 ? toSec(firstRaw - susp) : -1.0) << " s after suspend)"
            << " firstMixAfterResume " << firstFrame(r, lane, resume, kBig, isMix) - resume;
     }
     WARN(os.str());
