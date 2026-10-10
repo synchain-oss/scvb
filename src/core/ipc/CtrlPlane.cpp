@@ -634,4 +634,16 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     return r;
 }
 
+void CtrlPlane::resetWatchdogUnlessTripped() noexcept
+{
+    if (tripped_)
+    {
+        return; // 停摆仍然成立(见头注):hold 与快照原样留着,等 blockCounter 真正恢复推进
+    }
+    watchdogInit_ = false; // 下一拍重取基线(lastBlockValue_ / lastBlockAdvanceMs_ / lastWriteHead_)
+    onlineMaskAtTrip_ = 0;
+    reacquireNext_ = 0;
+    holdMask_ = 0;
+}
+
 } // namespace scvb

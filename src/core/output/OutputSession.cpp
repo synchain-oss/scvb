@@ -595,6 +595,9 @@ void OutputSession::release(u64 nowMs)
     releaseSlot();
     releaseSegments();
     resetChannelTracking();
+    // [KI-6] 停用期间 tick 不跑看门狗、基线冻在停用前:不清的话重新 prepare 后首拍(宿主首块还没来)会把整段
+    // 停用时长算成停摆,误触发并闩住全部轨。停摆中则照旧闩着(见 CtrlPlane::resetWatchdogUnlessTripped)。
+    ctrl_.resetWatchdogUnlessTripped();
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
     reap(nowMs);

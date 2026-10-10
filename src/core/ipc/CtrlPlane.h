@@ -314,6 +314,13 @@ public:
     // 人声在停调期间一直无声(H5,LS-11a 实测 329/329 帧缺席)。只在 [M] 读写,进程内状态,不进共享段。
     u32 watchdogHoldMask() const noexcept { return holdMask_; }
     bool watchdogTripped() const noexcept { return tripped_; }
+    // [KI-6] 音频流结束(OutputSession::release)时调。没在停摆:看门狗回到初始态 —— 下一次 tickWatchdog
+    // 重取 blockCounter / write_head 基线,让位序列与 hold 一并作废(重新 prepare 后各轨走常规上线 + [J32])。
+    // 为什么:release 到重新 prepare 之间 tick 不跑看门狗,基线冻在停用前。不清的话重新 prepare 后首拍
+    // (宿主首块还没来)会把整段停用时长算成「blockCounter 停滞」,而 Input 停用期间照写、写头早越过旧基线
+    // → 误触发、闩住全部轨,已转直通的轨恢复时还要逐轨排队。修 H5 之前误触发只清一拍、无害;有了 hold 才可感知。
+    // 停摆中(tripped)不动:Output 从停摆起一块都没跑过,停摆仍然成立,hold 照旧闩到它真正恢复推进。
+    void resetWatchdogUnlessTripped() noexcept;
 
     // ---- 广播区(Output→Input 配置只读镜像,契约 §4.3)----
     // Output [M] 写(seqlock 奇偶);值变化才调用,不必每拍写。未打开则静默不写。

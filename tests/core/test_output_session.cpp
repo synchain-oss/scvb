@@ -2449,3 +2449,173 @@ TEST_CASE("[KI-6] short Output stall: lanes whose Input is still muted rejoin to
     CHECK(last.mask == 0x7u);
     CHECK(last.inject == 0x7u);
 }
+
+// 宿主停用再启用 Output(releaseResources → prepareToPlay),其间别的轨照常在播、Input 照写:停用那一段**不算**
+// 停调。release 到重新 prepare 之间 tick 不跑看门狗、基线冻在停用前;不清的话重新 prepare 后首拍(宿主首块还没来,
+// 这里晚 [M] 一拍多)会把 7 s 停用整段算成「blockCounter 停滞」→ 误触发、闩住全部轨,已转直通的三轨恢复时再逐轨
+// 排队(第 2、3 轨各多等 200 / 400 ms 无声)。修 H5 之前误触发只清一拍、无害;有了 hold 才可感知。
+TEST_CASE("[KI-6] Output released and re-prepared while Inputs keep writing: the released span is not a stall",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kRelease = 3010; // 紧跟 3000 那一拍之后停用:那一拍 Output 刚 bump 过、看门狗刚取过基线
+    constexpr u64 kPrepare = 10000; // 停用 ~7 s:三条 Input 早已转直通
+    constexpr u64 kFirstBlock = 10050; // 重新 prepare 后 10000、10040 两拍都在宿主首块之前
+    constexpr u64 kEnd = 12000;
+    rig.runUntil(kRelease, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.out.release(rig.now);
+    rig.runUntil(kPrepare, /*outputCalled=*/false);
+    // 前提:三条 Input 都已转直通。还在静音档的话恢复时走 muted 例外、当拍接回,本格分不出排没排队。
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        REQUIRE_FALSE(rig.log.back().muted[i]);
+    }
+    REQUIRE(rig.out.prepare(48000, 512, rig.now) == OutputClaimState::kActive);
+    rig.runUntil(kFirstBlock, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kPrepare)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        // 常规上线:重新 prepare 后的首拍三轨同时置位(误触发的话首拍就被清掉,恢复后再逐轨放)。
+        CHECK(rejoinAt[i] <= kPrepare + 40);
+        // [J32] 握手照走:Input 看到位、转静音、报 muted 之后才注入,且不晚于 200 ms 窗。
+        CHECK(injectAt[i] > rejoinAt[i]);
+        CHECK(injectAt[i] - rejoinAt[i] <= scvb::output::kInjectDelayMs);
+    }
+    CHECK(rejoinAt[1] == rejoinAt[0]);
+    CHECK(rejoinAt[2] == rejoinAt[0]);
+
+    // 置位之后 Output 的每一拍 mask 都在(没有任何一拍被看门狗清掉)。
+    int clearedTicks = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t > rejoinAt[0] && s.outputTick && s.mask != 0x7u)
+        {
+            ++clearedTicks;
+        }
+    }
+    CHECK(clearedTicks == 0);
+    WARN("KI-6 release/re-prepare: rejoin +" << (rejoinAt[0] - kPrepare) << "/+" << (rejoinAt[1] - kPrepare) << "/+"
+                                             << (rejoinAt[2] - kPrepare) << " ms, inject +" << (injectAt[0] - kPrepare)
+                                             << " ms");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}
+
+// 反过来:停摆**之中**被 release 的,重新 prepare 后停摆照样成立 —— Output 从停摆起一块都没跑过。闩锁不跟着
+// release 清掉:重新 prepare 后宿主还是不调 Output 的话,各 Input 一直不健康、5 s 滞回接着数,不会因为
+// 「Output 重新 prepare 了」被叫回静音、白白重计一轮(清掉的话 0.5 s 后看门狗会再触发,Input 已被拉回静音)。
+TEST_CASE("[KI-6] Output released while stalled: the latch survives re-prepare until the Output runs again",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000;
+    constexpr u64 kRelease = 4000; // 停调 1 s 后停用:看门狗已触发并闩住
+    constexpr u64 kPrepare = 4500;
+    constexpr u64 kFirstBlock = 5500; // 重新 prepare 之后又 1 s 没被调用
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.runUntil(kRelease, /*outputCalled=*/false);
+
+    u64 tripMs = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0); // 前提:停用前确实已停摆
+
+    rig.out.release(rig.now);
+    rig.runUntil(kPrepare, /*outputCalled=*/false);
+    REQUIRE(rig.out.prepare(48000, 512, rig.now) == OutputClaimState::kActive);
+    rig.runUntil(kFirstBlock, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // 重新 prepare 后、宿主首块之前:Output 每一拍都不置位、不注入;Input 一直不健康(滞回没被打断)。
+    int ticksBeforeBlock = 0;
+    int leakedTicks = 0;
+    int healthySamples = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kPrepare || s.t >= kFirstBlock)
+        {
+            continue;
+        }
+        if (s.outputTick)
+        {
+            ++ticksBeforeBlock;
+            leakedTicks += (s.mask != 0 || s.inject != 0) ? 1 : 0;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            healthySamples += s.healthy[i] ? 1 : 0;
+        }
+    }
+    REQUIRE(ticksBeforeBlock >= 20); // 前提:这一段 Output 的 [M] 真在跑
+    CHECK(leakedTicks == 0);
+    CHECK(healthySamples == 0);
+
+    // Output 真正恢复推进后照常接回:停调 2.5 s < 5.5 s,Input 仍报 muted ⇒ 三轨同拍接回、当拍注入。
+    u64 rejoinAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kFirstBlock)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        CHECK(rejoinAt[i] <= kFirstBlock + 80);
+    }
+    WARN("KI-6 stalled release: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[0] - kFirstBlock)
+                                        << " ms after the first block");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}
