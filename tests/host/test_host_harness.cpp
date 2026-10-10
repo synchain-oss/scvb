@@ -13241,8 +13241,12 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     // 只停用/重启 Output 所在轨、别的轨照常在播(宿主里最常见的一幕):Input 继续推块、Output 不推。
     // Input 必须在推 —— 写头冻结 ≥ kSuspendStallMs(500ms)该轨就判挂起、退出 inject,首块反而走
     // 早退把记账清掉,这一格就什么都证明不了(第一版用例只 pump 不推块,删掉复位行照样绿,就是这个原因)。
-    // 推满 ~0.7s:[M] 重新 claim、重新绑定、走完 [J32] 200ms 注入延迟,inject 在 Output 首块之前已填回。
-    for (int k = 0; k < 35; ++k)
+    // 推 ~0.2s:够 [M] 重新 claim、重新绑定并把 inject 填回(prepare 重启 25Hz Timer,首拍 ≤ 40ms;三条 Input
+    // 一直报 muted 确认位,[J32] 当拍注入),inject 在 Output 首块之前已填回。
+    // ⚠ 不能推到 ≥ 0.5s(本格原先推 ~0.7s):Input 照写而 Output 一块不跑满 0.5s 就是 KI-6 的停调形状,
+    // 停摆看门狗会闩住全部轨(#379 修 H5 之后不再只清一拍),Output 首块因 inject = 0 走早退 ——
+    // 同样什么都证明不了;下面 checkNoResidualRelease 首块的 REQUIRE(本轨电平表读到 ch2)就是拦它的。
+    for (int k = 0; k < 10; ++k)
     {
         for (int i = 0; i < MonoMultiRig::kCount; ++i)
         {
