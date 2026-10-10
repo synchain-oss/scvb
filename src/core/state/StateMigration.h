@@ -13,7 +13,8 @@
 //   - 读到高版本 → RejectedNewer,preservedOriginal 保留整个 blob,由 Output 层原样回写,绝不让旧插件
 //     重写(毁掉)新版数据;
 //   - 读到低版本 → 依次执行 kMigrators[abi-1 .. kCurrentAbi-2] 升格,全部成功 → Migrated;
-//   - magic/长度/chunk 边界校验失败 → Corrupt(保持默认态,UI 报错)。
+//   - magic/长度/chunk 边界校验失败 → Corrupt(`out` 不动;调用方 Output 的 setStateInformation 原样返回:
+//     不改当前状态、不留这份字节、没有 UI 提示。见 docs/STATE_SCHEMA.md §三「迁移函数框架」①)。
 namespace scvb::state
 {
 

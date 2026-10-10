@@ -118,7 +118,8 @@ TEST_CASE("Monitor:0 自动化参数(123 参数面一个不动)", "[monitor][par
     ScvbMonitorAudioProcessor p;
     REQUIRE(p.getParameters().isEmpty());
     REQUIRE(p.getParameters().size() == 0);
-    // 宿主看到的参数总数为 0;bypass 由 wrapper 提供,不占自动化位。
+    // 插件自己声明的参数为 0。getBypassParameter() 为空时,JUCE 的 VST3 wrapper 自建一个 Bypass
+    // (`byps`,kCanAutomate | kIsBypass),所以宿主看到的是 1 个参数:可见、可自动化,不计入 123 的预算。
     REQUIRE(p.getBypassParameter() == nullptr);
     REQUIRE(p.getName() == "SCVB Monitor");
 }
