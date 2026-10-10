@@ -14,7 +14,8 @@
 // `decodeInputState` 里逐字成立(那一行今天仍在),**本 PR 把容器 abi 推到 4 之后它也没变** ——
 // Input 侧没有新的 CFGS 尾档,别把「共用容器 abi」与「两边布局同形」混成一件事。
 // 别拿 Input 那边来推这里,也别去 InputStateCodec 里找这一位。)
-// 别拿 `ui.scale` / `ui.language` 举证:那两个在 PRMS 与 CFGS 两行**都**登记着,证不出该放哪边。
+// `ui.scale` / `ui.language` 只登记在 CFGS 名下,实现也只写进 CFGS([J183] 订正 STATE_SCHEMA 之前,
+// PRMS 那一行也列着它们);它们不经本模块,别拿来推这几位该放哪一节。
 //
 // 当年(T37)还有一条机制上的理由,今天只剩一半,别再照旧口径记:那时 CFGS 的
 // OutputStateCodec 是 `kHeaderBytes + langBytes != size` 的严格等长解码,尾部**加不进**字段,
