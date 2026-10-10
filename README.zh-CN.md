@@ -10,6 +10,8 @@
 
 > 多人多声部人声的自动声像与音量平衡,以一对配套 VST3 插件的形式落地。
 
+<p align="center"><img src="docs/images/readme/hero-zh.jpg" alt="SCVB 把所有人声轨放在一起分析,给每一轨算出声像和音量曲线,直接写成 DAW 自动化" width="100%"></p>
+
 SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码与文档完全公开,欢迎在 [GPL-3.0-or-later](LICENSE) 的条款下自由使用、修改与分发。如果它帮你省下了时间,也欢迎去 [synchain.ca](https://synchain.ca) 看看我们的其他产品 —— 用得顺手的话,把 Synchain 推荐给你的朋友和同事,就是对我们最好的支持。
 
 > **状态:预发布(rc)阶段。** 预发布版见 [Releases 页](https://github.com/synchain-oss/scvb/releases)。正式版发布之前,功能与界面仍可能调整;已知限制见 [KNOWN_ISSUES](docs/KNOWN_ISSUES.md)。
@@ -20,7 +22,22 @@ SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码�
 
 SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集每一条人声轨,放在一起分析,再给每轨一条声像位置曲线和一条音量曲线,让各声部彼此错开而不是挤在同一个位置互相打架,并确保段落之间的响度接近一致。
 
+<p align="center"><img src="docs/images/readme/how-it-works-zh.jpg" alt="怎么用:01 采集,正常播放一遍;02 分析,点一下;03 写入,DAW 开 Latch 或 Write 再播一遍" width="100%"></p>
+
 **两个插件,一套系统。** **SCVB Input** 插在每条人声轨上负责采集;**SCVB Output** 插在人声总线上,负责分析、平衡、求和,并替换总线输入。另有一个可选的第三件 **SCVB Monitor**:只读窗口,用来看整组的声像与音量变化。界面逐 tab 的说明见[用户手册](docs/USER_GUIDE.zh-CN.md)。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/shot-master-zh.jpg" alt="SCVB Output 整体调整页"><br><sub><b>Output · 整体调整</b> —— 采集、分析、写入;每一轨的声像和音量一眼看清</sub></td>
+    <td width="50%"><img src="docs/images/readme/shot-tracks-zh.jpg" alt="SCVB Output 轨道页"><br><sub><b>Output · 轨道</b> —— 每一轨的主唱、配对、冻结和实时电平</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/shot-waveform-zh.jpg" alt="SCVB Output 波形与分段页"><br><sub><b>Output · 波形与分段</b> —— 按乐句分段,每一段都能单独改、单独锁</sub></td>
+    <td width="50%"><img src="docs/images/readme/shot-monitor-zh.jpg" alt="SCVB Monitor"><br><sub><b>Monitor</b> —— 只读观察整组的声像分布与轨迹</sub></td>
+  </tr>
+</table>
+
+<sub>界面为示意图,使用演示数据。</sub>
 
 觉得引擎分析的效果一般、跟你想象中的安排不符,想要微调?没问题!你可以参考 Waves 的 Vocal Rider 那种「先打印自动化、再手工微调」的工作流,使用自动化写入功能把引擎的分析结果写成自动化记录到宿主中,再在宿主里基于这些结果微调 —— 相信这能省下你不少时间。
 

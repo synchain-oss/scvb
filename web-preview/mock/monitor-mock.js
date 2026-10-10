@@ -28,9 +28,13 @@
 //     注意与车道的判据**不同**:车道是点采样、位图是区间求交,两者刻意不一致;
 //   • 位图位序 LSB 优先、每字 32 列;
 //   • 车道定点 `round(clamp(pan,−100,100) × 100)`,整轨无数据 ⇒ 全 `kVizPanNone`;
-//   • **断线以位图为准**:曲线求值会填补空隙,故本文件在没有分段的列上**照样填车道值**
-//     (hold 上一段的 pan)—— 只有位图是 0。消费侧若误把车道当覆盖判据,断线会整个消失,
-//     这正是 smoke 要抓的那个错;
+//   • 车道值 = 引擎 `CurveEvaluator::panAt` 在列中心时刻的求值(`VizPublisher::rebuildLanes`
+//     与自动化打印同源),段间过渡照引擎走 —— 停顿里的过渡放在**停顿中点**,首尾相接的两段按
+//     限速平滑过渡([SL-591];此前这里简化成「列中心之前最近一段」的 hold,新段起点落在列中心
+//     之后的那一列会多出一截上一段的值,Monitor 轨迹上每段开头一个「┌」「L」形台阶,真机没有);
+//   • **断线以位图为准**:过渡曲线在空隙里也求得出值,故本文件在没有分段的列上**照样填车道值**
+//     (停顿前半段是上一段的 pan、过了中点是下一段的)—— 只有位图是 0。消费侧若误把车道当覆盖
+//     判据,断线会整个消失,这正是 smoke 要抓的那个错;
 //   • 窗口跨度 = `max(最大分段末端, playhead+1, 60s)` 向上取整到 **30s** 边界,上限 24h;
 //   • 帧头按桥面到达周期(SL-192 后 25Hz);车道 / 位图 / 轨色**按需重算**(`lane_revision` 变化时才随事件带上)。
 //
@@ -72,6 +76,12 @@ const SAMPLE_RATE = 48000;
 
 /** `VizTrackLabels` 的每轨定长槽(字节;T44:`utf8[15][8]` u32 = 32 B/轨)。 */
 const VIZ_LABEL_BYTES = 32;
+
+/**
+ * 段间过渡时间缺省值(ms):快照里读不到 `analysis.transition_ramp_ms` 时用(契约 §1.20 默认 80,
+ * 与 `web/shared/mock-data.js` 的演示快照、codec 的 `kOutputTransitionRampMsDefault` 同值)。
+ */
+const TRANSITION_RAMP_MS_DEFAULT = 80;
 
 /** 窗口跨度量化边界(秒)与下限、上限 —— 逐条照 T44 变更文档「窗口跨度」。 */
 const WINDOW_QUANTUM_S = 30;
@@ -259,28 +269,149 @@ export function panToFixed(pan) {
     return fixedOf(clamp(-100, 100, pan));
 }
 
+// 段间过渡(`src/core/engine/CurveEvaluator.cpp` 的移植,02 §8.2;只服务车道求值)。
+// 引擎侧的固定常数逐个照抄 —— 改了哪个都会让 preview 的轨迹与真机分家。
+const RAMP_MIN_S = 0.02; // kMinRampSec
+const TINY_PAN_DELTA = 5; // kTinyPanDelta
+const TINY_VOL_DELTA_DB = 0.5; // kTinyVolDeltaDb
+const RATE_PAN_PER_S = 15; // TransitionConfig::ratePanPerSec
+const RATE_GAIN_DB_PER_S = 3; // TransitionConfig::rateGainDbPerSec
+const MAX_RAMP_S = 6; // TransitionConfig::maxRampSec
+const OVERLAP_RATIO = 0.9; // TransitionConfig::overlapRatio
+
+/** smoothstep:3w² − 2w³,端点导数为 0。 */
+function smoothstep(x) {
+    const w = clamp(0, 1, x);
+    return w * w * (3 - 2 * w);
+}
+
+/**
+ * 有序段表 → 声像过渡曲线 `panAt(tS)`(`CurveEvaluator::build` + `panAt`,逐条照引擎):
+ *   • 段内取本段值;首段之前取首段、末段之后取末段;
+ *   • 两段之间有停顿:过渡放在**停顿中点**,时长 `clamp(min(过渡时间, 0.6·停顿), 20 ms, 过渡时间)`
+ *     —— 新段一开口声像已经到位;
+ *   • 首尾相接:按限速拉长,`clamp(1.5 × max(|Δpan| / 15, |Δvol| / 3), 过渡时间, 6 s)`;
+ *   • 两侧各至多占相邻段长的 0.45(过渡互不重叠);|Δpan| < 5 且 |Δvol| < 0.5 dB 的微小变化
+ *     与退化段在边界中点直接跳变。
+ * 段须按起点升序、互不重叠(`rasterizeTrack` 过滤排序之后的段表);值不夹取(定点时才夹)。
+ */
+export function transitionCurve(segments, rampMs = TRANSITION_RAMP_MS_DEFAULT) {
+    const segs = segments || [];
+    const n = segs.length;
+    const pan = (s) => (Number.isFinite(s.pan) ? s.pan : 0);
+    const vol = (s) => (Number.isFinite(s.volDb) ? s.volDb : 0);
+    if (n === 0) return () => 0;
+    if (n === 1) return () => pan(segs[0]);
+    const rampS =
+        Math.max(
+            Number.isFinite(rampMs) ? rampMs : TRANSITION_RAMP_MS_DEFAULT,
+            0,
+        ) / 1000;
+    const bounds = [];
+    for (let i = 0; i + 1 < n; i++) {
+        const a = segs[i];
+        const b = segs[i + 1];
+        const gap = b.t0S - a.t1S;
+        const dPan = pan(b) - pan(a);
+        const dVol = vol(b) - vol(a);
+        const center = gap > 0 ? (a.t1S + b.t0S) / 2 : a.t1S;
+        if (
+            Math.abs(dPan) < TINY_PAN_DELTA &&
+            Math.abs(dVol) < TINY_VOL_DELTA_DB
+        ) {
+            bounds.push({ jump: true, center, tEff: 0 });
+            continue;
+        }
+        // 引擎的 clampd(x, lo, hi) 先判下界 —— 过渡时间 < 20 ms 时上下界倒挂,两边同样取下界。
+        let tEff =
+            gap > 0
+                ? clamp(RAMP_MIN_S, rampS, Math.min(rampS, 0.6 * gap))
+                : clamp(
+                      rampS,
+                      MAX_RAMP_S,
+                      1.5 *
+                          Math.max(
+                              Math.abs(dPan) / RATE_PAN_PER_S,
+                              Math.abs(dVol) / RATE_GAIN_DB_PER_S,
+                          ),
+                  );
+        tEff = Math.min(
+            tEff,
+            OVERLAP_RATIO * (a.t1S - a.t0S),
+            OVERLAP_RATIO * (b.t1S - b.t0S),
+        );
+        bounds.push(
+            tEff > 0
+                ? { jump: false, center, tEff }
+                : { jump: true, center, tEff: 0 },
+        );
+    }
+    return (tS) => {
+        if (tS < segs[0].t0S) return pan(segs[0]);
+        if (tS >= segs[n - 1].t1S) return pan(segs[n - 1]);
+        // 过渡优先(互不重叠,至多命中一个)。
+        for (let i = 0; i + 1 < n; i++) {
+            const b = bounds[i];
+            if (b.jump) continue;
+            const lo = b.center - b.tEff / 2;
+            if (tS >= lo && tS <= b.center + b.tEff / 2) {
+                const from = pan(segs[i]);
+                return (
+                    from +
+                    (pan(segs[i + 1]) - from) * smoothstep((tS - lo) / b.tEff)
+                );
+            }
+        }
+        for (const s of segs) if (tS >= s.t0S && tS < s.t1S) return pan(s);
+        // 段间空隙:过渡之前保持前段值,之后取后段值(跳变在边界中点切换)。
+        for (let i = 0; i + 1 < n; i++) {
+            if (tS >= segs[i].t1S && tS < segs[i + 1].t0S) {
+                const b = bounds[i];
+                const at = b.jump ? b.center : b.center - b.tEff / 2;
+                return tS < at ? pan(segs[i]) : pan(segs[i + 1]);
+            }
+        }
+        return pan(segs[n - 1]); // 防御性兜底(同引擎)
+    };
+}
+
 /**
  * 单轨段表 → `{lane: int16[1024], words: u32[32]}`。
  *
  * **两条判据刻意不同**(照 T44):
- *   • `lane[i]` = 列**中心时刻**的曲线求值。曲线会 hold —— 没有分段的列**照样有值**
- *     (取最近一段的 pan),整轨无分段时才全哨兵;
+ *   • `lane[i]` = 列**中心时刻**的过渡曲线求值(`transitionCurve`)。曲线在空隙里也有值 ——
+ *     没有分段的列**照样有值**,整轨无分段时才全哨兵;
  *   • `words` 的第 i 位 = 列区间 `[i·colS, (i+1)·colS)` 与任一分段**有交集**即 1
  *     (保守口径:短于一列的分段不会消失)。
  *
  * 于是「车道有值 ≠ 有覆盖」——**断线只能看位图**。消费侧若拿车道当覆盖判据,断线会整个
  * 消失而图看起来完全正常,这正是 smoke ③ 要抓的那个错。
  */
-export function rasterizeTrack(segments, spanS, startS = 0) {
+export function rasterizeTrack(
+    segments,
+    spanS,
+    startS = 0,
+    rampMs = TRANSITION_RAMP_MS_DEFAULT,
+) {
     const lane = new Array(VIZ_COLUMNS).fill(VIZ_PAN_NONE);
     const words = new Array(VIZ_COVERAGE_WORDS).fill(0);
+    const finite = (s) => s && Number.isFinite(s.t0S) && Number.isFinite(s.t1S);
+    const byStart = (a, b) => a.t0S - b.t0S;
+    // 位图只认正长度的段(零长段与任何列区间都没有交集)。
     const segs = (segments || [])
-        .filter((s) => s && Number.isFinite(s.t0S) && s.t1S > s.t0S)
+        .filter((s) => finite(s) && s.t1S > s.t0S)
         .slice()
-        .sort((a, b) => a.t0S - b.t0S);
-    if (segs.length === 0 || !(spanS > 0)) return { lane, words };
+        .sort(byStart);
+    // 车道照引擎拿**完整**段表:零长段照样进 build(它经重叠防护把两侧边界压成跳变),
+    // 只剔除倒挂 / 非数的坏段。
+    const curveSegs = (segments || [])
+        .filter((s) => finite(s) && s.t1S >= s.t0S)
+        .slice()
+        .sort(byStart);
+    if (curveSegs.length === 0 || !(spanS > 0)) return { lane, words };
 
     const colS = spanS / VIZ_COLUMNS;
+    const panAt = transitionCurve(curveSegs, rampMs);
     for (let i = 0; i < VIZ_COLUMNS; i++) {
         const c0 = startS + i * colS;
         const c1 = c0 + colS;
@@ -291,14 +422,8 @@ export function rasterizeTrack(segments, spanS, startS = 0) {
                 break;
             }
         }
-        // ---- 车道:列中心点采样 + hold(CurveEvaluator 的填补语义)
-        const mid = c0 + colS / 2;
-        let hold = null;
-        for (const s of segs) {
-            if (s.t0S > mid) break;
-            hold = s; // 最后一个起点 ≤ mid 的段
-        }
-        if (hold) lane[i] = panToFixed(hold.pan);
+        // ---- 车道:列中心时刻的过渡曲线求值(VizPublisher::rebuildLanes → CurveEvaluator::panAt)
+        lane[i] = panToFixed(panAt(c0 + colS / 2));
     }
     return { lane, words };
 }
@@ -324,6 +449,14 @@ function buildGroup(world, groupId) {
 
     const segChannels = (world.output.segments || {}).channels || [];
     const cfgChannels = (world.output.snapshot || {}).channels || [];
+    // 车道的段间过渡按 Tab1「过渡时间」走(引擎 `TransitionConfig::transitionRampSec` 的来源)。
+    // `null` 不能按 `Number(null) === 0` 算成 0 ms —— 读不到就用缺省值。
+    const rampRaw = ((world.output.snapshot || {}).analysis || {})
+        .transition_ramp_ms;
+    const rampMs =
+        typeof rampRaw === "number" && Number.isFinite(rampRaw)
+            ? rampRaw
+            : TRANSITION_RAMP_MS_DEFAULT;
 
     let maxEnd = 0;
     for (const ch of tracks) {
@@ -352,7 +485,7 @@ function buildGroup(world, groupId) {
         }
         const entry = segChannels.find((c) => c.ch === ch);
         const segs = (entry && entry.segments) || [];
-        const { lane, words } = rasterizeTrack(segs, spanS, 0);
+        const { lane, words } = rasterizeTrack(segs, spanS, 0, rampMs);
         lanes.push(lane);
         coverage.push(words);
         if (words.some((w) => w !== 0)) covered.push(ch);

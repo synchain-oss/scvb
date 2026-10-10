@@ -1,18 +1,18 @@
 name: Branch Gate
 
-# 晋升链(v1 只有 dev 一条长期分支):
+# 晋升链(J184,2026-10-09 起每次发布都走 dev → staging → prod):
 #   feat/* | feature/*  ->  dev            (same-repo)
 #   任意分支名(除长期分支名) -> dev        (fork,J31/J41)
+#   dev                 ->  staging        (只收本仓的 dev:发版晋升,见 docs/RELEASE.md)
+#   staging             ->  prod           (只收本仓的 staging;tag 只打在 prod 的合并提交上)
 # 子 PR(base=feature/*)故意不受此命名门禁约束(D2)。
 # [SL-277/J96,2026-09-02] 子 PR 已回到轻档 CI(不跑 build-vst3);本工作流的触发面不受影响
-# —— 它本来就只挂 pull_request→dev。
-# 发版里程碑再打开下面被注释的 prod/staging 规则(预发布分支名是 staging,J163a / SL-557)。
-# staging / prod 本身不经 PR 前移:发布后由维护者临时放开分支保护、直推快进(J163 / J172,见 docs/RELEASE.md),
-# 所以这两条规则只对误开到这两个分支的 PR 起作用,不代表前移要走 PR。
+# —— 它不挂 feature/**。
+# staging / prod 只经 PR 前移(J184 取代 J163 / J172 的「临时放开保护、直推快进」),下面规则 ⓪ 管这两条 PR 的来源。
 
 on:
   pull_request:
-    branches: [dev] # 发版后改为 [prod, staging, dev]
+    branches: [dev, staging, prod] # staging / prod 只收发版晋升 PR(规则 ⓪)
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -36,6 +36,22 @@ jobs:
           THIS_REPO: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
         run: |
+          # ⓪ base=staging / prod:发版晋升链 dev → staging → prod(J184),每一级只收本仓的上一级。
+          #    放在 ① ② 之前:那两条放行是为「PR 到 dev」设计的,排在它们后面的话,dependabot / fork
+          #    开到 staging / prod 的 PR 会在 ① ② 处 exit 0,本规则形同虚设。fork 的 head 即使叫
+          #    dev / staging 也不是本仓的那个分支,故连仓名一起比(同 synchain-bridge 的 dev→prod 规则)。
+          want=""
+          case "$BASE" in
+            staging) want="dev" ;;
+            prod) want="staging" ;;
+          esac
+          if [ -n "$want" ]; then
+            if [ "$HEAD_REPO" != "$THIS_REPO" ] || [ "$HEAD" != "$want" ]; then
+              echo "::error::Only '$want' of $THIS_REPO can merge into '$BASE'. Got: '$HEAD_REPO:$HEAD'"
+              exit 1
+            fi
+          fi
+
           # ① 机器人 PR 先放行命名规则:dependabot 的 head 形如
           #    dependabot/github_actions/actions-checkout-5,永远不匹配 feat/*|feature/*。
           #    不放行的话每条依赖升级 PR 都会被 required check 红叉,只能靠 admin bypass
@@ -48,7 +64,7 @@ jobs:
           # ② fork PR(J31/J41):允许,但不得用长期分支名伪装晋升;不强制 feat/*|feature/* 命名。
           if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
             case "$HEAD" in
-              dev|stage|prod|feature/v1|feature/extraction)
+              dev|stage|staging|prod|feature/v1|feature/extraction)
                 echo "::error::Fork PR head branch must not be named '$HEAD' (reserved long-lived branch name)."
                 exit 1 ;;
             esac
@@ -64,9 +80,7 @@ jobs:
               *) echo "::error::Only 'feat/*' or 'feature/*' can merge into 'dev'. Got: '$HEAD'"; exit 1 ;;
             esac
           fi
-          # --- 发版后启用 ---
-          # if [ "$BASE" = "prod" ] && [ "$HEAD" != "staging" ] && [ "$HEAD" != "dev" ]; then ... fi
-          # if [ "$BASE" = "staging" ] && [ "$HEAD" != "dev" ]; then ... fi
+          # base=staging / prod 的规则在 ⓪,走到这里的已经放行。
           echo "Branch gate passed: '$HEAD' -> '$BASE'"
 
       # DCO —— 12 §1.4 把 Signed-off-by 定为贡献前提,而 PR 模板里的勾选框是纯自觉。

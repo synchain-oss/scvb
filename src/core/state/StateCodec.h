@@ -19,9 +19,10 @@
 //   16..  TLV × N:{ u32 fourcc; u32 sizeBytes; u8 payload[sizeBytes](4 字节对齐,padding 置 0) }
 //
 // 六个已知 fourcc:PRMS / CFGS / CRVS / FEAT / UICF / LEAD([SL-216] lead_select 时间线记录,
-// 编解码在 analysis/LeadTimeline.h,容器层同样只当不透明 payload)。PRMS/CFGS 是 JUCE ValueTree 二进制、
-// FEAT 是 gzip(04 §5.2,归 T21)——三者在 scvb_core(无 JUCE)层面都是**不透明 payload**,
-// 本层只负责容器承载与未知块回写(03 §6.1)。CRVS 是自定义紧凑二进制,本层负责其编解码。
+// 编解码在 analysis/LeadTimeline.h,容器层同样只当不透明 payload)。PRMS 是 Output 的 APVTS 状态树
+// 经 JUCE copyXmlToBinary 写出的 XML(带 JUCE 的小头,不是 ValueTree 的二进制流)、CFGS 是自定义紧凑二进制
+// (字段级编解码在 OutputStateCodec / InputStateCodec)、FEAT 是 gzip(04 §5.2,归 T21)——三者在本层
+// 都是**不透明 payload**,本层只负责容器承载与未知块回写(03 §6.1)。CRVS 是自定义紧凑二进制,本层负责其编解码。
 // 未知 fourcc 的块在 load 时原样保留、save 时原样回写(前向小版本兼容)。
 //
 // 【挂账 / 后续接线契约落点】(本卡不改代码,只记账):
