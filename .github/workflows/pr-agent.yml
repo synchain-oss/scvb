@@ -1,11 +1,15 @@
 name: PR Agent
 
-# Qodo PR-Agent —— DeepSeek,按量计费(三个 review bot 里唯一"每次 push 必跑"的一个)。
+# Qodo PR-Agent —— DeepSeek,按量计费。**只在 base 为 `dev` 的 PR 上跑**(用户 2026-10-11 裁定):
+# 子 PR(base=feature/**)与 staging / prod 发版晋升 PR 都不跑;开到 dev 的 PR 每次 push 照常复审。
+# 注意:被 on.pull_request.branches 过滤掉的 PR 不会产生 pr-agent 的 check run —— 哪个分支的保护规则若仍把
+# `pr-agent` 列为必需检查,开到那个分支的 PR 会一直停在等待状态;改触发面时要同步调整分支保护。
 # 容器化(Docker container)action:slim runner 无 docker daemon,build 阶段会在 /var/run/docker.sock 上失败。
 # fork PR 一律不跑(J31):pull_request 事件不向 fork 下发 secrets。
 # 成本提醒(U8):v1 建议先 gh workflow disable,等观察到 claude-review 的盲区再开。
 on:
   pull_request:
+    branches: [dev]
     types: [opened, reopened, ready_for_review, synchronize]
 
 concurrency:
