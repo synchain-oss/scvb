@@ -13091,13 +13091,16 @@ void setTrackEnabled(ScvbOutputAudioProcessor& out, int ch, bool on)
 // 下去,关掉的轨照常在母线上(SL-488 首格在 mac 上就这样红过:③ 的 12 块恒为 0.354、本轨电平表 0.5)。
 // soloBlock 不泵消息,所以这一拍只能落在这里。
 // 条件:Input 读到的广播区 config_seq 追上了这次递增。[M] 的 timerCallback 先存启用位图、同一拍末尾才
-// publishConfigBroadcast(config_seq = configSeq + 1),所以追上 ⇒ 位图已在 [A] 手里。上界 400 ms,留在
-// 写头冻结判挂起的 500 ms(kSuspendStallMs)之下;到点没追上就红在这里,不让后面的判据替它背锅。
+// publishConfigBroadcast(config_seq = configSeq + 1),所以追上 ⇒ 位图已在 [A] 手里。上界是墙钟 400 ms
+// (steadyNowMs,与挂起判定同一个时钟;不按名义 ms 累加 —— mac 上 runDispatchLoopUntil 会被拉长),最后一次
+// pump(10) 至多再多十几 ms,仍在写头冻结判挂起的 500 ms(kSuspendStallMs)之下;到点没追上就红在这里,
+// 不让后面的判据替它背锅。
 void pumpUntilTrackConfigApplied(MonoMultiRig& r)
 {
     const scvb::u32 want = r.out.runtime().configSeq + 1u;
     const auto seen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
-    for (int waited = 0; waited < 400 && seen() < want; waited += 10)
+    const scvb::u64 deadline = scvb::steadyNowMs() + 400;
+    while (seen() < want && scvb::steadyNowMs() < deadline)
     {
         MonoMultiRig::pump(10);
     }

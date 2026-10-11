@@ -476,7 +476,8 @@ else()
 #   · 分片不省总时长:四条照样串行(exclusive_guard 互斥,mac 的 ctest 步不带 -j)。它保的是每条都在
 #     900 s 线下,以及一片挂死被杀时另几片的结论还在 —— 被杀的那片会在 POSIX 上留下无主段(SIGKILL 来不及
 #     shm_unlink),build-macos.yml 的 11a 残段基线随之红,这是对的。
-# 切点按格数、不按耗时,所以四片不等长。估计(同一口径):141 / 251 / 530 / 334 s。
+# 切点按格数、不按耗时,所以四片不等长。实测(run 38174830485,macos-15 arm64):144.8 / 249.2 / 544.4 /
+# 458.6 s,最长那片对 900 s 约 1.65 倍余量(分片前按格外推的估计是 141 / 251 / 530 / 334 s,第 4 片偏乐观)。
 foreach(scvb_host_shard RANGE 3)
   math(EXPR scvb_host_shard_no "${scvb_host_shard} + 1")
   add_test(NAME scvb_host_tests_shard${scvb_host_shard_no}of4
