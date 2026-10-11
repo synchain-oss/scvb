@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "diag/VizRateMeter.h" // [B 线 M07b] viz 实得速率(进程内计数,不进共享内存)
 #include "engine/PlayheadShot.h"
 #include "ipc/PlatformSegmentBackend.h" // 按平台选段后端(Windows 分支自带 NOMINMAX,见该头)
 #include "ipc/VizPlane.h"
@@ -104,6 +105,13 @@ public:
     // 离线环境里直接驱动一拍(否则「零写入」只能靠真机跑 —— 那就不叫断言了)。
     void tickMessageThread(std::uint64_t nowMs);
 
+    // [B 线 M07b] 编辑器每次**真的**把 scvb.viz 推给页面之后调一次(MonitorEditor::emitTick,消息线程,
+    // 调用方已持 lifecycleLock())。只计数,不改任何别的状态;汇总由 tickMessageThread 收窗时写。
+    void noteVizPushed(std::uint64_t nowMs);
+
+    // [B 线 M07b] 实得速率计数器(测试内省用;生产只经平台文件日志往外报)。
+    const scvb::diag::MonitorVizRate& vizRate() const noexcept { return vizRate_; }
+
 private:
     void timerCallback() override;
     void refreshViz(std::uint64_t nowMs);
@@ -143,6 +151,12 @@ private:
     std::uint64_t lastStaleProbeMs_ = 0; // 上次「松手重探」的时刻(陈旧时每 kVizStaleMs 探一次)
     std::uint8_t groupsOnline_ = 0;
     std::uint64_t lastGroupsProbeMs_ = 0; // 1Hz 跨组探测折半
+
+    // [B 线 M07b] viz 实得速率:tick / poll / fresh 在 [M] 定时器里记,push 由编辑器经 noteVizPushed 记,
+    // 每约 10 s 在 tickMessageThread 末尾收一窗,装了平台文件日志(mac)时写一行 viz-rate。
+    // 全部持 lifecycleMutex_;prepareToPlay / 换组时 restart;processBlock 不碰。
+    scvb::diag::MonitorVizRate vizRate_{
+        scvb::diag::makeVizRateInstanceTag(juce::AudioProcessor::getWrapperTypeDescription(wrapperType))};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbMonitorAudioProcessor)
 };

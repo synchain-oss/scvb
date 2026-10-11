@@ -30,6 +30,12 @@
 // DiagDeduper:同一 (op, error, segment) 在 kRepeatWindowMs 内只落一行,下一次落行时带上期间略去的
 // 次数;另有全局每窗口 kMaxLinesPerWindow 行的上限,挡住大量不同键同时刷屏。
 //
+// 【viz 实得速率】(B 线 M07b)installAt() 同时把 scvb_core 的 viz-rate 槽(core/diag/VizRateSink.h)接到
+// 本日志:Output / Monitor 的定时器回调每约 10 s 交一行 `viz-rate ...`(行的口径见 core/diag/VizRateMeter.h)。
+// 源头本身就按窗口限了频(每实例每窗一行);sink 另有一道全局上限 LineBudget(每 kVizRateBudgetWindowMs
+// 最多 kVizRateLinesPerWindow 行,任意实例合计),挡住「同一个二进制里开了一大把实例」把日志撑满,
+// 被挡下的条数进下一条落行。uninstall() 摘掉。Windows 生产路径从不 install,槽一直是空的。
+//
 // 文案一律 ASCII(运行期字面量含非 ASCII 会在 CP936 机器上触发 MSVC C4819);中文只在注释里。
 
 #include <juce_core/juce_core.h>
@@ -113,15 +119,45 @@ private:
     std::uint32_t rateLimited_ = 0;
 };
 
+// 一类日志行的全局上限(纯逻辑,时间由调用方传入)。每个窗口最多 maxLines 行,超出的只计数,并进下一条
+// 放行的那一行。时间差按 uint32 无符号相减(getMillisecondCounter 约 49 天回绕一次)。
+class LineBudget
+{
+public:
+    struct Verdict
+    {
+        bool emit = false; // true = 这一行落盘
+        std::uint32_t dropped = 0; // 上一条放行之后被挡下的条数(emit 时才有意义)
+    };
+
+    LineBudget(std::uint32_t maxLines, std::uint32_t windowMs) noexcept : maxLines_(maxLines), windowMs_(windowMs) {}
+
+    Verdict onLine(std::uint32_t nowMs) noexcept;
+
+private:
+    std::uint32_t maxLines_;
+    std::uint32_t windowMs_;
+    bool windowStarted_ = false;
+    std::uint32_t windowStartMs_ = 0;
+    std::uint32_t linesInWindow_ = 0;
+    std::uint32_t dropped_ = 0;
+};
+
+// viz-rate 行的全局上限:每 60 s 最多 60 行 = 每个实例每 10 s 一行时可容 10 个实例同时报。
+// 按每行约 200 字节算,封顶约 12 KB / 分钟,一份 1 MB 日志至少撑约 80 分钟才轮转。
+inline constexpr std::uint32_t kVizRateBudgetWindowMs = 60000;
+inline constexpr std::uint32_t kVizRateLinesPerWindow = 60;
+
 // 生产入口(三个插件的 createPluginFilter 调):本角色的默认日志文件 + IPC 诊断 sink,再写一行开场
 // (角色、版本、pid、宿主可执行名)。每个插件二进制只装一次,后续调用是空操作;非 mac 平台恒为空操作。
 // 返回 true = 这次真的装上了。线程:任意非实时线程(内部有锁)。
 bool install(const juce::String& role, const juce::String& version = {});
 
 // 指定文件装上(install 的下半段;单测也走这里,把日志放进临时目录)。已装时不替换、返回 false。
+// 装上时同时接上 IpcDiag sink(有 POSIX 段后端的平台)与 viz-rate sink(所有平台;生产上只有 mac 会走到这里)。
 bool installAt(const juce::File& file);
 
-// 卸下(只给单测用:恢复 IpcDiag 的空操作 sink,丢掉文件句柄)。生产代码从不调用 —— 日志与进程(准确说
+// 卸下(只给单测用:恢复 IpcDiag 与 viz-rate 的空操作 sink,丢掉文件句柄)。生产代码从不调用 —— 日志与进程(准确说
 // 与插件二进制)同寿。
 void uninstall();
 

@@ -107,6 +107,10 @@ target_sources(scvb_tests PRIVATE core/test_platform_identity.cpp)
 # `scvb_seqlock_stress` 用同一个二进制按标签 `[stress]` 单跑,上界单独给(见紧随的 set_tests_properties)。
 target_sources(scvb_tests PRIVATE core/test_seqlock_stress.cpp)
 
+# [B 线 M07b] viz 实得速率的计数与窗口汇总(src/core/diag/VizRateMeter.*,[M07b][vizrate])。注入逻辑时刻、
+# 不看墙钟,进默认 `scvb_tests` 那一条(上界同那一条)。同样是独立的 target_sources 追加块;两平台都编都跑。
+target_sources(scvb_tests PRIVATE core/test_viz_rate_meter.cpp)
+
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
 else()
