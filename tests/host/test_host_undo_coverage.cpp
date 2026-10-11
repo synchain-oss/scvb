@@ -695,3 +695,9 @@ TEST_CASE("SL-536 UNDO-L:载入 state 清空撤销 / 重做栈(含只带 PRMS �
         CHECK(closeTo(r.eng("ms_balance"), 0.0f));
     }
 }
+
+// M12B-DIAG (temporary commit, reverted before review): fails on purpose so ctest prints per-case durations.
+TEST_CASE("M12B-DIAG host: forced failure so ctest prints the reporter output", "[host][m12b-diag]")
+{
+    FAIL("M12B-DIAG: forced failure so ctest prints the full reporter output");
+}
