@@ -32,6 +32,21 @@ constexpr std::uint64_t kVizAttachRetryMs = 250;
 // 代价是 `VizPlane::read()` 跑到 60Hz —— 实测 p50 **3.80 µs**/次
 // (`tests/core/test_viz_publish_cost.cpp`),即 **0.023% 一颗核**,跑在 [M] 上,买得值。
 constexpr int kVizPollHz = 60;
+
+// [B 线 M07b] viz-rate 日志行里的段状态名(与编辑器 scvb.state 的 viz 字段同一组词)。
+const char* vizStateLogName(ScvbMonitorAudioProcessor::VizState s) noexcept
+{
+    switch (s)
+    {
+    case ScvbMonitorAudioProcessor::VizState::kOnline:
+        return "online";
+    case ScvbMonitorAudioProcessor::VizState::kAbiMismatch:
+        return "abiMismatch";
+    case ScvbMonitorAudioProcessor::VizState::kOffline:
+    default:
+        return "offline";
+    }
+}
 } // namespace
 
 ScvbMonitorAudioProcessor::ScvbMonitorAudioProcessor()
@@ -70,6 +85,7 @@ void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPe
     sawVizFrame_ = false;
     lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
+    vizRate_.restart(); // [B 线 M07b] 音频流(重)起:上一段的残窗作废,停表期间不算进拍距
     startTimerHz(kVizPollHz);
 }
 
@@ -272,6 +288,7 @@ bool ScvbMonitorAudioProcessor::setObservedGroup(int groupId)
     lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
     *viz_ = scvb::VizSnapshot{}; // 清空上一组的车道,避免换组瞬间画出别人的曲线
+    vizRate_.restart(); // [B 线 M07b] 一窗只算一个组:换组前的残窗作废(日志行里的 group 才不会张冠李戴)
     return true;
 }
 
@@ -300,7 +317,11 @@ void ScvbMonitorAudioProcessor::timerCallback()
 
 void ScvbMonitorAudioProcessor::tickMessageThread(std::uint64_t now)
 {
+    // [B 线 M07b] 编辑器在不在:取锁之前读(getActiveEditor 自己取 JUCE 的 activeEditorLock),
+    // 不在 lifecycleMutex_ 里再套一把别的锁。只进日志行。
+    const bool editorOpen = getActiveEditor() != nullptr;
     const juce::ScopedLock lock(lifecycleMutex_);
+    vizRate_.onTick(now); // [B 线 M07b] 定时器这一拍本身(看它有没有被拉长 / 合并)
     refreshViz(now);
 
     if (now - lastGroupsProbeMs_ >= kGroupsProbeIntervalMs)
@@ -310,6 +331,18 @@ void ScvbMonitorAudioProcessor::tickMessageThread(std::uint64_t now)
         groupsOnline_ = scvb::probeGroupsOnline(backend_, static_cast<scvb::u32>(groupId_), now,
                                                 /*includeOwnGroup=*/true);
     }
+
+    // [B 线 M07b] 每约 10 s 收一窗;装了平台文件日志(mac)时写一行 viz-rate。段状态与编辑器在不在
+    // 都取收窗这一刻的(push 为 0 时据 editor=off 分辨「没开窗」与「开着却推不出去」)。
+    vizRate_.closeIfDue(now, groupId_, vizStateLogName(vizState_), editorOpen);
+}
+
+void ScvbMonitorAudioProcessor::noteVizPushed(std::uint64_t nowMs)
+{
+    // 调用方(MonitorEditor::emitTick)已持 lifecycleLock();这里再取一次是可重入的同一把锁,
+    // 让本入口不依赖调用方的这条前提(与 setObservedGroup 同款)。
+    const juce::ScopedLock lock(lifecycleMutex_);
+    vizRate_.onPush(nowMs);
 }
 
 void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
@@ -354,6 +387,7 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
     }
 
     // 一致性读;撕裂(连续 8 次)则沿用上帧,不清空、不闪烁。
+    vizRate_.onPoll(nowMs); // [B 线 M07b] 真的去读了一次段(上面 attach 不上的早退拍子不算)
     if (vizPlane_.read(*viz_))
     {
         // 首帧必算「有新帧」:publish_ms 完全可以合法地是 0(写方用的是自己的时钟基准),
@@ -363,6 +397,7 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
             sawVizFrame_ = true;
             lastVizPublishMs_ = viz_->publishMs;
             lastVizChangeMs_ = nowMs;
+            vizRate_.onFresh(nowMs); // [B 线 M07b] 读到新帧(与判陈旧用的是同一个判据)
         }
     }
     vizFresh_ = sawVizFrame_ && (nowMs - lastVizChangeMs_) < kVizStaleMs;

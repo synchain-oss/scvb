@@ -997,6 +997,48 @@ jobs:
           echo "- \`$name.vst3\` with GUI tests: exit $rc, SUCCESS line $ok; shm leftover probe afterwards: $left" >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
+      # 11h) [M07b] 平台文件日志 —— **记录项,不作门**(只读,永远 exit 0)。auval / pluginval 都在 runner 上真加载过
+      #      插件,生产的 install 路径(createPluginFilter → platformlog::install)写的是 ~/Library/Logs/Synchain/SCVB/
+      #      <role>.log。这里把那几份文件原样打进 job 日志,summary 里记行数、开场行数、viz-rate 行数与 viz-rate 行本身。
+      #      viz-rate 行要一个实例连续 prepare 满一个窗口(10 s)才会写;pluginval 每格只活几秒(6 格合计约 10 s),
+      #      所以这里**通常一行 viz-rate 都没有** —— 那不是故障,真实宿主里的数字归 LUNA 会话带回的日志。
+      - name: Platform log files after auval / pluginval (record only, not a gate)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          dir="$HOME/Library/Logs/Synchain/SCVB"
+          vrl="$RUNNER_TEMP/viz-rate-lines.txt" # 中间文件放 runner 临时目录,不留在仓库树里(后面还有打包冒烟)
+          echo "### Platform log files (record only)" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -d "$dir" ]; then
+            echo "no ~/Library/Logs/Synchain/SCVB directory on this runner"
+            echo "- no ~/Library/Logs/Synchain/SCVB directory" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          found=0
+          for f in "$dir"/*.log; do
+            [ -f "$f" ] || continue
+            found=1
+            base=$(basename "$f")
+            lines=$(wc -l < "$f" | tr -d '[:space:]')
+            opened=$(grep -c ' log opened ' "$f")
+            grep ' viz-rate ' "$f" > "$vrl"
+            vr=$(grep -c . "$vrl")
+            echo "::group::~/Library/Logs/Synchain/SCVB/$base ($lines lines, $opened log-opened, $vr viz-rate; first 400 lines)"
+            sed -n '1,400p' "$f"
+            echo "::endgroup::"
+            echo "- \`$base\`: $lines lines, $opened log-opened lines, $vr viz-rate lines" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$vr" != "0" ]; then
+              echo '  ```' >> "$GITHUB_STEP_SUMMARY"
+              sed -n '1,20p' "$vrl" >> "$GITHUB_STEP_SUMMARY"
+              echo '  ```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          if [ "$found" = "0" ]; then echo "- directory exists, no *.log files" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit 0
+
       # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release 档的正式出包,步骤 13,
       #     调的是同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,
       #     负对照删文件、注入都碰不到 build/。判据:

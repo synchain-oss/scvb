@@ -99,6 +99,10 @@ add_library(scvb_core STATIC
   state/SegmentEdit.h
   export/SuggestionExport.cpp
   export/SuggestionExport.h
+  # [B 线 M07b] viz 实得速率的进程内计数与 10 s 汇总(Output / Monitor 定时器回调里用;不进共享内存)。
+  diag/VizRateMeter.cpp
+  diag/VizRateMeter.h
+  diag/VizRateSink.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现见下面的 if(APPLE) 块。
