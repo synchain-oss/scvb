@@ -588,6 +588,7 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
             diag.note(IpcDiagOp::kShmOpen, blocker, "segment exists but is not ours (another user?); not touching it");
             return InitResult::kFailed;
         }
+#if 0 // M12B-J1 INJECT (temporary, reverted): orphan cleanup before the exclusive re-create disabled
         if (::shm_unlink(shm.c_str()) != 0 && errno != ENOENT)
         {
             const int err = errno;
@@ -595,6 +596,7 @@ InitResult SegmentBackendPosix::openLocked(const std::string& shm, std::size_t s
             diag.note(IpcDiagOp::kShmUnlink, err, "cannot remove an orphaned segment before re-creating it");
             return InitResult::kFailed;
         }
+#endif
         shmFd = ::shm_open(shm.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         if (shmFd < 0)
         {
