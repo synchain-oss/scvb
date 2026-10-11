@@ -119,6 +119,7 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
     if (cr == Registry::ClaimResult::kConflict)
     {
         state_.store(OutputClaimState::kObserver, std::memory_order_release);
+        stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
         return state_.load(std::memory_order_relaxed);
     }
@@ -330,6 +331,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
     const u32 hold = ctrl_.watchdogHoldMask();
     const bool tripped = ctrl_.watchdogTripped();
     u32 inject = 0;
+    u32 stalled = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
@@ -367,6 +369,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
         // 调用、缺口自然停止增长,只看「无新缺口」会把持续断流判成恢复(v4 实测 P0-2 假恢复)。
         // 开场条件之二:本拍确实有「写头没推到」的饿读。走带停止 / 宿主没在给块时写头同样
         // 冻结,但那时要么读得到数据、要么根本没在读 —— 一笔饿读都不会有,不该报。
+        // [A-8] 走带在跑时挂起轨保持在注入集里,read() 每块照调、饿读持续增长,开场判据照旧成立。
         const u32 sf = sources_[idx].stallFailCount();
         if (sf != lastStallFail_[idx])
         {
@@ -397,8 +400,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
         const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
 
         // 恢复判定:必须「该轨数据真的在推进」,**不能只看「不再产生新缺口」**。
-        // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended →
-        // online=false → 退出 injectMask → processBlock 根本不再调 read() → 缺口自然不再增长。
+        // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended → 缺口不再增长
+        // (走带停住时它掉线、退出 injectMask,read() 根本不再被调;[A-8] 起走带在跑时它保持在线、照读,
+        // 但写头不动的失败读只记 stallFail、不计缺口 —— 两条路上缺口都不长)。
         // 只看「无新缺口」会把这种**持续断流的静默**判成恢复,横幅在实际仍无声时撤下。
         // 所以恢复要同时满足:槽活跃 + 心跳新鲜 + 采样率一致 + 已绑定 + 未挂起 + 有新帧写入。
         const bool dataHealthy = slotActive && hbFresh && srMatch && bound && !suspended && dataAdvancing;
@@ -412,9 +416,30 @@ void OutputSession::evaluateChannels(u64 nowMs)
         const bool inHold = (hold & (1u << (ch - 1))) != 0;
         const bool inputStillMuted = slot != nullptr && (slot->flags.load(std::memory_order_acquire) & kFlagMuted) != 0;
         const bool held = inHold && (tripped || !inputStillMuted);
-        const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended && !held;
+        // [A-8] E2「挂起 ≠ 掉线」(设计稿 §3.6,用户裁定 U3(a)):走带在跑时写头冻结(宿主在静音段 / 无 region 处
+        // 暂停调用 Input,或用户旁路它)**不再让轨掉线** —— 其余条件(槽活跃 ∧ 心跳新鲜 ∧ 采样率一致 ∧ 已绑定 ∧
+        // ¬失准 ∧ 不在 hold 里)全都成立就照旧置 connected_mask 位、照旧注入。修前写头冻结 500ms 即掉线、退出注入集,
+        // Input 那边随之转「不健康」:下一句开头先要等 [M] 发现写头动了(≤40ms)、重新置位、再走 80ms 淡入
+        // (实测句首丢 85–150ms),停得比 5.5s 长时 Input 已切直通,句首还先出一段未平衡原声(E2-a);离线导出里
+        // 这些墙钟量按倍速放大(E2-b)。保持在线之后,写方一恢复,读方同一块就读到。
+        // · 走带停住时(transportPlaying_ 为假)沿用 500ms 规则掉线 —— 停走带期间所有写头本来就冻着,这条规则
+        //   决定的是起播时的接回方式,Cubase / REAPER 停走带的行为不变(LS-15 钉住)。离线导出走同一条规则。
+        // · 只看走带、不看 Output 自己被没被调用:Output 与 Input 一起被停调(整链停调、Output 的 playhead 快照停在
+        //   「在跑」)时看门狗不会触发(没有在写的写头),这里保持在线,恢复无缝;Output 被停调而 Input 在写,
+        //   由看门狗的 hold 闩住(上面 held,本条服从它:被闩的轨不因挂起被保持在线)。两者互为镜像。
+        // · 心跳陈旧照旧掉线(hbFresh);失准的轨照旧掉线(¬misaligned),失准恢复判据(dataHealthy)不变。
+        // · 「挂起」照常上桥(stallEpisode_ → ChannelConnInfo::suspended,中性提示);Input 面板在宿主挂起期间
+        //   仍显示「已连接」(用户裁定 U3(c))。
+        // · 宿主因总线输入静音而停调 Output(H2)仍走 KI-6 路径,本条不涉及。
+        const bool keepThroughStall = transportPlaying_;
+        const bool online =
+            slotActive && hbFresh && srMatch && bound && !misaligned && (!suspended || keepThroughStall) && !held;
         if (online)
         {
+            if (suspended)
+            {
+                stalled |= (1u << (ch - 1)); // 保持在线的挂起轨([A] 判「注入轨全部停滞」用,U3(b)-ii)
+            }
             registry_.setConnectedMaskBit(ch);
             if (!onlinePrev_[idx])
             {
@@ -449,6 +474,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
             onlinePrev_[idx] = false;
         }
     }
+    stalledMask_.store(stalled, std::memory_order_release);
     injectMask_.store(inject, std::memory_order_release);
 }
 
@@ -559,6 +585,7 @@ void OutputSession::tick(u64 nowMs)
     if (wr.action == WatchdogAction::kClearMask)
     {
         registry_.clearConnectedMask();
+        stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
     }
     // kReacquireBit:CtrlPlane 已放开这一轨的 hold。这里**不**直接置位 —— 置位只有 evaluateChannels 一个
@@ -580,6 +607,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     // 只在**改组**清;release(同组 releaseResources/重新 prepare)不清 —— 那不该丢已采集的数据。
     frameStore_.reset();
     fpWatch_.reset(); // 基线随特征一起作废,失配定谳不得跨组留存(04 §4.5)
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 
@@ -599,6 +627,7 @@ void OutputSession::release(u64 nowMs)
     // [KI-6] 停用期间 tick 不跑看门狗、基线冻在停用前:不清的话重新 prepare 后首拍(宿主首块还没来)会把整段
     // 停用时长算成停摆,误触发并闩住全部轨。停摆中则照旧闩着(见 CtrlPlane::resetWatchdogUnlessTripped)。
     ctrl_.resetWatchdogUnlessTripped();
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
     reap(nowMs);
@@ -741,6 +770,7 @@ u64 OutputSession::epoch(u32 channel) const
 void OutputSession::forceClearMask() noexcept
 {
     registry_.clearConnectedMask();
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
 }
 
