@@ -413,12 +413,6 @@ target_include_directories(scvb_host_tests PRIVATE
 # 该 API 在 JUCE 里由 JUCE_MODAL_LOOPS_PERMITTED 守卫,**只对本测试目标开**,插件产物不受影响。
 target_compile_definitions(scvb_host_tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
 
-# [B 线 M12b] macOS 追加块:整轮测试期间声明「用户发起的活动」,不让这个没有窗口的测试进程被 App Nap 降频
-#(理由与实测见文件头注)。只是一个 Catch2 监听器,不加用例;Windows 上的源集合不变。
-if(APPLE)
-  target_sources(scvb_host_tests PRIVATE host/host_mac_activity.cpp)
-endif()
-
 if(MSVC)
   target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc)
 else()
