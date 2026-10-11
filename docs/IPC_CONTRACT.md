@@ -177,6 +177,7 @@ struct OutputGlobalInfo {          // size 256 align 64
 - **Input → Output 命令环**(SPSC,每 slot 一条):`{seq, channel, op, value}`,op 全集 = `{kSetPriority, kFpReport}`(v1 冻结,[J36] 以 01 §4.4-c 枚举为准,禁止两端各自发明;`set_label` 等字符串型 op 不在 v1,需 abi+1 增补变长区;[J150] 的 DAW 轨道名不经命令环,走上面的轨道名区);Output 消息线程消费并落 state(唯一真源,ADR-004)。[J46] `value` 字段定型为 **u64**;`kFpReport` 载荷打包 `tile_idx(高16位) | fingerprint 截断(低48位)`,单条记录原子;「跨轨上游延迟汇总」op 不进 v1,入 abi+1 增补清单
 - **连接状态灯**:Input 读 OutputSlot.heartbeat + connected_mask;Output 读各 InputSlot.heartbeat
 - **健康 Output 判定(J12)**:Input 直通↔静音仲裁的「健康 Output」= OutputSlot 心跳新鲜(≤2000ms 口径)∧ `connected_mask` 含本 channel;检测不到健康 Output → Input 直通(80ms ramp + 5s 滞回,ADR-002 v1)
+  - [A-8] `connected_mask` 注(措辞补充,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261011-a8-suspend-not-offline.md`):§1 里「哪些 channel 数据健康」**不要求写头此刻在推进**。走带在跑时,写头冻结(宿主在静音段 / 无 region 处暂停调用该 Input,或用户旁路它)的轨只要槽活跃、心跳新鲜、采样率一致、读方已绑定且未失准,Output 就**保留该位**(挂起 ≠ 掉线),于是 Input 照旧按「健康 Output」静音、写方一恢复读方同块就读到;走带停住时写头冻结 ≥ 500ms 仍清该位(行为同前)。心跳陈旧、失准、停摆看门狗闩住(KI-6)照旧清位。挂起的轨 Output 侧照常报 `suspended`(SCVB_CONTRACT §2.3)
 
 ```c
 struct CtrlRecord {                // size 24 align 8([J46]:value 定型 u64;四字段 atomic 化,尺寸/偏移不变)

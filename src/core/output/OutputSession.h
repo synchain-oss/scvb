@@ -12,6 +12,10 @@
 // CH_MISALIGNED / CH_ONLINE。CH_ONLINE 才置 connected_mask 位;注入经 [J32] 延迟 ——
 // 置位后等该轨 muted 确认位或延迟 ≥200ms(先到者)才置 injectMask 位([A] 只读 injectMask 混音)。
 // 停摆看门狗的 hold 掩码(KI-6,CtrlPlane::watchdogHoldMask)里的轨一律不算 CH_ONLINE:不置位、不注入。
+// [A-8] E2「挂起 ≠ 掉线」:走带在跑时,CH_SUSPENDED(写头冻结)不再让轨掉线 —— 其余在线条件
+// (槽活跃 ∧ 心跳新鲜 ∧ 采样率一致 ∧ 已绑定 ∧ ¬失准 ∧ 不在 hold 里)都成立就保留 connected_mask 位与
+// inject 位;走带停住时仍按 500ms 规则掉线。保持在线的挂起轨另报进 stalledMask(),[A] 据此判「注入轨
+// 是否全部停滞」(U3(b)-ii:全部停滞时总线回到原声,见 OutputProcessor::renderSpan)。
 //
 // 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调);音频线程只经
 // mixSource()/injectMask() 拿裸指针做原子读写。
@@ -152,10 +156,16 @@ public:
     ShmRingMixSource& mixSource(u32 channel);
     const ShmRingMixSource& mixSource(u32 channel) const;
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
+    // [A-8] 保持在线的挂起轨(写头冻结 ≥ kSuspendStallMs,但按 E2 规则仍在线;bit{N-1})。只含在线轨,
+    // 与 injectMask 同一次评估里发布。[A] 用它判「注入轨是否全部停滞」(U3(b)-ii),不用它决定读不读环。
+    // ⚠ 它与 injectMask 是**两个**原子量,不是同一次快照:[A] 可能读到跨过一次 [M] 更新的旧新组合,最坏让「全部停滞」
+    // 早或晚成立一段(回原声还另要「本段没有注入轨读到数据 ∧ 总线听得见」)。只能当启发式判据用,别拿它做更强的判断。
+    u32 stalledMask() const noexcept { return stalledMask_.load(std::memory_order_acquire); }
 
     // 状态访问。
     // 走带是否在跑([M] 每拍由 OutputProcessor 从 playhead 快照喂进来)。
     // 只用于停流判定:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
+    // [A-8] 同时是 E2 保持在线的守卫:只有走带在跑时写头冻结才不掉线;停住时沿用 500ms 规则。
     void setTransportPlaying(bool on) noexcept { transportPlaying_ = on; }
     void setCaptureEnabled(bool on) noexcept { captureEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
     void setOutputEnabled(bool on) noexcept { outputEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
@@ -322,6 +332,8 @@ private:
 
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};
+    // [A-8] 保持在线的挂起轨(见 stalledMask());[M] 25Hz 写,与 injectMask_ 同拍。
+    std::atomic<u32> stalledMask_{0};
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
     std::atomic<u64> blockCounter_{0};
 

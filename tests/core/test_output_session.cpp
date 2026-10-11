@@ -3105,3 +3105,468 @@ TEST_CASE("[KI-6] Output released while stalled: the latch survives re-prepare u
     CHECK(last.mask == 0x7u);
     CHECK(last.inject == 0x7u);
 }
+
+// ===========================================================================
+// [A-8] E2「挂起 ≠ 掉线」端到端:InProcess 后端 + 3 个 InputSession + OutputSession,虚拟时钟逐 10 ms 推进
+// (拍点相位与上面 [KI-6] 那组相同:Output [M] 在 t%40==0、Input [M] 在 t%40==20,心跳 4 Hz)。
+// 每一步先「音频」:各 Input 在写就写一块(宿主暂停调用某条 Input = 它不写,写头冻结),Output 被调用就
+// bumpBlockCounter 并按同一时间线位置读注入集里的每一条(读不到的那几块就是 stallFail 的来源),再「[M]」。
+// 判据(设计稿 §3.6 / 用户裁定 U3):
+//   · 走带在跑 ∧ 心跳新鲜 ∧ 其余在线条件成立时,写头冻结的轨保留 connected_mask 位与 inject 位,报进 stalledMask,
+//     「挂起」照常上桥;Input 侧一直健康、一直静音(U3(c):Input 面板仍显示已连接);写方一恢复,同一块就读到;
+//   · 走带停住时沿用 500 ms 规则(掉线);心跳陈旧照旧掉线;
+//   · 看门狗 hold 闩住期间不因挂起被置位(A-7 的闩锁优先)。
+// ===========================================================================
+namespace
+{
+constexpr int kE2Lanes = 3;
+constexpr int kE2BlockFrames = 480; // 10 ms @48k
+
+struct E2Lane
+{
+    E2Lane(scvb::SegmentBackendInProcess& backend, u32 pid, u32 ch) : session(backend, pid), channel(ch) {}
+
+    InputSession session;
+    StageSwitchStateMachine sm;
+    u32 channel;
+    OutputStageMode target = OutputStageMode::kPassthrough;
+    bool writing = true; // 宿主调不调这条 Input(false = 静音段挂起 / 无 region / 旁路:写头冻结)
+    bool alive = true; // 这条 Input 的 [M] 还在不在跑(false = 心跳不再更新)
+    std::int64_t nextPos = -1; // 上一块写到哪(InputProcessor 的 expectedNext_)
+    std::int64_t lastPos = -1; // 上一块从哪写起(InputProcessor 的 lastT0_)
+
+    // 照 InputProcessor::processBlock 步骤 3/4:位置不连续 ∧(在播放 ∨ 位置变了)⇒ 换代;停走带原地重写不换代。
+    void write(std::int64_t pos, bool playing)
+    {
+        const scvb::AudioRingBinding* b = session.audioRing().acquire();
+        if (nextPos >= 0 && pos != nextPos && (playing || pos != lastPos))
+        {
+            scvb::AudioRing::bumpEpoch(b);
+        }
+        float buf[kE2BlockFrames];
+        for (int i = 0; i < kE2BlockFrames; ++i)
+        {
+            buf[i] = 0.25f;
+        }
+        scvb::AudioRing::write(b, pos, buf, kE2BlockFrames);
+        lastPos = pos;
+        nextPos = pos + kE2BlockFrames;
+    }
+
+    void tickM(u64 now)
+    {
+        target = sm.evaluate(session.isHealthy(now), now);
+        session.setMuted(target == OutputStageMode::kSilence);
+    }
+};
+
+struct E2Sample
+{
+    u64 t = 0;
+    bool outputTick = false;
+    u32 mask = 0;
+    u32 inject = 0;
+    u32 stalled = 0;
+    bool read[kE2Lanes] = {}; // 本块 Output 读这一轨读到了(只在它在注入集里时才读)
+    bool suspended[kE2Lanes] = {}; // 桥面 channelConn(..).suspended
+    bool muted[kE2Lanes] = {};
+    bool healthy[kE2Lanes] = {};
+};
+
+struct E2Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    std::vector<std::unique_ptr<E2Lane>> lanes;
+    OutputSession out{backend, 2001};
+    scvb::Registry probe{backend, 1};
+    std::vector<E2Sample> log;
+    u64 now = 1000;
+    std::int64_t pos = 0; // 时间线位置(走带在跑时每步推进一块)
+    bool playing = true;
+    bool outputCalled = true;
+
+    E2Rig()
+    {
+        for (u32 i = 0; i < static_cast<u32>(kE2Lanes); ++i)
+        {
+            lanes.push_back(std::make_unique<E2Lane>(backend, 1001 + i, i + 1)); // channel 1..3
+            lanes.back()->session.setChannelId(i + 1);
+            REQUIRE(lanes.back()->session.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+            lanes.back()->session.heartbeat(now);
+        }
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        out.setTransportPlaying(playing);
+    }
+
+    E2Lane& lane(int i) { return *lanes[static_cast<std::size_t>(i)]; }
+
+    void runUntil(u64 untilMs)
+    {
+        for (; now < untilMs; now += 10)
+        {
+            E2Sample s;
+            s.t = now;
+            // 停走带时宿主照样给块、时间线不动:写方原地重写同一段(不换代),写头只在停下那一块动一次,之后冻结
+            // —— 对 Output 来说与「写头冻结」同形,这正是 500 ms 规则要按走带分开的那一类。
+            for (auto& l : lanes)
+            {
+                if (l->writing)
+                {
+                    l->write(pos, playing);
+                }
+            }
+            if (outputCalled)
+            {
+                out.bumpBlockCounter();
+                const u32 inject = out.injectMask();
+                float dst[kE2BlockFrames];
+                for (int i = 0; i < kE2Lanes; ++i)
+                {
+                    if ((inject & (1u << static_cast<u32>(i))) != 0)
+                    {
+                        s.read[i] = out.mixSource(static_cast<u32>(i + 1)).read(pos, dst, kE2BlockFrames);
+                    }
+                }
+            }
+            if (playing)
+            {
+                pos += kE2BlockFrames;
+            }
+            if (now % 250 == 0)
+            {
+                out.heartbeat(now);
+                for (auto& l : lanes)
+                {
+                    if (l->alive)
+                    {
+                        l->session.heartbeat(now);
+                    }
+                }
+            }
+            if (now % 40 == 0)
+            {
+                out.setTransportPlaying(playing);
+                out.tick(now);
+                s.outputTick = true;
+            }
+            if (now % 40 == 20)
+            {
+                for (auto& l : lanes)
+                {
+                    if (l->alive)
+                    {
+                        l->tickM(now);
+                    }
+                }
+            }
+            s.mask = probe.connectedMask();
+            s.inject = out.injectMask();
+            s.stalled = out.stalledMask();
+            for (int i = 0; i < kE2Lanes; ++i)
+            {
+                s.suspended[i] = out.channelConn(static_cast<u32>(i + 1), now).suspended;
+                s.muted[i] = lane(i).target == OutputStageMode::kSilence;
+                s.healthy[i] = lane(i).session.isHealthy(now);
+            }
+            log.push_back(s);
+        }
+    }
+
+    // 前提:三轨都已接管(在 mask、在注入、Input 静音),且没有一条在报停滞。
+    void requireAllInjected() const
+    {
+        const E2Sample& s = log.back();
+        REQUIRE(s.mask == 0x7u);
+        REQUIRE(s.inject == 0x7u);
+        REQUIRE(s.stalled == 0u);
+        for (int i = 0; i < kE2Lanes; ++i)
+        {
+            REQUIRE(s.muted[i]);
+        }
+    }
+};
+
+constexpr u32 e2Bit(int lane)
+{
+    return 1u << static_cast<u32>(lane);
+}
+} // namespace
+
+TEST_CASE("[A-8] transport running: a lane whose writer freezes keeps its connected_mask and inject bits",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kFreeze = 3000; // 宿主从这一刻起不调 lane 1 的 Input(静音段挂起 / 无 region)
+    constexpr u64 kResume = 10000; // 停 7 s 后恢复(> 5.5 s:修前 Input 此时早已切直通)
+    constexpr u64 kEnd = 11000;
+    rig.runUntil(kFreeze);
+    rig.requireAllInjected();
+    rig.lane(1).writing = false;
+    rig.runUntil(kResume);
+    rig.lane(1).writing = true;
+    rig.runUntil(kEnd);
+
+    // 挂起段:Output 的每一拍 lane 1 都在 mask、在注入;写头冻结 500 ms(+ 至多一拍)后报进 stalledMask 与桥面 suspended。
+    int droppedTicks = 0;
+    int ticks = 0;
+    u64 stalledAt = 0;
+    u64 suspendedAt = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kFreeze || s.t >= kResume || !s.outputTick)
+        {
+            continue;
+        }
+        ++ticks;
+        droppedTicks += ((s.mask & e2Bit(1)) == 0 || (s.inject & e2Bit(1)) == 0) ? 1 : 0;
+        if (stalledAt == 0 && (s.stalled & e2Bit(1)) != 0)
+        {
+            stalledAt = s.t;
+        }
+        if (suspendedAt == 0 && s.suspended[1])
+        {
+            suspendedAt = s.t;
+        }
+    }
+    REQUIRE(ticks >= 150);
+    CHECK(droppedTicks == 0); // ← 修前:写头冻结 500 ms 即掉线、退出注入集
+    REQUIRE(stalledAt != 0);
+    CHECK(stalledAt >= kFreeze + scvb::output::kSuspendStallMs);
+    CHECK(stalledAt <= kFreeze + scvb::output::kSuspendStallMs + 50);
+    REQUIRE(suspendedAt != 0); // 「挂起」照常上桥(中性提示)
+    CHECK(suspendedAt <= kFreeze + scvb::output::kSuspendStallMs + 50);
+    int stalledGone = 0;
+    int suspendedGone = 0;
+    int notHealthyMuted = 0;
+    int otherLanesOff = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= stalledAt && s.t < kResume)
+        {
+            stalledGone += (s.stalled & e2Bit(1)) == 0 ? 1 : 0;
+            suspendedGone += s.suspended[1] ? 0 : 1;
+        }
+        if (s.t >= kFreeze)
+        {
+            // U3(c):挂起期间 Input 一直认为 Output 健康、一直在静音档 —— 不会 5 s 后切直通出原声。
+            notHealthyMuted += (s.healthy[1] && s.muted[1]) ? 0 : 1;
+            // 对照轨不受影响:一直在注入,从不报停滞。
+            otherLanesOff += ((s.inject & (e2Bit(0) | e2Bit(2))) != (e2Bit(0) | e2Bit(2)) ||
+                              (s.stalled & (e2Bit(0) | e2Bit(2))) != 0u)
+                                 ? 1
+                                 : 0;
+        }
+    }
+    CHECK(stalledGone == 0);
+    CHECK(suspendedGone == 0);
+    CHECK(notHealthyMuted == 0);
+    CHECK(otherLanesOff == 0);
+    CHECK(rig.out.misalignCountRecent(2) == 0); // 写方停着不是失准
+
+    // 恢复:写方第一块(时间线跳到当前位置、换代)Output 同一块就读到;stalledMask 与 suspended 在下一拍撤下。
+    const E2Sample* first = nullptr;
+    u64 clearedAt = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        if (first == nullptr)
+        {
+            first = &s;
+        }
+        if (clearedAt == 0 && s.outputTick && (s.stalled & e2Bit(1)) == 0 && !s.suspended[1])
+        {
+            clearedAt = s.t;
+        }
+    }
+    REQUIRE(first != nullptr);
+    CHECK(first->read[1]); // ← 修前:先要等 [M] 发现写头动了、重新置位,再走 80 ms 淡入
+    REQUIRE(clearedAt != 0);
+    CHECK(clearedAt <= kResume + 40);
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    CHECK(last.stalled == 0u);
+    WARN("A-8 e2e keep: stalled +" << (stalledAt - kFreeze) << " ms, suspended +" << (suspendedAt - kFreeze)
+                                   << " ms, cleared +" << (clearedAt - kResume) << " ms after resume");
+}
+
+TEST_CASE("[A-8] transport stopped: frozen writers still drop out after 500 ms (unchanged rule)",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kStop = 3000; // 停走带:宿主照样调用,时间线不动,写头全部冻结
+    constexpr u64 kStart = 5000;
+    constexpr u64 kEnd = 6500;
+    rig.runUntil(kStop);
+    rig.requireAllInjected();
+    rig.playing = false;
+    rig.runUntil(kStart);
+    rig.playing = true;
+    rig.runUntil(kEnd);
+
+    // 停走带 ≥ 500 ms(+ 至多一拍):三轨都掉线、退出注入集(LS-15 钉住的现行行为),stalledMask 一直是 0,桥面不报挂起。
+    u64 droppedAt = 0;
+    int stalledOrSuspended = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kStop || s.t >= kStart)
+        {
+            continue;
+        }
+        if (droppedAt == 0 && s.outputTick && s.mask == 0 && s.inject == 0)
+        {
+            droppedAt = s.t;
+        }
+        stalledOrSuspended += (s.stalled != 0 || s.suspended[0] || s.suspended[1] || s.suspended[2]) ? 1 : 0;
+    }
+    REQUIRE(droppedAt != 0); // ← 删掉 transportPlaying 守卫(停走带也保持在线)时红在这里
+    CHECK(droppedAt >= kStop + scvb::output::kSuspendStallMs);
+    CHECK(droppedAt <= kStop + scvb::output::kSuspendStallMs + 50);
+    int backOnline = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= droppedAt && s.t < kStart && s.outputTick)
+        {
+            backOnline += s.mask != 0 ? 1 : 0;
+        }
+    }
+    CHECK(backOnline == 0);
+    CHECK(stalledOrSuspended == 0);
+
+    // 起播后写头推进,三轨按现行规则接回。
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    WARN("A-8 e2e stop: dropped +" << (droppedAt - kStop) << " ms after the transport stopped");
+}
+
+TEST_CASE("[A-8] stale heartbeat: a stalled lane whose Input stopped heart-beating disconnects",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kFreeze = 3000; // lane 1 的写头冻结,且它的 [M] 也不再跑(心跳停在这一刻之前)
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kFreeze);
+    rig.requireAllInjected();
+    rig.lane(1).writing = false;
+    rig.lane(1).alive = false;
+    rig.runUntil(kEnd);
+
+    // 心跳还新鲜(≤ 2000 ms)时它是「挂起」,按 E2 保持在线;心跳一陈旧就掉线、退出注入集,stalledMask 随之撤下。
+    const u64 lastBeatMs = ((kFreeze - 1) / 250) * 250; // 心跳 4 Hz、在 t%250==0 的那一步
+    const u64 staleAt = lastBeatMs + scvb::kStaleDisplayMs;
+    u64 droppedAt = 0;
+    int keptWhileFresh = 0;
+    int freshTicks = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kFreeze || !s.outputTick)
+        {
+            continue;
+        }
+        if (s.t >= kFreeze + scvb::output::kSuspendStallMs + 50 && s.t <= staleAt)
+        {
+            ++freshTicks;
+            keptWhileFresh += ((s.mask & e2Bit(1)) != 0 && (s.stalled & e2Bit(1)) != 0) ? 1 : 0;
+        }
+        if (droppedAt == 0 && (s.mask & e2Bit(1)) == 0)
+        {
+            droppedAt = s.t;
+        }
+    }
+    REQUIRE(freshTicks >= 10);
+    CHECK(keptWhileFresh == freshTicks);
+    REQUIRE(droppedAt != 0);
+    CHECK(droppedAt > staleAt);
+    CHECK(droppedAt <= staleAt + 50);
+    int leaked = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= droppedAt)
+        {
+            leaked += ((s.mask | s.inject | s.stalled) & e2Bit(1)) != 0 ? 1 : 0;
+        }
+    }
+    CHECK(leaked == 0);
+    const E2Sample& last = rig.log.back();
+    CHECK((last.inject & (e2Bit(0) | e2Bit(2))) == (e2Bit(0) | e2Bit(2))); // 对照轨照常
+    WARN("A-8 e2e stale heartbeat: dropped +" << (droppedAt - staleAt) << " ms after the heartbeat went stale");
+}
+
+TEST_CASE("[A-8] watchdog hold wins: a lane frozen while the Output is not called is not kept online by E2",
+          "[output][session][e2][a8][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kStall = 3000; // 宿主停调 Output(lane 0/2 照写)
+    constexpr u64 kFreeze = 4500; // 停调之中 lane 1 的写头也冻结(它的心跳照常、走带在跑)
+    constexpr u64 kResume = 7000;
+    constexpr u64 kEnd = 9500;
+    rig.runUntil(kStall);
+    rig.requireAllInjected();
+    rig.outputCalled = false;
+    rig.runUntil(kFreeze);
+    rig.lane(1).writing = false;
+    rig.runUntil(kResume);
+    rig.outputCalled = true;
+    rig.runUntil(kEnd);
+
+    u64 tripMs = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0); // 前提:看门狗确实触发(lane 0/2 在写,Output 不动)
+    REQUIRE(tripMs < kFreeze);
+
+    // 停摆期间(含 lane 1 写头冻结 ≥ 500 ms、按 E2 本该「保持在线」的那一段):每一拍都不置位、不注入、不报停滞。
+    int leakedTicks = 0;
+    int frozenTicks = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < tripMs || s.t >= kResume || !s.outputTick)
+        {
+            continue;
+        }
+        leakedTicks += (s.mask != 0 || s.inject != 0 || s.stalled != 0) ? 1 : 0;
+        frozenTicks += s.t >= kFreeze + scvb::output::kSuspendStallMs + 50 ? 1 : 0;
+    }
+    REQUIRE(frozenTicks >= 20); // 前提:lane 1 写头冻结过了 500 ms 门限,E2 的条件在 hold 之外都成立
+    CHECK(leakedTicks == 0); // ← E2 不服从 hold 时,lane 1 在这一段被置回
+
+    // 恢复后照常接回;lane 1 接回之后按 E2 规则保持在线(写头仍冻结 ⇒ 报进 stalledMask)。
+    u64 rejoin[kE2Lanes] = {};
+    for (const E2Sample& s : rig.log)
+    {
+        for (int i = 0; i < kE2Lanes; ++i)
+        {
+            if (s.t >= kResume && rejoin[i] == 0 && (s.mask & e2Bit(i)) != 0)
+            {
+                rejoin[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kE2Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoin[i]);
+        REQUIRE(rejoin[i] != 0);
+        CHECK(rejoin[i] <= kResume + 2000);
+    }
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK((last.stalled & e2Bit(1)) != 0u);
+    CHECK((last.stalled & (e2Bit(0) | e2Bit(2))) == 0u);
+    WARN("A-8 e2e hold: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoin[0] - kResume) << " / +"
+                                << (rejoin[1] - kResume) << " / +" << (rejoin[2] - kResume) << " ms");
+}

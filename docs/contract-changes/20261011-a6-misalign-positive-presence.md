@@ -5,7 +5,7 @@
 > `misalignCount` 新增成因「已注入但持续读不到」,以及 IPC_CONTRACT §2「读」;同节第 4 条:E1b 告警沿用现有
 > `misalignCount` 与「路由失准」横幅,零 UI 改动 —— 即设计稿 U4 的推荐项。批准计划即批准实质,措辞随代码同 PR
 > 落地,用户在 A 线里程碑 PR(A→dev)里统一过目)。本文件只记**措辞**与它对应的实现落点。
-> `suspended` 语义的调整归 A-8(另有变更文档,随 A-8 落地),本文件不涉及。
+> `suspended` 语义的调整归 A-8(`docs/contract-changes/20261011-a8-suspend-not-offline.md`),本文件不涉及。
 
 ## 变更了哪个冻结契约
 
