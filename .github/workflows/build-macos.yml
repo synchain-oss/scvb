@@ -78,7 +78,10 @@ jobs:
     runs-on: macos-15
     # [M06b] 实测(macos-15 arm64,JUCE 源码缓存命中、无编译缓存):configure 35 s,全量构建 541 步
     # 384 s,整个 job 约 8 分钟。45 分钟留约 5 倍余量,只拦挂死,不是性能预算。
-    timeout-minutes: 45
+    # [M12b] ctest 步加了 host 四片 + sched(这台 runner 上合计约 26 分钟,见步骤 8),整个 job 实测 39 分钟
+    # (run 38171726439:构建 10 分钟、ctest 27 分钟),45 只剩约 15% 余量,构建稍慢就会把正常的跑判成超时。
+    # 改 75:约 1.9 倍余量,仍只拦挂死。
+    timeout-minutes: 75
     outputs:
       release-artifact: ${{ steps.release_package.outputs.artifact }}
       release-zip: ${{ steps.release_package.outputs.zip-name }}
