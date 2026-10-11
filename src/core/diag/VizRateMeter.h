@@ -142,7 +142,6 @@ public:
     // 被移除、本实例接过 viz 段)时,那一行的 publish 落在 0 与 30Hz 之间 —— 那不是定时器被拉长,
     // 判定时器本身看 tick / tick-max。
     bool onBeat(std::uint64_t nowMs, std::uint64_t publishCount, bool writerOpen, int group);
-    bool onBeat(std::uint64_t nowMs, std::uint64_t publishCount, bool writerOpen, int group);
 
     const VizRateMeter& meter() const noexcept { return meter_; }
     // 最近一次收的窗(测试内省;一窗都没收过时全零)。
