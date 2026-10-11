@@ -536,6 +536,324 @@ TEST_CASE("ShmRingMixSource A-5 「远超一步」只是暂定:换代后看到�
     CHECK(src.gapCount() == 0);
 }
 
+// ---------------------------------------------------------------------------
+// [A-6] 持续读不到 → 失准(E1b,设计稿 §3.4;ShmRingMixSource 头注「持续读不到」)。块长 480 = 10 ms @ 48 kHz,
+// 宽限下限 200 ms = 9600 样本 = 20 块(这些用例里读方一块都没在当前窗里读成功过,或提前量很小,宽限就是这一项)。
+// 环取 65536 / 131072:让在途保护与别名判据都碰不到,只看 A-6 这一条。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr int kA6Block = 480;
+
+int64_t a6Grace()
+{
+    return 48000 * ShmRingMixSource::kUnreadGraceMs / 1000;
+}
+} // namespace
+
+TEST_CASE("ShmRingMixSource A-6 (a) 持续读不到:读方从一代开始一直领先写头,宽限内不计,超过宽限后写方推进的每块计失准",
+          "[mix][ring][a6]")
+{
+    // H3 的读方层面最小形状:宿主每块先算 Output 再算 Input(或人声轨没送进装 Output 的总线 / 读方位置超前),
+    // Output 要的 [t0, t0+n) 恰是写方这一块还没写的那段。本代永远 primed 不了 —— A-6 之前一次都不计(无声且不报警)。
+    REQUIRE(a6Grace() == 20 * kA6Block);
+    RingFixture f(1u << 16, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 0, kA6Block);
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(static_cast<std::size_t>(kA6Block) * 2, -1.0f);
+    int64_t pos = kA6Block; // 读方位置
+    int64_t wpos = kA6Block; // 写方位置
+    const auto outputFirst = [&] {
+        const bool ok = src.read(pos, out.data(), kA6Block, 1);
+        pos += kA6Block;
+        writePositions(f, wpos, kA6Block);
+        wpos += kA6Block;
+        return ok;
+    };
+
+    // 宽限之内(读不到的这一段 ≤ 200 ms 读方时间线):照旧不计 —— 换代之初的短暂领先是正常的(N2a)。
+    for (int i = 0; i < 20; ++i)
+    {
+        CHECK_FALSE(outputFirst());
+    }
+    CHECK(src.gapCount() == 0u);
+    CHECK(src.unprimedFailCount() > 0u); // A-5 的成因分流确实把它分在 (a)
+    // 超过宽限:写方在推进的每一块计一笔(「路由失准」横幅的数据源)。
+    CHECK_FALSE(outputFirst());
+    CHECK(src.gapCount() == 1u);
+    CHECK(src.persistentFailCount() == 1u);
+    for (int i = 0; i < 9; ++i)
+    {
+        CHECK_FALSE(outputFirst());
+    }
+    CHECK(src.gapCount() == 10u);
+
+    // 写方停着(宿主挂起了 Input):照样读不到,但那是挂起、不是失准(P1-7),不计。停住之后的第一次读还看得见
+    // 写方上一块的推进(照计);从第二次起写头一动不动。
+    CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+    pos += kA6Block;
+    const u32 g0 = src.gapCount();
+    CHECK(g0 == 11u);
+    for (int i = 0; i < 5; ++i)
+    {
+        CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+        pos += kA6Block;
+    }
+    CHECK(src.gapCount() == g0);
+    // 写方又动了(仍落后于读方):动的那一块照计。
+    writePositions(f, wpos, kA6Block);
+    wpos += kA6Block;
+    CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+    pos += kA6Block;
+    CHECK(src.gapCount() == g0 + 1u);
+
+    // 写方追上读方:读到了 ⇒ primed,此后回到旧口径;持续读不到的计数不再增长。
+    while (wpos < pos + 2 * kA6Block)
+    {
+        writePositions(f, wpos, kA6Block);
+        wpos += kA6Block;
+    }
+    REQUIRE(src.read(pos, out.data(), kA6Block, 1));
+    CHECK(holdsPositions(out, pos, kA6Block));
+    CHECK(src.persistentFailCount() == src.gapCount()); // 这条轨上的缺口全是「持续读不到」那一类
+    CHECK(src.persistentFailCount() == g0 + 1u);
+}
+
+TEST_CASE("ShmRingMixSource A-6 持续读不到在读方漏读之后重新起算(本轨被移出注入集一段时间又回来)", "[mix][ring][a6]")
+{
+    // 漏读期间读不读得到无从得知:不能把这段时间线算进宽限,否则一条刚回到注入集的轨只要再有一块读不到就报警。
+    RingFixture f(1u << 16, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 0, kA6Block);
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(static_cast<std::size_t>(kA6Block) * 2, -1.0f);
+    int64_t pos = kA6Block;
+    int64_t wpos = kA6Block;
+    const auto outputFirst = [&] {
+        const bool ok = src.read(pos, out.data(), kA6Block, 1);
+        pos += kA6Block;
+        writePositions(f, wpos, kA6Block);
+        wpos += kA6Block;
+        return ok;
+    };
+    for (int i = 0; i < 15; ++i)
+    {
+        CHECK_FALSE(outputFirst());
+    }
+    // 1 s 不读(读方代号不变:不是读方跳变,是中间没读),写方照常写到读方回来时的位置之前。
+    for (int i = 0; i < 100; ++i)
+    {
+        pos += kA6Block;
+        writePositions(f, wpos, kA6Block);
+        wpos += kA6Block;
+    }
+    for (int i = 0; i < 15; ++i)
+    {
+        CHECK_FALSE(outputFirst());
+    }
+    CHECK(src.gapCount() == 0u); // 回来之后读不到的只有 15 块(150 ms)< 宽限
+    for (int i = 0; i < 6; ++i)
+    {
+        CHECK_FALSE(outputFirst());
+    }
+    CHECK(src.gapCount() == 1u); // 回来之后满 21 块:照计
+}
+
+TEST_CASE("ShmRingMixSource A-6 (b) 读方卡在锚点之下:超过「实测提前量上界 + 宽限」才计失准(H1 的安全网)",
+          "[mix][ring][a6]")
+{
+    // 写方领先读方 1920 帧(读方块尾之外再多 3 块)稳定读一阵,量到提前量上界 1920;随后写方单独往前跳 1 s
+    // (宿主跳过了这一轨 1 s 的渲染)。读方没跳:上一代窗接住到上一代写头,往后是「锚点(新一代确认过的写头)
+    // 之下、上一代窗也接不住」—— (b)。读方要走完锚点之下这一段才读得到;这一段超过「提前量上界 + 宽限」
+    // 还读不到,就不是交接,是真的没有数据。
+    constexpr int64_t kAhead = 1920;
+    RingFixture f(1u << 17, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 0, static_cast<int>(kAhead));
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(static_cast<std::size_t>(kA6Block) * 2, -1.0f);
+    int64_t pos = 0;
+    int64_t wpos = kAhead;
+    const auto leadingBlock = [&] {
+        const bool ok = src.read(pos, out.data(), kA6Block, 1);
+        const bool right = !ok || holdsPositions(out, pos, kA6Block);
+        pos += kA6Block;
+        writePositions(f, wpos, kA6Block);
+        wpos += kA6Block;
+        return ok && right;
+    };
+    for (int i = 0; i < 20; ++i)
+    {
+        INFO("lead block " << i);
+        REQUIRE(leadingBlock());
+    }
+
+    // 写方单独往前跳 1 s:换代,新一代从 wpos + 48000 起写。
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    wpos += 48000;
+    // 上一代最后观测到的写头 = 上一块读的时候的写头(读方读完之后写方又写的那一块读方没看见:写过,但证明不了)。
+    const int64_t prevHi = pos - kA6Block + kAhead;
+    const int64_t anchor = wpos + kA6Block; // 新一代第一次被看到的写头(保守规则锚在它上面)
+    // 上一代窗接住读方到上一代写头为止。
+    while (pos < prevHi)
+    {
+        INFO("prev window pos " << pos);
+        CHECK(leadingBlock());
+    }
+    // (b):锚点之下、上一代窗接不住。宽限 = 提前量上界 1920 + max(9600, 2·1920 + 480) = 11520 = 24 块。
+    const u32 stuck0 = src.stuckBelowAnchorCount();
+    for (int i = 0; i < 24; ++i)
+    {
+        CHECK_FALSE(leadingBlock());
+    }
+    CHECK(src.stuckBelowAnchorCount() > stuck0); // A-5 的成因分流确实把它分在 (b)
+    CHECK(src.gapCount() == 0u); // 宽限之内(只给 (a) 的宽限、不加提前量上界的话,第 21 块就计了)
+    CHECK_FALSE(leadingBlock());
+    CHECK(src.gapCount() == 1u); // 第 25 块:照计
+    // 读方走到锚点之后读到了:不再计。
+    while (pos < anchor)
+    {
+        CHECK_FALSE(leadingBlock());
+    }
+    const u32 gaps = src.gapCount();
+    CHECK(gaps > 1u);
+    for (int i = 0; i < 5; ++i)
+    {
+        CHECK(leadingBlock());
+    }
+    CHECK(src.gapCount() == gaps);
+}
+
+TEST_CASE("ShmRingMixSource A-6 段头 channels 与快照不一致单独计:不算失准,也不续长、不打断「持续读不到」",
+          "[mix][ring][a6]")
+{
+    // 几何改写(mono⇄stereo)之后、[M] 换绑之前(≤ 一拍),段头 channels 与读方快照不一致,整块不读(A-5)。
+    // A-5 时这类块记在 handoverLoss 里;A-6 起单独计 layoutMismatch:几何改写的短暂丢失不能凑满「持续读不到」
+    // 的宽限(误报),也不能让正在进行的那段连续失败重新起算(掩盖真的读不到)。
+    RingFixture f(1u << 16, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    std::vector<float> out(static_cast<std::size_t>(kA6Block) * 2, -1.0f);
+
+    SECTION("primed 之后:不计失准,计 layoutMismatch,不进 handoverLoss")
+    {
+        ShmRingMixSource src;
+        src.bind(&f.header, f.data.data());
+        int64_t pos = 0;
+        for (int i = 0; i < 5; ++i)
+        {
+            writePositions(f, pos, kA6Block);
+            REQUIRE(src.read(pos, out.data(), kA6Block, 1));
+            pos += kA6Block;
+        }
+        const u32 handover0 = src.handoverLossCount();
+        f.header.channels = 1; // 写方按新布局改写了段头(快照仍是 2)
+        for (int i = 0; i < 4; ++i)
+        {
+            writePositions(f, pos, kA6Block); // 写方照写(在推进)
+            CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+            pos += kA6Block;
+        }
+        CHECK(src.gapCount() == 0u);
+        CHECK(src.layoutMismatchCount() == 4u);
+        CHECK(src.handoverLossCount() == handover0);
+        f.header.channels = 2;
+        writePositions(f, pos, kA6Block);
+        CHECK(src.read(pos, out.data(), kA6Block, 1));
+        CHECK(holdsPositions(out, pos, kA6Block));
+    }
+
+    SECTION("primed 之前、一段连续读不到的中途:不续长、不重新起算")
+    {
+        writePositions(f, 0, kA6Block);
+        ShmRingMixSource src;
+        src.bind(&f.header, f.data.data());
+        int64_t pos = kA6Block;
+        int64_t wpos = kA6Block;
+        const auto outputFirst = [&] {
+            const bool ok = src.read(pos, out.data(), kA6Block, 1);
+            pos += kA6Block;
+            writePositions(f, wpos, kA6Block);
+            wpos += kA6Block;
+            return ok;
+        };
+        for (int i = 0; i < 15; ++i)
+        {
+            CHECK_FALSE(outputFirst());
+        }
+        f.header.channels = 1;
+        for (int i = 0; i < 4; ++i)
+        {
+            CHECK_FALSE(outputFirst());
+        }
+        f.header.channels = 2;
+        CHECK(src.layoutMismatchCount() == 4u);
+        // 读不到的块:之前 15 块 + 之后 j 块。宽限 20 块 ⇒ 之后第 6 块才计。
+        for (int j = 1; j <= 5; ++j)
+        {
+            CHECK_FALSE(outputFirst());
+        }
+        CHECK(src.gapCount() == 0u); // 把不一致那 4 块也算进去的话,之后第 2 块就计了
+        CHECK_FALSE(outputFirst());
+        CHECK(src.gapCount() == 1u); // 不一致那几块让它重新起算的话,要到之后第 21 块
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-6 冷启动不报警:空环、写方晚到、换代之初短暂领先", "[mix][ring][a6]")
+{
+    std::vector<float> out(static_cast<std::size_t>(kA6Block) * 2, -1.0f);
+
+    SECTION("刚 attach 的空环(写方一帧没写):读 1 s 都不计")
+    {
+        RingFixture f(1u << 16, 2);
+        ShmRingMixSource src;
+        src.bind(&f.header, f.data.data());
+        int64_t pos = 0;
+        for (int i = 0; i < 100; ++i)
+        {
+            CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+            pos += kA6Block;
+        }
+        CHECK(src.gapCount() == 0u);
+        // 写方随后在读方当前位置开写(先 Input 后 Output):第一块就读到,全程不计。
+        for (int i = 0; i < 10; ++i)
+        {
+            writePositions(f, pos, kA6Block);
+            CHECK(src.read(pos, out.data(), kA6Block, 1));
+            pos += kA6Block;
+        }
+        CHECK(src.gapCount() == 0u);
+    }
+
+    SECTION("换代之初先算 Output 的那几块(< 宽限)之后恢复先算 Input:不计")
+    {
+        RingFixture f(1u << 16, 2);
+        f.header.epoch.store(1, std::memory_order_release);
+        writePositions(f, 0, kA6Block);
+        ShmRingMixSource src;
+        src.bind(&f.header, f.data.data());
+        int64_t pos = kA6Block;
+        for (int i = 0; i < 19; ++i) // 19 块 = 190 ms,压在 200 ms 宽限之内
+        {
+            CHECK_FALSE(src.read(pos, out.data(), kA6Block, 1));
+            writePositions(f, pos, kA6Block);
+            pos += kA6Block;
+        }
+        for (int i = 0; i < 20; ++i)
+        {
+            writePositions(f, pos, kA6Block);
+            CHECK(src.read(pos, out.data(), kA6Block, 1));
+            pos += kA6Block;
+        }
+        CHECK(src.gapCount() == 0u);
+    }
+}
+
 TEST_CASE("MixMath ms_balance 端点语义", "[mix][math]")
 {
     SECTION("ms_balance=0 → 矩阵恒等(逐位透传)")

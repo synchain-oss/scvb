@@ -171,6 +171,7 @@ void ShmRingMixSource::onRebind() noexcept
     primed_ = false;
     sawFail_ = false;
     lastFailWriteHead_ = 0;
+    unreadRun_ = false; // [A-6] 新绑定:「持续读不到」重新起算
 }
 
 void ShmRingMixSource::confirmHead(int64_t w, int64_t prevN, int64_t ring) noexcept
@@ -288,6 +289,7 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
     primed_ = false;
     sawFail_ = false;
     lastFailWriteHead_ = 0;
+    unreadRun_ = false; // [A-6] 换代:「持续读不到」重新起算(新一代的交接期另给一份宽限)
 
     if (flux)
     {
@@ -461,6 +463,23 @@ bool ShmRingMixSource::prevAliasFree(int64_t a0, int64_t a1, int64_t bLow, int64
     return clear(a0, a1);
 }
 
+ShmRingMixSource::AliasRef ShmRingMixSource::aliasRef(int64_t w, int64_t prevN, int64_t ring) const noexcept
+{
+    // 上一代窗别名判的参照,certify(拷贝前,写头 w)与 read() 的拷贝后复核(写头 w2)共用这一份 —— [A-6] 起收成一处,
+    // 两处的判法不会各改各的(A-5 删除式 D15 那一格从此一处就同时打到两处)。
+    // 新一代可能写过的跨度下界:写头已确认 → confirmHead 记下的界;还没确认(R1 / 暂定的头 R5):
+    //   · 写头还停在上一代最后观测到的头(prevHi_)上:新一代一段都还没发布 —— 就算恰好发布到同一个值,它写的
+    //     位置也都在这个头之下,与上一代窗里同位置同槽,换不掉别的位置 ⇒ 只剩在途那第一段落点不明(R1),不判;
+    //   · 写头变了:可能是新一代发布了(也可能是上一代最后又多写了一笔),按「眼前这个写头就是新一代的」暂定
+    //     估 —— 它若其实是上一代的旧头,这样估只会更保守;不估就会放过新一代已经换掉的槽。
+    // 读方中间漏读过块时界定不了新一代写了多少,上一代窗不可用(bLowOk 为假)。
+    AliasRef a;
+    a.r1Trust = !prevBLowKnown_ && w == prevHi_;
+    a.bLowOk = prevBLowKnown_ || contiguousInGen_;
+    a.bLow = prevBLowKnown_ ? prevBLow_ : w - spanBound(prevN, ring) - framesSinceGen_;
+    return a;
+}
+
 ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t prevN,
                                                   int64_t ring) const noexcept
 {
@@ -487,16 +506,9 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
     }
     // 新一代已发布过的最高写头:停走带静止重写会让写头退回,但退回之前写到过的位置照样换掉了同槽内容。
     const int64_t newHi = std::max(w, curHi_);
-    // 新一代可能写过的跨度下界(别名判据用)。写头已确认:confirmHead 记下的界。还没确认(R1 / 暂定的头 R5):
-    //   · 写头还停在上一代最后观测到的头(prevHi_)上:新一代一段都还没发布 —— 就算恰好发布到同一个值,它写的
-    //     位置也都在这个头之下,与上一代窗里同位置同槽,换不掉别的位置 ⇒ 只剩在途那第一段落点不明(R1),不判;
-    //   · 写头变了:可能是新一代发布了(也可能是上一代最后又多写了一笔),按「眼前这个写头就是新一代的」暂定
-    //     估 —— 它若其实是上一代的旧头,这样估只会更保守;不估就会放过新一代已经换掉的槽。
-    // 读方中间漏读过块时界定不了新一代写了多少,上一代窗不可用。
-    const bool r1Trust = !prevBLowKnown_ && w == prevHi_;
-    const bool bLowOk = prevBLowKnown_ || contiguousInGen_;
-    const int64_t bLow = prevBLowKnown_ ? prevBLow_ : w - spanBound(prevN, ring) - framesSinceGen_;
-    const auto prevCovers = [this, newHi, r1Trust, bLowOk, bLow, guard, ring](int64_t p0, int64_t p1) {
+    // 新一代可能写过的跨度下界(别名判据用),判法见 aliasRef。
+    const AliasRef a = aliasRef(w, prevN, ring);
+    const auto prevCovers = [this, newHi, a, guard, ring](int64_t p0, int64_t p1) {
         if (p1 <= p0)
         {
             return true;
@@ -505,7 +517,7 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
         {
             return false;
         }
-        return r1Trust || (bLowOk && prevAliasFree(p0, p1, bLow, newHi + guard, ring));
+        return a.r1Trust || (a.bLowOk && prevAliasFree(p0, p1, a.bLow, newHi + guard, ring));
     };
     if (!prevCovers(rest0, rest1) || !prevCovers(restB0, restB1))
     {
@@ -519,13 +531,28 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
     return c;
 }
 
-void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring) noexcept
+int64_t ShmRingMixSource::unreadGrace(int64_t n, u32 sampleRate) const noexcept
+{
+    // 宽限 = max(200 ms 读方时间线, 2·实测提前量上界 + 本块长)(设计稿 §3.4;A-4 实测定案:N2a 那种「只在交接前后
+    // 先算 Output」的已注入却读不到 < 150 ms,必须压在宽限之内;LS-14 / N2b 的告警要 ≤ 0.5 s)。按样本计:离线导出
+    // 跑在墙钟前面多少倍都是同一条规则。没量到过提前量(本代之前一块都没在当前窗里读成功过)时只剩 200 ms 那一项。
+    // 采样率取绑定时的快照(0 = 段头没写过,按 48 kHz 估;只影响宽限长短,不影响读不读)。
+    const int64_t sr = sampleRate > 0 ? static_cast<int64_t>(sampleRate) : 48000;
+    const int64_t floorSamples = sr * kUnreadGraceMs / 1000;
+    const int64_t lead = leadHiRef();
+    const int64_t byLead = lead >= 0 ? 2 * lead + n : 0;
+    return std::max(floorSamples, byLead);
+}
+
+void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring,
+                                    u32 sampleRate) noexcept
 {
     // 旧实现的失准 / 饿读判别(P1-7),逐字保留:
     // 写方套圈(要读的数据已被覆盖)无条件算真失准。写头停滞 = 写方根本没在写(宿主在静音段挂起 Input /
     // bypass / 轨未激活),归 OutputSession 的 CH_SUSPENDED 管,不计失准。**本轮第一次失败不表态**:
     // 只有一个写头采样,判不出写方是在推进还是冻着,等下一块再比。本代还没在当前窗里读到过数据
-    // (primed 之前)的失败一律不计 —— 空环 / 起播瞬间 / 宿主先渲染 Output / 换代交接中(ADR-002)。
+    // (primed 之前)的失败这里不计 —— 空环 / 起播瞬间 / 宿主先渲染 Output / 换代交接中(ADR-002);
+    // [A-6] 唯一的例外是同一段失败持续超过宽限(H3,见本函数末尾与头注「持续读不到」)。
     const u64 wu = static_cast<u64>(w);
     const bool lapped = w > t0 && (w - t0 > ring || w + guard - t0 > ring);
     const bool producerAdvancing = sawFail_ && wu != lastFailWriteHead_;
@@ -562,6 +589,36 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
     {
         handoverLossCount_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    // [A-6] 持续读不到(E1b,见头注)。只管 primed 之前:primed 之后的失败上面已按旧口径计过。
+    if (!primed_)
+    {
+        if (!unreadRun_)
+        {
+            unreadRun_ = true;
+            unreadFrom_ = t0;
+        }
+        // 这一块属于哪一形、给多长宽限。(a) 读方在锚点之上、写方还没写到块尾:宽限 G。(b) 读方在锚点之下、上一代
+        // 窗接不住:读方要走完「锚点 − 自己」这一段才进当前窗,这一段不超过实测提前量上界(锚点 ≤ 写头,写头领先
+        // 读方不超过上界),所以宽限是「上界 + G」—— 超过它还在锚点之下,就是锚错了(H1 的安全网)。其余形状
+        // (还锚不上 / 锚点在写头之上 / 被套圈)不在 E1b 的口径里:它们不会在写方推进时持续(写头一动就能锚)。
+        const int64_t graceA = unreadGrace(t1 - t0, sampleRate);
+        int64_t limit = -1;
+        if (curAnchored_ && t0 >= curVf_ && t1 > w && !lapped)
+        {
+            limit = graceA; // (a)
+        }
+        else if (curAnchored_ && t0 < curVf_ && curVf_ <= w)
+        {
+            limit = std::max<int64_t>(leadHiRef(), 0) + graceA; // (b)
+        }
+        // 写方停着的块不计(P1-7:那是挂起,不是失准);写方一动,这一块照计。
+        if (limit >= 0 && producerAdvancing && t1 - unreadFrom_ > limit)
+        {
+            gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→失准计数(「路由失准」横幅)
+            persistentFailCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }
 
 bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int64_t hostBlockEnd) noexcept
@@ -573,6 +630,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     {
         return false;
     }
+    readAttemptCount_.fetch_add(1, std::memory_order_relaxed); // [A-6] 这一轨这一块确实被读了(成败不论)
 
     // 绑定指针变化(重绑 / 换环)→ 清窗、代际重来。换的是另一条环(attach / 改组)时与首次绑定同样
     // 处理(旧实现在这里把有效起点直接放在本块起点);同一条环重绑(几何改写)不当读方跳变。
@@ -605,6 +663,12 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     lastT0_ = t0;
     end_ = t1;
     lastN_ = n;
+    if (jumped || skipped)
+    {
+        // [A-6] 读方自己跳了 / 中间漏读了块(本轨被移出注入集一段时间又回来):这一段读不到的时间线不连续,
+        // 「持续读不到」重新起算(漏读期间读没读得到无从得知,不把它算进宽限)。停走带静止重读不在此列。
+        unreadRun_ = false;
+    }
 
     // 规则 2:装载顺序 epoch → 写头 → epoch。两次 epoch 不同 = 装载期间正在换代,写头属于哪一代不明。
     AudioRingHeader* const h = b->header;
@@ -622,7 +686,14 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     const u32 hdrChannels = *static_cast<const volatile u32*>(&h->channels);
     if (hdrChannels != b->geo.channels)
     {
-        handoverLossCount_.fetch_add(1, std::memory_order_relaxed);
+        // [A-6] 单独计(A-5 时混在 handoverLoss 里)。它不是失准,也不碰「持续读不到」的计时:正在进行的那段连续
+        // 失败不重新起算(几何改写不能掩盖真的读不到),但这一块不算进它的长度(几何改写的短暂丢失不能凑满宽限)——
+        // 起点往后挪一块,「t1 − 起点」只剩真正读不到的那几块。[M] 换绑之后(≤ 一拍)由 onRebind 重新起算。
+        layoutMismatchCount_.fetch_add(1, std::memory_order_relaxed);
+        if (unreadRun_)
+        {
+            unreadFrom_ += n;
+        }
         return false;
     }
 
@@ -645,7 +716,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     const Cover c = certify(t0, t1, w, guard, prevN, ring);
     if (!c.ok)
     {
-        countFailure(t0, t1, w, guard, ring);
+        countFailure(t0, t1, w, guard, ring, b->geo.sampleRate);
         framesSinceGen_ += n;
         return false;
     }
@@ -677,15 +748,13 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     const bool prevUsed = c.prevA1 > c.prevA0 || c.prevB1 > c.prevB0;
     if (ok && prevUsed)
     {
-        // 上一代窗认领的段在拷贝之后的写头 w2 下重判一次别名(写头没确认时同 certify:w2 还停在上一代最后
+        // 上一代窗认领的段在拷贝之后的写头 w2 下重判一次别名(与 certify 同一个 aliasRef:w2 还停在上一代最后
         // 观测到的头上就不判,变了就按 w2 暂定)。写头已确认时 curHi_ 是本代发布过的最高写头;没确认时它可能是
         // 上一代的旧头,不算。
-        const bool r1Trust2 = !prevBLowKnown_ && w2 == prevHi_;
-        const int64_t bLow = prevBLowKnown_ ? prevBLow_ : w2 - spanBound(prevN, ring) - framesSinceGen_;
+        const AliasRef a2 = aliasRef(w2, prevN, ring);
         const int64_t hi2 = prevBLowKnown_ ? std::max(w2, curHi_) : w2;
-        ok = r1Trust2 ||
-             ((prevBLowKnown_ || contiguousInGen_) && prevAliasFree(c.prevA0, c.prevA1, bLow, hi2 + guard, ring) &&
-              prevAliasFree(c.prevB0, c.prevB1, bLow, hi2 + guard, ring));
+        ok = a2.r1Trust || (a2.bLowOk && prevAliasFree(c.prevA0, c.prevA1, a2.bLow, hi2 + guard, ring) &&
+                            prevAliasFree(c.prevB0, c.prevB1, a2.bLow, hi2 + guard, ring));
     }
     framesSinceGen_ += n;
     if (!ok)
@@ -712,6 +781,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         ++leadCur_.samples;
     }
     sawFail_ = false; // 成功一块即清停滞账:下一次失败重新从「写头是否在动」问起
+    unreadRun_ = false; // [A-6] 读到了(哪个窗都算):「持续读不到」重新起算
     readOkCount_.fetch_add(1, std::memory_order_relaxed);
     return true;
 }

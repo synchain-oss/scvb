@@ -393,7 +393,13 @@ void OutputSession::evaluateChannels(u64 nowMs)
         {
             misalignedSinceMs_[idx] = nowMs;
             lastGapCount_[idx] = gc;
+            readOkAtGap_[idx] = sources_[idx].readOkCount(); // [A-6] 正向在场从最近一笔缺口起算
         }
+        // [A-6] 正向在场:自最近一笔缺口以来这一轨确实读出过数据(见 positivePresence)。每拍每轨都要调(它顺带
+        // 维护「在注入集里却没被读」的计时),所以单列一行,不放进下面恢复判定的短路里。
+        // injectMask_ 此刻还是上一拍发布的值(本拍的在循环之后才写)。
+        const bool present =
+            positivePresence(idx, (injectMask_.load(std::memory_order_relaxed) & (1u << (ch - 1))) != 0, nowMs);
         const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
 
         // 恢复判定:必须「该轨数据真的在推进」,**不能只看「不再产生新缺口」**。
@@ -402,10 +408,14 @@ void OutputSession::evaluateChannels(u64 nowMs)
         // 只看「无新缺口」会把这种**持续断流的静默**判成恢复,横幅在实际仍无声时撤下。
         // 所以恢复要同时满足:槽活跃 + 心跳新鲜 + 采样率一致 + 已绑定 + 未挂起 + 有新帧写入。
         const bool dataHealthy = slotActive && hbFresh && srMatch && bound && !suspended && dataAdvancing;
-        if (!misaligned && dataHealthy)
+        if (!misaligned && dataHealthy && present)
         {
             // 本次失准发作结束 → 上桥的 misalignCount 归零,「路由失准」横幅与逐行 ⚠ 随之撤下
             // (进程累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
+            // [A-6] 还要求正向在场(present):写方在推进(dataAdvancing)不等于读方读得到。H3(读方一直领先写头,
+            // 见 ShmRingMixSource 头注「持续读不到」)里失准把本轨踢出注入集、read() 不再被调、缺口停止增长,1s 后
+            // 「无新缺口 ∧ 数据在推进」照样成立 —— 不加这一条横幅会在实际仍无声时撤下,本轨回到注入集、宽限走完再亮,
+            // 以约 1s 的周期闪(P0-2 的同族假恢复)。
             misalignBaseline_[idx] = gc;
         }
 
@@ -720,6 +730,37 @@ u32 OutputSession::misalignCountRecent(u32 channel) const
     return gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
 }
 
+bool OutputSession::positivePresence(std::size_t idx, bool wasInjected, u64 nowMs) noexcept
+{
+    // [A-6] 失准恢复的正向在场判据(设计稿 §3.4):自最近一笔缺口以来,读方确实从这一轨读出过数据。
+    // 「从最近一笔缺口」而不是「从发作开始」:发作期间读成功过几块、随后又持续读不到(H3 那一形)时,
+    // 早先那几块不能替后来的读不到作证。
+    const ShmRingMixSource& src = sources_[idx];
+    const u32 tries = src.readAttemptCount();
+    if (!wasInjected || tries != lastReadAttempts_[idx])
+    {
+        unreadInjectedSinceMs_[idx] = nowMs; // 被读了 / 本来就不在注入集里:「在注入集里却没被读」重新起算
+    }
+    lastReadAttempts_[idx] = tries;
+    if (src.readOkCount() != readOkAtGap_[idx])
+    {
+        return true;
+    }
+    // 兜底:本轨在注入集里待满 kUnreadInjectedFallbackMs、读方一次都没被调用 —— Output 根本没在读它(面板上关了
+    // 这一轨,混音时被启用位挡掉;或宿主没在调 Output),「读到过数据」无从谈起,退回旧判据(无新缺口 ∧ 数据在推进),
+    // 免得一条用户自己关掉的轨把失准横幅永久钉住。H3 不会走到这里:它在注入集里的每一块都在被读(只是读不到)。
+    return nowMs - unreadInjectedSinceMs_[idx] >= kUnreadInjectedFallbackMs;
+}
+
+u32 OutputSession::readOkCount(u32 channel) const
+{
+    if (channel < 1 || channel > kMaxChannels)
+    {
+        return 0;
+    }
+    return sources_[static_cast<std::size_t>(channel - 1)].readOkCount();
+}
+
 u64 OutputSession::writeHead(u32 channel) const
 {
     if (channel < 1 || channel > kMaxChannels)
@@ -794,7 +835,10 @@ void OutputSession::resetChannelTracking() noexcept
         lastGapCount_[i] = gc;
         misalignBaseline_[i] = gc;
         lastStallFail_[i] = sources_[i].stallFailCount();
+        readOkAtGap_[i] = sources_[i].readOkCount(); // [A-6] 同理:读方计数也是进程寿命的
+        lastReadAttempts_[i] = sources_[i].readAttemptCount();
     }
+    unreadInjectedSinceMs_.fill(0); // 调用方随后都把 injectMask 清零:下一拍按「不在注入集里」从那一拍重新起算
     stallEpisode_.fill(false);
     starvingSeen_.fill(false);
 }

@@ -64,6 +64,21 @@
 //   R6 读方自己的跳变只看 podEpoch_(规则 1),而 OutputProcessor 在跨零点的块与 bypass 路径上不更新它
 //      (它的口径归打印器 / playhead,本卡不动):这两处读方那一次跳变读环看不到。同步宿主上由锁步规则接住
 //      (SL-523 跨零点用例);写方领先时退到保守规则,那一圈 / 那一次定位多丢至多一个写方块。
+//
+// ## [A-6] 持续读不到 → 失准(E1b;设计依据 A 线设计稿 §3.4,判据 = A-4 LS-14 / N2b)
+//
+// 旧口径(P1-7 起逐字保留,见 countFailure):本代 primed 之前的失败一律不计 —— 空环 / 起播瞬间 / 宿主先渲染
+// Output / 换代交接中,都是「尚未上线」。缺陷 H3 就藏在这里:读方从一代开始就一直领先写头(宿主先算总线、
+// 人声轨没送进装 Output 的总线、Aux 位置没做延迟补偿),这一代永远 primed 不了,于是一直无声、一次都不报。
+// A-6 在 primed 之前加一条「持续读不到」:同一段连续读失败(读方时间线连续,中间没有一块读成功)
+//   (a) 读方在锚点之上、写头还没写到块尾(unprimedFail 那一形):持续超过宽限 G 之后,写方在推进的块每块计一笔缺口;
+//   (b) 读方在锚点之下、上一代窗也接不住(stuckBelowAnchor 那一形,H1 的安全网):持续超过「提前量上界 + G」之后同样计。
+//   G = max(200 ms 读方时间线, 2·实测提前量上界 + 本块长),按样本计 —— 离线导出下同一条规则(墙钟不进来)。
+//   写头停着(写方没在推进)的块照旧不计(P1-7 / 挂起归 suspended);一段失败里写方停了又动,动的那一块才计。
+// 这段连续失败在这些时候重新起算:读成功(任一窗)、换代、重绑、读方自己跳变、读方漏读了块(本轨被移出注入集
+// 一段时间又回来)。段头 channels 与快照不一致的块(几何改写、[M] 还没换绑,≤ 一拍)单独计 layoutMismatch:
+// 它既不把这段失败续长(不让几何改写的短暂丢失凑满宽限),也不让它重新起算(不让几何改写掩盖真的读不到)。
+// primed 之后的失败仍走旧口径(写方在推进 / 套圈即计,停着只记 stallFail),A-6 不动。
 
 #include <atomic>
 #include <cstdint>
@@ -112,10 +127,20 @@ public:
     u32 unprimedFailCount() const noexcept { return unprimedFailCount_.load(std::memory_order_relaxed); }
     // stuckBelowAnchor:块起点在锚点之下(t0 < vf ≤ 写头)、上一代窗也接不住,且写方在推进(设计稿 (b))。
     u32 stuckBelowAnchorCount() const noexcept { return stuckBelowAnchorCount_.load(std::memory_order_relaxed); }
-    // handoverLoss:换代交接期读不出的块(当前窗还没能锚定、上一代窗别名判据不过、
-    // 段头 channels 与快照不一致等)。段头 channels 不一致那一类最多持续一个 [M] 换绑周期(约 40 ms),
-    // A-6 拿它做告警时要与真正的交接丢失分开看。
+    // handoverLoss:换代交接期读不出的块(当前窗还没能锚定、上一代窗别名判据不过、拷贝后复核不过等)。
+    // [A-6] 起不再含「段头 channels 与快照不一致」那一类(见 layoutMismatchCount)。
     u32 handoverLossCount() const noexcept { return handoverLossCount_.load(std::memory_order_relaxed); }
+
+    // [A-6] 持续读不到(E1b,见头注)的宽限下限:读方时间线 200 ms(按快照采样率折成样本)。
+    static constexpr int64_t kUnreadGraceMs = 200;
+    // [A-6] 段头 channels 与快照不一致、整块不读的块(几何改写之后、[M] 换绑之前,最多一个 [M] 周期约 40 ms)。
+    // A-5 时记在 handoverLoss 里;它不是交接丢失,也不进「持续读不到」的计时,单独计。
+    u32 layoutMismatchCount() const noexcept { return layoutMismatchCount_.load(std::memory_order_relaxed); }
+    // [A-6] 因「持续读不到」计进 gapCount 的块(gapCount 的子集;诊断 / 测试用)。
+    u32 persistentFailCount() const noexcept { return persistentFailCount_.load(std::memory_order_relaxed); }
+    // [A-6] read() 被调用的块数(成功与失败都算;未绑定 / 参数非法的空调用不算)。OutputSession 拿它分辨
+    // 「在注入集里、却一次都没被读」(面板关了这一轨 / Output 没被调用)与「读了、读不到」。
+    u32 readAttemptCount() const noexcept { return readAttemptCount_.load(std::memory_order_relaxed); }
 
 private:
     // 一代里观测到的「写头相对读方」的提前量(只在整块落在当前窗里、成功读出的块上量)。
@@ -136,6 +161,14 @@ private:
         int64_t prevB0 = 0, prevB1 = 0;
     };
 
+    // 上一代窗别名判的参照(certify 与拷贝后复核共用一份,见 aliasRef)。
+    struct AliasRef
+    {
+        bool r1Trust = false; // 写头没确认、还停在上一代最后观测到的头上:新一代一段都没发布,不判(R1)
+        bool bLowOk = false; // 新一代起点下界界定得了(写头已确认,或本代首次观测以来读方没漏读)
+        int64_t bLow = 0; // 新一代可能写过的跨度下界
+    };
+
     void onRebind() noexcept;
     void clearWindows() noexcept;
     void newGeneration(u64 e, int64_t w, bool flux, bool jumped, bool skipped, int64_t prevN, int64_t ring) noexcept;
@@ -144,8 +177,11 @@ private:
     void confirmHead(int64_t w, int64_t prevN, int64_t ring) noexcept;
     void tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, int64_t ring) noexcept;
     Cover certify(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t prevN, int64_t ring) const noexcept;
+    AliasRef aliasRef(int64_t w, int64_t prevN, int64_t ring) const noexcept;
     bool prevAliasFree(int64_t a0, int64_t a1, int64_t bLow, int64_t wN, int64_t ring) const noexcept;
-    void countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring) noexcept;
+    void countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring, u32 sampleRate) noexcept;
+    // [A-6] (a) 类持续读不到的宽限(样本):max(kUnreadGraceMs 读方时间线, 2·实测提前量上界 + 本块长)。
+    int64_t unreadGrace(int64_t n, u32 sampleRate) const noexcept;
     int64_t leadHiRef() const noexcept; // 实测提前量上界(没量到过 → -1)
     // 新一代在被首次观测前可能已写的跨度上界(prevN = 上一次 read() 的块长)。
     int64_t spanBound(int64_t prevN, int64_t ring) const noexcept;
@@ -203,6 +239,7 @@ private:
     // 本代是否已在当前窗里成功读到过数据。未 primed 的失败 = 写方还没追到本位置(刚 attach 的空环 /
     // 起播瞬间 / 宿主先渲染 Output 再渲染 Input / 换代交接中),是「尚未上线」而非「失准」,不得计数 ——
     // 否则所有注入轨会在同一块同时 +1(T37 三轮 A 族「五轨几乎同时报失准」)。
+    // [A-6] 「尚未上线」有期限:同一段失败持续超过宽限仍读不到(写方在推进),就是「持续读不到」(H3),照计失准。
     bool primed_ = false;
     // covered 失败的**写头停滞**判别(P1-7)。covered 会因两个物理上相反的原因失败:
     //   ① 写头还没推到本块(w < t0+n)—— 写方压根没在写(宿主在静音段挂起了 Input 的
@@ -214,6 +251,11 @@ private:
     u64 lastFailWriteHead_ = 0;
     bool sawFail_ = false;
 
+    // [A-6] primed 之前的一段连续读失败(见头注「持续读不到」)。unreadFrom_ = 这段失败的起点(读方时间线);
+    // 段头 channels 不一致的块把它往后挪一块,所以「t1 − unreadFrom_」只量真正读不到的那几块。
+    bool unreadRun_ = false;
+    int64_t unreadFrom_ = 0;
+
     std::atomic<u32> gapCount_{0};
     // 被「写头停滞」判据挡下来的失败读:不是失准,但也不是无事发生 —— 它精确表示
     // 「Output 要 t0 处的数据,而写方压根没推到那里」。OutputSession 拿它给 CH_SUSPENDED
@@ -224,6 +266,9 @@ private:
     std::atomic<u32> unprimedFailCount_{0};
     std::atomic<u32> stuckBelowAnchorCount_{0};
     std::atomic<u32> handoverLossCount_{0};
+    std::atomic<u32> layoutMismatchCount_{0};
+    std::atomic<u32> persistentFailCount_{0};
+    std::atomic<u32> readAttemptCount_{0};
 };
 
 } // namespace scvb::output

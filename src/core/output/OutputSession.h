@@ -38,6 +38,9 @@ inline constexpr u32 kOutputDefaultGroup = 1;
 inline constexpr u64 kInjectDelayMs = 200;
 // [01 §4.2] 近 1s 无失准 → 重新在线(mask 位恢复)。
 inline constexpr u64 kMisalignRecoverMs = 1000;
+// [A-6] 失准恢复的正向在场判据的兜底:一轨在注入集里连续这么久、Output 一次都没读过它(面板关了这一轨 /
+// Output 没被调用),「读到过数据」无从谈起,恢复退回旧判据(见 OutputSession::positivePresence)。
+inline constexpr u64 kUnreadInjectedFallbackMs = 1000;
 // [01 §4.2] write_head 停滞判定(CH_SUSPENDED 软启发式)。
 inline constexpr u64 kSuspendStallMs = 500;
 
@@ -253,9 +256,13 @@ public:
     u32 gapCount(u32 channel) const;
 
     // [M] 桥面 scvb.conn.misalignCount 的数据面:**本次失准发作**内的缺口数 —— 该轨连续
-    // kMisalignRecoverMs 无新缺口(evaluateChannels 判定 !misaligned)即归零。累计值不适合直接上桥:
+    // kMisalignRecoverMs 无新缺口(evaluateChannels 判定 !misaligned)、数据在推进,且 [A-6] 自最近一笔缺口
+    // 以来确实读到过数据(正向在场,positivePresence)即归零。累计值不适合直接上桥:
     // 它只增不减,起播抖一次就把「路由失准」横幅永久钉住,恢复健康也撤不下来(T37 三轮 A 族)。
     u32 misalignCountRecent(u32 channel) const;
+    // [A-6] 该轨读方成功读出的块数(ShmRingMixSource::readOkCount,进程寿命累计;测试 / 诊断用)。
+    // 失准恢复要求它自上一笔缺口以来有推进(正向在场),见 positivePresence。
+    u32 readOkCount(u32 channel) const;
     u64 writeHead(u32 channel) const;
     u64 epoch(u32 channel) const;
 
@@ -279,6 +286,8 @@ private:
     void releaseSlot();
     void resetChannelTracking() noexcept;
     void evaluateChannels(u64 nowMs);
+    // [A-6] 失准恢复的正向在场判据(evaluateChannels 每拍每轨调一次;wasInjected = 上一拍发布的 injectMask 里有它)。
+    bool positivePresence(std::size_t idx, bool wasInjected, u64 nowMs) noexcept;
     void refreshGlobalInfo(u64 nowMs);
     void consumeCommands(u64 nowMs);
 
@@ -330,6 +339,11 @@ private:
     // 本次失准发作的起算点:恢复健康(!misaligned)时对齐到当前累计值,于是
     // misalignCountRecent = gapCount - baseline 归零。
     std::array<u32, kMaxChannels> misalignBaseline_{};
+    // [A-6] 正向在场(见 positivePresence):最近一次看到新缺口那一拍的 readOkCount;上一拍的 readAttemptCount;
+    // 本轨「在注入集里、读方一次都没被调用」这段从何时起(被读了 / 不在注入集里就重新起算)。
+    std::array<u32, kMaxChannels> readOkAtGap_{};
+    std::array<u32, kMaxChannels> lastReadAttempts_{};
+    std::array<u64, kMaxChannels> unreadInjectedSinceMs_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};
     std::array<u64, kMaxChannels> lastWriteHeadChangeMs_{};
     // 停流(CH_SUSPENDED)独立成一条上桥状态(ChannelConnInfo::suspended),**不并进失准计数**。
