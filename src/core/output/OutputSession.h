@@ -155,6 +155,8 @@ public:
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
     // [A-8] 保持在线的挂起轨(写头冻结 ≥ kSuspendStallMs,但按 E2 规则仍在线;bit{N-1})。只含在线轨,
     // 与 injectMask 同一次评估里发布。[A] 用它判「注入轨是否全部停滞」(U3(b)-ii),不用它决定读不读环。
+    // ⚠ 它与 injectMask 是**两个**原子量,不是同一次快照:[A] 可能读到跨过一次 [M] 更新的旧新组合,最坏让「全部停滞」
+    // 早或晚成立一段(回原声还另要「本段没有注入轨读到数据 ∧ 总线听得见」)。只能当启发式判据用,别拿它做更强的判断。
     u32 stalledMask() const noexcept { return stalledMask_.load(std::memory_order_acquire); }
 
     // 状态访问。

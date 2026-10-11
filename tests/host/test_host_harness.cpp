@@ -1706,7 +1706,9 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     }
     INFO("un-bypass at " << su << ", mix back at " << yStart << ", mix peak " << mixPeak);
     REQUIRE(yStart < se);
-    CHECK(yStart - su <= static_cast<std::size_t>(2 * kBlock)); // 写方一恢复就读到(至多差一块)
+    // 写方一恢复,同一块就读到、交叉当块开始(第一个样本 sin 0 = 0,所以实测是 +1)—— 不等 [M] 下一拍撤停滞位
+    // (那要晚至少一块 = 512 样本;删除式 D8 去掉「本段读到数据即不算停滞」时红在这里)。
+    CHECK(yStart - su <= static_cast<std::size_t>(kBlock / 2));
     CHECK(maxAbs(outL, yStart, yStart + kBlock) < 0.6f * mixPeak); // 淡入,不是当块满幅
     const std::size_t settled = yStart + 3840 + kBlock;
     CHECK(maxAbs(outL, settled, se) >= 0.9f * mixPeak); // 80 ms 之后回到稳态混音
@@ -1723,6 +1725,106 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     WARN("A-8 U3(b)-ii: raw crossfade starts +" << static_cast<double>(xStart - sb) / kSr << " s after bypass, lasts "
                                                 << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
                                                 << " samples after un-bypass");
+}
+
+// ---------------------------------------------------------------------------
+// [A-8] U3(b)-ii 的边界(只表征;PR #387 第 1 轮评审):「总线听得见」只是「旁路」的近似。人声总线上除了装 Input 的轨
+// 还接着别的声源(没装 Input 的和声轨 / FX return / send)时,装 Input 的轨被宿主挂起(这里:宿主不调用它,该轨送进
+// 总线的是静音),注入轨全部停滞,而总线因为那路声源「听得见」⇒ Output 照样回原声(那路声源在间奏里出声);写方恢复时
+// 要走 80 ms 交叉回混音,句首被淡入吃掉一截 —— E2-a 的淡入在这种工程里仍在,与修前相同(修前 500 ms 掉线后同样回直通)。
+// 总线上全是装 Input 的轨时句首第一帧在场,见 sched 的 LS-12 单轨格。本格钉的是这个形状本身:以后改判据(比如改成
+// 按「旁路」本身判)时这里会变,CHANGELOG「修复」里那句例外与变更文档的「边界」要一起改。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST A-8 U3(b)-ii boundary: with a non-SCVB source on the bus, suspending every Input falls back to raw "
+          "and the next phrase fades in over 80 ms",
+          "[host][a8][e2]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.waitUntilAudioFlowing());
+
+    static constexpr float kOtherAmp = 0.02f; // 没装 Input 的那路声源(220 Hz,约 -34 dBFS)
+    std::vector<float> busL;
+    std::vector<float> outL;
+    const auto step = [&r, &busL, &outL](bool inputCalled) {
+        Rig::fillSine(r.inBuf, 0.25f, r.ph.timeSamples);
+        if (inputCalled)
+        {
+            r.in.processBlock(r.inBuf, r.midi);
+        }
+        for (int c = 0; c < 2; ++c)
+        {
+            const float* vocal = r.inBuf.getReadPointer(c);
+            float* bus = r.outBuf.getWritePointer(c);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                const double t = static_cast<double>(r.ph.timeSamples + i) / kSr;
+                const float other =
+                    kOtherAmp * static_cast<float>(std::sin(2.0 * juce::MathConstants<double>::pi * 220.0 * t));
+                bus[i] = (inputCalled ? vocal[i] : 0.0f) + other; // 被挂起的轨送进总线的是静音
+            }
+        }
+        const float* bus = r.outBuf.getReadPointer(0);
+        busL.insert(busL.end(), bus, bus + kBlock);
+        r.out.processBlock(r.outBuf, r.midi);
+        const float* o = r.outBuf.getReadPointer(0);
+        outL.insert(outL.end(), o, o + kBlock);
+        r.ph.timeSamples += kBlock;
+        Rig::pumpMessages(10);
+    };
+    const auto maxAbs = [](const std::vector<float>& v, std::size_t a, std::size_t b) {
+        float m = 0.0f;
+        for (std::size_t i = a; i < b && i < v.size(); ++i)
+        {
+            m = std::max(m, std::abs(v[i]));
+        }
+        return m;
+    };
+    const auto sameAsBus = [&busL, &outL](std::size_t a, std::size_t b) {
+        for (std::size_t i = a; i < b; ++i)
+        {
+            if (outL[i] != busL[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // ⓪ 稳态:Output 用混音替换总线(那路声源被替换掉)。
+    for (int b = 0; b < 40; ++b)
+    {
+        step(true);
+    }
+    const std::size_t s0 = outL.size();
+    const float mixPeak = maxAbs(outL, s0 - 20 * kBlock, s0);
+    REQUIRE(mixPeak > 0.05f);
+    REQUIRE_FALSE(sameAsBus(s0 - 20 * kBlock, s0)); // 前提:此刻是混音,不是直通
+
+    // ① 宿主挂起这条 Input 1.1 s(Cubase「无信号时挂起」一类):坐实停滞后总线回原声,那路声源出声。
+    for (int b = 0; b < 100; ++b)
+    {
+        step(false);
+    }
+    const std::size_t sr = outL.size();
+    CHECK(sameAsBus(sr - 20 * kBlock, sr));
+    CHECK(maxAbs(outL, sr - 20 * kBlock, sr) <= kOtherAmp + 1.0e-4f);
+
+    // ② 恢复:写方同块读到,但总线要从原声交叉回混音 ⇒ 句首淡入(第一块远不到满幅),80 ms 之后回到稳态混音。
+    for (int b = 0; b < 40; ++b)
+    {
+        step(true);
+    }
+    const std::size_t se = outL.size();
+    const float headPeak = maxAbs(outL, sr, sr + kBlock);
+    const float settledPeak = maxAbs(outL, sr + 3840 + kBlock, se);
+    CHECK(headPeak < 0.6f * mixPeak);
+    CHECK(settledPeak >= 0.9f * mixPeak);
+    CHECK(settledPeak <= 1.1f * mixPeak);
+    WARN("A-8 U3(b)-ii boundary: during the suspension the output follows the bus (other source "
+         << maxAbs(outL, sr - 20 * kBlock, sr) << "); after resume the first block peaks at " << headPeak / mixPeak
+         << " of the steady mix");
 }
 
 // ---------------------------------------------------------------------------

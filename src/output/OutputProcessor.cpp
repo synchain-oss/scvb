@@ -860,7 +860,10 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 namespace
 {
 // [A-8] U3(b)-ii「注入轨全部停滞 → 总线回到原声」的总线输入静音门限(约 −100 dBFS)。宿主给无 region / 被挂起的
-// 轨送的是数字静音,装了 Input 的轨把总线交给 Output 后自己也是静音;低于这个电平的「原声」听不出来。
+// 轨送的是数字静音,装了 Input 的轨把总线交给 Output 后自己也是静音 —— 它前面那些插件的噪声底一并被它静音掉
+// (Input 装在人声轨插件链最后一格),dither 一般加在母线输出而不在人声总线的输入里。所以总线输入里高于这个门限的,
+// 只会是旁路出来的原声或没装 Input 的声源。门限取得低,是为了不把很轻的旁路原声(乐句尾音、气声)当成静音吞掉;
+// 低于它的「原声」听不出来,不回原声也听不出差别。
 constexpr float kStalledBusAudibleFloor = 1.0e-5f;
 
 // 本段总线输入(stereo,isBusesLayoutSupported 钉死两声道)里有没有高于静音门限的样本。只读、定长循环,不分配。
@@ -1054,6 +1057,10 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // Input / 无 region —— E2 本来要修的那一类),原声就是静音,Output 输出的空混音与它逐样本相同;此时若照样把
     // 交叉拨回直通,写方恢复时得再走一遍 80ms 交叉回混音,句首又被淡入吃掉一截(LS-12 单轨格)。闩住是为了让
     // 旁路期间乐句之间的静音不把交叉来回拨。进出都经 busXfade(80ms 等功率,ADR-010),没有硬切路径。
+    // 释放中的轨(releasing:已离开 inject、只剩 80ms 淡出)有意不计入 injectHasData:它不再是注入轨;此时交叉回直通
+    // 与它的逐轨淡出叠乘,与 [SL-521]「最后一条轨关掉」同形,仍在 80ms 内落到 0。
+    // 边界(「总线听得见」只是「旁路」的近似):总线上还接着没装 Input 的声源时,所有注入轨一起被挂起也会回原声,
+    // 写方恢复时照样要走 80ms 交叉回混音 —— 与修前相同,见 docs/contract-changes/20261011-a8-suspend-not-offline.md。
     bool injectHasData = false;
     for (int ch = 0; ch < 15; ++ch)
     {
