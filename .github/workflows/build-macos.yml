@@ -445,7 +445,9 @@ jobs:
               out=$("$exe" --list-tests </dev/null 2>&1) || rc=$?
             fi
             if [ "$rc" != "0" ]; then printf '%s\n' "$out" | tail -n 5; echo "::error::$what --list-tests failed (exit $rc)"; return 1; fi
-            cases=$(printf '%s\n' "$out" | sed -nE 's/^([0-9]+) (matching )?test cases?$/\1/p' | tail -n 1)
+            # LC_ALL=C:host 的用例名是 UTF-8 中文,BSD sed 在 runner 的默认 locale 下会以
+            # 「RE error: illegal byte sequence」退出(M12b 首跑实测);按字节匹配,汇总行本身只有 ASCII。
+            cases=$(printf '%s\n' "$out" | LC_ALL=C sed -nE 's/^([0-9]+) (matching )?test cases?$/\1/p' | tail -n 1)
             if [ -z "$cases" ] || [ "$cases" -lt "$2" ]; then
               echo "::error::$what lists ${cases:-0} test cases, expected at least $2"; return 1
             fi

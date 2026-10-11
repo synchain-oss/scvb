@@ -4512,7 +4512,7 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
     // 取 ∓70 而不是 ∓100:硬左会让右声道恒 0,L/R 比就成了除零,判据反而不成立。
     // stereo 源 + width=100 → 子声像 = clamp(pan∓100),解析比:pan=−70 → L/R≈1.79,+70 → ≈0.56。
     constexpr float kCurvePan = -70.0f; // 曲线:偏左
-    constexpr float kAutomatedPan = 70.0f; // 宿主已录自动化:偏右,与曲线镜像
+    static constexpr float kAutomatedPan = 70.0f; // 宿主已录自动化:偏右,与曲线镜像(static:lambda 里不必捕获)
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, kCurvePan, replaced, replacedLocked));
     REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 1);
     CHECK(segmentsOfTrack(r.out, kTestChannel).front().pan == kCurvePan);
@@ -4522,7 +4522,7 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
 
     // 模拟宿主自动化 Read 档把已录值顶进参数。包 gesture 的理由同 setTrackManual 头注:
     // 裸写在 Read 档宿主上会被当场顶回去。
-    const auto writeAutomation = [panParam, kAutomatedPan] {
+    const auto writeAutomation = [panParam] {
         panParam->beginChangeGesture();
         panParam->setValueNotifyingHost(panParam->convertTo0to1(kAutomatedPan));
         panParam->endChangeGesture();
@@ -11963,12 +11963,12 @@ TEST_CASE("HOST SL-399 H5:写回窗内全量分析没有段 ⇒ 窗内陈旧 aut
     const auto win = r.coverageWindow();
     REQUIRE(win.endS > win.startS);
 
-    const int ch = kTestChannel;
+    static constexpr int ch = kTestChannel; // static:lambda 里不必捕获(clang -Wunused-lambda-capture)
     const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
 
     // 全量重分析一趟,同时把 min_segment 档写进 runtime(写法同 SL-391 的 countAt:
     // 这里钉的是 `startAnalysis` 读不读这个字段,不走桥)。
-    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+    const auto analyzeAll = [&r, &win](int minSegmentMs) {
         r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
         return segmentsOfTrack(r.out, ch);
@@ -12137,10 +12137,10 @@ TEST_CASE("HOST SL-399 H5c:clearManual 档下窗内未锁手编段被清、锁�
     const auto win = r.coverageWindow();
     REQUIRE(win.endS > win.startS);
 
-    const int ch = kTestChannel;
+    static constexpr int ch = kTestChannel; // static:lambda 里不必捕获(clang -Wunused-lambda-capture)
     const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
 
-    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+    const auto analyzeAll = [&r, &win](int minSegmentMs) {
         r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
         return segmentsOfTrack(r.out, ch);
