@@ -425,7 +425,7 @@ else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
+add_test(NAME scvb_host_tests COMMAND scvb_host_tests -r xml -d yes) # M12B-DIAG temporary
 # [SL-311] 显式上界。此前这一套**没有** TIMEOUT 属性,吃 ctest 的默认 1500s ——
 # 一次真挂死要占住机器 25 分钟以上(实测见过 `***Timeout 2278.13 sec`),而它此刻
 # 正持着 `Local\SCVB-ipc-tests`,全机别的 agent 一起等。
@@ -505,6 +505,6 @@ set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
 #   · 失败路径:场景台交接的等待预算 8 s,第一台走不完之后其余台只给 1.5 s(test_host_sched_scenarios.cpp
 #     的 runScenario),一百多台 ⇒ 交接全坏时多出约 3 min,仍在 600 s 内、断言原文打得出来;
 #   · 仍远低于 ctest 默认的 1500 s。设计稿的整套目标 ≤ 5 分钟(300 s),现在约 190 s。
-add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
+add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]" -r xml -d yes) # M12B-DIAG temporary
 set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 600)
 endif()

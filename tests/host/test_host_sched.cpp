@@ -764,3 +764,93 @@ TEST_CASE("SCHED rig 7: transport events, live switches, quirks and stall polici
     CHECK(rig.invariant().undeclared == 0);
     CHECK(rig.busUnderflowSamples() == 0);
 }
+
+// M12B-DIAG (temporary commit, reverted before review): measures message-loop / timer granularity on this
+// machine and fails on purpose so ctest prints the whole reporter output of this entry.
+#include <chrono>
+#include <thread>
+#if defined(__APPLE__)
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+
+namespace
+{
+struct M12bDiagTimer : juce::Timer
+{
+    std::vector<double> stamps;
+    void timerCallback() override { stamps.push_back(juce::Time::getMillisecondCounterHiRes()); }
+};
+
+std::string m12bStats(std::vector<double> v)
+{
+    if (v.empty())
+    {
+        return "n=0";
+    }
+    std::sort(v.begin(), v.end());
+    const auto q = [&v](double p) { return v[static_cast<std::size_t>(p * static_cast<double>(v.size() - 1))]; };
+    std::ostringstream os;
+    os << "n=" << v.size() << " min=" << v.front() << " p50=" << q(0.5) << " p90=" << q(0.9) << " max=" << v.back();
+    return os.str();
+}
+
+void m12bMeasure(const char* label)
+{
+    const auto now = [] { return juce::Time::getMillisecondCounterHiRes(); };
+    M12bDiagTimer timer;
+    timer.startTimerHz(25);
+    std::vector<double> pump1;
+    std::vector<double> pump40;
+    for (int i = 0; i < 100; ++i)
+    {
+        const double a = now();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(1);
+        pump1.push_back(now() - a);
+    }
+    for (int i = 0; i < 50; ++i)
+    {
+        const double a = now();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(40);
+        pump40.push_back(now() - a);
+    }
+    timer.stopTimer();
+    std::vector<double> gaps;
+    for (std::size_t i = 1; i < timer.stamps.size(); ++i)
+    {
+        gaps.push_back(timer.stamps[i] - timer.stamps[i - 1]);
+    }
+    std::vector<double> sleep1;
+    for (int i = 0; i < 50; ++i)
+    {
+        const double a = now();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        sleep1.push_back(now() - a);
+    }
+    WARN("M12B-DIAG [" << label << "] runDispatchLoopUntil(1) wall ms: " << m12bStats(pump1));
+    WARN("M12B-DIAG [" << label << "] runDispatchLoopUntil(40) wall ms: " << m12bStats(pump40));
+    WARN("M12B-DIAG [" << label << "] 25Hz juce::Timer callback gaps ms: " << m12bStats(gaps));
+    WARN("M12B-DIAG [" << label << "] sleep_for(1ms) wall ms: " << m12bStats(sleep1));
+}
+} // namespace
+
+TEST_CASE("M12B-DIAG sched: message loop and timer granularity", "[.][sched][m12b-diag]")
+{
+    juce::ScopedJuceInitialiser_GUI init;
+    m12bMeasure("run-wide listener only");
+#if defined(__APPLE__)
+    // Extra activity with NSActivityLatencyCritical on top (diag only).
+    using MsgNoArg = void* (*)(void*, SEL);
+    using MsgStr = void* (*)(void*, SEL, const char*);
+    using MsgBegin = void* (*)(void*, SEL, unsigned long long, void*);
+    void* pi = reinterpret_cast<MsgNoArg>(objc_msgSend)(reinterpret_cast<void*>(objc_getClass("NSProcessInfo")),
+                                                        sel_registerName("processInfo"));
+    void* reason = reinterpret_cast<MsgStr>(objc_msgSend)(reinterpret_cast<void*>(objc_getClass("NSString")),
+                                                          sel_registerName("stringWithUTF8String:"), "m12b diag");
+    void* act = reinterpret_cast<MsgBegin>(objc_msgSend)(pi, sel_registerName("beginActivityWithOptions:reason:"),
+                                                         0x00FFFFFFULL | 0xFF00000000ULL, reason);
+    reinterpret_cast<MsgNoArg>(objc_msgSend)(act, sel_registerName("retain"));
+    m12bMeasure("plus LatencyCritical");
+#endif
+    FAIL("M12B-DIAG: forced failure so ctest prints the full reporter output");
+}
