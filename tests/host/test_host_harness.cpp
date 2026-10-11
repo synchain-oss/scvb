@@ -13092,9 +13092,10 @@ void setTrackEnabled(ScvbOutputAudioProcessor& out, int ch, bool on)
 // soloBlock 不泵消息,所以这一拍只能落在这里。
 // 条件:Input 读到的广播区 config_seq 追上了这次递增。[M] 的 timerCallback 先存启用位图、同一拍末尾才
 // publishConfigBroadcast(config_seq = configSeq + 1),所以追上 ⇒ 位图已在 [A] 手里。上界是墙钟 400 ms
-// (steadyNowMs,与挂起判定同一个时钟;不按名义 ms 累加 —— mac 上 runDispatchLoopUntil 会被拉长),最后一次
-// pump(10) 至多再多十几 ms,仍在写头冻结判挂起的 500 ms(kSuspendStallMs)之下;到点没追上就红在这里,
-// 不让后面的判据替它背锅。
+// (steadyNowMs,与挂起判定同一个时钟;不按名义 ms 累加 —— mac 上 runDispatchLoopUntil 会被拉长)。截止只在
+// 两次 pump 之间查,mac 上单次 runDispatchLoopUntil 实测可被拉长到百 ms 量级(诊断里 40 ms 那档最长 199 ms),
+// 所以**失败路径**的总时长不严格保证低于写头冻结判挂起的 500 ms(kSuspendStallMs);那条路本来就要红 ——
+// 到点没追上就红在这里,不让后面的判据替它背锅。成功路径在 [M] 那一拍处理完就退出。
 void pumpUntilTrackConfigApplied(MonoMultiRig& r)
 {
     const scvb::u32 want = r.out.runtime().configSeq + 1u;
