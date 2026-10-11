@@ -394,9 +394,7 @@ SegmentBackendPosix::~SegmentBackendPosix()
         {
             break;
         }
-        // M12B-J2 INJECT (temporary, reverted): the destructor no longer does the "leave" half for views
-        // dropped without unmap (lock fd stays open, last leaver never unlinks).
-        // leave(*m);
+        leave(*m);
         delete m;
     }
 }
