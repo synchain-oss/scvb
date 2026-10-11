@@ -371,12 +371,15 @@ endif()
 #   · 那两个 TU 里的 createEditor() 会把 WebViewHost/WebView2 拖进来(harness 不需要 GUI);
 #   · createPluginFilter() 在两侧同名,同进程托管两个插件会撞符号。
 # 见 src/output/OutputPluginEntry.cpp 头注。
-# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**(Win32 CreateFileMapping),
-# 属重量级进程外资源测试,不该在非 Windows 上进默认 ctest 集合。
-if(WIN32)
+# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**,只在有真段后端的平台上定义。
+# [B 线 M12b] 原先仅 WIN32;M12b 起 Windows 与 macOS 都编都跑:用例里直接建段的地方一律写
+# PlatformSegmentBackend(Windows = SegmentBackendWin32 / CreateFileMapping,macOS = SegmentBackendPosix /
+# shm_open + flock),同机独占守卫 support/exclusive_guard.h 两平台都有真实现(M12a)。只放开条件,
+# 块内源列表不动,Windows 上的源集合逐字不变。其余非 Windows 平台没有真段后端,仍不定义。
+if(WIN32 OR APPLE)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
-  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
+  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真共享内存段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
   # [A-1] 宿主调度模拟器两份落点,用例一律打 `[.][sched]`:主条目默认不跑,由下面的
   # `scvb_host_sched_tests` 显式选中。

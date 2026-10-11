@@ -46,7 +46,7 @@
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
 #include "ipc/CtrlPlane.h" // [SL-463] CtrlHeader / kCtrlSegmentSize(坏 ctrl 段夹具)
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // [B 线 M12b] Windows = SegmentBackendWin32,mac = SegmentBackendPosix
 #include "ipc/VizPlane.h"
 #include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
 #include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
@@ -1324,7 +1324,7 @@ TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不�
 
     // 预置 kProjectGroup 的 ctrl 段并把 abi 写坏(同 tests/core 里「换组失败返回 kAbiMismatch」
     // 那格的构造,换成真 Win32 段)。句柄在本用例结束前一直持有,段不会被内核回收。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView bad;
     REQUIRE(backend.createOrOpen(
                 L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup), scvb::SegmentKind::kCtrl),
@@ -3560,7 +3560,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
 
     // 先确认起点:旧组的 viz 段确实开着(否则下面的断言证明不了什么)。
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::VizPlane probe(backend, kFromGroup);
         REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
     }
@@ -3579,7 +3579,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
     for (int waited = 0; waited < 3000 && !attached; waited += 100)
     {
         juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::VizPlane probe(backend, kToGroup);
         attached = (probe.attachReadOnly() == scvb::InitResult::kOk);
     }
@@ -5975,7 +5975,7 @@ TEST_CASE("HOST SL-481:兄弟 Input 接手同一通道后,原实例析构不得�
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager(25Hz Timer 要它)
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kTestGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(probe.inputSlot(kTestChannel) != nullptr);
@@ -6031,11 +6031,11 @@ namespace
 template<typename Header>
 struct Sl463PoisonedSegment
 {
-    scvb::SegmentBackendWin32& backend;
+    scvb::PlatformSegmentBackend& backend;
     scvb::SegmentView view;
     Header* header = nullptr;
 
-    Sl463PoisonedSegment(scvb::SegmentBackendWin32& b, const std::wstring& fullName, std::size_t size,
+    Sl463PoisonedSegment(scvb::PlatformSegmentBackend& b, const std::wstring& fullName, std::size_t size,
                          std::size_t dataOffset)
         : backend(b)
     {
@@ -6079,7 +6079,7 @@ TEST_CASE("HOST SL-463:首次选通道时 registry abi 不符 → 请求结果 a
     constexpr int kGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     probe.header()->abi.store(scvb::kScvbAbi + 1, std::memory_order_release); // 本组 registry 由另一 abi 的 SCVB 建
@@ -6109,7 +6109,7 @@ TEST_CASE("HOST SL-463:换通道时目标 audio 段打不开 → 会话回滚到
     constexpr int kFrom = 5;
     constexpr int kTo = 6;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kGroup, kTo),
                                                          kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
     {
@@ -6141,7 +6141,7 @@ TEST_CASE("HOST SL-463:改组时新组 ctrl 段 abi 不符 → 组号不变,请�
     constexpr int kToGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::CtrlHeader> poisoned(backend, scvb::segmentCtrlName(kToGroup), scvb::kCtrlSegmentSize,
                                                     scvb::kCtrlBroadcastOffset);
     {
@@ -6172,7 +6172,7 @@ TEST_CASE("HOST SL-463:改组后新组 audio 段打不开 → 组号已换,请�
     constexpr int kToGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kToGroup, kCh),
                                                          kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
     {
@@ -8007,7 +8007,7 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
     Rig::pumpMessages(400);
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane probe(backend, static_cast<scvb::u32>(kTestGroup));
     REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
 
@@ -10160,7 +10160,7 @@ TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必�
     // 模拟「Output 进程挂死」:**不**调 releaseResources(state 仍 kSlotActive、mask 位仍在),
     // 只把 OutputSlot 的心跳**持续拨旧**。Output 的 [M] 仍在跑、每 250ms 会刷回心跳,所以
     // 必须在每次泵消息**之前**重新拨旧 —— 一次性拨旧会被它刷掉,那样测的就不是这条路了。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kTestGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     scvb::OutputSlot* os = probe.outputSlot();
@@ -10848,7 +10848,7 @@ scvb::state::Segment sl363Seg(double t0Sec, double t1Sec, float pan, float volDb
 // 只读 attach 本组 viz 段并读一帧;段不在 / 撕裂读满次数 ⇒ false。
 bool sl363ReadViz(scvb::u32 group, scvb::VizSnapshot& out)
 {
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane probe(backend, group);
     if (probe.attachReadOnly() != scvb::InitResult::kOk)
     {
