@@ -203,6 +203,7 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     // channelFade_.reset() 只换档、不改当前值 —— 两者凑齐,一条 release 期间被关掉的轨会被当成
     // 释放中读环、响 80ms。连调两次 prepareToPlay(中间不 release)时 inject 不被清,同样靠这一行挡。
     releasableMask_ = 0;
+    stalledRawLatched_ = false; // [A-8] 音频流重起:上一轮「全部停滞、已回原声」的闩不延续
 
     // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启打印 Timer,见 startPrinting)。
     rebindVersion();
@@ -856,6 +857,29 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 }
 
+namespace
+{
+// [A-8] U3(b)-ii「注入轨全部停滞 → 总线回到原声」的总线输入静音门限(约 −100 dBFS)。宿主给无 region / 被挂起的
+// 轨送的是数字静音,装了 Input 的轨把总线交给 Output 后自己也是静音;低于这个电平的「原声」听不出来。
+constexpr float kStalledBusAudibleFloor = 1.0e-5f;
+
+// 本段总线输入(stereo,isBusesLayoutSupported 钉死两声道)里有没有高于静音门限的样本。只读、定长循环,不分配。
+bool busInputAudible(const float* const* in, int n) noexcept
+{
+    for (int c = 0; c < 2; ++c)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (std::abs(in[c][i]) > kStalledBusAudibleFloor)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // namespace
+
 void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0)
 {
     // [SL-488] 上一段真混进了哪些轨:取出即清。只有走到混音路径末尾才重写(见 releasableMask_
@@ -888,6 +912,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         publishSilentMeters();
+        stalledRawLatched_ = false; // [A-8] 总线已在回直通,「全部停滞」那一段不再延续
         return;
     }
 
@@ -925,6 +950,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         const float* silentMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, silentMix, n, /*targetMix=*/false);
         publishSilentMeters();
+        stalledRawLatched_ = false; // [A-8] 同上
         return;
     }
 
@@ -1018,10 +1044,36 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         accumR_[static_cast<std::size_t>(i)] = r;
     }
 
+    // [A-8] U3(b)-ii:注入轨**全部**停滞时总线回到原声。E2 起走带在跑时写头冻结的轨不掉线、照旧在 inject 里
+    // (OutputSession::evaluateChannels),于是「单独旁路唯一一条 Input」时 inject 不再清空 —— 不处理的话 Output
+    // 会一直用一份空混音替换总线,旁路出来的原声被吃掉(修前是 500ms 后掉线、总线回直通)。判据:
+    //   · inject 里每一条都在 [M] 报的 stalledMask 里(写头冻结 ≥ 500ms 但按 E2 保持在线),且本段没有一条注入轨读到
+    //     数据 —— 写方一恢复,读到数据的那一段就回到混音,不等 [M] 下一拍;
+    //   · 多轨时只要有一条注入轨不在停滞,照常替换:停滞轨只是读不到、退出混音(与修前多轨旁路一轨同形)。
+    // 回原声只在总线输入**听得见**时才做,且一旦做了就闩到本段停滞结束:总线输入是数字静音时(宿主在静音段挂起
+    // Input / 无 region —— E2 本来要修的那一类),原声就是静音,Output 输出的空混音与它逐样本相同;此时若照样把
+    // 交叉拨回直通,写方恢复时得再走一遍 80ms 交叉回混音,句首又被淡入吃掉一截(LS-12 单轨格)。闩住是为了让
+    // 旁路期间乐句之间的静音不把交叉来回拨。进出都经 busXfade(80ms 等功率,ADR-010),没有硬切路径。
+    bool injectHasData = false;
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        injectHasData = injectHasData || ((inject & (1u << ch)) != 0 && hasData[static_cast<std::size_t>(ch)]);
+    }
+    const bool allStalled = inject != 0 && (inject & ~session_.stalledMask()) == 0 && !injectHasData;
+    if (!allStalled)
+    {
+        stalledRawLatched_ = false;
+    }
+    else if (!stalledRawLatched_ && busInputAudible(in, n))
+    {
+        stalledRawLatched_ = true;
+    }
+
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
     // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
+    // [A-8] 注入轨全部停滞且总线输入听得见时同样交叉回直通(见上)。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0);
+    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);

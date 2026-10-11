@@ -1127,6 +1127,9 @@ private:
     // 早退路径不推进 fade,残留的 fade 值不代表它刚才在响。每段开头取出即清,只有走完
     // 混音路径才重写,任何早退都让它归零;prepareToPlay 也清(理由见那里)。
     scvb::u32 releasableMask_ = 0;
+    // [A-8] U3(b)-ii:注入轨全部停滞期间,总线输入一旦听得见就闩成「回原声」,直到有注入轨重新读到数据(或不再全部
+    // 停滞)为止。见 renderSpan 里那一段的注释。[A] 独占;prepareToPlay 与 renderSpan 的两条早退清它。
+    bool stalledRawLatched_ = false;
 
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;

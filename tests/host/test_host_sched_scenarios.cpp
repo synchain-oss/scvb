@@ -32,9 +32,10 @@
 //   现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
 //   [A-5] E1 读方换代处理落地后去掉了标记的(现在是必须绿的普通用例):LS-3 跳跃组、LS-4、LS-6 k≥1、
 //   LS-8 垃圾值、LS-12 的错音(H4,含领先离线 6 s 格)、LS-13 的两次定位 / ε<0 / 几何三条。仍留着标记的:
-//   N2b 与 LS-14(H3,归 A-6)、LS-12 的句首(E2-a / E2-b,归 A-8);LS-11a(H5)已由 A-7 翻转。LS-12 领先轨的
-//   句首判据随 A-5 改成「最多丢一个写方块」(checkLs12LeadHead,设计稿 §8 第 4 条),领先实时 1 s 格挪进 E2-a。
-//   下面各场景注释里描述的「修前」现象指 A-5 之前的读方,保留作证据。
+//   N2b 与 LS-14(H3,归 A-6);LS-11a(H5)已由 A-7 翻转;LS-12 的句首(E2-a / E2-b)已由 A-8 翻转。LS-12 领先轨的
+//   句首判据随 A-5 改成「最多丢一个写方块」(checkLs12LeadHead,设计稿 §8 第 4 条),领先实时 1 s 格挪进 E2-a;
+//   A-8 之后领先实时 1 s / 6 s 两格也按它判(实测各丢 1 帧)。
+//   下面各场景注释里描述的「修前」现象指 A-5 / A-8 之前的实现,保留作证据。
 //
 // ## 场景结果缓存与节拍
 //
@@ -1875,6 +1876,75 @@ std::pair<int, int> passthroughSamples(const Run& r, int lane, std::int64_t rel0
     return {on, total};
 }
 
+// ===========================================================================
+// E2 旁路(A-8,用户裁定 U3(b)-ii)
+// ===========================================================================
+//
+// 宿主旁路一条 Input(不调用它、把它的源信号原样送进总线 —— JUCE 默认的 processBlockBypassed 就是直通):
+// 写头冻结、心跳照常。A-8 起走带在跑时它保持在线、保持注入(挂起 ≠ 掉线)。pace=1(500 ms 停滞门限是墙钟量)。
+// 放 1 s → 旁路 3 s → 解除旁路 2 s。
+//   · solo:只有这一条轨 —— 注入轨全部停滞,而总线输入里有它旁路出来的原声 ⇒ Output 经 80 ms 交叉回到原声
+//     (修前:500 ms 后掉线、总线直通,听感相同);解除旁路后接回混音。80 ms 交叉的样本级形状由
+//     test_host_harness.cpp 的「HOST A-8 U3(b)-ii」钉。
+//   · 3 轨里旁路 lane 1:只有它停滞 ⇒ Output 照常替换总线,它退出混音(缺席),总线不回原声。
+// 两格都 REQUIRE 墙钟跨得过门限;判据只看旁路段与解除之后。
+Run runBypass(bool solo)
+{
+    const sched::SchedCfg cfg = lanesCfg(solo ? 1 : 3, 1.0);
+    const int lane = solo ? 0 : 1;
+    return runScenario(solo ? "E2 bypass solo" : "E2 bypass lane 1 of 3", cfg, [lane](SchedRig& rig, Run& run) {
+        sampleInputs(rig, run, 2 * 1024, sec(6.0));
+        rig.runFor(sec(1.0));
+        markNow(rig, run, "bypass");
+        rig.bypassInput(lane, true);
+        rig.runFor(sec(3.0));
+        markNow(rig, run, "unbypass");
+        rig.bypassInput(lane, false);
+        rig.runFor(sec(2.0));
+    });
+}
+
+const Run& bypassSolo()
+{
+    static const Run r = runBypass(true);
+    return r;
+}
+
+const Run& bypassOneOfThree()
+{
+    static const Run r = runBypass(false);
+    return r;
+}
+
+// [M] 拍里该轨报 suspended 的拍数(相对游标窗)。
+int suspendedBeats(const Run& r, int lane, std::int64_t rel0, std::int64_t rel1)
+{
+    int n = 0;
+    for (const sched::MBeat& b : r.beats)
+    {
+        const std::int64_t rel = b.outCursor - r.c0;
+        n += (rel >= rel0 && rel < rel1 && b.lanes[static_cast<std::size_t>(lane)].suspended) ? 1 : 0;
+    }
+    return n;
+}
+
+// 旁路格的共同前提:交接走完、旁路前该轨在场、旁路段宿主一块都没调用它、墙钟跨得过 500 ms 门限。
+void requireBypassScenario(const Run& r, int lane)
+{
+    INFO(r.name);
+    REQUIRE(r.settled);
+    const std::int64_t b = r.mark.at("bypass");
+    const std::int64_t u = r.mark.at("unbypass");
+    REQUIRE(r.wall.at("unbypass") - r.wall.at("bypass") >= 2400.0);
+    const Tally before = tally(r, lane, b - sec(0.5), b);
+    REQUIRE(before.total >= 20);
+    REQUIRE(before.mixPresent == before.total);
+    REQUIRE(countLaneReason(r, lane, sched::CallReason::Bypassed, b, u) > 100);
+    REQUIRE(countLaneReason(r, lane, sched::CallReason::Called, b, u) == 0);
+    REQUIRE(countLaneReason(r, lane, sched::CallReason::Called, u, kBig) > 50);
+    REQUIRE(r.inputs.size() >= 50u);
+}
+
 } // namespace
 
 // ###########################################################################
@@ -2600,6 +2670,10 @@ namespace
 //   · leadOfflineLong:领先离线 6 s —— 错读还是缺席取决于恢复那一拍落在读方到 g1 之前还是之后(写方领先
 //     ≈ 34 ms 墙钟,与 [M] 一拍同量级),两种结果都是缺陷。
 // [A-5] 领先四格的错音都并进 H4 那条(已翻转);句首改按领先轨判据 checkLs12LeadHead(见那里的注释)。
+// [A-8] 上面「判挂起、退出注入集」那几组的成因都是 E2(挂起即掉线):走带在跑时写头冻结不再让轨掉线
+// (OutputSession::evaluateChannels),于是这几组的轨也「一直在注入集里」,句首判据全部翻转 —— 同步各格第一帧
+// 在场,领先各格最多丢一个写方块;单轨格的间隙里总线输入是数字静音,不触发「全部停滞回原声」(U3(b)-ii,见
+// OutputProcessor::renderSpan),句首同样第一帧在场。分组保留,数字见各前提用例的 WARN。
 enum class Ls12Group
 {
     SyncRealtime,
@@ -2758,23 +2832,37 @@ TEST_CASE("SCHED LS-12: lanes that stay injected through a no-region gap are pre
 
 TEST_CASE("SCHED LS-12 (E2-a): a realtime lane suspended over a no-region gap is present on the first frame after "
           "it, with no raw transition",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
+    // [A-8] 翻转(摘掉 [!shouldfail]):走带在跑时写头冻结的轨保持在线、保持注入,写方一恢复读方同一块就读到。
+    // 修前(本机 A-8 开工时复跑):同步 1 s / 6 s 句首丢 4 / 6 帧,单轨 6 s 丢 6 帧且出 4 帧原声;领先 1 s / 6 s
+    // 丢 4 / 8 帧。三类分开判:同步各格(含单轨)全部判据;领先两格按领先轨判据(最多丢一个写方块)。
+    int sync = 0;
+    int lead = 0;
     for (const Ls12Cell& c : ls12Cells())
     {
-        if (ls12Group(c) == Ls12Group::SyncRealtime)
+        const Ls12Group g = ls12Group(c);
+        if (g != Ls12Group::SyncRealtime && g != Ls12Group::LeadRealtimeLong && g != Ls12Group::LeadRealtimeShort)
         {
+            continue;
+        }
+        INFO(c.run.name);
+        REQUIRE(c.run.settled);
+        requireLs12WallSide(c);
+        if (g == Ls12Group::SyncRealtime)
+        {
+            ++sync;
             checkLs12(c);
         }
-        else if (ls12Group(c) == Ls12Group::LeadRealtimeLong || ls12Group(c) == Ls12Group::LeadRealtimeShort)
+        else
         {
-            // 错音归 H4 那条;句首按领先轨判据(最多丢一个写方块,见 checkLs12LeadHead)。⚠ 领先实时 6 s 格的
-            // 句首另有 0–2 帧取决于拍点相位(见 Ls12Group 注释);领先实时 1 s 格 A-5 实测丢 4 帧,多出来的是
-            // 挂起退出注入集、重新接上那几拍(E2-a)。同组的同步实时格每次都红,所以它们混在这里不影响本条现在的
-            // 结论;修复卡摘掉本条标记时,要单独确认这两格也过了(看 WARN 摘要里它们那两行),不要只看整条用例绿了没有。
+            // 错音归 H4 那条;句首按领先轨判据(见 checkLs12LeadHead)。
+            ++lead;
             checkLs12LeadHead(c);
         }
     }
+    CHECK(sync == 3);
+    CHECK(lead == 2);
 }
 
 TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads no stale ring audio", "[.][sched]")
@@ -2797,26 +2885,34 @@ TEST_CASE("SCHED LS-12 (H4): a leading lane resuming after a no-region gap reads
     CHECK(n == 4);
 }
 
-TEST_CASE("SCHED LS-12 (E2-b): an offline export loses nothing after a long no-region gap", "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-12 (E2-b): an offline export loses nothing after a long no-region gap", "[.][sched]")
 {
+    // [A-8] 翻转:离线导出走同一条「走带在跑 ⇒ 挂起不掉线」规则,恢复时同块读到(修前本机 9 帧 / 192 ms)。
+    REQUIRE(ls12Count(Ls12Group::SyncOfflineLong) == 1);
     for (const Ls12Cell& c : ls12Cells())
     {
         if (ls12Group(c) == Ls12Group::SyncOfflineLong)
         {
+            INFO(c.run.name);
+            REQUIRE(c.run.settled);
+            requireLs12WallSide(c);
             checkLs12(c);
         }
     }
 }
 
-TEST_CASE("SCHED LS-12 (E2-b): a leading offline lane after a long gap does not miss its head",
-          "[.][sched][!shouldfail]")
+TEST_CASE("SCHED LS-12 (E2-b): a leading offline lane after a long gap does not miss its head", "[.][sched]")
 {
     // A-4 时这条连错音带句首一起判(H4 / E2-b 二者必居其一);[A-5] 修掉了错音(并进上面 H4 那条),
-    // 这里只留句首 —— 归 E2-b(A-8),按领先轨判据(最多丢一个写方块,见 checkLs12LeadHead)。
+    // 这里只留句首,按领先轨判据(最多丢一个写方块,见 checkLs12LeadHead)。[A-8] 翻转(修前本机 6 帧)。
+    REQUIRE(ls12Count(Ls12Group::LeadOfflineLong) == 1);
     for (const Ls12Cell& c : ls12Cells())
     {
         if (ls12Group(c) == Ls12Group::LeadOfflineLong)
         {
+            INFO(c.run.name);
+            REQUIRE(c.run.settled);
+            requireLs12WallSide(c);
             checkLs12LeadHead(c);
         }
     }
@@ -3133,4 +3229,82 @@ TEST_CASE("SCHED LS-15: stopping and restarting the transport with leading write
         CHECK(maxMisalignAll(c.run) == 0);
         WARN(os.str());
     }
+}
+
+// ---------------------------------------------------------------------------
+// E2 旁路(A-8,U3(b)-ii)
+// ---------------------------------------------------------------------------
+TEST_CASE("SCHED E2 (U3(b)-ii): bypassing the only Input brings the bus back to raw, un-bypassing rejoins the mix",
+          "[.][sched]")
+{
+    const Run& r = bypassSolo();
+    requireBypassScenario(r, 0);
+    const std::int64_t b = r.mark.at("bypass");
+    const std::int64_t u = r.mark.at("unbypass");
+    // 旁路后:要等 [M] 坐实停滞(写头冻结 500 ms 墙钟)才回原声 —— 不是当块就切(与修前掉线的时刻同量级);
+    // 一旦回到原声,到解除旁路为止每一帧都是原声。
+    const std::int64_t firstRaw = firstFrame(r, 0, b, u, isRaw);
+    CHECK(firstRaw >= b + sec(0.4));
+    CHECK(firstRaw <= b + sec(1.0)); // ← 删掉「全部停滞回原声」时这里没有原声(-1)
+    if (firstRaw >= 0)
+    {
+        const Tally raw = tally(r, 0, firstRaw + 4 * kF, u);
+        CHECK(raw.total >= 80);
+        CHECK(raw.rawPresent == raw.total);
+    }
+    // 解除旁路:接回混音(80 ms 交叉 ≈ 3.75 帧),之后全是混音;全程没有错音。
+    const std::int64_t back = firstFrame(r, 0, u, kBig, isMix);
+    CHECK(back >= 0);
+    CHECK(back <= u + 6 * kF);
+    if (back >= 0)
+    {
+        const Tally after = tally(r, 0, back + 4 * kF, kBig);
+        CHECK(after.total >= 60);
+        CHECK(after.mixPresent == after.total);
+    }
+    CHECK(tally(r, 0).wrong == 0);
+    // 挂起不掉线(U3(c)):旁路期间 Input 侧 connected_mask 本位一直在;「挂起」照常上桥;不是失准。
+    const std::pair<int, int> m = maskOffSamples(r, 0, b, kBig);
+    CHECK(m.first == 0);
+    CHECK(suspendedBeats(r, 0, b + sec(1.0), u) > 0);
+    CHECK(maxMisalignAll(r) == 0);
+    WARN(r.name << ": firstRaw +" << toSec(firstRaw - b) << " s after bypass, mix back +" << (back - u) / kF
+                << " frames after un-bypass, during[" << str(tally(r, 0, b, u)) << "] after["
+                << str(tally(r, 0, u, kBig)) << "] maskOff " << m.first << "/" << m.second);
+}
+
+TEST_CASE("SCHED E2 (U3(b)-ii): bypassing one of three Inputs only drops that lane, the bus does not fall back to raw",
+          "[.][sched]")
+{
+    const Run& r = bypassOneOfThree();
+    requireBypassScenario(r, 1);
+    const std::int64_t b = r.mark.at("bypass");
+    const std::int64_t u = r.mark.at("unbypass");
+    // lane 1:旁路期间(切换处一帧之后)一直缺席 —— 只是退出混音,它旁路出来的原声被 Output 的替换盖住。
+    const Tally during = tally(r, 1, b + 2 * kF, u);
+    CHECK(during.total >= 100);
+    CHECK(during.absent == during.total);
+    // lane 0/2 全程 Mix 在场;三条轨一帧原声都没有(多轨时部分停滞不触发回原声)。
+    for (const int other : {0, 2})
+    {
+        INFO("lane " << other);
+        const Tally t = tally(r, other, b - sec(0.5), kBig);
+        CHECK(t.mixPresent == t.total);
+    }
+    for (int lane = 0; lane < 3; ++lane)
+    {
+        INFO("lane " << lane);
+        CHECK(tally(r, lane).rawAny == 0);
+        CHECK(tally(r, lane).wrong == 0);
+    }
+    // 解除旁路:它一直在注入集里(逐轨淡变保持在 1),写方一恢复就接回。
+    const std::int64_t back = firstFrame(r, 1, u, kBig, isMix);
+    CHECK(back >= 0);
+    CHECK(back <= u + kF);
+    const std::pair<int, int> m = maskOffSamples(r, 1, b, kBig);
+    CHECK(m.first == 0);
+    CHECK(suspendedBeats(r, 1, b + sec(1.0), u) > 0);
+    CHECK(maxMisalignAll(r) == 0);
+    WARN(r.name << ": lane1 during[" << str(during) << "] back +" << (back - u) / kF << " frames, lane0 "
+                << str(tally(r, 0, b, kBig)) << " maskOff " << m.first << "/" << m.second);
 }
