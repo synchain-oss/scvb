@@ -2075,6 +2075,7 @@ struct A6Sample
     u32 gaps = 0; // gapCount(累计)
     int reads = 0; // 本步 Output 读这一轨的块数
     int readsOk = 0; // ……其中读成功的
+    bool inputPassthrough = false; // 本步末 Input 侧目标档是直通(5 s 滞回满了,原声出到总线)
 };
 
 struct A6Rig
@@ -2082,6 +2083,7 @@ struct A6Rig
     scvb::SegmentBackendInProcess backend;
     InputSession in{backend, 1001};
     scvb::input::StageSwitchStateMachine sm;
+    scvb::input::OutputStageMode target = scvb::input::OutputStageMode::kPassthrough;
     OutputSession out{backend, 2001};
     std::vector<A6Sample> log;
     scvb::u64 now = 1000;
@@ -2162,9 +2164,10 @@ struct A6Rig
         }
         if (now % 40 == 20)
         {
-            const auto target = sm.evaluate(in.isHealthy(now), now);
+            target = sm.evaluate(in.isHealthy(now), now);
             in.setMuted(target == scvb::input::OutputStageMode::kSilence);
         }
+        s.inputPassthrough = target == scvb::input::OutputStageMode::kPassthrough;
         s.injected = (out.injectMask() & 1u) != 0;
         s.misalign = out.misalignCountRecent(1);
         s.gaps = out.gapCount(1);
@@ -2211,6 +2214,7 @@ struct A6Alarm
     int reinjections = 0; // 亮起之后、条件撤掉之前本轨重新回到注入集的次数
     int reads = 0; // 条件期间 Output 读这一轨的块数
     int readsOk = 0; // ……其中读成功的
+    int passthroughSteps = 0; // 条件期间 Input 侧在直通档的步数
     scvb::u64 clear = 0; // 条件撤掉之后第一次熄的拍;0 = 没熄
 };
 
@@ -2224,6 +2228,7 @@ A6Alarm a6AlarmOf(const std::vector<A6Sample>& log, scvb::u64 on, scvb::u64 off)
         {
             a.reads += s.reads;
             a.readsOk += s.readsOk;
+            a.passthroughSteps += s.inputPassthrough ? 1 : 0;
             if (!s.tick)
             {
                 continue;
@@ -2325,6 +2330,9 @@ TEST_CASE("[A-6] an injected lane the Output keeps failing to read raises misali
                 CHECK(a.onset - on <= 100); // 离线 10x:200 ms 时间线只是 20 ms 墙钟 —— 宽限按样本计
             }
             CHECK(a.flicker == 0);
+            // 告警期间本轨被踢出 / 放回注入集(connected_mask 本位跟着通断),但每次断开都不满 Input 的 5 s 滞回:
+            // Input 一直在静音档、不切直通(原声不会冒出来;周期被意外拉长时这里先红)。
+            CHECK(a.passthroughSteps == 0);
             // 条件撤掉之后:读到数据,告警在 1.5 s 内撤下,此后不再亮、每块都读到。
             CHECK(a.clear != 0);
             CHECK(a.clear - off <= 1500);
@@ -2419,6 +2427,56 @@ TEST_CASE("[A-6] misalign recovery needs a successful read since the last gap; a
         CHECK(clear - kicked >= scvb::output::kMisalignRecoverMs + scvb::output::kUnreadInjectedFallbackMs - 100);
         WARN("A-6 e2e lane never read: clear +" << (clear - kicked) << " ms");
     }
+}
+
+TEST_CASE("[A-6] an ordinary transient misalign (one gap, then the lane reads again) still clears 1 s after the gap",
+          "[output][session][misalign][A6]")
+{
+    // 正向在场按块算,不按 [M] 拍算:缺口之后同一拍里紧接着读到的那一块也算。所以一次普通的瞬时失准(这一代已经读到过
+    // 数据,偶然缺了一块又接着读到)撤下的时机与修前完全相同 —— 1 s 失准窗一满就撤,不必等本轨回到注入集再读一块。
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+    rig.runUntil(3010);
+    REQUIRE(rig.log.back().injected);
+    REQUIRE(rig.out.misalignCountRecent(1) == 0);
+    REQUIRE(rig.now % 40 == 10); // 下面两步落在同一拍里(拍在 t%40==0)
+    // 两块先算 Output:第一块写头还没动(只记饿读),第二块写方在推进 ⇒ 已读到过数据的这一代照旧计一笔缺口(旧口径);
+    // 第三块起恢复先算 Input,同一拍里就又读到了。
+    rig.outputFirst = true;
+    rig.step();
+    rig.step();
+    rig.outputFirst = false;
+    rig.runUntil(rig.now + 3000);
+    scvb::u64 lit = 0;
+    scvb::u64 clear = 0;
+    bool readAfterGapBeforeLit = false;
+    for (const A6Sample& s : rig.log)
+    {
+        if (s.t < 3010)
+        {
+            continue;
+        }
+        if (lit == 0 && s.readsOk > 0 && s.gaps > 0)
+        {
+            readAfterGapBeforeLit = true;
+        }
+        if (s.tick && lit == 0 && s.misalign > 0)
+        {
+            lit = s.t;
+        }
+        else if (s.tick && lit != 0 && clear == 0 && s.misalign == 0)
+        {
+            clear = s.t;
+        }
+    }
+    INFO("lit " << lit << ", clear +" << (clear - lit) << " ms");
+    REQUIRE(lit != 0); // 前提:这一笔缺口确实在 [M] 拍上被看到、亮了
+    REQUIRE(lit - 3010 <= 40);
+    REQUIRE(readAfterGapBeforeLit); // 前提:缺口之后、被看到之前这一轨又读到了
+    CHECK(clear != 0);
+    CHECK(clear - lit == scvb::output::kMisalignRecoverMs);
+    CHECK(a6CleanAfter(rig.log, clear));
+    WARN("A-6 e2e transient gap: lit at " << lit << ", clear +" << (clear - lit) << " ms");
 }
 
 TEST_CASE("[A-6] cold start does not raise misalign", "[output][session][misalign][A6]")

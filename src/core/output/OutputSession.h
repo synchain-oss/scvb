@@ -261,7 +261,7 @@ public:
     // 它只增不减,起播抖一次就把「路由失准」横幅永久钉住,恢复健康也撤不下来(T37 三轮 A 族)。
     u32 misalignCountRecent(u32 channel) const;
     // [A-6] 该轨读方成功读出的块数(ShmRingMixSource::readOkCount,进程寿命累计;测试 / 诊断用)。
-    // 失准恢复要求它自上一笔缺口以来有推进(正向在场),见 positivePresence。
+    // 失准恢复要求自上一笔缺口以来读成功过(ShmRingMixSource::readOkSinceLastGap,正向在场),见 positivePresence。
     u32 readOkCount(u32 channel) const;
     u64 writeHead(u32 channel) const;
     u64 epoch(u32 channel) const;
@@ -339,9 +339,8 @@ private:
     // 本次失准发作的起算点:恢复健康(!misaligned)时对齐到当前累计值,于是
     // misalignCountRecent = gapCount - baseline 归零。
     std::array<u32, kMaxChannels> misalignBaseline_{};
-    // [A-6] 正向在场(见 positivePresence):最近一次看到新缺口那一拍的 readOkCount;上一拍的 readAttemptCount;
-    // 本轨「在注入集里、读方一次都没被调用」这段从何时起(被读了 / 不在注入集里就重新起算)。
-    std::array<u32, kMaxChannels> readOkAtGap_{};
+    // [A-6] 正向在场的兜底(见 positivePresence):上一拍的 readAttemptCount;本轨「在注入集里、读方一次都没被调用」
+    // 这段从何时起(被读了 / 不在注入集里就重新起算)。「自最近一笔缺口以来读到过」由读方自己记(readOkSinceLastGap)。
     std::array<u32, kMaxChannels> lastReadAttempts_{};
     std::array<u64, kMaxChannels> unreadInjectedSinceMs_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};

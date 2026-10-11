@@ -49,7 +49,8 @@ A-4 实测「只在交接前后先算 Output」的已注入却读不到 < 150 ms
 **归零条件补一条**:原为「连续 1 s(`kMisalignRecoverMs`)无新缺口 ∧ 数据在推进」,补「∧ 该轨自最近一笔缺口
 以来确实读出过数据(正向在场)」。理由:失准会把该轨踢出注入集,读方不再读它、缺口自然停止增长 —— 只看
 「无新缺口」,持续读不到的轨会以约 1 s 的周期假恢复(1 s 后撤下横幅、放回注入集、宽限走完又亮;与 v4 P0-2
-同族的假恢复)。兜底:该轨在注入集里满 1 s 而 Output 一次都没读它(面板上关了这一轨,混音时被启用位挡掉;
+同族的假恢复)。「读出过」按块算、不按 [M] 拍算:缺口之后同一拍里紧接着读到的那一块也算,所以普通的瞬时失准
+(这一代已经读到过数据、偶然缺了一块又接着读到)撤下的时机与修前相同。兜底:该轨在注入集里满 1 s 而 Output 一次都没读它(面板上关了这一轨,混音时被启用位挡掉;
 或宿主没在调用 Output)时,「读出过数据」无从谈起,退回原条件 —— 免得一条用户自己关掉的轨把横幅永久钉住。
 
 ctrl 段 `OutputGlobalInfo.gap_count[15]`(进程寿命累计)与 native `gapCount()` 同口径累计这一成因。
@@ -67,7 +68,7 @@ A-5 补的子条目「失准计数口径不变:只在本代已读到过数据之
 | 宽限按样本、读方时间线 | `unreadGrace()`:`max(sr × kUnreadGraceMs / 1000, 2 × leadHiRef() + n)`;这段失败在读成功 / 换代 / 重绑 / 读方跳变 / 读方漏读块时重新起算 |
 | 写头停着不计 | 只在 `producerAdvancing` 的块计(P1-7 判别不变) |
 | 段头 `channels` 不一致不计、不算进宽限 | `read()` 里该分支:单独计 `layoutMismatchCount_`(A-5 时混在 `handoverLossCount_` 里),起点往后挪一块(不续长),不重新起算(不掩盖) |
-| 归零要求正向在场 | `OutputSession::evaluateChannels` 的恢复判定多一个 `present`;`OutputSession::positivePresence`:`readOkCount` 自最近一笔缺口以来有推进,或在注入集里满 `kUnreadInjectedFallbackMs` 而 `readAttemptCount` 一次没动 |
+| 归零要求正向在场 | `OutputSession::evaluateChannels` 的恢复判定多一个 `present`;`OutputSession::positivePresence`:`ShmRingMixSource::readOkSinceLastGap()`(读方在计缺口的同一处 `countGap()` 清掉、读成功时置上,精确到块),或在注入集里满 `kUnreadInjectedFallbackMs` 而 `readAttemptCount` 一次没动 |
 | online 公式 | **不变**(只经由 `misaligned` 受影响:告警期间该轨照旧不在线、不注入) |
 
 **不属于契约、因此没写进两份冻结文档的**:四个读方进程内计数的定义(A-5)、新增的 `layoutMismatchCount` /

@@ -141,6 +141,10 @@ public:
     // [A-6] read() 被调用的块数(成功与失败都算;未绑定 / 参数非法的空调用不算)。OutputSession 拿它分辨
     // 「在注入集里、却一次都没被读」(面板关了这一轨 / Output 没被调用)与「读了、读不到」。
     u32 readAttemptCount() const noexcept { return readAttemptCount_.load(std::memory_order_relaxed); }
+    // [A-6] 自最近一笔缺口(gapCount 的任何一次 +1)以来,是否读成功过一块(任一窗)。OutputSession 的失准恢复要求
+    // 它为真(正向在场)。读方在计缺口的同一处清掉、读成功时置上 —— 精确到块,不受 [M] 拍粒度影响:缺口之后同一拍里
+    // 紧接着读到的那一块也算(普通的瞬时失准撤下时机与修前相同)。
+    bool readOkSinceLastGap() const noexcept { return readOkSinceGap_.load(std::memory_order_relaxed); }
 
 private:
     // 一代里观测到的「写头相对读方」的提前量(只在整块落在当前窗里、成功读出的块上量)。
@@ -180,6 +184,8 @@ private:
     AliasRef aliasRef(int64_t w, int64_t prevN, int64_t ring) const noexcept;
     bool prevAliasFree(int64_t a0, int64_t a1, int64_t bLow, int64_t wN, int64_t ring) const noexcept;
     void countFailure(int64_t t0, int64_t t1, int64_t w, int64_t guard, int64_t ring, u32 sampleRate) noexcept;
+    // 计一笔缺口(失准计数)。所有计缺口的地方都走这里:顺带清掉「自最近一笔缺口以来读成功过」。
+    void countGap() noexcept;
     // [A-6] (a) 类持续读不到的宽限(样本):max(kUnreadGraceMs 读方时间线, 2·实测提前量上界 + 本块长)。
     int64_t unreadGrace(int64_t n, u32 sampleRate) const noexcept;
     int64_t leadHiRef() const noexcept; // 实测提前量上界(没量到过 → -1)
@@ -269,6 +275,8 @@ private:
     std::atomic<u32> layoutMismatchCount_{0};
     std::atomic<u32> persistentFailCount_{0};
     std::atomic<u32> readAttemptCount_{0};
+    std::atomic<bool> readOkSinceGap_{false}; // [A] 写(relaxed),[M] 读;见 readOkSinceLastGap()
+    static_assert(decltype(readOkSinceGap_)::is_always_lock_free, "readOkSinceGap_ must be lock-free (audio thread)");
 };
 
 } // namespace scvb::output

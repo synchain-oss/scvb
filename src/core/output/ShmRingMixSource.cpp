@@ -531,11 +531,19 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
     return c;
 }
 
+void ShmRingMixSource::countGap() noexcept
+{
+    gapCount_.fetch_add(1, std::memory_order_relaxed);
+    readOkSinceGap_.store(false, std::memory_order_relaxed); // [A-6] 正向在场从这一笔缺口起重新算
+}
+
 int64_t ShmRingMixSource::unreadGrace(int64_t n, u32 sampleRate) const noexcept
 {
     // 宽限 = max(200 ms 读方时间线, 2·实测提前量上界 + 本块长)(设计稿 §3.4;A-4 实测定案:N2a 那种「只在交接前后
     // 先算 Output」的已注入却读不到 < 150 ms,必须压在宽限之内;LS-14 / N2b 的告警要 ≤ 0.5 s)。按样本计:离线导出
     // 跑在墙钟前面多少倍都是同一条规则。没量到过提前量(本代之前一块都没在当前窗里读成功过)时只剩 200 ms 那一项。
+    // 提前量那一项按设计稿的取值保留、不封顶:代价是写方领先很多的轨(预取提前量 L)上 H3 告警要约 2L 才亮 ——
+    // 「≤ 0.5 s 告警」只在提前量约 200 ms 以内的轨上成立(LS-14 / N2b 都是 live 轨)。
     // 采样率取绑定时的快照(0 = 段头没写过,按 48 kHz 估;只影响宽限长短,不影响读不读)。
     const int64_t sr = sampleRate > 0 ? static_cast<int64_t>(sampleRate) : 48000;
     const int64_t floorSamples = sr * kUnreadGraceMs / 1000;
@@ -560,7 +568,7 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
     sawFail_ = true;
     if (primed_ && (lapped || producerAdvancing))
     {
-        gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→该轨该块静音+失准计数
+        countGap(); // 缺口→该轨该块静音+失准计数
     }
     else if (primed_)
     {
@@ -615,7 +623,7 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
         // 写方停着的块不计(P1-7:那是挂起,不是失准);写方一动,这一块照计。
         if (limit >= 0 && producerAdvancing && t1 - unreadFrom_ > limit)
         {
-            gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→失准计数(「路由失准」横幅)
+            countGap(); // 缺口→失准计数(「路由失准」横幅)
             persistentFailCount_.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -689,6 +697,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         // [A-6] 单独计(A-5 时混在 handoverLoss 里)。它不是失准,也不碰「持续读不到」的计时:正在进行的那段连续
         // 失败不重新起算(几何改写不能掩盖真的读不到),但这一块不算进它的长度(几何改写的短暂丢失不能凑满宽限)——
         // 起点往后挪一块,「t1 − 起点」只剩真正读不到的那几块。[M] 换绑之后(≤ 一拍)由 onRebind 重新起算。
+        // 起点可能被挪过之后几块的 t1(差为负)⇒ 那几块不计,方向安全;这里是有符号运算,别改成无符号差。
         layoutMismatchCount_.fetch_add(1, std::memory_order_relaxed);
         if (unreadRun_)
         {
@@ -761,7 +770,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     {
         if (primed_)
         {
-            gapCount_.fetch_add(1, std::memory_order_relaxed);
+            countGap();
         }
         handoverLossCount_.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -782,6 +791,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     }
     sawFail_ = false; // 成功一块即清停滞账:下一次失败重新从「写头是否在动」问起
     unreadRun_ = false; // [A-6] 读到了(哪个窗都算):「持续读不到」重新起算
+    readOkSinceGap_.store(true, std::memory_order_relaxed); // [A-6] 正向在场(失准恢复的前提)
     readOkCount_.fetch_add(1, std::memory_order_relaxed);
     return true;
 }

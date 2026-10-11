@@ -829,9 +829,11 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     const double t0 = juce::Time::getMillisecondCounterHiRes();
     double firstAlarmMs = -1.0;
     int offAfterOn = 0;
+    int passthroughSamples = 0;
     for (double now = t0; now - t0 < 1500.0; now = juce::Time::getMillisecondCounterHiRes())
     {
         r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+        passthroughSamples += r.in.bridgeTickSnapshot().passthrough ? 1 : 0;
         const bool alarm = r.out.misalignCount(kTestChannel) > 0;
         if (alarm && firstAlarmMs < 0.0)
         {
@@ -842,10 +844,13 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
             ++offAfterOn;
         }
     }
-    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn);
+    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn
+                        << ", Input passthrough samples " << passthroughSamples);
     CHECK(firstAlarmMs >= 0.0);
     CHECK(firstAlarmMs <= 500.0);
     CHECK(offAfterOn == 0);
+    // 告警期间本轨被失准踢出 connected_mask 又放回(约 1 s 一次),每次断开都不满 Input 的 5 s 滞回:Input 不切直通。
+    CHECK(passthroughSamples == 0);
 }
 
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
@@ -857,12 +862,16 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(waitUntilHandedOver(r)); // 这一轨已交给 Output:connected_mask 本位已置、Input 侧目标档是静音……
-    r.runBlocks(80, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/10);
-    // ……此后 Input 一直静音。[A-6] 起这里不再要求 connected_mask 本位此刻仍在:告警亮起后失准把本轨踢出
+    // ……此后 Input 一直静音(逐段采样)。[A-6] 起这里不再要求 connected_mask 本位一直在:告警亮起后失准把本轨踢出
     // connected_mask / 注入集,1 s 后放回、宽限走完又踢出(online 只经由 misaligned 受影响)—— 本位按约 1 s 的周期
     // 通断,采样落在哪一边看相位。断开从来不满 Input 的 5 s 滞回,所以 Input 一直在静音档、不切直通。
-    const auto snap = r.in.bridgeTickSnapshot();
-    REQUIRE_FALSE(snap.passthrough);
+    int passthroughSamples = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/10);
+        passthroughSamples += r.in.bridgeTickSnapshot().passthrough ? 1 : 0;
+    }
+    REQUIRE(passthroughSamples == 0);
     // ……而 Output 一块都读不到它:真实状态是 trackPeak == 0(原 N2 那条 `>= 0.0f` 恒真,把这一点盖住了)。
     // 修复前后都成立:A-6 让它报警,但 Output-first 下这段数据在 Output 读的那一刻还没写。
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
