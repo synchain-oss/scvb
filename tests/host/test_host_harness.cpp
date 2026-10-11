@@ -13085,6 +13085,25 @@ void setTrackEnabled(ScvbOutputAudioProcessor& out, int ch, bool on)
     ++out.runtime().configSeq;
 }
 
+// [B 线 M12b] 关轨之后,等 Output 的 [M] 真跑过一拍(启用位图已推给 [A])再推下一块,期间不推块。
+// 原先是固定的 pump(100)(SL-488 首格注释写「≥2 拍 [M] tick」):Windows 上 25Hz Timer 准点,100ms 里
+// 必有两拍;mac CI 上同一个 Timer 实得间隔 p50 92 ms / p90 179 ms,100ms 里可能一拍都没有 —— 位图没推
+// 下去,关掉的轨照常在母线上(SL-488 首格在 mac 上就这样红过:③ 的 12 块恒为 0.354、本轨电平表 0.5)。
+// soloBlock 不泵消息,所以这一拍只能落在这里。
+// 条件:Input 读到的广播区 config_seq 追上了这次递增。[M] 的 timerCallback 先存启用位图、同一拍末尾才
+// publishConfigBroadcast(config_seq = configSeq + 1),所以追上 ⇒ 位图已在 [A] 手里。上界 400 ms,留在
+// 写头冻结判挂起的 500 ms(kSuspendStallMs)之下;到点没追上就红在这里,不让后面的判据替它背锅。
+void pumpUntilTrackConfigApplied(MonoMultiRig& r)
+{
+    const scvb::u32 want = r.out.runtime().configSeq + 1u;
+    const auto seen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
+    for (int waited = 0; waited < 400 && seen() < want; waited += 10)
+    {
+        MonoMultiRig::pump(10);
+    }
+    REQUIRE(seen() >= want);
+}
+
 // 跑到 ch1 的声音稳定混进母线(注入延迟走完、fade 到 1、busXfade 稳在替换态)。返回最后一块。
 SoloBlock settleSolo(MonoMultiRig& r)
 {
@@ -13140,7 +13159,7 @@ TEST_CASE("HOST SL-488:多轨在注入时面板关掉一轨,那一轨 80ms 淡�
     REQUIRE(corrWithSine(last) > 0.99);
 
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100); // ≥2 拍 [M] tick,把启用位图推给 [A];期间不推块
+    pumpUntilTrackConfigApplied(r); // 把启用位图推给 [A];期间不推块
 
     // ① 关轨后的首块:仍是 ch1 的声音、与继续走的正弦同相(修前逐位为 0)。
     const SoloBlock first = soloBlock(r, 0.5f);
@@ -13192,7 +13211,7 @@ TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当�
         REQUIRE(r.out.meterSnapshot().trackPeak[0] == 0.0f);
     }
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f);
@@ -13216,7 +13235,7 @@ TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被�
         soloBlock(r, 0.5f, /*bypassed=*/true);
     }
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f, /*bypassed=*/true);
@@ -13306,7 +13325,7 @@ TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,�
     // 先关 ch2/ch3,跑满它们的淡出,让 ch1 成为唯一还在 inject 里的轨。
     setTrackEnabled(r.out, 2, false);
     setTrackEnabled(r.out, 3, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     SoloBlock last;
     for (int k = 0; k < 12; ++k)
     {
@@ -13322,7 +13341,7 @@ TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,�
 
     // 关掉最后一条轨。
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     std::vector<SoloBlock> tail;
     for (int k = 0; k < 12; ++k)
     {
