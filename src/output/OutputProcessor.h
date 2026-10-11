@@ -20,6 +20,7 @@
 #include "OutputParams.h"
 #include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
+#include "diag/VizRateMeter.h" // [B 线 M07b] viz 实得速率(进程内计数,不进共享内存)
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
@@ -913,6 +914,11 @@ private:
     scvb::output::OutputSession session_;
     // [T44/J75] viz 段发布器(Monitor 只读数据面)。只在 [M] 触碰;processBlock 对 viz 段零写入。
     scvb::output::VizPublisher vizPublisher_;
+    // [B 线 M07b] viz 实得速率(tick = vizTimer_ 回调,publish = 发布器真的发出去的帧),每约 10 s 收一窗,
+    // 装了平台文件日志(mac)时写一行 viz-rate。只在 vizTimer_ 回调里记(消息线程、持 lifecycleMutex_),
+    // prepareToPlay 里 restart;processBlock 不碰。声明在 vizTimer_ 之前:析构时定时器先拆、它后拆。
+    scvb::diag::OutputVizRate vizRate_{
+        scvb::diag::makeVizRateInstanceTag(juce::AudioProcessor::getWrapperTypeDescription(wrapperType))};
     // [SL-192] viz 发布的**独立定时器**,与主 25Hz [M] tick 分开。
     //
     // 为什么不把主 tick 提到 30Hz:那条 tick 上挂着心跳、session tick、看门狗、配置广播、

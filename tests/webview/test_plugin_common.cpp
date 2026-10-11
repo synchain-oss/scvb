@@ -19,6 +19,7 @@
 #include <WebViewRevealGate.h>
 #include <ResourceProvider.h>
 #include <WebViewHost.h> // 只取看门狗预算/事件名常量(全是 constexpr,不需要编 WebViewHost.cpp)
+#include <diag/VizRateSink.h> // [B 线 M07b] header-only 槽:本目标在 Windows 上不链 scvb_core
 
 #if JUCE_MAC
 // [B 线 M07] mac 上本目标链 scvb_core(tests/CMakeLists.txt),IpcDiag 与 SCVB_HAS_POSIX_SHM 都从那里来;
@@ -1510,3 +1511,120 @@ TEST_CASE("[M07][mac] IpcDiag sink keeps one line per (op, error, segment)", "[M
     CHECK(linesOf(file).size() == 4);
 }
 #endif
+
+// ===========================================================================
+// [B 线 M07b] viz 实得速率行:平台文件日志接 scvb_core 的 viz-rate 槽 + 全局上限 + 接线点
+// ===========================================================================
+TEST_CASE("[M07b] the installed platform log carries viz-rate lines; uninstall detaches the sink",
+          "[M07b][platformlog]")
+{
+    juce::ScopedJuceInitialiser_GUI gui; // 本线程 = 消息线程(生产上 sink 的调用方就是消息线程上的定时器回调)
+    PlatformLogGuard guard;
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("output.log");
+
+    // 没装:槽是空的,交上来的行什么都不做。
+    CHECK(scvb::diag::vizRateSink() == nullptr);
+    scvb::diag::reportVizRate("viz-rate before install");
+    CHECK_FALSE(file.exists());
+
+    REQUIRE(scvb::platformlog::installAt(file));
+    CHECK(scvb::diag::vizRateSink() != nullptr);
+    const std::string line = "viz-rate output VST3#1 group=1 writer=on window=10.0s tick=60.0Hz publish=30.0Hz "
+                             "tick-max=17ms publish-max=34ms";
+    scvb::diag::reportVizRate(line);
+    auto lines = linesOf(file);
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].endsWith(" " + juce::String(line))); // 时间戳前缀 + 原样一行
+
+    scvb::platformlog::uninstall();
+    CHECK(scvb::diag::vizRateSink() == nullptr);
+    scvb::diag::reportVizRate("viz-rate after uninstall");
+    CHECK(linesOf(file).size() == 1);
+}
+
+TEST_CASE("[M07b] viz-rate lines share one budget per window; dropped lines are counted into the next one",
+          "[M07b][platformlog]")
+{
+    using scvb::platformlog::LineBudget;
+    {
+        LineBudget b(3, 1000);
+        CHECK(b.onLine(100).emit);
+        CHECK(b.onLine(200).emit);
+        CHECK(b.onLine(300).emit);
+        CHECK_FALSE(b.onLine(400).emit);
+        CHECK_FALSE(b.onLine(1099).emit); // 窗口从第一条起算:差 1 ms 仍在窗内
+        const auto v = b.onLine(1100);
+        CHECK(v.emit);
+        CHECK(v.dropped == 2);
+        CHECK(b.onLine(1101).dropped == 0); // 带出去一次就清零
+    }
+    {
+        // getMillisecondCounter 回绕:无符号相减仍按「过了多久」判。
+        LineBudget b(1, 1000);
+        const std::uint32_t nearWrap = 0xffffffffu - 100u;
+        CHECK(b.onLine(nearWrap).emit);
+        CHECK_FALSE(b.onLine(500u).emit); // 回绕后 601 ms:仍在窗内
+        const auto v = b.onLine(nearWrap + 1000u);
+        CHECK(v.emit);
+        CHECK(v.dropped == 1);
+    }
+    // 生产口径:每分钟最多 60 行(每实例每 10 s 一行时可容 10 个实例)。
+    CHECK(scvb::platformlog::kVizRateLinesPerWindow == 60);
+    CHECK(scvb::platformlog::kVizRateBudgetWindowMs == 60000);
+}
+
+TEST_CASE("[M07b] the installed sink enforces the budget and reports what it dropped", "[M07b][platformlog]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    PlatformLogGuard guard;
+    ScratchDir scratch;
+    const auto file = scratch.dir.getChildFile("monitor.log");
+    REQUIRE(scvb::platformlog::installAt(file));
+
+    // 一口气交 kVizRateLinesPerWindow + 5 行:同一个 60 s 窗内只落前 kVizRateLinesPerWindow 行。
+    const auto total = static_cast<int>(scvb::platformlog::kVizRateLinesPerWindow) + 5;
+    for (int i = 0; i < total; ++i)
+        scvb::diag::reportVizRate("viz-rate monitor AU#" + std::to_string(i + 1));
+    const auto lines = linesOf(file);
+    CHECK(lines.size() == static_cast<int>(scvb::platformlog::kVizRateLinesPerWindow));
+    if (!lines.isEmpty())
+        CHECK(lines[lines.size() - 1].endsWith(
+            " viz-rate monitor AU#" + juce::String(static_cast<int>(scvb::platformlog::kVizRateLinesPerWindow))));
+}
+
+TEST_CASE("[M07b] viz-rate counting points: Output vizTimer_ callback, MonitorEditor real pushes, no processBlock",
+          "[M07b][source]")
+{
+    // OutputProcessor.cpp 与 MonitorEditor.cpp 的这几处没有离线测试目标能驱动(Output 的 vizTimer_ 只在
+    // host harness 里转,编辑器依赖真 WebView),接线只能读源码判(去注释、去空白后按片段匹配;手法同上面
+    // [M07][source])。计数本身的口径由 scvb_tests 的 [M07b][vizrate] 与 scvb_monitor_tests 的 [M07b] 格判。
+    INFO("source-level check: the viz-rate counters must be fed from the timer callbacks / the editor tick only; "
+         "if only the wording of the code changed, update the expected snippet");
+
+    // ① Output:publishVizFrame 之后在同一个 vizTimer_ 回调里 onBeat(发布器自己的累计计数);
+    //    prepareToPlay 里 restart 在 startTimerHz 之前;全文件只有这两处碰 vizRate_。
+    const auto out = lexSource("src/output/OutputProcessor.cpp");
+    CHECK(out.code.find("vizTimer_=std::make_unique<juce::TimedCallback>([this]{constautonow=scvb::steadyNowMs();"
+                        "constjuce::ScopedLocklock(lifecycleMutex_);publishVizFrame(now);vizRate_.onBeat(now,"
+                        "vizPublisher_.publishCount(),vizPublisher_.isOpen(),groupId_);});") != std::string::npos);
+    CHECK(out.code.find("vizRate_.restart();vizTimer_->startTimerHz(scvb::output::VizPublisher::kPublishTimerHz);") !=
+          std::string::npos);
+    CHECK(countOf(out.code, "vizRate_.") == 2);
+
+    // ② Monitor 编辑器:只在 scvb.viz **真的发出去**(emitIfChanged 返回 true)之后数一次 push。
+    const auto ed = lexSource("src/monitor/MonitorEditor.cpp");
+    CHECK(ed.code.find("if(emitIfChanged(bridge::kEvViz,buildVizPayload(needLanes),lastVizJson_)){processor_."
+                       "noteVizPushed(now);") != std::string::npos);
+    CHECK(countOf(ed.code, "noteVizPushed(") == 1);
+
+    // ③ 音频线程零改动:两个 processBlock 里一处都不碰计数器。
+    const auto outBlock =
+        methodBody(out.code, "voidScvbOutputAudioProcessor::processBlock(", "voidScvbOutputAudioProcessor::");
+    CHECK(outBlock.find("vizRate") == std::string::npos);
+    const auto mon = lexSource("src/monitor/MonitorProcessor.cpp");
+    const auto monBlock =
+        methodBody(mon.code, "voidScvbMonitorAudioProcessor::processBlock(", "voidScvbMonitorAudioProcessor::");
+    CHECK(monBlock.find("vizRate") == std::string::npos);
+    CHECK(countOf(mon.code, "vizRate_.") == 7); // restart x2 / onTick / onPoll / onFresh / closeIfDue / onPush
+}

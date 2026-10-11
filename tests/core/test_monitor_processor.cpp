@@ -9,14 +9,18 @@
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "MonitorProcessor.h"
 #include "UiDefaultsStore.h"
 
+#include "diag/VizRateMeter.h" // [B 线 M07b]
+#include "diag/VizRateSink.h"
 #include "ipc/PlatformSegmentBackend.h"
 #include "ipc/VizPlane.h"
 
@@ -583,5 +587,179 @@ TEST_CASE("Monitor:自己的 AudioPlayHead 经 processBlock 落进 playheadSnaps
             REQUIRE(p.playheadSnapshot().timeSamples == at);
         }
         p.setPlayHead(nullptr);
+    }
+}
+
+// ===========================================================================
+// [B 线 M07b] viz 实得速率:Monitor 的四路计数各落在各自的点上
+// ===========================================================================
+// tick = 定时器回调本身;poll = 真的去读了一次 viz 段;fresh = 读到新帧;push = 编辑器真的推了一帧
+// (本目标不编编辑器,push 由用例按 25Hz 直接调 noteVizPushed —— 编辑器那一侧「只在真的发出去之后才数」
+// 由 scvb_plugin_common_tests 的 [M07b][source] 格读源码判)。时间全是注入的逻辑时刻,不看墙钟;
+// 段是真共享内存段(与上面几格同一手法,组号错开)。
+namespace
+{
+std::vector<std::string>& monitorRateLines()
+{
+    static std::vector<std::string> lines;
+    return lines;
+}
+
+void monitorRateSink(const char* line) noexcept
+{
+    try
+    {
+        monitorRateLines().emplace_back(line);
+    }
+    catch (...)
+    {
+    }
+}
+
+struct MonitorRateCapture
+{
+    MonitorRateCapture()
+    {
+        monitorRateLines().clear();
+        scvb::diag::setVizRateSink(&monitorRateSink);
+    }
+    ~MonitorRateCapture()
+    {
+        scvb::diag::setVizRateSink(nullptr);
+        monitorRateLines().clear();
+    }
+    MonitorRateCapture(const MonitorRateCapture&) = delete;
+    MonitorRateCapture& operator=(const MonitorRateCapture&) = delete;
+};
+
+// 60Hz 定时器的第 k 拍(整数毫秒,向下取整;第 600 拍恰好 +10000 ms)。
+std::uint64_t monitorBeat60(std::uint64_t k)
+{
+    return (k * 1000u) / 60u;
+}
+
+// "viz-rate monitor <tag> <rest>" -> "<rest>"。tag 里的实例序号取决于本二进制里先构造过几个
+// Monitor(用例顺序),不进判据。
+std::string withoutInstanceTag(const std::string& line)
+{
+    const std::string head = "viz-rate monitor ";
+    REQUIRE(line.rfind(head, 0) == 0);
+    const auto space = line.find(' ', head.size());
+    REQUIRE(space != std::string::npos);
+    return line.substr(space + 1);
+}
+
+// 30Hz 写方 + 25Hz 编辑器推送 + 60Hz Monitor 定时器,跑满 [t0, t0 + 10 s] 这 601 拍。
+void runOnlineWindow(ScvbMonitorAudioProcessor& p, scvb::VizPlane& writer, scvb::VizSnapshot& frame, std::uint64_t t0)
+{
+    std::uint64_t nextPush = t0 + 40;
+    for (std::uint64_t k = 0; k <= 600; ++k)
+    {
+        const auto t = t0 + monitorBeat60(k);
+        if (k % 2 == 0) // 写方每两拍发一帧(publishMs 变 = 新帧)
+        {
+            frame.publishMs = t;
+            writer.publish(frame, /*writeLanes=*/k == 0);
+        }
+        for (; nextPush <= t; nextPush += 40)
+        {
+            p.noteVizPushed(nextPush);
+        }
+        p.tickMessageThread(t);
+    }
+}
+
+constexpr const char* kOnlineLine = "group=3 seg=online editor=off window=10.0s tick=60.0Hz poll=60.0Hz fresh=30.0Hz "
+                                    "push=25.0Hz tick-max=17ms poll-max=17ms fresh-max=34ms push-max=40ms";
+} // namespace
+
+TEST_CASE("[M07b] Monitor counts ticks, segment reads, fresh frames and pushes at their own points",
+          "[monitor][M07b][vizrate]")
+{
+    constexpr scvb::u32 kGroup = 3; // 与本文件其余用例(4/5/6)和 harness(2/4/5/7)错开
+    constexpr std::uint64_t kT0 = 1000;
+    scvb::PlatformSegmentBackend backend;
+    MonitorRateCapture capture;
+
+    SECTION("no Output in the group: the timer ticks at 60Hz but nothing is read")
+    {
+        {
+            scvb::VizPlane probe(backend, kGroup);
+            REQUIRE(probe.attachReadOnly() == scvb::InitResult::kFailed);
+        }
+        ScvbMonitorAudioProcessor p;
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
+        p.prepareToPlay(48000.0, 256);
+        for (std::uint64_t k = 0; k <= 600; ++k)
+        {
+            p.tickMessageThread(kT0 + monitorBeat60(k));
+        }
+        REQUIRE(monitorRateLines().size() == 1);
+        // poll 只数真的读段的拍子:段 attach 不上(4Hz 重试)时一次都不读。
+        CHECK(withoutInstanceTag(monitorRateLines()[0]) ==
+              "group=3 seg=offline editor=off window=10.0s tick=60.0Hz poll=0.0Hz fresh=0.0Hz push=0.0Hz "
+              "tick-max=17ms poll-max=- fresh-max=- push-max=-");
+        p.releaseResources();
+    }
+
+    SECTION("Output publishing at 30Hz, editor pushing at 25Hz")
+    {
+        scvb::VizPlane writer(backend, kGroup);
+        REQUIRE(writer.open() == scvb::InitResult::kOk);
+        auto frame = std::make_unique<scvb::VizSnapshot>();
+        frame->sampleRate = 48000;
+        frame->windowSpanSamples = 48000ull * 60;
+        frame->versionActive = 1;
+
+        ScvbMonitorAudioProcessor p;
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
+        p.prepareToPlay(48000.0, 256);
+        runOnlineWindow(p, writer, *frame, kT0);
+
+        REQUIRE(monitorRateLines().size() == 1);
+        // fresh 只数「读到新帧」(publishMs 变了):每拍都读,但只有一半的拍子是新帧。
+        CHECK(withoutInstanceTag(monitorRateLines()[0]) == kOnlineLine);
+        CHECK(p.vizRate().lastWindow().series[scvb::diag::MonitorVizRate::kPoll].count == 600);
+        CHECK(p.vizRate().lastWindow().series[scvb::diag::MonitorVizRate::kFresh].count == 300);
+        CHECK(p.vizState() == ScvbMonitorAudioProcessor::VizState::kOnline);
+        p.releaseResources();
+    }
+
+    SECTION("prepareToPlay again or a group change: the partial window is dropped")
+    {
+        scvb::VizPlane writer(backend, kGroup);
+        REQUIRE(writer.open() == scvb::InitResult::kOk);
+        auto frame = std::make_unique<scvb::VizSnapshot>();
+        frame->sampleRate = 48000;
+
+        ScvbMonitorAudioProcessor p;
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
+        p.prepareToPlay(48000.0, 256);
+        for (std::uint64_t k = 0; k <= 300; ++k) // 5 s 后宿主停了音频流
+        {
+            const auto t = kT0 + monitorBeat60(k);
+            if (k % 2 == 0)
+            {
+                frame->publishMs = t;
+                writer.publish(*frame, k == 0);
+            }
+            p.tickMessageThread(t);
+        }
+        CHECK(monitorRateLines().empty());
+        p.releaseResources();
+
+        // 10 s 后重新 prepareToPlay:停表那段不进 tick-max(否则这一窗会写出一个 10 s 的「拍距」)。
+        p.prepareToPlay(48000.0, 256);
+        CHECK_FALSE(p.vizRate().meter().anchored());
+        runOnlineWindow(p, writer, *frame, kT0 + 15000);
+        REQUIRE(monitorRateLines().size() == 1);
+        CHECK(withoutInstanceTag(monitorRateLines()[0]) == kOnlineLine);
+
+        // 换组同样作废残窗:一窗只算一个组。
+        p.tickMessageThread(kT0 + 25100);
+        CHECK(p.vizRate().meter().anchored());
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup) + 5));
+        CHECK_FALSE(p.vizRate().meter().anchored());
+        p.releaseResources();
     }
 }

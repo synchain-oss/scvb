@@ -8,6 +8,8 @@
 #include <mutex>
 #include <utility>
 
+#include "diag/VizRateSink.h" // [B 线 M07b] header-only 的槽:本 TU 不需要链接 scvb_core
+
 #if SCVB_HAS_POSIX_SHM
 #include "ipc/IpcDiag.h"
 #endif
@@ -43,6 +45,7 @@ struct State
     std::mutex mutex;
     std::unique_ptr<RotatingLogFile> log; // 非空 = 已装
     DiagDeduper deduper;
+    LineBudget vizRateBudget{kVizRateLinesPerWindow, kVizRateBudgetWindowMs}; // [B 线 M07b]
 };
 
 State& state()
@@ -116,6 +119,34 @@ void ipcDiagSink(const scvb::IpcDiagEvent& event) noexcept
     }
 }
 #endif
+
+// [B 线 M07b] viz-rate 的 sink(调用方 = Output / Monitor 的定时器回调,消息线程;write 就地落盘)。
+// 先过全局上限,再交给 write()。noexcept:吞掉一切异常,不许穿回定时器回调。
+void vizRateLogSink(const char* line) noexcept
+{
+    try
+    {
+        if (line == nullptr)
+            return;
+        LineBudget::Verdict verdict;
+        {
+            const std::lock_guard<std::mutex> lock(state().mutex);
+            if (state().log == nullptr)
+                return;
+            verdict = state().vizRateBudget.onLine(juce::Time::getMillisecondCounter());
+        }
+        if (!verdict.emit)
+            return;
+        juce::String text = juce::String::fromUTF8(line);
+        if (verdict.dropped > 0)
+            text << " (" << juce::String(static_cast<juce::int64>(verdict.dropped))
+                 << " viz-rate lines dropped by the rate limit)";
+        write(text);
+    }
+    catch (...)
+    {
+    }
+}
 
 juce::String processIdForLog()
 {
@@ -288,6 +319,29 @@ DiagDeduper::Verdict DiagDeduper::onEvent(std::uint32_t op, int error, const juc
 }
 
 // -----------------------------------------------------------------------------
+// LineBudget
+// -----------------------------------------------------------------------------
+LineBudget::Verdict LineBudget::onLine(std::uint32_t nowMs) noexcept
+{
+    Verdict verdict;
+    if (!windowStarted_ || (nowMs - windowStartMs_) >= windowMs_)
+    {
+        windowStarted_ = true;
+        windowStartMs_ = nowMs;
+        linesInWindow_ = 0;
+    }
+    if (linesInWindow_ >= maxLines_)
+    {
+        dropped_ = saturatingIncrement(dropped_);
+        return verdict;
+    }
+    ++linesInWindow_;
+    verdict.emit = true;
+    verdict.dropped = std::exchange(dropped_, 0u);
+    return verdict;
+}
+
+// -----------------------------------------------------------------------------
 // 全局实例
 // -----------------------------------------------------------------------------
 bool installAt(const juce::File& file)
@@ -300,12 +354,15 @@ bool installAt(const juce::File& file)
             return false; // 先装者为准:同一个二进制里第二个实例走到这里是正常的
         state().log = std::make_unique<RotatingLogFile>(file);
         state().deduper = DiagDeduper{};
+        state().vizRateBudget = LineBudget{kVizRateLinesPerWindow, kVizRateBudgetWindowMs};
         installedFlag().store(true, std::memory_order_release);
     }
 #if SCVB_HAS_POSIX_SHM
     // 锁外设 sink:sink 自己会取同一把锁。IpcDiag 只有一个槽,默认空操作(M05),装上就是本日志。
     scvb::setIpcDiagSink(&ipcDiagSink);
 #endif
+    // [B 线 M07b] viz-rate 槽同理(锁外设;sink 自己取锁)。生产上只有 mac 会 install 到这里。
+    scvb::diag::setVizRateSink(&vizRateLogSink);
     return true;
 }
 
@@ -328,10 +385,13 @@ void uninstall()
     if (scvb::ipcDiagSink() == &ipcDiagSink)
         scvb::setIpcDiagSink(nullptr);
 #endif
+    if (scvb::diag::vizRateSink() == &vizRateLogSink)
+        scvb::diag::setVizRateSink(nullptr);
     const std::lock_guard<std::mutex> lock(state().mutex);
     installedFlag().store(false, std::memory_order_release);
     state().log.reset();
     state().deduper = DiagDeduper{};
+    state().vizRateBudget = LineBudget{kVizRateLinesPerWindow, kVizRateBudgetWindowMs};
 }
 
 bool isInstalled() noexcept

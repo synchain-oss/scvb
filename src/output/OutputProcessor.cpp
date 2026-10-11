@@ -227,8 +227,12 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
             const auto now = scvb::steadyNowMs();
             const juce::ScopedLock lock(lifecycleMutex_);
             publishVizFrame(now);
+            // [B 线 M07b] 实得速率:本拍记一次 tick;发布器的累计计数这一拍涨了才记 publish(闸门挡掉的拍子、
+            // 本实例不是 viz 写方的拍子都不算)。`now` 是取锁前采的 = 定时器真正打进来的时刻。
+            vizRate_.onBeat(now, vizPublisher_.publishCount(), vizPublisher_.isOpen(), groupId_);
         });
     }
+    vizRate_.restart(); // [B 线 M07b] 音频流(重)起:上一段的残窗作废,停表期间不算进拍距(持着 lifecycleMutex_)
     vizTimer_->startTimerHz(scvb::output::VizPublisher::kPublishTimerHz);
 }
 
