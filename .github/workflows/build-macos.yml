@@ -1010,6 +1010,7 @@ jobs:
           set +e
           set -uo pipefail
           dir="$HOME/Library/Logs/Synchain/SCVB"
+          vrl="$RUNNER_TEMP/viz-rate-lines.txt" # 中间文件放 runner 临时目录,不留在仓库树里(后面还有打包冒烟)
           echo "### Platform log files (record only)" >> "$GITHUB_STEP_SUMMARY"
           if [ ! -d "$dir" ]; then
             echo "no ~/Library/Logs/Synchain/SCVB directory on this runner"
@@ -1023,15 +1024,15 @@ jobs:
             base=$(basename "$f")
             lines=$(wc -l < "$f" | tr -d '[:space:]')
             opened=$(grep -c ' log opened ' "$f")
-            grep ' viz-rate ' "$f" > viz-rate-lines.txt
-            vr=$(grep -c . viz-rate-lines.txt)
+            grep ' viz-rate ' "$f" > "$vrl"
+            vr=$(grep -c . "$vrl")
             echo "::group::~/Library/Logs/Synchain/SCVB/$base ($lines lines, $opened log-opened, $vr viz-rate; first 400 lines)"
             sed -n '1,400p' "$f"
             echo "::endgroup::"
             echo "- \`$base\`: $lines lines, $opened log-opened lines, $vr viz-rate lines" >> "$GITHUB_STEP_SUMMARY"
             if [ "$vr" != "0" ]; then
               echo '  ```' >> "$GITHUB_STEP_SUMMARY"
-              sed -n '1,20p' viz-rate-lines.txt >> "$GITHUB_STEP_SUMMARY"
+              sed -n '1,20p' "$vrl" >> "$GITHUB_STEP_SUMMARY"
               echo '  ```' >> "$GITHUB_STEP_SUMMARY"
             fi
           done

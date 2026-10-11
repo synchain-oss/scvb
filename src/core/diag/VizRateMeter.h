@@ -138,6 +138,10 @@ public:
 
     // publishCount = VizPublisher::publishCount()(累计值,本拍发布之后读);writerOpen = 发布器的段开着;
     // group = 当前组号(只进日志行)。收窗时若装了 sink 就交一行。返回 true = 这一拍收了一个窗。
+    // ⚠ writer= / group= 只反映**收窗那一拍**的状态:窗口中途接管或让出写方(例如同组第一个 Output
+    // 被移除、本实例接过 viz 段)时,那一行的 publish 落在 0 与 30Hz 之间 —— 那不是定时器被拉长,
+    // 判定时器本身看 tick / tick-max。
+    bool onBeat(std::uint64_t nowMs, std::uint64_t publishCount, bool writerOpen, int group);
     bool onBeat(std::uint64_t nowMs, std::uint64_t publishCount, bool writerOpen, int group);
 
     const VizRateMeter& meter() const noexcept { return meter_; }
@@ -178,6 +182,9 @@ public:
 
     // tickMessageThread 末尾调。segState = "online" / "offline" / "abiMismatch";editorOpen = 编辑器开着
     // (push 为 0 时据此分辨「没开窗」与「开着但推不出去」)。收窗时若装了 sink 就交一行。
+    // ⚠ 与 Output 侧同理:seg= / editor= 只反映收窗那一拍;窗口中途上线 / 掉线 / 开关编辑器时,
+    // 那一行的 poll / fresh / push 落在两档之间,不要读成定时器被拉长(看 tick / tick-max)。
+    // 换组不在此列:换组会 restart,一窗只算一个组。
     bool closeIfDue(std::uint64_t nowMs, int group, const char* segState, bool editorOpen);
 
     const VizRateMeter& meter() const noexcept { return meter_; }
