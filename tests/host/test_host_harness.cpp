@@ -816,7 +816,8 @@ TEST_CASE("HOST N2a: Output-first only for the first blocks - present right afte
     }
 }
 
-// N2b:Output-first 一直持续(H3)。目标(A-6):交给 Output 之后 0.5 s 内亮「路由失准」,持续期间不灭。
+// N2b:Output-first 一直持续(H3)。目标(A-6):交给 Output 之后 0.5 s 内亮「路由失准」,持续期间不灭(看 3 s:
+// 跨过至少一次「失准窗满 → 放回注入集 → 宽限走完又踢出」)。
 // 计时起点 = waitUntilHandedOver 返回(Input 侧静音之后再过约 120 ms)。
 // 「不灭」是 A-6 的第二半:告警亮起后失准把本轨踢出注入集、read() 不再被调,1 s 后「无新缺口 ∧ 数据在推进」照样
 // 成立 —— 恢复还要求本轨自上一笔缺口以来确实读到过数据(正向在场),否则横幅会以约 1 s 的周期假恢复。
@@ -831,11 +832,23 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     const double t0 = juce::Time::getMillisecondCounterHiRes();
     double firstAlarmMs = -1.0;
     int offAfterOn = 0;
-    int passthroughSamples = 0;
-    for (double now = t0; now - t0 < 1500.0; now = juce::Time::getMillisecondCounterHiRes())
+    // Input 侧看到的 connected_mask 本位:告警期间本轨被失准踢出、1 s 失准窗一满放回、宽限走完又踢出。量最长的一段
+    // 连续断开(墙钟):它必须远短于 Input 的 5 s 滞回,否则 Input 会切直通、把原声放进总线。
+    double maskOffSince = -1.0;
+    double maxMaskOffMs = 0.0;
+    for (double now = t0; now - t0 < 3000.0; now = juce::Time::getMillisecondCounterHiRes())
     {
         r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/10);
-        passthroughSamples += r.in.bridgeTickSnapshot().passthrough ? 1 : 0;
+        const double tNow = juce::Time::getMillisecondCounterHiRes();
+        if (!r.in.bridgeTickSnapshot().conn.maskBit)
+        {
+            maskOffSince = maskOffSince < 0.0 ? tNow : maskOffSince;
+            maxMaskOffMs = std::max(maxMaskOffMs, tNow - maskOffSince);
+        }
+        else
+        {
+            maskOffSince = -1.0;
+        }
         const bool alarm = r.out.misalignCount(kTestChannel) > 0;
         if (alarm && firstAlarmMs < 0.0)
         {
@@ -847,12 +860,13 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
         }
     }
     INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn
-                        << ", Input passthrough samples " << passthroughSamples);
+                        << ", longest connected_mask-off stretch " << maxMaskOffMs << " ms");
     CHECK(firstAlarmMs >= 0.0);
     CHECK(firstAlarmMs <= 500.0);
     CHECK(offAfterOn == 0);
-    // 告警期间本轨被失准踢出 connected_mask 又放回(约 1 s 一次),每次断开都不满 Input 的 5 s 滞回:Input 不切直通。
-    CHECK(passthroughSamples == 0);
+    CHECK(maxMaskOffMs >= 500.0); // 告警确实把本轨踢出过(online 只经由 misaligned 受影响)
+    CHECK(maxMaskOffMs < 2000.0); // 按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红
+    WARN("N2b: first alarm " << firstAlarmMs << " ms, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
 }
 
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
@@ -864,9 +878,9 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(waitUntilHandedOver(r)); // 这一轨已交给 Output:connected_mask 本位已置、Input 侧目标档是静音……
-    // ……此后 Input 一直静音(逐段采样)。[A-6] 起这里不再要求 connected_mask 本位一直在:告警亮起后失准把本轨踢出
-    // connected_mask / 注入集,1 s 后放回、宽限走完又踢出(online 只经由 misaligned 受影响)—— 本位按约 1 s 的周期
-    // 通断,采样落在哪一边看相位。断开从来不满 Input 的 5 s 滞回,所以 Input 一直在静音档、不切直通。
+    // ……此后 Input 一直静音(逐段采样;这一段不到 1 s,只是前提,不判通断周期 —— 那一条在判据用例里量)。[A-6] 起
+    // 这里不再要求 connected_mask 本位一直在:告警亮起后失准把本轨踢出 connected_mask / 注入集,1 s 后放回、宽限走完
+    // 又踢出(online 只经由 misaligned 受影响)—— 本位按约 1 s 的周期通断,采样落在哪一边看相位。
     int passthroughSamples = 0;
     for (int i = 0; i < 40; ++i)
     {

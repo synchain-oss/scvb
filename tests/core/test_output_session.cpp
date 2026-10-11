@@ -2075,7 +2075,7 @@ struct A6Sample
     u32 gaps = 0; // gapCount(累计)
     int reads = 0; // 本步 Output 读这一轨的块数
     int readsOk = 0; // ……其中读成功的
-    bool inputPassthrough = false; // 本步末 Input 侧目标档是直通(5 s 滞回满了,原声出到总线)
+    bool inputHealthy = false; // 本步末 Input 侧看到的「Output 健康 ∧ connected_mask 本位在」(InputSession::isHealthy)
 };
 
 struct A6Rig
@@ -2083,7 +2083,6 @@ struct A6Rig
     scvb::SegmentBackendInProcess backend;
     InputSession in{backend, 1001};
     scvb::input::StageSwitchStateMachine sm;
-    scvb::input::OutputStageMode target = scvb::input::OutputStageMode::kPassthrough;
     OutputSession out{backend, 2001};
     std::vector<A6Sample> log;
     scvb::u64 now = 1000;
@@ -2164,10 +2163,10 @@ struct A6Rig
         }
         if (now % 40 == 20)
         {
-            target = sm.evaluate(in.isHealthy(now), now);
+            const auto target = sm.evaluate(in.isHealthy(now), now);
             in.setMuted(target == scvb::input::OutputStageMode::kSilence);
         }
-        s.inputPassthrough = target == scvb::input::OutputStageMode::kPassthrough;
+        s.inputHealthy = in.isHealthy(now);
         s.injected = (out.injectMask() & 1u) != 0;
         s.misalign = out.misalignCountRecent(1);
         s.gaps = out.gapCount(1);
@@ -2214,7 +2213,7 @@ struct A6Alarm
     int reinjections = 0; // 亮起之后、条件撤掉之前本轨重新回到注入集的次数
     int reads = 0; // 条件期间 Output 读这一轨的块数
     int readsOk = 0; // ……其中读成功的
-    int passthroughSteps = 0; // 条件期间 Input 侧在直通档的步数
+    scvb::u64 maxUnhealthyMs = 0; // 条件期间 Input 侧连续「不健康」(connected_mask 本位不在)的最长一段
     scvb::u64 clear = 0; // 条件撤掉之后第一次熄的拍;0 = 没熄
 };
 
@@ -2222,13 +2221,15 @@ A6Alarm a6AlarmOf(const std::vector<A6Sample>& log, scvb::u64 on, scvb::u64 off)
 {
     A6Alarm a;
     bool prevInjected = true;
+    scvb::u64 unhealthyRun = 0;
     for (const A6Sample& s : log)
     {
         if (s.t >= on && s.t < off)
         {
             a.reads += s.reads;
             a.readsOk += s.readsOk;
-            a.passthroughSteps += s.inputPassthrough ? 1 : 0;
+            unhealthyRun = s.inputHealthy ? 0 : unhealthyRun + kA6StepMs;
+            a.maxUnhealthyMs = std::max(a.maxUnhealthyMs, unhealthyRun);
             if (!s.tick)
             {
                 continue;
@@ -2322,6 +2323,12 @@ TEST_CASE("[A-6] an injected lane the Output keeps failing to read raises misali
             // 一次 ——「无新缺口 ∧ 数据在推进」的旧恢复判据会在放回来的那几拍假恢复。
             REQUIRE(a.reads > 0);
             REQUIRE(a.readsOk == 0);
+            // 告警期间本轨被失准踢出注入集、connected_mask 本位跟着断开(online 只经由 misaligned 受影响),
+            // 1 s 失准窗一满放回、宽限走完再踢出。每段断开都要远短于 Input 的 5 s 滞回,否则 Input 会切直通、
+            // 把原声放进总线。量最长的一段(按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红)。
+            // 放在下面的前提断言之前,删除式红在这一条上。
+            CHECK(a.maxUnhealthyMs >= 500);
+            CHECK(a.maxUnhealthyMs < 2000);
             REQUIRE(a.reinjections >= 2);
             CHECK(a.onset != 0);
             CHECK(a.onset - on <= 500);
@@ -2330,17 +2337,15 @@ TEST_CASE("[A-6] an injected lane the Output keeps failing to read raises misali
                 CHECK(a.onset - on <= 100); // 离线 10x:200 ms 时间线只是 20 ms 墙钟 —— 宽限按样本计
             }
             CHECK(a.flicker == 0);
-            // 告警期间本轨被踢出 / 放回注入集(connected_mask 本位跟着通断),但每次断开都不满 Input 的 5 s 滞回:
-            // Input 一直在静音档、不切直通(原声不会冒出来;周期被意外拉长时这里先红)。
-            CHECK(a.passthroughSteps == 0);
             // 条件撤掉之后:读到数据,告警在 1.5 s 内撤下,此后不再亮、每块都读到。
             CHECK(a.clear != 0);
             CHECK(a.clear - off <= 1500);
             CHECK(a6CleanAfter(rig.log, a.clear));
             WARN("A-6 e2e H3 genStart=" << fromGenerationStart << " blocks/step=" << blocksPerStep << ": onset +"
                                         << (a.onset != 0 ? a.onset - on : 0) << " ms, flicker " << a.flicker
-                                        << ", reinjections " << a.reinjections << ", clear +"
-                                        << (a.clear != 0 ? a.clear - off : 0) << " ms");
+                                        << ", reinjections " << a.reinjections << ", longest disconnect "
+                                        << a.maxUnhealthyMs << " ms, clear +" << (a.clear != 0 ? a.clear - off : 0)
+                                        << " ms");
         }
     }
 }

@@ -71,6 +71,9 @@ A-5 补的子条目「失准计数口径不变:只在本代已读到过数据之
 | 归零要求正向在场 | `OutputSession::evaluateChannels` 的恢复判定多一个 `present`;`OutputSession::positivePresence`:`ShmRingMixSource::readOkSinceLastGap()`(读方在计缺口的同一处 `countGap()` 清掉、读成功时置上,精确到块),或在注入集里满 `kUnreadInjectedFallbackMs` 而 `readAttemptCount` 一次没动 |
 | online 公式 | **不变**(只经由 `misaligned` 受影响:告警期间该轨照旧不在线、不注入) |
 
+恢复判据只看 `readOkSinceLastGap`(与累计的 `readOkCount` 无关;`OutputSession::readOkCount(ch)` 访问器只给测试与
+诊断用)。
+
 **不属于契约、因此没写进两份冻结文档的**:四个读方进程内计数的定义(A-5)、新增的 `layoutMismatchCount` /
 `persistentFailCount` / `readAttemptCount` 三个进程内计数、`OutputSession::readOkCount` 测试访问器。
 
