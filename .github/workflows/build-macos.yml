@@ -400,10 +400,10 @@ jobs:
           fi
           echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
 
-      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的九条,
+      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的十二条,
       #    而不是不带 -R 跑全部:列名让「mac 上跑哪几套」是写下来的事实,不由 CMake 守卫隐式决定。
       #    每一条先核「恰好登记一次」:被删、改名、或被守卫挡掉,这里当场红 —— `--no-tests=error`
-      #    只管「一条都没选中」,选中九条里的八条它照样绿。
+      #    只管「一条都没选中」,选中十二条里的十一条它照样绿。
       #    [B 线 M04] `scvb_seqlock_stress` 与 `scvb_tests` 是同一个二进制,按标签 `[stress]` 单跑 seqlock
       #    压测(tests/core/test_seqlock_stress.cpp)。它是 arm64 内存序的门禁,在 x86 上恒绿,所以必须在这里跑。
       #    [B 线 M12a] 加 `scvb_ipc_tests`(L1 双进程 IPC 契约 IPC-1..20、VIZ、registry 探测,外加只在 mac 编的
@@ -415,11 +415,13 @@ jobs:
       #    低于下限当场红。下限 = Windows 上同一份源的用例数 + mac 专属格:
       #      scvb_ipc_tests     37(IPC-1..20 落成的 29 个 TEST_CASE + VIZ-1..4 + REGISTRY-PROBE-1..4)+ 3(IPC-P1..P3)= 40
       #      scvb_monitor_tests 11(两平台同一份)
-      #    [B 线 M12b] 加 `scvb_host_tests`(免 DAW 宿主 harness:真 Input / Output Processor 同进程托管、经真实段名
-      #    通信、手跑消息循环)与 `scvb_host_sched_tests`(同一个二进制按 `[sched]` 选出的宿主调度模拟器,含
-      #    `[!shouldfail]` 格)。tests/CMakeLists.txt 的 host 块由 `WIN32` 放开为 `WIN32 OR APPLE`;同一个二进制也持
-      #    exclusive_guard.h 的 flock,与上面几套串行。下限同样 = Windows 上同一份源的用例数(host 源里没有平台条件格):
-      #      scvb_host_tests          246(`--list-tests` 列出的非隐藏格)
+      #    [B 线 M12b] 加 scvb_host_tests 这个二进制的五条:免 DAW 宿主 harness(真 Input / Output Processor 同进程
+      #    托管、经真实段名通信、手跑消息循环)在 mac 上分四片 `scvb_host_tests_shard1of4` … `shard4of4`(Catch2
+      #    `--shard-count 4`;不分片的一条在这台 runner 上要约 1260 s,超出 900 s 上界,理由与实测见 tests/CMakeLists.txt
+      #    host 块),外加 `scvb_host_sched_tests`(按 `[sched]` 选出的宿主调度模拟器,含 `[!shouldfail]` 格)。
+      #    Windows 上仍是一条 `scvb_host_tests`。同一个二进制也持 exclusive_guard.h 的 flock,与上面几套串行。
+      #    下限按二进制数、不按分片数,同样 = Windows 上同一份源的用例数(host 源里没有平台条件格):
+      #      scvb_host_tests          246(`--list-tests` 列出的非隐藏格 = 四片之和)
       #      scvb_host_sched_tests     49(`--list-tests "[sched]"`:`[.][sched]` 是隐藏格,只在显式过滤时列出)
       #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
       - name: Unit tests (ctest - scvb_tests, seqlock_stress, params, plugin_common, input_bridge, ipc, monitor, host, host_sched)
@@ -427,7 +429,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          want=(scvb_tests scvb_seqlock_stress scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests scvb_ipc_tests scvb_monitor_tests scvb_host_tests scvb_host_sched_tests)
+          want=(scvb_tests scvb_seqlock_stress scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests scvb_ipc_tests scvb_monitor_tests
+                scvb_host_tests_shard1of4 scvb_host_tests_shard2of4 scvb_host_tests_shard3of4 scvb_host_tests_shard4of4 scvb_host_sched_tests)
           for t in "${want[@]}"; do
             n=$(ctest --test-dir build -N -R "^${t}\$" | grep -cE "Test +#[0-9]+: ${t}\$" || true)
             if [ "$n" != "1" ]; then echo "::error::ctest entry $t is not registered exactly once (found $n); see tests/CMakeLists.txt"; exit 1; fi
