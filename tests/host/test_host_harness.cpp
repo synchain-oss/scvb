@@ -821,6 +821,13 @@ TEST_CASE("HOST N2a: Output-first only for the first blocks - present right afte
 // 计时起点 = waitUntilHandedOver 返回(Input 侧静音之后再过约 120 ms)。
 // 「不灭」是 A-6 的第二半:告警亮起后失准把本轨踢出注入集、read() 不再被调,1 s 后「无新缺口 ∧ 数据在推进」照样
 // 成立 —— 恢复还要求本轨自上一笔缺口以来确实读到过数据(正向在场),否则横幅会以约 1 s 的周期假恢复。
+// [B 线 M12b-fix] 「0.5 s 内亮」按读方时间线(样本)判,不按墙钟:告警来自 [A] 的缺口计数(misalignCount 直读
+// gapCount,不等 [M] 的拍),而开始计缺口的宽限是 max(200 ms 读方时间线, …)、**按样本计**(ShmRingMixSource::
+// unreadGrace,离线导出同一条规则)。用例每块泵 10 ms:Windows 上一块 ≈ 实时,两种量相同(实测 80–83 ms);mac CI
+// 上 runDispatchLoopUntil 被拉长、一块 30–44 ms 墙钟,同样的样本量要 3–4 倍墙钟,墙钟量出来是 360–511 ms
+// (run 38194842347 / 38198202147 / 38201052045 / 38201012625 / 38204335369,最后那次红在旧的墙钟 500 ms 上)。
+// 所以首次告警按「t0 之后 Output 走过的样本」折成毫秒判 ≤ 500;墙钟只记录。踢出 / 放回的周期(maxMaskOffMs)
+// 来自 [M] 的 1 s 失准窗(墙钟量),照旧按墙钟判。
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on",
           "[.][sched][host][N2]")
 {
@@ -830,7 +837,9 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     REQUIRE(r.waitUntilInjected());
     REQUIRE(waitUntilHandedOver(r));
     const double t0 = juce::Time::getMillisecondCounterHiRes();
-    double firstAlarmMs = -1.0;
+    const std::int64_t ph0 = r.ph.timeSamples; // 读方时间线起点(Output 每块按 kBlock 推进)
+    double firstAlarmMs = -1.0; // 墙钟(只记录)
+    double firstAlarmAudioMs = -1.0; // t0 之后 Output 走过的样本,折成毫秒(判据)
     int offAfterOn = 0;
     // Input 侧看到的 connected_mask 本位:告警期间本轨被失准踢出、1 s 失准窗一满放回、宽限走完又踢出。量最长的一段
     // 连续断开(墙钟):它必须远短于 Input 的 5 s 滞回,否则 Input 会切直通、把原声放进总线。
@@ -853,20 +862,23 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
         if (alarm && firstAlarmMs < 0.0)
         {
             firstAlarmMs = juce::Time::getMillisecondCounterHiRes() - t0;
+            firstAlarmAudioMs = static_cast<double>(r.ph.timeSamples - ph0) * 1000.0 / kSr;
         }
         else if (!alarm && firstAlarmMs >= 0.0)
         {
             ++offAfterOn;
         }
     }
-    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn
+    INFO("first alarm " << firstAlarmAudioMs << " ms of audio / " << firstAlarmMs
+                        << " ms wall after the hand-over, alarm-off samples after onset " << offAfterOn
                         << ", longest connected_mask-off stretch " << maxMaskOffMs << " ms");
     CHECK(firstAlarmMs >= 0.0);
-    CHECK(firstAlarmMs <= 500.0);
+    CHECK(firstAlarmAudioMs <= 500.0);
     CHECK(offAfterOn == 0);
     CHECK(maxMaskOffMs >= 500.0); // 告警确实把本轨踢出过(online 只经由 misaligned 受影响)
     CHECK(maxMaskOffMs < 2000.0); // 按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红
-    WARN("N2b: first alarm " << firstAlarmMs << " ms, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
+    WARN("N2b: first alarm " << firstAlarmAudioMs << " ms of audio / " << firstAlarmMs
+                             << " ms wall, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
 }
 
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
