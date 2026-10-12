@@ -129,7 +129,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 See [CLAUDE.md](CLAUDE.md) §6 for the full toolchain list, and run `pwsh scripts/gates.ps1` for the local quality gates.
 
-macOS (Apple Silicon): there is no separate build guide yet; the steps CI uses are in [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml), and `scripts/package-macos.sh` builds the zip from the result.
+macOS (Apple Silicon): see [docs/build-macos.md](docs/build-macos.md) for building, testing and packaging locally (in Chinese); the steps CI uses are in [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml), and `scripts/package-macos.sh` builds the zip from the result.
 
 ## Known limitations
 

@@ -51,7 +51,7 @@ semver 语义(音频插件特化):
 
 ## 发版流水线现状
 
-推一个 `v*` tag,`.github/workflows/release.yml` 跑五个 job:Windows 三个依次跑,mac 两个(B 线 M16)与之并行。
+推一个 `v*` tag,`.github/workflows/release.yml` 跑五个 job:Windows 三个依次跑,mac 两个(B 线 M16)与之并行。mac 部分的核对与演练见下方「macOS 包」一节,本地编译与打包见 [build-macos.md](build-macos.md)。
 
 | job | 做什么 | 失败时 |
 |---|---|---|
@@ -68,6 +68,45 @@ semver 语义(音频插件特化):
 - 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
 - **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过第 0 步列的那几处文件之后,先做下面第 0 步。
+
+## macOS 包(B 线,beta)
+
+mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、互不依赖。本节只写 mac 独有的部分;tag 打在哪个提交上、`dev` / `staging` / `prod` 怎么前移,都按下方「发版清单」第 6 步与对应小节,mac 一路只认「被打 tag 的那个提交」。本地怎么编、怎么跑 mac 的测试与打包见 [build-macos.md](build-macos.md)。
+
+- **未签名、未公证。** mac 包不做代码签名也不做公证(与 Windows 同为 U13),用户装完要执行 `xattr` 清掉隔离标记,步骤在 zip 里的 `INSTALL.txt` 与 README。只有 Apple Silicon(arm64),没有 Intel 与 Universal。发布说明里要把这一点写明,别让 mac 用户以为是漏了签名。
+- **草稿里恰好 6 件**:Windows 3 件 + mac 3 件,缺一件、多一件都不能发:
+
+  | 平台 | 资产 |
+  |---|---|
+  | Windows | `SCVB-v<版本>-win64.zip`、`SCVB-v<版本>-win64.zip.sha256`、`package-summary.md` |
+  | mac | `SCVB-v<版本>-macos-arm64.zip`、`SCVB-v<版本>-macos-arm64.zip.sha256`、`package-summary-macos.md` |
+
+  草稿标题在 mac 三件上传并读回成功之后才从「… (Windows x64)」补成「… (Windows x64 · macOS arm64 beta)」。**只有 Windows 三件、标题仍是「(Windows x64)」是 mac 那一路红了**(见上方「mac 失败不挡 Windows」),不是正常形态;此时先查 `build-mac` / `release-macos`,不要把它当成 Windows 单平台版本发出去,除非维护者有意只发 Windows。
+- **核对 6 件与各自的 `.sha256`**(发版清单第 7 步时做;命令在装有 `gh` 的 clone 里执行,`<tag>` 换成实际 tag):
+
+  ```bash
+  gh release view <tag> --repo synchain-oss/scvb --json isDraft,isPrerelease,name,assets     --jq '.isDraft, .isPrerelease, .name, ([.assets[].name] | sort | .[])'     # 恰好 6 个资产名;标题含「macOS arm64 beta」
+  D=$(mktemp -d) && gh release download <tag> --repo synchain-oss/scvb -D "$D" && cd "$D"
+  sha256sum -c SCVB-v*-win64.zip.sha256 SCVB-v*-macos-arm64.zip.sha256    # 两行都是 OK(macOS 上用 shasum -a 256 -c)
+  grep -h '^| sha256 |' package-summary.md package-summary-macos.md     # 与两个 .sha256 里的哈希逐字相同
+  grep -h '^| sourceCommit |' package-summary.md package-summary-macos.md  # 两份一致,都是被打 tag 的那个提交
+  unzip -Z1 SCVB-v*-macos-arm64.zip | grep -cE '^SCVB (Input|Output|Monitor)\.(vst3|component)/$'   # 6
+  unzip -p SCVB-v*-macos-arm64.zip INSTALL.txt | grep -c 'tree/<tag>'    # >= 1:源码声明指向本 tag
+  ```
+
+  `sha256sum -c` 对两个文件一起核,任何一行不是 `OK` 就停在草稿。重跑过的 tag(见上「同一个 tag 重跑」)尤其要核 `sourceCommit`,因为草稿上可能留着上一次的 mac 三件。
+- **mac 演练 tag**:改过 `build-macos.yml` / `macos-oop.yml` 的调用面 / `release.yml` / `scripts/package-macos.sh` 之后,按发版清单第 0 步推一次演练 tag(`v0.0.0-test` 或 `v0.0.0-test.N`)。演练 tag 的 kind 是 `test`,mac 打包会带 `--allow-missing-license-texts`;草稿带 `[pipeline test - delete me]` 前缀。期望:`verify-tag` / `build` / `release` / `build-mac` / `release-macos` 全绿,`build` 里的 `macos-build` / `macos-oop` 两个 caller 因 tag 守卫显示 skipped(一次 tag push 里 `build-macos.yml` 只由 `build-mac` 跑一次),草稿恰好 6 件、标题已补成合并标题,上面的核对命令全过。
+  - 演练 tag 的创建与删除都受 ruleset `protect-release-tags-v` 管(它管 `refs/tags/v*` 的创建与删除),需要仓库管理员的 bypass 才能推与删。
+  - **清理顺序**(先草稿后 tag,与第 0 步一致):
+
+    ```bash
+    gh release delete v0.0.0-test.N --repo synchain-oss/scvb --yes
+    git push origin :refs/tags/v0.0.0-test.N && git tag -d v0.0.0-test.N
+    gh release view v0.0.0-test.N --repo synchain-oss/scvb          # 应报 release not found
+    git ls-remote --tags origin v0.0.0-test.N                        # 应为空
+    ```
+  - 参照:PR #377 的演练记录。第一次演练(`v0.0.0-test.1`)里 `build-mac` 红在 ctest 的一个计时敏感用例上,Windows 三件草稿照常生成、标题保持「(Windows x64)」、`release-macos` 跳过 —— 顺带实证了「mac 失败不挡 Windows」;修好用例后重做,全部 job 绿、草稿恰好 6 件、两个 `.sha256` 核对通过且与各自 summary 一致、两份 summary 的 `sourceCommit` 相同。因此「mac 打包步故意失败」那一次(原方案的演练 #2)没有单独再做,这一点是被第一次的红间接证明的,不是单独演练出来的结论。
+- **发布前的 mac 额外检查**:`build-mac` 绿、`release-macos` 绿(job summary 的资产表列出草稿上全部资产与字节数),并且发版前对目标 ref dispatch 的 `build-vst3` 里,`macos-build` 与 `macos-oop` 也看过一眼(它们不挡 Windows 出包,但红了要记进发版验证清单,见 `CLAUDE.md` §4「出包流程硬规」下的「全绿管到哪几个 job」)。
 
 ## 发版清单
 

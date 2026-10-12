@@ -42,6 +42,7 @@
 - **本地 gates 与 CI 的生成器不同,不是等价关系**([J96] 起):CI 是 `Ninja Multi-Config` + sccache,本地 gate 4 默认用 CMake 在 Windows 上的默认生成器(Visual Studio)。两者会在不同的地方红 —— `add_custom_command` 漏声明的隐式依赖(MSBuild 靠工程内顺序兜住、Ninja 并行到炸)、生成物时序、PCH 行为。以前无所谓,因为 push→`feature/**` 每次都在 CI 上编一遍;那条触发撤掉之后,**Ninja 侧的错第一次被看见就是出包前那次 dispatch**。所以:改到 `CMakeLists.txt` / 构建脚本 / 依赖的 PR,**[SL-283] 起会自动照编**(这些路径都在 `NATIVE_RE` 里,不用再打 `ci:full`);想在本地先对一遍,就在 Developer Command Prompt 里跑 `pwsh scripts/gates.ps1 -Generator "Ninja Multi-Config"`(该参数默认空 = 保持旧行为;**不做自动探测**,`ninja` 在 PATH 上但 shell 里没有 vcvars 时会把所有人的 gate 4 一起变红)。
 - 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成第一道编译门**:子 PR 默认不跑 `build-vst3`。**[SL-283] 起收窄**:碰了 native 路径的子 PR 在 CI 上照跑全量,所以「没有任何机器会看见」现在**只对纯文档 / 脚本子 PR 成立**(而那类 PR 本来也不该有编译错)。即便如此本地 gates 仍是第一道也是最快的一道 —— CI 那道要等 7 分钟,而且它只在你碰了 native 路径时才醒。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
+- **`gates.ps1` 是 Windows 专属。** macOS 侧没有本地一键门禁:每一道门都是 `build-macos.yml` 里的独立步骤,在 Mac 上的等价手动做法(编译、零警告、ctest、auval、pluginval、打包、`scvb_auhost`)见 [docs/build-macos.md](docs/build-macos.md)。
 - **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己用一把命名互斥体 `Local\SCVB-ipc-tests` 串行**两段**:**gate 3e**([SL-301] 纳入——它起 6 个无头 Chrome,实测会把同机别人的 gate 6 拖红)与 **gate 6/7/8**;**两段分别持、之间放开**,所以 `3f..5`(含 configure/build)**不持锁**、可与别的 agent 并行。
   - 拆锁的理由:要互斥的是**跨进程共享内存段**(段名前缀 `SynchainSCVB.v1.` 全机唯一,ctest 的 ipc 套件与 pluginval 都会开同名段),而 configure/build 只动各自的 `-BuildDir`。旧做法把整条 gates 包进一把外部目录锁,连 20 分钟的编译一起串行,四个 agent 排队等一个人编译。
   - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
@@ -52,7 +53,7 @@
 
 ## 3. 评审规则
 
-- 处理完所有 comment,不止 bot 的(D2);子 PR 的 merge 由用户人工审核并亲自执行。
+- 处理完所有 comment,不止 bot 的(D2);**子 PR(base 为主支线)由统筹合并,进 `dev` 的 PR 由用户人工审核并亲自执行**。实施 agent 把 PR 做到「可以合」就汇报,不自己合并、不推主支线或别人的分支。
 
 ## 4. CI 三档与各 Workflow 触发范围
 
@@ -84,6 +85,13 @@
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
 - `review-dispatch`:维护者评论 `/review` 显式触发 —— 这是 §0 铁律第 4 条**方案 D** 的实现,也是本仓目前给 fork PR 做 AI 审查的**默认通道**(铁律允许的另一条是方案 C 的 workflow_run 两阶段,本仓未实现)。
 - `release`:push tags `v*` 触发:`verify-tag`(tag ↔ `project(SCVB VERSION)` 一致性门禁,`-rc.N` / `-beta.N` 对应同一个 X.Y.Z、草稿都勾 pre-release;`v0.0.0-test` 仅作演练)→ 调用 `build-vst3`(构建 / ctest / pluginval)→ `scripts/package.ps1` 把三个 bundle 与合规文件打成 zip + `.sha256` + `package-summary.md` → **草稿** Release(发布由维护者手动)。[B 线 M16] 起并行一路 mac:`build-mac`(调 `build-macos.yml` 的 release 档,全部 mac 门禁绿后用 `scripts/package-macos.sh` 按 tag 版本打包)→ `release-macos`(needs Windows 的 `release`,把 mac 的 zip / `.sha256` / `package-summary-macos.md` 补传到同一个草稿,并把标题补成「(Windows x64 · macOS arm64 beta)」);Windows 的 `build` / `release` 不 needs 任何 mac job,mac 红了草稿照样只有 Windows 三件、标题保持「(Windows x64)」。流程见 `docs/RELEASE.md`。
+- **macOS job(B 线;`build-vst3` 一条末尾的「完整的 mac 流程说明由后续卡补进本节」指的就是本条)**:
+  - **两个 reusable 配方**:`.github/workflows/build-macos.yml`(`build-and-validate-macos`,`macos-15` arm64:构建三个插件的 VST3 + AU、first-party 零警告、ctest 十二条、auval、pluginval、残段门、打包冒烟;超时 75 分钟)与 `.github/workflows/macos-oop.yml`(`scvb-auhost`:测同一个 run 里 `macos-build` 上传的 bundle)。二者**只有 `on: workflow_call`**,不新增任何事件触发。
+  - **三个 caller**:`build-vst3.yml` 的 `macos-build`(调 `build-macos.yml`)与 `macos-oop`(`needs` `macos-build`,调 `macos-oop.yml`),以及 `release.yml` 的 `build-mac`(调 `build-macos.yml` 的 release 档,见上面 `release` 一条)。前两个跑不跑完全继承 `build-vst3.yml` 的触发规则与 `detect-native`。
+  - **tag 守卫**:`macos-build` / `macos-oop` 的 `if:` 带 `!startsWith(github.ref, 'refs/tags/')`,所以被 `release.yml` 经 `build-vst3.yml` 调起时它们一律 skipped;一次 tag push 里 `build-macos.yml` 只由 `build-mac` 跑一次。
+  - **`macos-26` 只在 `workflow_dispatch` 时加入** `scvb-auhost` 的矩阵(同一份 bundle,`macos-build` 只在 `macos-15` 上编);PR 与 push 只跑 `macos-15`。
+  - **`scvb_auhost`**(`tests/macos/auhost/`,独立 CMake 工程,不链 JUCE)是二进制级调度宿主,真 component × 进程内 / 进程外 × LS-1 / LS-4;它取代了 M01 的 `auhost-spike` job。
+  - mac job **都不是 required check,红了不挡 Windows 出包**(见上「出包流程硬规」);但 mac 红要记进发版清单。本地怎么跑见 [docs/build-macos.md](docs/build-macos.md),发版里的 mac 部分见 `docs/RELEASE.md`。
 - 成本纪律:runner 就低不就高;按量计费的 review bot 克制使用,不设为 required。
 
 ## 5. 冻结契约变更规范
@@ -95,6 +103,7 @@
 ## 6. 环境与依赖
 
 - JUCE(版本见 `.juce-version`)、CMake ≥3.22、MSVC 2022(静态 CRT `/MT`)、WebView2 SDK(NuGet,版本常量在 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`)+ WebView2 Evergreen Runtime、pluginval(版本见 `.pluginval-version`)、Catch2(仅测试目标,由 `tests/CMakeLists.txt` 的 FetchContent 钉版拉取)、clang-format 18.1.8(J38 钉死)、gitleaks(版本见 `.gitleaks-version`)、`reuse`(pipx)。
+- **macOS 侧依赖(B 线)**:runner `macos-15`(Apple Silicon)+ 镜像自带的 Xcode(Apple clang / libc++;`macos-oop` 的 `scvb-auhost` 另在 dispatch 时加 `macos-26`)、CMake ≥3.22、Ninja(镜像自带,缺了 `brew install ninja`)、JUCE(同一个 `.juce-version`,浅克隆锁 tag)、pluginval 的 macOS 版(`pluginval_macOS.zip`,版本同一个 `.pluginval-version`,下载后做版本身份断言)、系统自带的 `auval` / `ditto` / `xattr` / `lipo`、`pwsh`(`scripts/package-macos.sh` 的合规预检与 ctest 上界检查需要)。构建目标固定 `arm64` + `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`,唯一真源是根 `CMakeLists.txt`,**不要在命令行或 workflow 里另传**。mac 构建**没有** sccache(无编译缓存)。不需要 WebView2:mac 界面走系统的 WKWebView。逐条命令见 [docs/build-macos.md](docs/build-macos.md)。
 - **仅 CI 侧的构建依赖**([J96] 起):Ninja(runner 镜像自带,缺了回退 choco)与 sccache(版本见 `.sccache-version`,校验和见 `.sccache-sha256`)。本地 gates **不需要**这两个 —— 默认仍走 CMake 的默认生成器;只有显式跑 `-Generator "Ninja Multi-Config"` 复现 CI 时才要,且要在 Developer Command Prompt 里(见 §2)。
 - **可选依赖:无头 Chrome / Edge**(T46 起)。`web-preview/tests/smoke-*-page.mjs` 这几套(经 CDP 驱动真页面:Monitor 投影面、Output 过期提示面、Output 分布图补间面)用得到,**没装不算失败** —— 该套回退出码 **2**,`scripts/gates.ps1` 的 Gate 3e 与 CI 的 web-smoke job 都把 2 记成 SKIP / `::warning::` 而不判红(理由写在那两处的注释里:web-smoke 是 required check,为一个可选依赖判红会卡住仓库里每一个 PR)。**[SL-297] 另有退出码 3 = 「浏览器在,但这一次没起来 / 没连上」**(spawn 失败或 CDP 端口没在预算内开出来)——**同样不判红**,但 gates 打的是 `[FLAKY-SKIP]` 并**单独计数进汇总标签**、CI 出的是措辞不同的 `::warning::`。两档必须分开读:把「装着浏览器、这一次没跑成」当成「没装浏览器」,会让一次瞬时超时**无声地**抹掉整套判据而汇总照写全 PASS(SL-293 多轮 gates 实测撞到三次)。装了才跑得到「页面真的执行起来」那一层断言 —— node 侧的其余各套都不执行页面 JS,建议装。
 - **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` / `.sccache-version` / `.sccache-sha256` **五个**文件是各自版本(与校验和)的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。这条纪律的价值在于清单是穷举的 —— 漏记一个,就等于给「再写一个版本号字面量」开了口子;新增钉版依赖时**必须**同时加到这里。这份清单在 `build-vst3.yml` 的 "Resolve pinned versions" 步里有一份**副本**(那里四个,不含 build 侧用不到的 `.gitleaks-version`),用于 dispatch 时前置校验;两处要一起改,只改这里会让 dispatch 旧 ref 退回裸 `Cannot find path`。
