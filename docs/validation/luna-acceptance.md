@@ -66,6 +66,7 @@ auval -v aufx Scvm Snch | tail -3
 - 建一条 **Stereo Bus**,**不要用 Folder 轨**(设计上预期 Output 放在 Folder 轨上收不到预期的路由;未实测)。把 4 条人声轨的输出都送到这条 Bus。
 - 每条人声轨:在 insert 1–4 中**最后一个已用的槽位**放 **SCVB Input(AU)**。**不要放进 Record FX**(设计上预期 Input 在 Record FX 里不会按预期工作;未实测)。
 - Bus 的 **Insert 1** 放 **SCVB Output(AU)**。
+- 再在任意一条轨上放一个 **SCVB Monitor(AU)**,验收期间**一直开着它的窗口**(§6 的刷新率日志靠它;关着时推送计数恒为 0)。
 - 给每个 Input 分配 channel(1–4),捕获、分析,打开 Output 的输出开关(第一次要在确认条上点"开始")。
 - 宿主 pan 全部居中(硬约束第 4 条)。
 
