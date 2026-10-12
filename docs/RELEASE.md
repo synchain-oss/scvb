@@ -85,7 +85,8 @@ mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、�
 - **核对 6 件与各自的 `.sha256`**(发版清单第 7 步时做;命令在装有 `gh` 的 clone 里执行,`<tag>` 换成实际 tag):
 
   ```bash
-  gh release view <tag> --repo synchain-oss/scvb --json isDraft,isPrerelease,name,assets \n    --jq '.isDraft, .isPrerelease, .name, ([.assets[].name] | sort | .[])'    # 恰好 6 个资产名;标题含「macOS arm64 beta」
+  gh release view <tag> --repo synchain-oss/scvb --json isDraft,isPrerelease,name,assets \
+    --jq '.isDraft, .isPrerelease, .name, ([.assets[].name] | sort | .[])'    # 恰好 6 个资产名;标题含「macOS arm64 beta」
   D=$(mktemp -d) && gh release download <tag> --repo synchain-oss/scvb -D "$D" && cd "$D"
   sha256sum -c SCVB-v*-win64.zip.sha256 SCVB-v*-macos-arm64.zip.sha256    # 两行都是 OK(macOS 上用 shasum -a 256 -c)
   grep -h '^| sha256 |' package-summary.md package-summary-macos.md     # 与两个 .sha256 里的哈希逐字相同
