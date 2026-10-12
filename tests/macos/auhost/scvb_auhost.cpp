@@ -846,7 +846,6 @@ int runMode(const Options& opt)
         };
         engine = std::make_unique<ah::Engine>(spec, cb);
         ep = engine.get();
-        engine->setSkipped(2, true); // [M13 reverse injection #1 - to be reverted] host never calls Input lane 2
         if (opt.negativeControl)
         {
             engine->setSkipped(1, true); // 负对照:宿主从不调用 lane 1 的 Input
