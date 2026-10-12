@@ -752,7 +752,8 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
 //   · N2a(本条,主条目):只有头几块是 Output-first(已注入却读不到的那段 < A-6 的 200 ms 宽限),之后
 //     恢复源轨先算 —— 不报警,且恢复后即刻在场;
 //   · N2b(`[.][sched]`,见下):Output-first 一直持续 —— 读方永远领先写头、本代永远 primed 不了,
-//     每次读失败都不计失准:这一轨无声且不报警(H3)。目标「≤ 0.5 s 告警」,修复前 `[!shouldfail]`。
+//     A-6 之前每次读失败都不计失准:这一轨无声且不报警(H3)。目标「≤ 0.5 s 告警」,修复前 `[!shouldfail]`;
+//     [A-6] E1b(持续读不到超过 200 ms 宽限即计失准,恢复要求正向在场)落地后摘掉标记,是必须绿的普通用例。
 // 原 N2 末尾的 `CHECK(trackPeak >= 0.0f)` 恒真(峰值不可能是负数),它旁边那句「Output 读到的是上一块
 // 的数据」也不成立:Output-first 下 Output 要的 [t0, t0+n) 恰是 Input 这一块还没写的那段,一块都读不到
 // —— 这一轨的真实状态是 trackPeak == 0。N2a 拿它当前提,N2b 的前提用例直接断言它。
@@ -815,10 +816,13 @@ TEST_CASE("HOST N2a: Output-first only for the first blocks - present right afte
     }
 }
 
-// N2b:Output-first 一直持续(H3)。目标(A-6):交给 Output 之后 0.5 s 内亮「路由失准」,持续期间不灭。
+// N2b:Output-first 一直持续(H3)。目标(A-6):交给 Output 之后 0.5 s 内亮「路由失准」,持续期间不灭(看 3 s:
+// 跨过至少一次「失准窗满 → 放回注入集 → 宽限走完又踢出」)。
 // 计时起点 = waitUntilHandedOver 返回(Input 侧静音之后再过约 120 ms)。
+// 「不灭」是 A-6 的第二半:告警亮起后失准把本轨踢出注入集、read() 不再被调,1 s 后「无新缺口 ∧ 数据在推进」照样
+// 成立 —— 恢复还要求本轨自上一笔缺口以来确实读到过数据(正向在场),否则横幅会以约 1 s 的周期假恢复。
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on",
-          "[.][sched][host][N2][!shouldfail]")
+          "[.][sched][host][N2]")
 {
     Rig r;
     r.outputFirst_ = true;
@@ -828,9 +832,23 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     const double t0 = juce::Time::getMillisecondCounterHiRes();
     double firstAlarmMs = -1.0;
     int offAfterOn = 0;
-    for (double now = t0; now - t0 < 1500.0; now = juce::Time::getMillisecondCounterHiRes())
+    // Input 侧看到的 connected_mask 本位:告警期间本轨被失准踢出、1 s 失准窗一满放回、宽限走完又踢出。量最长的一段
+    // 连续断开(墙钟):它必须远短于 Input 的 5 s 滞回,否则 Input 会切直通、把原声放进总线。
+    double maskOffSince = -1.0;
+    double maxMaskOffMs = 0.0;
+    for (double now = t0; now - t0 < 3000.0; now = juce::Time::getMillisecondCounterHiRes())
     {
         r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/10);
+        const double tNow = juce::Time::getMillisecondCounterHiRes();
+        if (!r.in.bridgeTickSnapshot().conn.maskBit)
+        {
+            maskOffSince = maskOffSince < 0.0 ? tNow : maskOffSince;
+            maxMaskOffMs = std::max(maxMaskOffMs, tNow - maskOffSince);
+        }
+        else
+        {
+            maskOffSince = -1.0;
+        }
         const bool alarm = r.out.misalignCount(kTestChannel) > 0;
         if (alarm && firstAlarmMs < 0.0)
         {
@@ -841,10 +859,14 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
             ++offAfterOn;
         }
     }
-    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn);
+    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn
+                        << ", longest connected_mask-off stretch " << maxMaskOffMs << " ms");
     CHECK(firstAlarmMs >= 0.0);
     CHECK(firstAlarmMs <= 500.0);
     CHECK(offAfterOn == 0);
+    CHECK(maxMaskOffMs >= 500.0); // 告警确实把本轨踢出过(online 只经由 misaligned 受影响)
+    CHECK(maxMaskOffMs < 2000.0); // 按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红
+    WARN("N2b: first alarm " << firstAlarmMs << " ms, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
 }
 
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
@@ -855,12 +877,17 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     r.outputFirst_ = true;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
-    REQUIRE(waitUntilHandedOver(r));
-    r.runBlocks(80, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/10);
-    // 这一轨已交给 Output(Input 侧静音)……
-    const auto snap = r.in.bridgeTickSnapshot();
-    REQUIRE(snap.conn.maskBit);
-    REQUIRE_FALSE(snap.passthrough);
+    REQUIRE(waitUntilHandedOver(r)); // 这一轨已交给 Output:connected_mask 本位已置、Input 侧目标档是静音……
+    // ……此后 Input 一直静音(逐段采样;这一段不到 1 s,只是前提,不判通断周期 —— 那一条在判据用例里量)。[A-6] 起
+    // 这里不再要求 connected_mask 本位一直在:告警亮起后失准把本轨踢出 connected_mask / 注入集,1 s 后放回、宽限走完
+    // 又踢出(online 只经由 misaligned 受影响)—— 本位按约 1 s 的周期通断,采样落在哪一边看相位。
+    int passthroughSamples = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/10);
+        passthroughSamples += r.in.bridgeTickSnapshot().passthrough ? 1 : 0;
+    }
+    REQUIRE(passthroughSamples == 0);
     // ……而 Output 一块都读不到它:真实状态是 trackPeak == 0(原 N2 那条 `>= 0.0f` 恒真,把这一点盖住了)。
     // 修复前后都成立:A-6 让它报警,但 Output-first 下这段数据在 Output 读的那一刻还没写。
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
@@ -10290,6 +10317,8 @@ TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未
         // ★ 与 ③ 成镜像:非实时是**硬切**,不许有 ramp 过渡块(ramp 也是墙钟量,250x 下会摊成 20s
         //   渐变 —— 把「前段静音」换成「前段超长淡入」,同样被倍速放大)。谁把 ramp 放回非实时,这里红。
         CHECK(p.rampBlocks == 0);
+        // [A-6] 零误报:离线交接(音频跑在墙钟前面)不得被「持续读不到」判成失准 —— 宽限按样本计。
+        CHECK(r.out.misalignCount(kTestChannel) == 0);
     }
 }
 
@@ -10309,6 +10338,7 @@ TEST_CASE("HOST SL-254:非实时下注入不得早于 Input 静音(防双路叠�
     INFO("Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject);
     // ★ 同块交接:注入不早于静音(允许同块,不允许更早)。
     CHECK(p.firstInject >= p.firstInputSilent);
+    CHECK(r.out.misalignCount(kTestChannel) == 0); // [A-6] 零误报
 }
 
 // ③ 实时路径逐字不变:J32 的 200ms / muted 确认位 / 80ms ramp 一个都没动。
@@ -10350,6 +10380,7 @@ TEST_CASE("HOST SL-254:实时路径仍走 J32 原协议(注入延迟未被顺手
     r.runBlocks(60, 0.5f);
     Rig::pumpMessages(200);
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
+    CHECK(r.out.misalignCount(kTestChannel) == 0); // [A-6] 零误报
 }
 
 // ④ 【复审 r1 红旗】非实时下健康前提不被豁免:Output 释放后 Input 必须回直通,不得恒静音。
@@ -10370,6 +10401,7 @@ TEST_CASE("HOST SL-254:非实时下 Output 释放后必须回直通(健康前提
     const auto before = runOfflineHandover(r, 16, kHandoverPumps * 16);
     REQUIRE(before.firstInputSilent >= 0);
     REQUIRE(before.firstInject >= 0);
+    CHECK(r.out.misalignCount(kTestChannel) == 0); // [A-6] 零误报(退场之前)
 
     // Output 退场:走宿主真实路径 releaseResources() ⇒ session_.release() ⇒ releaseSlot()
     // ⇒ Registry::releaseOutput():state = kSlotFree,而 connected_mask **位残留**。

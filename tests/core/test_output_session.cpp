@@ -2053,6 +2053,497 @@ TEST_CASE("[SL-482] 反向:attach 到几何相同的存活段不换代", "[outpu
 }
 
 // ===========================================================================
+// [A-6] E1b 正向在场与告警(修 H3)端到端:InProcess 后端 + 一条 InputSession + OutputSession,虚拟时钟逐 10 ms
+// 推进。每一块:Input 写一块、Output 按自己发布的 injectMask 读这一轨(OutputProcessor::renderSpan 只读注入集里的
+// 轨;读方时间线照样往前走,不在注入集里的那几块就是读方的「漏读」)。outputFirst 时同一块里 Output 先读、Input
+// 后写 —— Output 要的那一块写方还没写(N2 / LS-14 的形状:宿主先算总线、人声轨没送进装 Output 的总线)。
+// 拍点相位同下面 [KI-6] 那一组:Output [M] 在 t%40==0、Input [M] 在 t%40==20;Input 侧 [M] 照
+// InputProcessor::timerCallback:isHealthy → 5 s 滞回状态机 → muted 确认位 = 目标档是静音。
+// 判据看的是桥面口径 misalignCountRecent(> 0 = 「路由失准」横幅亮)与 injectMask,不看 A-6 的内部量。
+// ===========================================================================
+namespace
+{
+constexpr scvb::u64 kA6StepMs = 10;
+constexpr int kA6Frames = 480; // 一块 = 10 ms @ 48 kHz
+
+struct A6Sample
+{
+    scvb::u64 t = 0;
+    bool tick = false; // 本步 Output [M] 跑了一拍(下面三项取本步末的值,只在 tick 时有意义)
+    bool injected = false; // injectMask 本位
+    u32 misalign = 0; // misalignCountRecent
+    u32 gaps = 0; // gapCount(累计)
+    int reads = 0; // 本步 Output 读这一轨的块数
+    int readsOk = 0; // ……其中读成功的
+    bool inputHealthy = false; // 本步末 Input 侧看到的「Output 健康 ∧ connected_mask 本位在」(InputSession::isHealthy)
+};
+
+struct A6Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    InputSession in{backend, 1001};
+    scvb::input::StageSwitchStateMachine sm;
+    OutputSession out{backend, 2001};
+    std::vector<A6Sample> log;
+    scvb::u64 now = 1000;
+    std::int64_t writePos = 0;
+    std::int64_t readPos = 0;
+    scvb::u64 podEpoch = 1; // Output 自己的时间线代号(OutputProcessor 的 podEpoch_)
+    int blocksPerStep = 1; // > 1:离线导出,音频跑在墙钟前面 N 倍
+    bool outputFirst = false;
+    bool inputWrites = true; // false = 写方没在写(还没开始 / 宿主没调它)
+    bool outputReadsLane = true; // false = 面板上关了这一轨:注入集里有它,但启用位挡掉、Output 不读
+    std::vector<float> wbuf = std::vector<float>(static_cast<std::size_t>(kA6Frames), 0.0f);
+    std::vector<float> rbuf = std::vector<float>(static_cast<std::size_t>(kA6Frames), 0.0f);
+
+    A6Rig()
+    {
+        in.setChannelId(1);
+        REQUIRE(in.prepare(48000, 512, 1, now) == InputClaimState::kActive); // mono
+        in.heartbeat(now);
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        out.setTransportPlaying(true);
+    }
+
+    void writeBlock()
+    {
+        if (inputWrites)
+        {
+            scvb::AudioRing::write(in.audioRing().acquire(), writePos, wbuf.data(), kA6Frames);
+            writePos += kA6Frames;
+        }
+    }
+
+    void readBlock(A6Sample& s)
+    {
+        if (outputReadsLane && (out.injectMask() & 1u) != 0)
+        {
+            ++s.reads;
+            s.readsOk += out.mixSource(1).read(readPos, rbuf.data(), kA6Frames, podEpoch) ? 1 : 0;
+        }
+        readPos += kA6Frames;
+    }
+
+    // 宿主定位:两边同一块跳过去(写方换代 —— InputProcessor 遇时间线跳变即 bumpEpoch;读方自己的时间线代号 +1)。
+    void seek(std::int64_t to)
+    {
+        scvb::AudioRing::bumpEpoch(in.audioRing().acquire());
+        writePos = to;
+        readPos = to;
+        ++podEpoch;
+    }
+
+    void step()
+    {
+        A6Sample s;
+        s.t = now;
+        for (int b = 0; b < blocksPerStep; ++b)
+        {
+            if (outputFirst)
+            {
+                readBlock(s);
+                writeBlock();
+            }
+            else
+            {
+                writeBlock();
+                readBlock(s);
+            }
+            out.bumpBlockCounter(); // processBlock 首行([J52]):Output 一直在被调用
+        }
+        if (now % 250 == 0)
+        {
+            out.heartbeat(now);
+            in.heartbeat(now);
+        }
+        if (now % 40 == 0)
+        {
+            out.tick(now);
+            s.tick = true;
+        }
+        if (now % 40 == 20)
+        {
+            const auto target = sm.evaluate(in.isHealthy(now), now);
+            in.setMuted(target == scvb::input::OutputStageMode::kSilence);
+        }
+        s.inputHealthy = in.isHealthy(now);
+        s.injected = (out.injectMask() & 1u) != 0;
+        s.misalign = out.misalignCountRecent(1);
+        s.gaps = out.gapCount(1);
+        log.push_back(s);
+        now += kA6StepMs;
+    }
+
+    void runUntil(scvb::u64 untilMs)
+    {
+        while (now < untilMs)
+        {
+            step();
+        }
+    }
+
+    // 一直跑到「告警亮起之后、本轨第一次被失准踢出注入集」那一拍(H3 条件须已设好)。返回那一拍;0 = 没等到。
+    scvb::u64 runUntilKickedOut(scvb::u64 maxMs)
+    {
+        const scvb::u64 end = now + maxMs;
+        bool lit = false;
+        while (now < end)
+        {
+            step();
+            const A6Sample& s = log.back();
+            if (!s.tick)
+            {
+                continue;
+            }
+            lit = lit || s.misalign > 0;
+            if (lit && !s.injected)
+            {
+                return s.t;
+            }
+        }
+        return 0;
+    }
+};
+
+// 告警时序。条件在 [on, off) 内成立。
+struct A6Alarm
+{
+    scvb::u64 onset = 0; // 条件开始之后第一次亮(misalign > 0)的拍;0 = 没亮
+    int flicker = 0; // 亮起之后、条件撤掉之前熄掉(misalign == 0)的拍数
+    int reinjections = 0; // 亮起之后、条件撤掉之前本轨重新回到注入集的次数
+    int reads = 0; // 条件期间 Output 读这一轨的块数
+    int readsOk = 0; // ……其中读成功的
+    scvb::u64 maxUnhealthyMs = 0; // 条件期间 Input 侧连续「不健康」(connected_mask 本位不在)的最长一段
+    scvb::u64 clear = 0; // 条件撤掉之后第一次熄的拍;0 = 没熄
+};
+
+A6Alarm a6AlarmOf(const std::vector<A6Sample>& log, scvb::u64 on, scvb::u64 off)
+{
+    A6Alarm a;
+    bool prevInjected = true;
+    scvb::u64 unhealthyRun = 0;
+    for (const A6Sample& s : log)
+    {
+        if (s.t >= on && s.t < off)
+        {
+            a.reads += s.reads;
+            a.readsOk += s.readsOk;
+            unhealthyRun = s.inputHealthy ? 0 : unhealthyRun + kA6StepMs;
+            a.maxUnhealthyMs = std::max(a.maxUnhealthyMs, unhealthyRun);
+            if (!s.tick)
+            {
+                continue;
+            }
+            if (a.onset == 0 && s.misalign > 0)
+            {
+                a.onset = s.t;
+            }
+            else if (a.onset != 0 && s.misalign == 0)
+            {
+                ++a.flicker;
+            }
+            if (a.onset != 0 && s.injected && !prevInjected)
+            {
+                ++a.reinjections;
+            }
+            prevInjected = s.injected;
+        }
+        else if (s.t >= off && s.tick && a.clear == 0 && s.misalign == 0)
+        {
+            a.clear = s.t;
+        }
+    }
+    return a;
+}
+
+// 从 from 起(不含)到末尾:每一拍都不亮、每一块都读到。
+bool a6CleanAfter(const std::vector<A6Sample>& log, scvb::u64 from)
+{
+    for (const A6Sample& s : log)
+    {
+        if (s.t > from && ((s.tick && s.misalign != 0) || s.readsOk != s.reads))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 整段 log 里亮过的拍数。
+int a6LitTicks(const std::vector<A6Sample>& log)
+{
+    int n = 0;
+    for (const A6Sample& s : log)
+    {
+        n += (s.tick && s.misalign != 0) ? 1 : 0;
+    }
+    return n;
+}
+} // namespace
+
+TEST_CASE("[A-6] an injected lane the Output keeps failing to read raises misalign within 0.5 s and the alarm does not "
+          "falsely recover while the lane jitters in and out of the injection set",
+          "[output][session][misalign][A6]")
+{
+    // 四格:{从一代开始(同一周期里先定位)、播放中途(读方这一代已经读到过)} × {实时、离线 10x}。
+    for (const bool fromGenerationStart : {true, false})
+    {
+        for (const int blocksPerStep : {1, 10})
+        {
+            scvb::SegmentBackendInProcess::resetAll();
+            A6Rig rig;
+            if (blocksPerStep > 1)
+            {
+                rig.out.setNonRealtime(true);
+                rig.blocksPerStep = blocksPerStep;
+            }
+            INFO("generation start " << fromGenerationStart << ", blocks/step " << blocksPerStep);
+            rig.runUntil(3000);
+            // 前提:交接走完 —— 已注入、读得到、不亮。
+            REQUIRE(rig.log.back().injected);
+            REQUIRE(rig.log.back().readsOk > 0);
+            REQUIRE(rig.out.misalignCountRecent(1) == 0);
+
+            if (fromGenerationStart)
+            {
+                rig.seek(rig.readPos + 30 * 48000);
+            }
+            const scvb::u64 on = rig.now;
+            rig.outputFirst = true;
+            rig.runUntil(on + 5000);
+            const scvb::u64 off = rig.now;
+            rig.outputFirst = false;
+            rig.runUntil(off + 3000);
+
+            const A6Alarm a = a6AlarmOf(rig.log, on, off);
+            INFO("onset +" << (a.onset != 0 ? a.onset - on : 0) << " ms, flicker " << a.flicker << ", reinjections "
+                           << a.reinjections << ", reads " << a.readsOk << "/" << a.reads << ", clear +"
+                           << (a.clear != 0 ? a.clear - off : 0) << " ms");
+            // 前提:条件期间这一轨确实一块都没读到(真实状态:无声),而且失准把它踢出注入集、1 s 后又放回来过不止
+            // 一次 ——「无新缺口 ∧ 数据在推进」的旧恢复判据会在放回来的那几拍假恢复。
+            REQUIRE(a.reads > 0);
+            REQUIRE(a.readsOk == 0);
+            // 告警期间本轨被失准踢出注入集、connected_mask 本位跟着断开(online 只经由 misaligned 受影响),
+            // 1 s 失准窗一满放回、宽限走完再踢出。每段断开都要远短于 Input 的 5 s 滞回,否则 Input 会切直通、
+            // 把原声放进总线。量最长的一段(按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红)。
+            // 放在下面的前提断言之前,删除式红在这一条上。
+            CHECK(a.maxUnhealthyMs >= 500);
+            CHECK(a.maxUnhealthyMs < 2000);
+            REQUIRE(a.reinjections >= 2);
+            CHECK(a.onset != 0);
+            CHECK(a.onset - on <= 500);
+            if (blocksPerStep > 1)
+            {
+                CHECK(a.onset - on <= 100); // 离线 10x:200 ms 时间线只是 20 ms 墙钟 —— 宽限按样本计
+            }
+            CHECK(a.flicker == 0);
+            // 条件撤掉之后:读到数据,告警在 1.5 s 内撤下,此后不再亮、每块都读到。
+            CHECK(a.clear != 0);
+            CHECK(a.clear - off <= 1500);
+            CHECK(a6CleanAfter(rig.log, a.clear));
+            WARN("A-6 e2e H3 genStart=" << fromGenerationStart << " blocks/step=" << blocksPerStep << ": onset +"
+                                        << (a.onset != 0 ? a.onset - on : 0) << " ms, flicker " << a.flicker
+                                        << ", reinjections " << a.reinjections << ", longest disconnect "
+                                        << a.maxUnhealthyMs << " ms, clear +" << (a.clear != 0 ? a.clear - off : 0)
+                                        << " ms");
+        }
+    }
+}
+
+TEST_CASE("[A-6] misalign recovery needs a successful read since the last gap; a lane the Output never reads does not "
+          "pin the alarm",
+          "[output][session][misalign][A6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+    rig.runUntil(3000);
+    REQUIRE(rig.log.back().injected);
+    rig.seek(rig.readPos + 30 * 48000);
+    rig.outputFirst = true;
+    const scvb::u64 kicked = rig.runUntilKickedOut(3000);
+    REQUIRE(kicked != 0); // 前提:告警亮了,本轨被失准踢出了注入集
+
+    SECTION("the host orders the Input first again while the lane is out: the alarm clears only after the lane is read")
+    {
+        rig.outputFirst = false;
+        rig.runUntil(kicked + 3000);
+        scvb::u64 back = 0; // 本轨回到注入集的那一拍
+        bool litAtBack = false;
+        scvb::u64 firstOk = 0; // 踢出之后第一次读到
+        scvb::u64 clear = 0;
+        for (const A6Sample& s : rig.log)
+        {
+            if (s.t <= kicked)
+            {
+                continue;
+            }
+            if (firstOk == 0 && s.readsOk > 0)
+            {
+                firstOk = s.t;
+            }
+            if (s.tick && back == 0 && s.injected)
+            {
+                back = s.t;
+                litAtBack = s.misalign > 0;
+            }
+            if (s.tick && clear == 0 && s.misalign == 0)
+            {
+                clear = s.t;
+            }
+        }
+        INFO("kicked " << kicked << ", back +" << (back - kicked) << ", first read +" << (firstOk - kicked)
+                       << ", clear +" << (clear - kicked));
+        REQUIRE(back != 0);
+        REQUIRE(firstOk != 0);
+        // 放回注入集的那一拍:「无新缺口 ∧ 数据在推进」都成立,但这一轨自上一笔缺口以来一块都还没被读到 —— 不撤。
+        CHECK(litAtBack);
+        CHECK(clear != 0);
+        CHECK(clear >= firstOk); // 撤下只发生在读到之后(读在拍之前,同一步里读到、同一步撤下也算)
+        CHECK(clear - kicked <= 1500);
+        CHECK(a6CleanAfter(rig.log, clear));
+        WARN("A-6 e2e recovery: back +" << (back - kicked) << " ms (lit " << litAtBack << "), first read +"
+                                        << (firstOk - kicked) << " ms, clear +" << (clear - kicked) << " ms");
+    }
+
+    SECTION("the lane is switched off in the Output panel: never read, the alarm still clears (old rule as fallback)")
+    {
+        rig.outputReadsLane = false;
+        rig.outputFirst = false;
+        rig.runUntil(kicked + 4000);
+        int readsAfter = 0;
+        scvb::u64 clear = 0;
+        for (const A6Sample& s : rig.log)
+        {
+            if (s.t <= kicked)
+            {
+                continue;
+            }
+            readsAfter += s.reads;
+            if (s.tick && clear == 0 && s.misalign == 0)
+            {
+                clear = s.t;
+            }
+        }
+        INFO("clear +" << (clear - kicked) << " ms");
+        REQUIRE(readsAfter == 0); // 前提:这一轨此后真的一块都没被读
+        CHECK(clear != 0);
+        // 1 s 失准窗走完才回注入集,再在注入集里待满兜底时长、一次都没被读,才退回旧判据。
+        CHECK(clear - kicked <= scvb::output::kMisalignRecoverMs + scvb::output::kUnreadInjectedFallbackMs + 200);
+        CHECK(clear - kicked >= scvb::output::kMisalignRecoverMs + scvb::output::kUnreadInjectedFallbackMs - 100);
+        WARN("A-6 e2e lane never read: clear +" << (clear - kicked) << " ms");
+    }
+}
+
+TEST_CASE("[A-6] an ordinary transient misalign (one gap, then the lane reads again) still clears 1 s after the gap",
+          "[output][session][misalign][A6]")
+{
+    // 正向在场按块算,不按 [M] 拍算:缺口之后同一拍里紧接着读到的那一块也算。所以一次普通的瞬时失准(这一代已经读到过
+    // 数据,偶然缺了一块又接着读到)撤下的时机与修前完全相同 —— 1 s 失准窗一满就撤,不必等本轨回到注入集再读一块。
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+    rig.runUntil(3010);
+    REQUIRE(rig.log.back().injected);
+    REQUIRE(rig.out.misalignCountRecent(1) == 0);
+    REQUIRE(rig.now % 40 == 10); // 下面两步落在同一拍里(拍在 t%40==0)
+    // 两块先算 Output:第一块写头还没动(只记饿读),第二块写方在推进 ⇒ 已读到过数据的这一代照旧计一笔缺口(旧口径);
+    // 第三块起恢复先算 Input,同一拍里就又读到了。
+    rig.outputFirst = true;
+    rig.step();
+    rig.step();
+    rig.outputFirst = false;
+    rig.runUntil(rig.now + 3000);
+    scvb::u64 lit = 0;
+    scvb::u64 clear = 0;
+    bool readAfterGapBeforeLit = false;
+    for (const A6Sample& s : rig.log)
+    {
+        if (s.t < 3010)
+        {
+            continue;
+        }
+        if (lit == 0 && s.readsOk > 0 && s.gaps > 0)
+        {
+            readAfterGapBeforeLit = true;
+        }
+        if (s.tick && lit == 0 && s.misalign > 0)
+        {
+            lit = s.t;
+        }
+        else if (s.tick && lit != 0 && clear == 0 && s.misalign == 0)
+        {
+            clear = s.t;
+        }
+    }
+    INFO("lit " << lit << ", clear +" << (clear - lit) << " ms");
+    REQUIRE(lit != 0); // 前提:这一笔缺口确实在 [M] 拍上被看到、亮了
+    REQUIRE(lit - 3010 <= 40);
+    REQUIRE(readAfterGapBeforeLit); // 前提:缺口之后、被看到之前这一轨又读到了
+    CHECK(clear != 0);
+    CHECK(clear - lit == scvb::output::kMisalignRecoverMs);
+    CHECK(a6CleanAfter(rig.log, clear));
+    WARN("A-6 e2e transient gap: lit at " << lit << ", clear +" << (clear - lit) << " ms");
+}
+
+TEST_CASE("[A-6] cold start does not raise misalign", "[output][session][misalign][A6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+
+    SECTION("the Input is attached but has not written anything yet, then starts at the transport position")
+    {
+        rig.inputWrites = false;
+        rig.runUntil(3000);
+        rig.inputWrites = true;
+        rig.writePos = rig.readPos; // Input 从宿主当前位置开写(先算 Input、后算 Output)
+        rig.runUntil(6000);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(rig.log.back().injected);
+        CHECK(a6CleanAfter(rig.log, 5000));
+    }
+
+    SECTION("Output-first only around the hand-over (< 200 ms unreadable), then the host orders the Input first")
+    {
+        rig.outputFirst = true;
+        while (rig.now < 4000 && (rig.log.empty() || !rig.log.back().injected))
+        {
+            rig.step();
+        }
+        REQUIRE(rig.log.back().injected);
+        const scvb::u64 handedOver = rig.now;
+        rig.runUntil(handedOver + 150);
+        rig.outputFirst = false;
+        rig.runUntil(handedOver + 3000);
+        const A6Alarm a = a6AlarmOf(rig.log, handedOver, handedOver + 150);
+        INFO("reads during Output-first " << a.readsOk << "/" << a.reads);
+        REQUIRE(a.reads >= 10); // 前提:注入之后确有一段「已注入却读不到」
+        REQUIRE(a.readsOk == 0);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(a6CleanAfter(rig.log, handedOver + 1000));
+    }
+
+    SECTION("offline export at 10x: Output-first for 100 ms of timeline around the hand-over")
+    {
+        rig.out.setNonRealtime(true);
+        rig.blocksPerStep = 10;
+        rig.outputFirst = true;
+        while (rig.now < 4000 && (rig.log.empty() || !rig.log.back().injected))
+        {
+            rig.step();
+        }
+        REQUIRE(rig.log.back().injected);
+        rig.step(); // 10 块 = 100 ms 时间线,全读不到
+        rig.outputFirst = false;
+        const scvb::u64 switched = rig.now;
+        rig.runUntil(switched + 3000);
+        const A6Alarm a = a6AlarmOf(rig.log, switched - kA6StepMs, switched);
+        REQUIRE(a.reads == 10);
+        REQUIRE(a.readsOk == 0);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(a6CleanAfter(rig.log, switched + 1000));
+    }
+}
+
+// ===========================================================================
 // [KI-6] 停摆看门狗闩锁(修 H5)端到端:InProcess 后端 + 3 个 InputSession + OutputSession,
 // 虚拟时钟逐 10 ms 推进。宿主停调 Output 7 s(Input 照写、两边心跳都由 [M] 写着)→ Input 不健康满 5 s
 // 转直通(从停调起算 5.5 ± 0.5 s);恢复调用后逐轨接回,接回时重走 [J32] 握手,双路叠加不超出 J32 窗。

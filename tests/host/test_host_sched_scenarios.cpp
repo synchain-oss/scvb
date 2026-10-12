@@ -31,11 +31,11 @@
 //   同一族里只有部分格出错时按格拆开:[!shouldfail] 只收实测出错的格,其余格进普通用例 —— 否则族里
 //   现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
 //   [A-5] E1 读方换代处理落地后去掉了标记的(现在是必须绿的普通用例):LS-3 跳跃组、LS-4、LS-6 k≥1、
-//   LS-8 垃圾值、LS-12 的错音(H4,含领先离线 6 s 格)、LS-13 的两次定位 / ε<0 / 几何三条。仍留着标记的:
-//   N2b 与 LS-14(H3,归 A-6);LS-11a(H5)已由 A-7 翻转;LS-12 的句首(E2-a / E2-b)已由 A-8 翻转。LS-12 领先轨的
+//   LS-8 垃圾值、LS-12 的错音(H4,含领先离线 6 s 格)、LS-13 的两次定位 / ε<0 / 几何三条。其余的标记也都已翻转:
+//   LS-11a(H5)由 A-7;LS-12 的句首(E2-a / E2-b)由 A-8;N2b 与 LS-14(H3)由 A-6。LS-12 领先轨的
 //   句首判据随 A-5 改成「最多丢一个写方块」(checkLs12LeadHead,设计稿 §8 第 4 条),领先实时 1 s 格挪进 E2-a;
 //   A-8 之后领先实时 1 s / 6 s 两格也按它判(实测各丢 1 帧)。
-//   下面各场景注释里描述的「修前」现象指 A-5 / A-8 之前的实现,保留作证据。
+//   下面各场景注释里描述的「修前」现象指 A-5 / A-6 / A-8 之前的实现,保留作证据。
 //
 // ## 场景结果缓存与节拍
 //
@@ -1708,8 +1708,11 @@ std::string wrongByLane(const Run& r)
 // 条件持续 3 s 后撤掉,再放 2 s。
 //   (a) outputFirst:Output 先于各 Input 处理(N2 的持续版);
 //   (b) readerOffset 4096:Output 报给插件的位置比总线超前 4096(Aux 位置没做延迟补偿一类)。
-// 另有 (c) 不经定位、播放中途才开始 outputFirst:读方此前已 primed,第二块起就计失准 —— 这是现行
-// 实现「会报」的那一半,只表征(打印告警的通断),不判 H3。
+// 另有 (c) 不经定位、播放中途才开始 outputFirst:读方此前已 primed,第二块起就计失准 —— 这是 A-6 之前
+// 也「会报」的那一半,但失准把它踢出注入集、1 s 后「无新缺口」就撤下横幅,随即又亮(断续)。
+// [A-6] 修复后:(a)(b) 持续读不到超过 200 ms 宽限即计失准;三格的告警都要求本轨读到过数据才撤下,
+// 条件持续期间不再断续(c 格从「只表征」改成普通判据用例)。告警期间本轨被失准踢出注入集、约 1 s 一次放回
+// 又踢出(online 只经由 misaligned 受影响),所以三格撤掉条件之后的恢复都要等最多一个 1 s 失准窗。
 struct Ls14Cell
 {
     std::string label;
@@ -3108,7 +3111,7 @@ TEST_CASE("SCHED LS-13: re-preparing a lane mono<->stereo mid-cycle reads no sta
 // ---------------------------------------------------------------------------
 TEST_CASE("SCHED LS-14 (H3): a reader that stays ahead of the writers from a generation start raises misalign within "
           "0.5 s, steadily, and clears within 1.5 s",
-          "[.][sched][!shouldfail]")
+          "[.][sched]")
 {
     for (const Ls14Cell& c : ls14Cells())
     {
@@ -3150,11 +3153,11 @@ TEST_CASE("SCHED LS-14 (H3): a reader that stays ahead of the writers from a gen
         os << c.run.name << ":";
         for (int lane = 0; lane < 3; ++lane)
         {
-            // 真实状态:条件持续期间该轨在 Output 上读不到(Absent);撤掉之后 0.5 s 起恢复在场。
+            // 真实状态:条件持续期间该轨在 Output 上读不到(Absent);撤掉之后恢复在场。
             const Tally during = tally(c.run, lane, on + sec(0.1), off);
-            // 中途才开始的那一格:条件期间该轨被失准踢出注入集,撤掉条件时可能正处在 1 s 的失准恢复窗里,
-            // 从 off + 1.5 s 起看恢复。
-            const Tally after = tally(c.run, lane, off + (c.atGenerationStart ? sec(0.5) : sec(1.5)), kBig);
+            // 条件期间该轨被失准踢出注入集(中途才开始的那一格一直如此;[A-6] 起从一代开始的两格也一样),撤掉条件时
+            // 可能正处在 1 s 的失准恢复窗里,从 off + 1.5 s 起看恢复。
+            const Tally after = tally(c.run, lane, off + sec(1.5), kBig);
             REQUIRE(during.total >= 100);
             REQUIRE(after.total >= 20);
             if (c.atGenerationStart)
@@ -3167,6 +3170,120 @@ TEST_CASE("SCHED LS-14 (H3): a reader that stays ahead of the writers from a gen
         }
         WARN(os.str());
     }
+}
+
+// [A-6] (c) 格:播放中途才开始先算 Output(读方这一代已经读到过数据)。A-6 之前它会报,但随失准踢出注入集而断续
+// (A-4 实测约 64–78 ms 亮、之后每约 1 s 熄一次);A-6 起恢复要求正向在场,条件持续期间不再熄。
+TEST_CASE("SCHED LS-14: a reader that starts leading mid-stream keeps misalign on steadily and clears within 1.5 s",
+          "[.][sched]")
+{
+    for (const Ls14Cell& c : ls14Cells())
+    {
+        if (c.atGenerationStart)
+        {
+            continue;
+        }
+        for (int lane = 0; lane < 3; ++lane)
+        {
+            const AlarmTiming a = alarmTiming(c.run, lane);
+            INFO(c.run.name << " lane " << lane << ": " << str(a));
+            CHECK(a.onsetMs >= 0.0);
+            CHECK(a.onsetMs <= 500.0);
+            CHECK(a.flickerBeats == 0);
+            CHECK(a.clearMs >= 0.0);
+            CHECK(a.clearMs <= 1500.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [A-6] 零误报:「持续读不到」与「恢复要求正向在场」不得让任何本来就该读得到的场景亮「路由失准」。
+// 逐族扫一遍已缓存的场景结果(与各族自己的判据用例共用同一次运行,不另跑):LS-1/2/3/4/5/6/7/8/9/10/12/13
+// 全部格(含理想调度台;LS-4 含 12 s 圈 × Δ=48000)。LS-11(停调 Output)、LS-14(本来就该报)、LS-15(自己有
+// 同一条判据)不在内。harness 里的 L-6a / L6 定位 / P1-7 / P0-2 / L-6b / N2a / SL-254 各自断言失准为 0。
+// ---------------------------------------------------------------------------
+TEST_CASE("SCHED A-6: no scenario that should stay readable raises misalign", "[.][sched]")
+{
+    std::vector<const Run*> runs;
+    for (const Ls1Cell& c : ls1Cells())
+    {
+        runs.push_back(&c.run);
+    }
+    for (const Run& r : ls1Ideal())
+    {
+        runs.push_back(&r);
+    }
+    for (const Ls2Cell& c : ls2Cells())
+    {
+        runs.push_back(&c.run);
+    }
+    runs.push_back(&ls3Smooth().ideal);
+    runs.push_back(&ls3Smooth().tested);
+    runs.push_back(&ls3Jump().ideal);
+    runs.push_back(&ls3Jump().tested);
+    for (const Ls4Cell& c : ls4().cells)
+    {
+        runs.push_back(&c.run);
+    }
+    for (const Run& r : ls4().ideal)
+    {
+        runs.push_back(&r);
+    }
+    for (const Ls5Cell& c : ls5Cells())
+    {
+        runs.push_back(&c.run);
+    }
+    for (const SeekFamily* f : {&ls6(), &ls7()})
+    {
+        for (const SeekCell& c : f->cells)
+        {
+            runs.push_back(&c.run);
+        }
+        for (const Run& r : f->ideal)
+        {
+            runs.push_back(&r);
+        }
+    }
+    runs.push_back(&ls8().ideal);
+    for (const Ls8Cell& c : ls8().cells)
+    {
+        runs.push_back(&c.run);
+    }
+    runs.push_back(&ls9());
+    runs.push_back(&ls10().realtime);
+    for (const Ls10Cell& c : ls10().cells)
+    {
+        runs.push_back(&c.run);
+    }
+    for (const Ls12Cell& c : ls12Cells())
+    {
+        runs.push_back(&c.run);
+    }
+    for (const std::vector<Ls13Cell>* v : {&ls13().nearRing, &ls13().twoSeeks, &ls13().mismatch})
+    {
+        for (const Ls13Cell& c : *v)
+        {
+            runs.push_back(&c.run);
+        }
+    }
+    runs.push_back(&ls13().geometry.run);
+
+    bool sawLongLeadCell = false;
+    for (const Ls4Cell& c : ls4().cells)
+    {
+        sawLongLeadCell = sawLongLeadCell || (c.lead == 48000 && c.loopLen == sec(12.0));
+    }
+    REQUIRE(sawLongLeadCell); // 前提:12 s 圈 × Δ=48000 那一格确实在扫描面里
+    int scanned = 0;
+    for (const Run* r : runs)
+    {
+        INFO(r->name);
+        REQUIRE(r->settled);
+        REQUIRE_FALSE(r->beats.empty()); // 前提:[M] 拍真的采到了(否则 0 是空跑出来的)
+        CHECK(maxMisalignAll(*r) == 0);
+        ++scanned;
+    }
+    WARN("A-6 zero-false-alarm sweep: " << scanned << " runs, all misalign 0 expected");
 }
 
 // ---------------------------------------------------------------------------
