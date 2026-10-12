@@ -195,7 +195,10 @@ bool gSettleFailed = false;
 // 放完旧块之后那一块),先多跑一块,让这次定位成为往回跳一块的真定位,并把脚本起点(c0、录音、[M] 拍、墙钟)
 // 挪到这一块之后 —— 各判据、理想调度差分的对齐都只看 c0 之后,不受影响。没撞上时(绝大多数台)什么都不做。
 // 边界:脚本在开场定位**之前**已经做掉的事(例如 sampleInputs 的第一次采样、markNow)发生在多跑的那一块之前;
-// 它们已记下的相对游标(run.inputs、run.mark)随 c0 一起平移,落到 c0 之前,如实反映它们发生的时刻。
+// 它们已记下的相对游标(run.inputs、run.mark)随 c0 一起平移,落到 c0 之前,如实反映它们发生的时刻(run.wall
+// 记的是墙钟,不平移,同样是它们真实发生的时刻)。在开场定位之前**挂**到将来的事件(markAt(rel)、
+// rig.at(run.c0 + X, …))是按旧 c0 算出的绝对游标,撞上时会比新 c0 早一块触发 —— 现在没有脚本这样写;要这样写,
+// 先做开场定位、再挂事件。
 // preRollFrom ≥ 0 只给框架自测用:交接走完后先定位到这里再跑 0.1 s,让脚本起点落在一个确定的位置上。
 Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Script& script,
                 const presence::Thresholds& th = presence::Thresholds{}, std::int64_t preRollFrom = -1)
