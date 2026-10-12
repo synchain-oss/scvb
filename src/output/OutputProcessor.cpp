@@ -993,7 +993,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         {
             continue;
         }
-        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_, readerBlockEnd_))
+        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, 0u /* [M13 reverse injection #2 - to be reverted] was podEpoch_ */, readerBlockEnd_))
         {
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
