@@ -129,7 +129,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 完整工具链见 [CLAUDE.md](CLAUDE.md) §6;本地质量门禁跑 `pwsh scripts/gates.ps1`。
 
-macOS(Apple Silicon):暂时还没有单独的构建说明;CI 用的步骤在 [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml),`scripts/package-macos.sh` 用构建结果打 zip。
+macOS(Apple Silicon):本地编译、测试与打包见 [docs/build-macos.md](docs/build-macos.md);CI 用的步骤在 [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml),`scripts/package-macos.sh` 用构建结果打 zip。
 
 ## 已知限制
 
