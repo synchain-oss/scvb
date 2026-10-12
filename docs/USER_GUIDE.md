@@ -255,7 +255,9 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 - **`%APPDATA%\Synchain\SCVB\sessions\`** — only for projects saved by an early version that kept its features outside the project (see "Sessions and files" above). This version does not create new folders there.
 - **An exported suggestions `.csv`** — only when you export one, in the folder you choose.
 
-SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+On Windows, SCVB keeps no log files. Its diagnostic messages go to the Windows debug output, which you can only see with a debugging tool.
+
+**On macOS (beta)** the same preferences file lives in `~/Library/Application Support/Synchain/SCVB/`, next to a small `ipc` folder of lock files the three plugins use to manage their shared memory (leave it alone while a DAW is running). Each plugin also writes a diagnostic text log to `~/Library/Logs/Synchain/SCVB/` (`input.log`, `output.log`, `monitor.log`; a file is renamed to `<name>.1.log` when it reaches about 1 MB, so each role keeps about 2 MB at most). The logs stay on your computer and are never sent anywhere. A line can contain your user name (a path such as `/Users/<name>/...`), so look a log over before you attach it to a public issue.
 
 To remove the preferences and the browser cache, close your DAW and delete the two `Synchain\SCVB` folders above. Keep `sessions` if you still have projects from an early version that use it.
 
@@ -290,7 +292,13 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 
 **Can I go beyond 15 tracks?** Not in v1; 15 tracks per group. If you genuinely need more, use a second group (an independent bus domain), but the two groups are not balanced jointly.
 
-**Is macOS supported?** v1 is Windows x64 / VST3 only. A macOS build is something we will look at later on.
+**Is macOS supported?** There is a **beta** for Apple Silicon Macs (arm64 only, macOS 11 or later), as VST3 and Audio Unit. It is not code-signed or notarized, so you have to clear the quarantine flag yourself with `xattr` after copying the plugins; the steps are in the macOS zip's `INSTALL.txt` and in the README. Intel Macs, hosts running under Rosetta and GarageBand are not supported. Windows remains the primary, better-tested platform.
+
+**Does it work in Logic Pro or LUNA on a Mac?** Neither has been verified yet. Logic Pro: beta / not tested in Logic (Tier 3); Logic loads Audio Units only. LUNA: Tier 3, a hands-on acceptance run is still to come. What we expect from each host's design is written down in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md); none of it is a tested result.
+
+**Where do I find the diagnostic logs on a Mac, and what do I do about them?** In `~/Library/Logs/Synchain/SCVB/` (see "Privacy and files on disk"). When you report a macOS problem, attach the relevant file after removing your user name from it.
+
+**Why does my Mac host not list SCVB, or refuse to load it?** The usual causes, in order: the quarantine flag was not cleared (run the two `xattr` lines of `INSTALL.txt`); the Audio Unit registry still holds an old entry (`killall -9 AudioComponentRegistrar`, then rescan); the host runs under Rosetta (the plugins are arm64 only; untick "Open using Rosetta" in the host's Get Info); the host has VST3 or Audio Units switched off (in LUNA, VST3 is off by default). Known macOS limits are KI-12 onward in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 **Can I edit the analysis result if I don't like it?** Yes, see "Manual touch-ups"; automatic re-analysis will not overwrite what you edited.
 
@@ -309,4 +317,5 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 - Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
 - **the DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
 - **on the waveform page, making a selection, selecting a segment and editing segments (dragging, splitting or removing a boundary) need a mouse or touchpad for now**; a keyboard way to do them is planned before v1.0.0. Details in `docs/KNOWN_ISSUES.md` (KI-10);
+- **macOS is a beta**: Apple Silicon only, unsigned, no host verified yet (Logic: beta / not tested in Logic). Details in `docs/KNOWN_ISSUES.md` (KI-12 onward);
 - v2 directions: a precise-mode VAD (Silero), and more platforms.
