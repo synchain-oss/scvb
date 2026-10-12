@@ -15,7 +15,8 @@
 //
 //   LS-1  每轨:帧数 ≥ 判定窗应有帧数 − 2;Wrong = 0;Mix 在场 ≥ ceil(99% × 帧数)。
 //   LS-4  恰好 laps 圈;每圈每轨:帧数 ≥ 90(2 s 圈应有 93);Wrong = 0;丢失(帧数 − Mix 在场)≤ 1。
-//   进程(processCheck):registry 里各实例的 pid 都 > 0;进程内 ⇒ 全等于宿主 pid,进程外 ⇒ 全不等于宿主 pid。
+//   进程(processCheck):registry 里各实例的 pid 都 > 0;进程内 ⇒ 全等于宿主 pid,进程外 ⇒ 全不等于宿主 pid,
+//   且每个都是活着的系统进程(可执行文件路径以 /System/ 开头)。
 //   pid 由 scvb_auhost.cpp 从插件建的 registry 段里读出来,判定只在这里。
 //
 // ## 自测(selfTest,scvb_auhost --self-test)
@@ -31,7 +32,7 @@
 //   F6 lane 0 有 2 帧读成上一圈环(错 R 样本,反相)⇒ LS-1 lane 0 只红在 Wrong = 0 这一条
 //      (2/234 帧,在场率仍 ≥ 99%:这一格专门给「Wrong = 0」那条判据配牙)
 //   F7 LS-4 每圈 lane 1 有 1 帧读成上一圈环 ⇒ 只红在 LS-4 的 Wrong = 0(每圈丢 1 帧,仍在 ≤ 1 的容差内)
-// 进程判据 processCheck 另有 7 格(两格必须过、五格必须红),在 selfTest 末尾。
+// 进程判据 processCheck 另有 10 格(三格必须过、七格必须红),在 selfTest 末尾。
 // 自测用例全部跑完再汇总(一格红不影响其余格的判断)。
 
 #include <algorithm>
@@ -259,16 +260,28 @@ inline Judgement judge(const Engine& e, const DriveResult& d, bool keepRows)
     return jd;
 }
 
-// 进程判据。pids = registry 里 Output 与各 Input 写下的 pid(0 = 没读到)。
-inline bool processCheck(bool outOfProcess, long long hostPid, const std::vector<long long>& pids)
+// 进程判据。pids = registry 里 Output 与各 Input 写下的 pid(0 = 没读到);paths[i] = pids[i] 那个进程此刻的
+// 可执行文件路径(进程已经不在、或读不到 = 空串)。
+// 进程外时每个 pid 还必须是一个**活着的系统进程**(路径以 /System/ 开头;AUHostingService 在
+// /System/Library/Frameworks/AudioToolbox.framework/XPCServices/ 下):registry 段若是之前某一格残留的旧段,
+// 里面的旧 pid 本来就 ≠ 宿主 pid,只看「≠ 宿主 pid」会在没有新证据时判过。不要求各实例同在一个进程:
+// 实例怎么分进程由系统决定,不是 API 的承诺(实测都在同一个 AUHostingService 里,数字记在 registry.distinct_pids)。
+// 进程内时 pid 等于宿主 pid 本身就是新证据(旧段里的 pid 不可能是本进程),路径不另核。
+inline bool processCheck(bool outOfProcess, long long hostPid, const std::vector<long long>& pids,
+                         const std::vector<std::string>& paths)
 {
-    if (pids.empty())
+    if (pids.empty() || paths.size() != pids.size())
     {
         return false;
     }
-    for (const long long p : pids)
+    for (std::size_t i = 0; i < pids.size(); ++i)
     {
-        if (p <= 0 || (outOfProcess ? p == hostPid : p != hostPid))
+        const long long p = pids[i];
+        if (p <= 0)
+        {
+            return false;
+        }
+        if (outOfProcess ? (p == hostPid || paths[i].rfind("/System/", 0) != 0) : p != hostPid)
         {
             return false;
         }
@@ -669,18 +682,35 @@ inline int selfTest()
         }
         check(withinLost, "F7: every lap has exactly 1 Wrong frame on lane 1 and stays within the lost <= 1 allowance");
     }
-    // 进程判据:进程外标志被静默忽略(实例其实在宿主进程里)必须红;反过来也一样;没读到 pid 必须红。
+    // 进程判据:进程外标志被静默忽略(实例其实在宿主进程里)必须红;反过来也一样;没读到 pid 必须红;
+    // 进程外时 pid 不是活着的系统进程(残留旧段里的 pid、或别的程序)必须红。
     {
         const long long host = 100;
-        check(processCheck(false, host, {100, 100, 100, 100}), "process: in-process, all pids are the host pid -> ok");
-        check(processCheck(true, host, {200, 200, 200, 200}), "process: out-of-process, no pid is the host pid -> ok");
-        check(!processCheck(true, host, {100, 100, 100, 100}),
+        const std::string sys =
+            "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/AUHostingServiceXPC_arrow.xpc/Contents/"
+            "MacOS/AUHostingServiceXPC_arrow";
+        const std::string self = "/opt/build-auhost/scvb_auhost"; // 宿主自己:不在 /System 下
+        check(processCheck(false, host, {100, 100, 100, 100}, {self, self, self, self}),
+              "process: in-process, all pids are the host pid -> ok");
+        check(processCheck(true, host, {200, 200, 200, 200}, {sys, sys, sys, sys}),
+              "process: out-of-process, every pid is a live system service, none is the host pid -> ok");
+        check(processCheck(true, host, {200, 201, 200, 201}, {sys, sys, sys, sys}),
+              "process: out-of-process across two system service processes -> ok (one process is not required)");
+        check(!processCheck(true, host, {100, 100, 100, 100}, {self, self, self, self}),
               "process: out-of-process flag ignored (instances in the host process) -> fails");
-        check(!processCheck(true, host, {200, 200, 100, 200}),
+        check(!processCheck(true, host, {200, 200, 100, 200}, {sys, sys, self, sys}),
               "process: one OOP instance in the host process -> fails");
-        check(!processCheck(false, host, {100, 200, 100, 100}), "process: in-process run with a foreign pid -> fails");
-        check(!processCheck(true, host, {200, 0, 200, 200}), "process: a pid that was never written -> fails");
-        check(!processCheck(false, host, {}), "process: no pids at all -> fails");
+        check(!processCheck(false, host, {100, 200, 100, 100}, {self, sys, self, self}),
+              "process: in-process run with a foreign pid -> fails");
+        // pid 0 = 没读到:单凭这一条就红,不靠路径(这里故意给它一个系统路径)。
+        check(!processCheck(true, host, {200, 0, 200, 200}, {sys, sys, sys, sys}),
+              "process: a pid that was never written -> fails");
+        check(!processCheck(false, host, {}, {}), "process: no pids at all -> fails");
+        check(!processCheck(true, host, {300, 300, 300, 300}, {"", "", "", ""}),
+              "process: out-of-process pids from a leftover registry (process no longer alive) -> fails");
+        const std::string other = "/usr/local/bin/other";
+        check(!processCheck(true, host, {400, 400, 400, 400}, {other, other, other, other}),
+              "process: out-of-process pid is a live non-system process -> fails");
     }
     std::printf("[self-test] %d cases, %d failed\n", cases, failed);
     return failed == 0 ? 0 : 1;

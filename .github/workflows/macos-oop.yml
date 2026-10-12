@@ -48,7 +48,8 @@ jobs:
         # (macos-build 只在 macos-15 上编,部署目标 11.0)。
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["macos-15","macos-26"]' || '["macos-15"]') }}
     runs-on: ${{ matrix.os }}
-    # 实测见 PR:下载 + 装 AU + 编宿主约 1 分钟,五次运行各约 15–30 s(实时节拍)。30 分钟只拦挂死。
+    # 实测见 PR:下载 + 装 AU + 编宿主约 15 s;五次运行每步约 7–13 s(其中按墙钟实时节拍渲染的部分 LS-1
+    # 约 5.7 s、LS-4 约 10 s),整个 job 约 70 s。30 分钟只拦挂死。
     timeout-minutes: 30
     steps:
       # 1) bundle artifact 的名字前缀,与 build-macos.yml 步骤 0 的命名逐档对应:
@@ -59,6 +60,9 @@ jobs:
       #    才起,分支可能已经前移 —— 所以按前缀 + `*` 下载,再从 artifact 名里取回 sha(步骤 3)。同一个 run 里
       #    这个前缀只对应 bundle 那一个 artifact:package artifact 的名字是 SCVB-macos-arm64-package-…,前缀不同。
       #    全部经 env 传入、不直接插值进脚本(分支名可含 `$` `;`,插值即注入面)。
+      #    **对拍关系**:下面三档前缀与 dispatch 的 slug 规则(`eff_ref="${INPUT_REF:-$REF_NAME}"` +
+      #    `tr '/\\' '--'`)与 build-macos.yml 步骤 0 的 `case "$EVENT_NAME"` 逐字同一份,没有机器门禁对拍,
+      #    改一处必须同改另一处。两边漂移时,dispatch 会在步骤 3 报「macos-build succeeded but no artifact」。
       - name: Resolve the bundles artifact prefix (same naming as build-macos.yml step 0)
         id: art
         shell: bash

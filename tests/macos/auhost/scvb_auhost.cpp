@@ -28,7 +28,8 @@
 // 插件建的 registry 段(/SynchainSCVB.v1.g1.registry,布局取自 src/core/ipc/SegmentLayout.h + Registry.h)
 // 里有每个 Input / Output 实例写下的 pid(Registry::currentProcessId = 插件所在进程的 getpid)。宿主只读
 // 映射它:预热判据看 Output 活跃、各 lane 的 InputSlot 活跃且 connected_mask 有这一位;判定时核
-// 进程内 ⇒ pid 全等于宿主 pid,进程外 ⇒ pid 全不等于宿主 pid,并记下那个进程的名字。
+// 进程内 ⇒ pid 全等于宿主 pid,进程外 ⇒ pid 全不等于宿主 pid 且每个都是活着的 /System/ 下的进程(残留旧段里的
+// 旧 pid 过不了这一条),并记下那个进程的名字。
 //
 // ## 线程
 //
@@ -311,7 +312,18 @@ OSStatus inputProc(void* refCon, AudioUnitRenderActionFlags*, const AudioTimeSta
         AudioBuffer& dst = io->mBuffers[b];
         if (dst.mData == nullptr)
         {
-            dst.mData = src.data(); // 插件没给缓冲:直接借 scratch(渲染返回前一直有效)
+            // 插件没给缓冲:直接借 scratch(渲染返回前一直有效)。与下面的拷贝分支同一口径:本块之外的尾部补零
+            // (不让插件读到上一块留下的样本);超出 scratch 容量(> MaximumFramesPerSlice)的拉取直接拒掉。
+            if (frames > src.size())
+            {
+                return kAudioUnitErr_TooManyFramesToProcess;
+            }
+            if (frames > in->pendingFrames)
+            {
+                std::fill(src.begin() + static_cast<std::ptrdiff_t>(in->pendingFrames),
+                          src.begin() + static_cast<std::ptrdiff_t>(frames), 0.0f);
+            }
+            dst.mData = src.data();
             dst.mDataByteSize = frames * sizeof(float);
             continue;
         }
@@ -970,13 +982,18 @@ int runMode(const Options& opt)
                 r.seti(k + "lead_observed_max", lo.any ? lo.max : -1);
             }
         }
-        // 进程:registry 里各实例的 pid。
+        // 进程:registry 里各实例的 pid,以及那个进程此刻的可执行文件路径(实例都还没拆,进程外时 AUHostingService
+        // 还活着;进程已不在则为空串)。路径只交给判据、只记「是不是系统进程」,不落盘(进程内时那是宿主自己的路径)。
         std::set<long long> pids;
+        std::vector<std::string> pidPaths;
         const std::array<const char*, ah::kLanes + 1> names{{"out", "in0", "in1", "in2"}};
         for (std::size_t i = 0; i < regPid.size(); ++i)
         {
             r.seti(std::string("registry.") + names[i] + ".pid", regPid[i]);
             pids.insert(regPid[i]);
+            pidPaths.push_back(regPid[i] > 0 ? processPath(static_cast<pid_t>(regPid[i])) : std::string());
+            r.seti(std::string("registry.") + names[i] + ".system_process",
+                   pidPaths.back().rfind("/System/", 0) == 0 ? 1 : 0);
         }
         r.seti("registry.distinct_pids", static_cast<long long>(pids.size()));
         if (!pids.empty() && *pids.begin() > 0)
@@ -987,12 +1004,13 @@ int runMode(const Options& opt)
             const std::string path = processPath(p0);
             r.set("plugin_process.path", path.rfind("/System/", 0) == 0 ? path : std::string("(not a system path)"));
         }
-        processOk = ah::processCheck(oop, hostPid, std::vector<long long>(regPid.begin(), regPid.end()));
+        processOk = ah::processCheck(oop, hostPid, std::vector<long long>(regPid.begin(), regPid.end()), pidPaths);
         processLine = "host pid " + std::to_string(hostPid) +
                       "; registry pids out/in0/in1/in2 = " + std::to_string(regPid[0]) + "/" +
                       std::to_string(regPid[1]) + "/" + std::to_string(regPid[2]) + "/" + std::to_string(regPid[3]) +
                       "; plugin process '" + r.get("plugin_process.name") + "'" +
-                      (oop ? " (out-of-process: every SCVB instance must NOT be in the host process)"
+                      (oop ? " (out-of-process: every SCVB instance must NOT be in the host process and must be in a "
+                             "live /System/ service process)"
                            : " (in-process: every SCVB instance must be in the host process)");
         r.seti("process.ok", processOk ? 1 : 0);
         if (!dr.ok)
