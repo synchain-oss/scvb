@@ -1,5 +1,5 @@
 > 状态: 演进中
-> 最后更新: 2026-09-28(首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
+> 最后更新: 2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
 > 真源: 本文件
 
 # SCVB DAW 兼容矩阵与支持等级表
@@ -10,6 +10,7 @@
 > - 证据分两层。**spike 层**:**S1 路由可靠性 spike(T02)** 2026-08-16/17 的真机实测(Cubase 14 / 15,REAPER 7 兜底;证据见 [S1-daw-checklist.md](spikes/S1-daw-checklist.md) 完成列与 [S1-routing.md](spikes/S1-routing.md) §6 收口报告)。**成品层**:**T37 成品测试包**(Input / Output / Monitor 成品插件)在 **Cubase 15 Pro** 上的多轮真机实测,2026-08 下旬的 v5.6 测试包起,到 2026-09-28 的 v5.6.19 测试包(测试包编号是内部轮次号,不是发布版本号)。
 > - **自动化 Write 录制**列:**S2 自动化写入 spike(T03)** 的逐宿主落点回填**没有做**([S2-automation.md](spikes/S2-automation.md) §6、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格仍空);**Cubase 这一格的证据来自成品测试包**(见矩阵脚注 7),其余宿主仍为「未验证」,并标注已知风险(RD-04/RD-02)。
 > - **成品层只覆盖 Cubase 15。** REAPER 只有 spike 层证据;Ableton Live 与 Studio One 两层都没有(U27)。spike 结论是架构级验证,不替代成品复测。
+> - **macOS(Apple Silicon,beta)的两个宿主 LUNA、Logic Pro 都还没有上机**,下面 §2.5、§2.6 里每一条宿主说法都是「设计上预期 / 未实测」,不是实测结论;验收之后由统筹逐条回填。
 > - 状态图例:✅ 已验证 / ⚠️ 未验证(原因见单元格)/ ➖ 不适用。
 
 ## 1. 总矩阵
@@ -20,6 +21,8 @@
 | **REAPER** | 7 | ✅ 已验证(anticipative 三档 + dedicated process) | ✅ 已验证 | ⚠️ 未验证(S2 待上机;RD-04 已知风险) | ⚠️ 未验证(S1 未单跑 state 往返) | 2026-08-16(S1 spike v8) |
 | **Ableton Live** | 12 | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(S2 可选未做;RD-02 已知风险) | ⚠️ 未验证(未上机) | — |
 | **Studio One** | 6 | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(S2 可选未做) | ⚠️ 未验证(未上机) | — |
+| **LUNA**(macOS,Apple Silicon) | — | ⚠️ 未验证(真机验收待做) | ⚠️ 未验证(同左) | ⚠️ 未验证(LUNA 没有 Write,见 §2.5) | ⚠️ 未验证(未上机) | — |
+| **Logic Pro**(macOS,Apple Silicon) | — | ⚠️ 未验证(beta / 未在 Logic 实测) | ⚠️ 未验证(同左) | ⚠️ 未验证(未上机) | ⚠️ 未验证(未上机) | — |
 
 **矩阵脚注**:
 
@@ -145,7 +148,7 @@ Live 的 device chain 无 pre/post 分隔线;「最后一格」= 设备链末尾
 
 #### 离线渲染注意事项
 
-Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到静音产物。**设备停用**(J52):Live 设备停用不经 bypass、直接停止调用 processBlock,Output 的看门狗判定停摆后(自己的处理计数停住 ≥0.5 秒)断开各轨并在整个停调期间保持断开,各 Input 按 5 秒滞回转直通,人声先**无声约 5.5 秒**、之后转为未经平衡的原始声像;宿主重新调用后,长停调的轨按通道号逐条(约每隔 0.2 秒)接回,未轮到的轨暂时无声,短停调当即接回,恢复后最初约 80 毫秒是停调前混音的淡出(详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6)。A/B 请用 SCVB 面板轨道开关,不要停用设备。
+Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到静音产物。**设备停用**(J52):Live 设备停用不经 bypass、直接停止调用 processBlock,Output 的看门狗判定停摆后(自己的处理计数停住 ≥0.5 秒)断开各轨并在整个停调期间保持断开,各 Input 按 5 秒滞回转直通,人声先**无声约 5.5 秒**、之后转为未经平衡的原始声像;宿主重新调用后,长停调的轨按通道号逐条(约每隔 0.2 秒)接回,未轮到的轨暂时无声,短停调当即接回,恢复后最初约 80 毫秒是停调前混音的淡出(详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6)。做 A/B 请不要停用设备,改在 SCVB 面板里比:输出开关开 / 关比的是引擎曲线与宿主参数值,Output 轨道页的「ON」开关是把该轨从 SCVB 输出里拿掉,两者都不是听原声(详见 KI-6 的缓解与 KI-8)。
 
 #### 已知坑
 
@@ -190,6 +193,47 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 - **Dropout Protection 异 block size**。出处:[S1-daw-checklist.md](spikes/S1-daw-checklist.md) §6。
 - **S1/S2 均未上机**:U27(2026-08-14)决定 Studio One 仅作可选对照,未执行。
 
+### 2.5 LUNA(macOS,Apple Silicon;beta,未上机)
+
+> **本节每一条都是「设计上预期 / 未实测」**:LUNA 的真机验收([validation/luna-acceptance.md](validation/luna-acceptance.md))还没做,下面写的是按插件设计和 LUNA 的已知行为推出来的预期,不是实测结论。验收后由统筹回填;回填之前不要把它们当成保证。
+
+#### 装与扫描
+
+- LUNA 默认启用 Audio Unit,macOS 上默认**不**启用 VST3。用 AU:装好后在 Plug-In Manager 里 Scan New(或 Rescan All),三个 SCVB 的状态应是 scanned,不是 rejected;用 VST3:先在 Plug-In Manager 里启用 VST3 再扫描。安装步骤见 macOS zip 里的 `INSTALL.txt`。
+- 用 Apollo 接口时,设计上预期要把 Apollo 切到 Core Audio 模式,或关掉 ARM(见 [validation/luna-acceptance.md](validation/luna-acceptance.md) 的「工程设置」);未实测。
+
+#### 放 Input / Output
+
+- Input 放在人声轨 insert 区已用槽位里的**最后一个**(硬约束第 2 条);**不要放进 Record FX**(设计上预期 Record FX 在录音路径上、不在播放路径上,Input 在那里不会按预期工作;未实测)。
+- Output 放在一条 **Stereo Bus** 的 Insert 1;**不要把 Output 放在 Folder 轨上**(设计上预期 Folder 轨不是普通的求和总线,Output 收不到预期的路由;未实测)。人声轨的输出都送到这条 Bus。
+
+#### 录自动化
+
+- 设计上预期用 **Latch**:LUNA 没有 Write 模式。全曲打印一次;只打印局部区间时,区间外是否被平线覆盖要在验收里看(T5)。未实测。
+
+#### 导出与渲染
+
+- Export Mixdown 与 Bounce:对单条人声轨做 Bounce 时选 **Keep**(保留源轨)。设计上预期单条人声轨的 Bounce 会得到静音文件(KI-4),选 Keep 是为了不把原轨换成静音;未实测(验收 T8)。
+- 含尾音(tail)的导出长度是否被拉长,验收时只记录现象(T4);AU tail 策略本版没做。
+
+#### 已知坑
+
+- **Power 硬停用 Output = KI-6**:设计上预期 LUNA 的 Power(插件电源)按钮会让宿主停止调用该插件,和 Live 的设备停用同类,人声先无声约 5.5 秒再转直通(详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6)。验收只记录是否出现。要做 A/B 对比,不要用 Power,见 KI-6 的缓解。
+- **IN(软旁路)** 设计上预期是直通、没有咔哒声;未实测(验收 T7)。
+- **键盘焦点、缩放、白闪**:见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-12 起;LUNA 里是否出现,验收 UI 一项只记录现象。
+
+### 2.6 Logic Pro(macOS,Apple Silicon;beta / 未在 Logic 实测,Tier 3)
+
+> **本节每一条都是「设计上预期 / 未实测」**:没有人在 Logic 里跑过 SCVB。Logic 只加载 Audio Unit(`.component`),不加载 VST3;GarageBand 不支持。等级 Tier 3 的含义见 [validation/daw-support-tiers.md](validation/daw-support-tiers.md)。
+
+- **打印自动化**:设计上预期用 **Latch** 把整首歌打印一遍。
+- **只打印局部区间**:设计上预期区间之外可能被一条平线覆盖(未实测,也不知道 Logic 在停止写入后怎样处理区间外);要局部修改,先备份自动化。
+- **Aux 总线**:设计上预期要先在 Mixer 里对 Aux 用 **Create Track**(把它建成一条真正的轨),再放 Output。
+- **旁路即停调**:Output 被宿主旁路时走 Output 自己的旁路路径:总线按 unity 求和、不再应用平衡(这是代码里的行为,不是在 Logic 里测的);把 Output 旁路等于停止调音,不是听「原声」。
+- **冻结**:设计上预期用 **Source Only**;其它冻结方式会经过轨道的插件链,按 KI-4 得到静音文件。
+- **AU 可见参数数**:以代码为准。VST3 是 123 个声明参数加 wrapper 合成的 bypass,共 124 个;AU 是否同数没有核对,本文不写死。参数 ID 由 `tests/core/test_au_param_ids.cpp` 钉住的 123 个 ID 决定,自动化在工程里按这些 ID 记。
+- **没有验证过的东西**:Logic 的路由、离线 Bounce、自动化写入、存工程重开、进程外 AUHostingService 下的共享内存。进程外那一项只有一个模拟宿主的 CI 近似(`scvb_auhost`),不是 Logic。
+
 ## 3. 通用坑清单
 
 ### 3.1 已修复(S1 修复链 v1..v10,按「已修复(vX)」归类)
@@ -231,5 +275,7 @@ A 线(宿主调度加固)留下的残余(提前处理的轨恢复时句首少约
 | REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
 | Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通(重新调用后逐轨接回,见 KI-6) |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
+| LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 尚未真机测试;首个 macOS beta 发布前计划做一次真机验收。设计上预期(未实测):自动化用 Latch,LUNA 没有 Write;Output 不能放在 Folder 轨上;Input 不能放进 Record FX 槽;用 Apollo 时请切到 Core Audio 模式或关闭 ARM;用 Power 硬停用 Output 会无声约 5.5 秒(KI-6) |
+| Logic Pro(macOS,Apple Silicon) | — | **Tier 3(beta / 未在 Logic 实测)** | 未在 Logic 实测。只有 Audio Unit(Logic 不加载 VST3)。设计上预期(未实测):用 Latch 全曲打印;只打印局部区间可能被平线覆盖;先 Create Track 建好 Aux 轨;旁路 Output 即停止调音;冻结用 Source Only。不支持 GarageBand |
 
-> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。
+> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3 / Audio Unit),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。macOS 的两行是 beta:macOS 上还没有任何宿主经过真机验证。
