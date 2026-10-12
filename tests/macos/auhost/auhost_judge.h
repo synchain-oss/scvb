@@ -15,7 +15,8 @@
 //
 //   LS-1  每轨:帧数 ≥ 判定窗应有帧数 − 2;Wrong = 0;Mix 在场 ≥ ceil(99% × 帧数)。
 //   LS-4  恰好 laps 圈;每圈每轨:帧数 ≥ 90(2 s 圈应有 93);Wrong = 0;丢失(帧数 − Mix 在场)≤ 1。
-//   两种模式都另核宿主侧前提(实例真在 / 不在宿主进程里),那一条在 scvb_auhost.cpp。
+//   进程(processCheck):registry 里各实例的 pid 都 > 0;进程内 ⇒ 全等于宿主 pid,进程外 ⇒ 全不等于宿主 pid。
+//   pid 由 scvb_auhost.cpp 从插件建的 registry 段里读出来,判定只在这里。
 //
 // ## 自测(selfTest,scvb_auhost --self-test)
 //
@@ -255,6 +256,23 @@ inline Judgement judge(const Engine& e, const DriveResult& d, bool keepRows)
     }
     jd.pass = jd.failures.empty();
     return jd;
+}
+
+// 进程判据。pids = registry 里 Output 与各 Input 写下的 pid(0 = 没读到)。
+inline bool processCheck(bool outOfProcess, long long hostPid, const std::vector<long long>& pids)
+{
+    if (pids.empty())
+    {
+        return false;
+    }
+    for (const long long p : pids)
+    {
+        if (p <= 0 || (outOfProcess ? p == hostPid : p != hostPid))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 inline std::string percent(int a, int b)
@@ -649,6 +667,19 @@ inline int selfTest()
             withinLost = withinLost && w.lanes[1].wrong == 1 && w.lanes[1].lost() <= ls4.maxLostPerLap;
         }
         check(withinLost, "F7: every lap has exactly 1 Wrong frame on lane 1 and stays within the lost <= 1 allowance");
+    }
+    // 进程判据:进程外标志被静默忽略(实例其实在宿主进程里)必须红;反过来也一样;没读到 pid 必须红。
+    {
+        const long long host = 100;
+        check(processCheck(false, host, {100, 100, 100, 100}), "process: in-process, all pids are the host pid -> ok");
+        check(processCheck(true, host, {200, 200, 200, 200}), "process: out-of-process, no pid is the host pid -> ok");
+        check(!processCheck(true, host, {100, 100, 100, 100}),
+              "process: out-of-process flag ignored (instances in the host process) -> fails");
+        check(!processCheck(true, host, {200, 200, 100, 200}),
+              "process: one OOP instance in the host process -> fails");
+        check(!processCheck(false, host, {100, 200, 100, 100}), "process: in-process run with a foreign pid -> fails");
+        check(!processCheck(true, host, {200, 0, 200, 200}), "process: a pid that was never written -> fails");
+        check(!processCheck(false, host, {}), "process: no pids at all -> fails");
     }
     std::printf("[self-test] %d cases, %d failed\n", cases, failed);
     return failed == 0 ? 0 : 1;

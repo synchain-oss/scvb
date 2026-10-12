@@ -972,26 +972,22 @@ int runMode(const Options& opt)
         }
         // 进程:registry 里各实例的 pid。
         std::set<long long> pids;
-        bool allPositive = true;
-        bool allHost = true;
-        bool noneHost = true;
         const std::array<const char*, ah::kLanes + 1> names{{"out", "in0", "in1", "in2"}};
         for (std::size_t i = 0; i < regPid.size(); ++i)
         {
             r.seti(std::string("registry.") + names[i] + ".pid", regPid[i]);
-            allPositive = allPositive && regPid[i] > 0;
-            allHost = allHost && regPid[i] == hostPid;
-            noneHost = noneHost && regPid[i] != hostPid;
             pids.insert(regPid[i]);
         }
         r.seti("registry.distinct_pids", static_cast<long long>(pids.size()));
-        if (allPositive && !pids.empty())
+        if (!pids.empty() && *pids.begin() > 0)
         {
             const pid_t p0 = static_cast<pid_t>(*pids.begin());
             r.set("plugin_process.name", processName(p0));
-            r.set("plugin_process.path", processPath(p0));
+            // 只记系统路径(AUHostingService 在 /System 下);进程内时那是宿主自己,路径在用户目录里,不记。
+            const std::string path = processPath(p0);
+            r.set("plugin_process.path", path.rfind("/System/", 0) == 0 ? path : std::string("(not a system path)"));
         }
-        processOk = allPositive && (oop ? noneHost : allHost);
+        processOk = ah::processCheck(oop, hostPid, std::vector<long long>(regPid.begin(), regPid.end()));
         processLine = "host pid " + std::to_string(hostPid) +
                       "; registry pids out/in0/in1/in2 = " + std::to_string(regPid[0]) + "/" +
                       std::to_string(regPid[1]) + "/" + std::to_string(regPid[2]) + "/" + std::to_string(regPid[3]) +
