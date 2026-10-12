@@ -105,7 +105,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 - **别单独渲染装了 SCVB Input 的人声轨**:单轨就地渲染(Render in Place)、冻结(Freeze)或单轨导出得到的是静音文件,选了「替换原音频」会把原素材换成静音。请对人声总线整体导出(KI-4)。
 - **DAW 的静音、独奏与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关(KI-8)。
 - **同一台电脑同一时间只开一个使用 SCVB 的工程**;确实要同时开,让两个工程用不同的组(KI-5)。
-- **宿主停止调用 Output 时**(Ableton Live 停用设备、FL Studio 的 smart disable 等),人声约 5.5 秒无声,之后变成未平衡的原始声像(KI-6)。
+- **宿主停止调用 Output 时**(Ableton Live 停用设备、FL Studio 的 smart disable 等),人声约 5.5 秒无声,之后变成未平衡的原始声像,直到宿主重新调用 Output;之后各轨逐条接回,没轮到的轨暂时无声(KI-6)。
 - **齐唱 / 加倍段落的平衡估算有偏差**:几条轨唱同一句、声音高度相似时,合起来往往比分析预想的更响(KI-9)。
 - **SCVB Output 不向 DAW 报告延迟**,对齐靠时间线寻址;不要用延迟补偿(PDC)去「修正」它(九条规则第 8 条)。
 - **Input 只在本轨调音量,不做声像**;声像统一由 Output 处理。
