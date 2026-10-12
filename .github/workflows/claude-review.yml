@@ -34,6 +34,11 @@ jobs:
       # deny 规则对符号链接按请求路径还是目标路径判定,在本仓钉的 Claude Code 版本上没有保证。所以签出的代码里只要有
       # 被 git 跟踪的符号链接(按 git 索引判断,不看工作树),就不做 AI 审查:列表打到日志、原因写进 run 摘要、job 判红。
       # 前提:本仓目前没有符号链接;将来若需要入库符号链接,要先重新评估这条规则。
+      # 已知前提(检查与使用之间的时间差):这里查的是 actions/checkout 签出的那一份(事件发生时的合并提交),
+      # 而 tag 模式随后会按分支名重新 fetch 并签出 PR head 的最新提交 —— 两步之间若又推了带符号链接的提交,
+      # 模型读到的那一份没有被查过。可以接受:本 workflow 与 deepseek-review.yml 只跑 same-repo PR,能往 PR 分支
+      # 推提交的人本来就有本仓写权限、可以直接改 workflow,这个时间差不额外放大权限。
+      # review-dispatch.yml 不签出 PR 代码,模型读的是目标分支与 diff 文本,没有这个时间差。
       # 本步的 run 脚本与 deepseek-review.yml、review-dispatch.yml 的同名步骤逐字相同(dispatch 只有 PR_NUMBER 的来源不同),
       # 改一处要三处一起改。
       - name: Prepare PR context for the reviewer
@@ -43,7 +48,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # 符号链接防护(理由与前提见本步上方注释):按 git 索引判断,不看工作树。
-          links=$(git ls-files -s | awk '$1 == "120000" {print $4}')
+          links=$(git ls-files -s | awk -F'\t' '$1 ~ /^120000 / {print $2}')
           if [ -n "$links" ]; then
             echo "::error::the checked-out tree tracks symbolic links; AI review skipped by policy:"
             printf '%s\n' "$links"

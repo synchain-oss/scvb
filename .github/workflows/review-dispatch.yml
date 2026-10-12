@@ -100,7 +100,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # 符号链接防护(理由与前提见本步上方注释):按 git 索引判断,不看工作树。
-          links=$(git ls-files -s | awk '$1 == "120000" {print $4}')
+          links=$(git ls-files -s | awk -F'\t' '$1 ~ /^120000 / {print $2}')
           if [ -n "$links" ]; then
             echo "::error::the checked-out tree tracks symbolic links; AI review skipped by policy:"
             printf '%s\n' "$links"

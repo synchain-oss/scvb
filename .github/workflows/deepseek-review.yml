@@ -31,6 +31,8 @@ jobs:
       # 模型没有 shell(见下方工具边界):PR 的 diff 与元数据由这一步预先写成文件,模型只用 Read/Grep/Glob 读。
       # PR 编号与仓库名经 env 传入;标题、正文等不可信文本只经 gh 写进文件,不进入任何 shell 展开。
       # 签出的代码里有被 git 跟踪的符号链接就不做 AI 审查(理由与前提见 claude-review.yml 同名步骤上方的注释)。
+      # 已知前提:这里查的是事件发生时的合并提交,tag 模式随后会重新签出 PR head 的最新提交,两步之间有时间差;
+      # 本 workflow 只跑 same-repo PR,推提交的人本来就有本仓写权限,所以可以接受(详见 claude-review.yml 那边)。
       # 本步的 run 脚本与 claude-review.yml、review-dispatch.yml 的同名步骤逐字相同,改一处要三处一起改。
       - name: Prepare PR context for the reviewer
         env:
@@ -39,7 +41,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # 符号链接防护(理由与前提见本步上方注释):按 git 索引判断,不看工作树。
-          links=$(git ls-files -s | awk '$1 == "120000" {print $4}')
+          links=$(git ls-files -s | awk -F'\t' '$1 ~ /^120000 / {print $2}')
           if [ -n "$links" ]; then
             echo "::error::the checked-out tree tracks symbolic links; AI review skipped by policy:"
             printf '%s\n' "$links"
