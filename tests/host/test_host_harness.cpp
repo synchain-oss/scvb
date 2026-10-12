@@ -10785,7 +10785,51 @@ TEST_CASE("HOST SL-255:防抖窗内重复布防 → 到点时刻从**最后一�
 //
 // 改法:reason 随作业走(PendingAnalysis),代号一丢它跟着丢。
 // ★ 反向验证:把 reason 挪回成员、清位只留在 finishAnalysis ⇒ 末尾那条 == Analyze 立刻红。
+//
+// [B 线 M12b-fix] 「在飞行中取消」的抓法从「两次泵之间看一眼」改成「消息之间看一眼」:
+//   · 起跑与收尾都是消息线程上的一条消息:起跑 = 25Hz 定时器那条消息里 tickResegmentDebounce → startAnalysis
+//     置 running;收尾 = 工作线程算完 triggerAsyncUpdate,那条消息里 handleAsyncUpdate → finishAnalysis 清 running。
+//     原写法每次 pumpMessages(1) 之后看 analysisRunning():只要起跑、整趟分析、收尾都落进同一次泵,running
+//     一真一假全在泵里,两次查看都是 false。泵准时的机器上(Windows:U3(b)-ii 那格 pump(10) 一块实测 ~10.4 ms)
+//     一次 pump(1) 短于一趟分析,看得到;mac CI 上 runDispatchLoopUntil 被拉长(同一 runner 上「一块 + pump(10)」
+//     实测 ~47 ms、「三块 Input + pump(20)」~59 ms,run 38194842347),一次泵就装得下整条链,8 轮 × 1200 次全
+//     落空过(run 38195854472 红在 REQUIRE(cancelledInFlight))。判据本身没问题,是抓手的粒度随泵变粗了。
+//   · 现在往队列里放一个自我重投的探针(callAsync):每次派发看一眼 running,真就当场 cancelAnalysis(),假就把
+//     自己重新排到队尾。JUCE 的消息队列是 FIFO(Windows 整批换出按序派发,mac 每次取下标 0),定时器回调与
+//     AsyncUpdater 走的都是这一个队列。起跑那条消息开始派发时,队列里恰好有一份探针,它是在起跑之前投的,
+//     所以排在收尾那条消息之前 ⇒ 起跑与收尾之间必有一次探针派发,它看到的一定是 running。抓手不再看泵的粒度。
+//   · 重试轮数、取消之后的两条判据都不变;墙钟 3 s 内没抓到(= 这一轮根本没起跑)就进下一轮,8 轮都没有就红在
+//     REQUIRE(cancelledInFlight)。
 // ---------------------------------------------------------------------------
+namespace
+{
+struct InFlightCancelProbe
+{
+    bool stop = false; // 测试体置位:队列里残留的那一份不再碰 Output(Output 可能已析构)
+    bool caught = false; // 在 analysisRunning() 为真的那次派发里调过 cancelAnalysis()
+    int dispatches = 0; // 派发次数(只记录,不判)
+};
+
+// 只在消息线程上投、也只在消息线程上跑,三个字段不需要原子。
+bool postInFlightCancelProbe(const std::shared_ptr<InFlightCancelProbe>& probe, ScvbOutputAudioProcessor& out)
+{
+    return juce::MessageManager::callAsync([probe, &out] {
+        if (probe->stop)
+        {
+            return;
+        }
+        ++probe->dispatches;
+        if (out.analysisRunning())
+        {
+            out.cancelAnalysis();
+            probe->caught = true;
+            return;
+        }
+        (void)postInFlightCancelProbe(probe, out);
+    });
+}
+} // namespace
+
 TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 reason 仍是 analyze", "[host][t37][v57][SL255]")
 {
     Rig r;
@@ -10801,29 +10845,35 @@ TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 r
     r.ph.playing = false; // 离开 PRINT
     Rig::pumpMessages(100);
 
-    // 布防松手档,然后**在它正跑着的时候**取消。
-    // 抓「正在跑」用 1ms 粒度的泵:finishAnalysis 只从消息循环里跑,抓到 running 就意味着
-    // 完成帧还没派发。允许重试几轮,免得被一次调度抖动判成失败。
+    // 布防松手档,然后**在它正跑着的时候**取消。抓「正在跑」用消息之间的探针(见头注 [B 线 M12b-fix]):
+    // finishAnalysis 只从消息循环里跑,探针看到 running 就意味着收尾那条消息还没派发。
     bool cancelledInFlight = false;
+    int attempts = 0;
+    scvb::u64 waitedMs = 0;
+    int dispatches = 0;
     for (int attempt = 0; attempt < 8 && !cancelledInFlight; ++attempt)
     {
+        ++attempts;
+        auto probe = std::make_shared<InFlightCancelProbe>();
         r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
-        for (int i = 0; i < 1200; ++i)
+        REQUIRE(postInFlightCancelProbe(probe, r.out));
+        const scvb::u64 startMs = scvb::steadyNowMs();
+        while (!probe->caught && scvb::steadyNowMs() - startMs < 3000)
         {
-            Rig::pumpMessages(1);
-            if (r.out.analysisRunning())
-            {
-                r.out.cancelAnalysis();
-                cancelledInFlight = true;
-                break;
-            }
+            Rig::pumpMessages(10);
         }
+        probe->stop = true;
+        waitedMs = scvb::steadyNowMs() - startMs;
+        dispatches = probe->dispatches;
+        cancelledInFlight = probe->caught;
         if (!cancelledInFlight)
         {
-            waitAnalysis(r); // 这一轮跑完了:清干净再试
+            waitAnalysis(r); // 这一轮没抓到:清干净再试
             (void)r.out.takeAnalysisDone();
         }
     }
+    INFO("attempts " << attempts << ", last attempt waited " << waitedMs << " ms wall, probe dispatched " << dispatches
+                     << " times");
     REQUIRE(cancelledInFlight); // 前置:确实在飞行中取消了(否则本例什么都没测)
 
     Rig::pumpMessages(300);
