@@ -88,24 +88,37 @@ jobs:
 
       # 模型没有 shell(工具边界见 claude-review.yml 的 claude_args):PR 的 diff 与元数据由这一步预先写成文件,
       # 模型只用 Read/Grep/Glob 读。必须排在 checkout 之后(checkout 会清掉工作区里未跟踪的文件)。
-      # PR 编号经 env 传入;标题、正文等不可信文本只经 gh 写进文件,不进入任何 shell 展开。
+      # PR 编号与仓库名经 env 传入;标题、正文等不可信文本只经 gh 写进文件,不进入任何 shell 展开。
+      # 本步的 run 脚本与 claude-review.yml、deepseek-review.yml 的同名步骤逐字相同(只有 PR_NUMBER 的来源不同),
+      # 改一处要三处一起改。其中的符号链接防护(理由与前提见 claude-review.yml 同名步骤上方的注释)在这里查的是
+      # 签出的目标分支的 git 索引:这条通道不签出 PR 代码,PR 自带的符号链接不会落到磁盘上,只以文本出现在 pr.diff 里;
+      # 保留它是为了三份逐字一致,也防目标分支本身混进符号链接。判红后由末尾的「失败回帖」告知 PR。
       - name: Prepare PR context for the reviewer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
         run: |
-          # 先删再建:目标分支上若有 .ot-review/ 下的符号链接,> 会顺着链接写到工作区外。
+          # 符号链接防护(理由与前提见本步上方注释):按 git 索引判断,不看工作树。
+          links=$(git ls-files -s | awk '$1 == "120000" {print $4}')
+          if [ -n "$links" ]; then
+            echo "::error::the checked-out tree tracks symbolic links; AI review skipped by policy:"
+            printf '%s\n' "$links"
+            echo "签出的代码里有被 git 跟踪的符号链接(该 PR 或其目标分支引入),按安全策略不做 AI 审查,请维护者本地人工审。" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # 先删再建:签出的代码若自带 .ot-review/,其中的符号链接会让 > 顺着链接写到工作区外。
           rm -rf .ot-review
           mkdir .ot-review
           # gh pr diff 任何失败(最常见的是 diff 超过 20,000 行时接口返回 406)都降级为逐文件 patch(大文件的 patch 可能被省略),
           # 并留下 DIFF_PARTIAL 标记,让 bot 在总结里写明 diff 不完整,而不是让 job 直接失败。
-          if ! gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" > .ot-review/pr.diff; then
+          if ! gh pr diff "$PR_NUMBER" -R "$REPO" > .ot-review/pr.diff; then
             echo "full diff unavailable; per-file patches only" > .ot-review/DIFF_PARTIAL
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+            gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
               --jq '.[] | "diff --git a/\(.filename) b/\(.filename)\n# status: \(.status), +\(.additions) -\(.deletions)\n\(.patch // "# (patch omitted by GitHub: file too large or binary)")"' \
               > .ot-review/pr.diff
           fi
-          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json number,title,body,baseRefName,headRefName,headRefOid,commits,files > .ot-review/pr.json
+          gh pr view "$PR_NUMBER" -R "$REPO" --json number,title,body,baseRefName,headRefName,headRefOid,commits,files > .ot-review/pr.json
           wc -c .ot-review/*
 
       # prompt 与 claude_args(--model / --tools / --allowedTools / --disallowedTools)的唯一真源是 claude-review.yml:
@@ -183,11 +196,15 @@ jobs:
       # 改 tag 模式建的追踪评论):它的最终回复就是审查总结,由这一步从 execution_file 里取出、原样发到 PR 上。
       # 发出去的是模型写的文字,所以先过一道纵深防御:出现凭据形态的字符串就不发、判红,走末尾的失败回帖。
       # 模型本应读不到任何凭据(见 claude-review.yml 的 deny 规则),真出现了说明边界被突破,不能贴到 PR 上。
+      # 这道过滤只管这一步代发的总结,不覆盖 inline comment:行内评论由模型经 inline comment 工具直接发出,不经过这里。
+      # 总结超过 GitHub 评论上限(65536 字符)时截断并在末尾附 run 链接,完整总结写进本次 run 的摘要页;
+      # 不截断的话 gh pr comment 会被接口拒掉,PR 上只剩一句笼统的失败回帖,看不出原因。
       - name: Post the review summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ] || { echo "::error::review step left no execution file"; exit 1; }
@@ -199,6 +216,16 @@ jobs:
           if grep -qE 'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ' "$body"; then
             echo "::error::the review summary contains a credential-shaped string; not posting it"
             exit 1
+          fi
+          # 上限按字符计(jq 的 length 数的是码点,不是字节);超限时截到 60000 字符,给末尾的说明留足余量。
+          # 凭据过滤在上面对全文做过,截断与写摘要页都在它之后。
+          if [ "$(jq -Rs 'length' "$body")" -gt 65536 ]; then
+            echo "::warning::the review summary exceeds the 65536-character comment limit; posting a truncated copy"
+            cat "$body" >> "$GITHUB_STEP_SUMMARY"
+            jq -Rrs --arg url "$RUN_URL" \
+              '.[0:60000] + "\n\n---\n\n(审查总结超过 GitHub 评论上限 65536 字符,以上为截断后的前一部分;完整总结见本次运行的摘要页:" + $url + ")"' \
+              "$body" > "$body.cut"
+            mv "$body.cut" "$body"
           fi
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$body"
 
