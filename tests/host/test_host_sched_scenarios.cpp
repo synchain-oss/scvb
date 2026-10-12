@@ -188,11 +188,14 @@ bool gSettleFailed = false;
 // 意思是「把各轨对齐到同一个位置、从这里开始」。脚本起点的时间线位置却由交接走了多久决定(墙钟量:settle 等到
 // 交接走完,pace 下墙钟越长、走过的样本越多)。它若恰好就是开场定位的目标,这一下定位对 Output 是空操作
 // (时间线连续,读方代号不变),而预取轨照样被冲刷、从这里重新渲染 —— 场景悄悄变成了另一个:「宿主在 Output
-// 自己的位置上重算预取轨」(写方单独换代、读方没跳,见 LS-16)。这种重合 Windows 上碰不到(脚本起点集中在
-// 72704–76800),mac CI 上脚本起点散在约 46000–205000,大约 1/150 的台会撞上(实测见 LS-16 头注),表现为
-// LS-1 / LS-2 / LS-4 的预取轨在开场后丢 2 帧。所以:开场定位应用之前若发现目标就是 Output 下一块要报的位置,
-// 先多跑一块,让这次定位成为往回跳一块的真定位,并把脚本起点(c0、录音、[M] 拍、墙钟)挪到这一块之后 ——
-// 各判据、理想调度差分的对齐都只看 c0 之后,不受影响。没撞上时(绝大多数台)什么都不做。
+// 自己的位置上重算预取轨」(写方单独换代、读方没跳,见 LS-16)。这种重合 Windows 上碰不到(M-inv-lsdrop 的
+// 一次性诊断:Windows CI 160 次,脚本起点全落在 72704–76800),mac CI 上脚本起点散在 46080–204800(中位 98304),
+// 同一诊断把 LS-1 的开场在 mac 上重复 160 次撞上 1 次(那次脚本起点正好是 95232),表现为 LS-1 / LS-2 / LS-4 的
+// 预取轨在开场后丢 2 帧。所以:开场定位应用之前若发现目标就是它生效那一块 Output 要报的位置(带在途旧块时是
+// 放完旧块之后那一块),先多跑一块,让这次定位成为往回跳一块的真定位,并把脚本起点(c0、录音、[M] 拍、墙钟)
+// 挪到这一块之后 —— 各判据、理想调度差分的对齐都只看 c0 之后,不受影响。没撞上时(绝大多数台)什么都不做。
+// 边界:脚本在开场定位**之前**已经做掉的事(例如 sampleInputs 的第一次采样、markNow)发生在多跑的那一块之前;
+// 它们已记下的相对游标(run.inputs、run.mark)随 c0 一起平移,落到 c0 之前,如实反映它们发生的时刻。
 // preRollFrom ≥ 0 只给框架自测用:交接走完后先定位到这里再跑 0.1 s,让脚本起点落在一个确定的位置上。
 Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Script& script,
                 const presence::Thresholds& th = presence::Thresholds{}, std::int64_t preRollFrom = -1)
@@ -220,14 +223,23 @@ Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Scrip
     run.tAtScript = rig.outReportedNow();
     std::size_t beat0 = rig.beats().size();
     double w0 = sched::wallMs();
-    rig.armOpeningSeekGuard([&run, &beat0, &w0](SchedRig& r, std::int64_t target) {
-        if (r.outReportedNow() != target)
+    rig.armOpeningSeekGuard([&run, &beat0, &w0](SchedRig& r, std::int64_t target, std::int64_t effectiveAt) {
+        if (r.outReportedAt(effectiveAt) != target)
         {
             return; // 开场定位本来就是一次真跳变
         }
         r.runCycles(1);
         r.clearRecording();
+        const std::int64_t shift = r.outCursor() - run.c0;
         run.c0 = r.outCursor();
+        for (InputSample& s : run.inputs)
+        {
+            s.rel -= shift; // 开场定位之前已采的样本:相对游标跟着 c0 平移(见头注「边界」)
+        }
+        for (auto& m : run.mark)
+        {
+            m.second -= shift;
+        }
         beat0 = r.beats().size();
         w0 = sched::wallMs();
         ++run.openingNudged;
@@ -2076,6 +2088,7 @@ TEST_CASE("SCHED scenarios scaffold: a lane read one ring lap stale is judged Wr
 // [M-inv-lsdrop] runScenario 的开场定位守卫(见其头注)。交接走完后先把时间线放到「再跑 0.1 s 正好落在开场定位
 // 目标上」的地方(preRollFrom),确定地造出 mac CI 上偶发的那种重合;守卫要把开场定位变回一次真定位,判据与
 // LS-1 lead=4096 bout=1024 同一套(理想调度差分不丢帧、不错音)。没有守卫时这一格红在 `d.lost == 0`(预取轨丢 2 帧)。
+// 脚本在开场定位之前先记一个标记、采一次 Input:守卫多跑一块之后,它们的相对游标要跟着 c0 平移到 -1024。
 TEST_CASE("SCHED scenarios scaffold: an opening seek that lands on the script start position is still a real "
           "transport jump for the Output",
           "[.][sched]")
@@ -2087,7 +2100,9 @@ TEST_CASE("SCHED scenarios scaffold: an opening seek that lands on the script st
     makePrefetch(cfg, 2, 4096);
     const Run run = runScenario(
         "scaffold opening seek on the start position", cfg,
-        [s0](SchedRig& rig, Run&) {
+        [s0](SchedRig& rig, Run& run) {
+            markNow(rig, run, "beforeSeek");
+            sampleInputs(rig, run, 8 * 1024, sec(1.0));
             rig.seek(sched::kNow, s0);
             rig.runFor(sec(2.0));
         },
@@ -2103,6 +2118,44 @@ TEST_CASE("SCHED scenarios scaffold: an opening seek that lands on the script st
         const Diff d = diffVsIdeal(ideal, lane, run, lane);
         CHECK(d.unmatched == 0);
         CHECK(d.lost == 0);
+        CHECK(t.wrong == 0);
+    }
+    CHECK(run.openingNudged == 1);
+    CHECK(run.mark.at("beforeSeek") == -1024);
+    REQUIRE(!run.inputs.empty());
+    CHECK(run.inputs.front().rel == -1024);
+    WARN(run.name << ": tAtScript " << run.tAtScript << " nudged " << run.openingNudged << " beforeSeek "
+                  << run.mark.at("beforeSeek") << " firstInput " << run.inputs.front().rel << " | lane1 "
+                  << str(tally(run, 1)) << " non-mix l1" << describeNonMix(run, 1));
+}
+
+// 同上,开场定位带一个在途旧块(seek(kNow, s0, 1)):Output 先放完旧块才换位置,空操作的条件是「旧块之后那一块
+// 报的位置 == 目标」。脚本起点放在目标前一块上,造出这种重合;守卫按生效游标判,照样把它变回真定位。旧块那一段
+// 与理想调度对不上游标,这里按逐帧在场判(全程 Mix 在场、不错音)。
+TEST_CASE("SCHED scenarios scaffold: an opening seek with a stale Output block that lands on the position after it "
+          "is still a real transport jump for the Output",
+          "[.][sched]")
+{
+    const std::int64_t s0 = alignedSec(2.0);
+    const std::int64_t preRoll = ((sec(0.1) + 1023) / 1024) * 1024;
+    sched::SchedCfg cfg = lanesCfg(3, kFastPace);
+    makePrefetch(cfg, 1, 4096);
+    makePrefetch(cfg, 2, 4096);
+    const Run run = runScenario(
+        "scaffold opening seek with a stale block", cfg,
+        [s0](SchedRig& rig, Run&) {
+            rig.seek(sched::kNow, s0, 1);
+            rig.runFor(sec(2.0));
+        },
+        presence::Thresholds{}, s0 - preRoll - 1024);
+    REQUIRE(run.settled);
+    REQUIRE(run.tAtScript == s0 - 1024); // 旧块之后那一块正好是目标(与守卫无关)
+    for (int lane = 0; lane < 3; ++lane)
+    {
+        INFO("lane " << lane);
+        const Tally t = tally(run, lane);
+        REQUIRE(t.total >= 90);
+        CHECK(t.mixPresent == t.total);
         CHECK(t.wrong == 0);
     }
     CHECK(run.openingNudged == 1);

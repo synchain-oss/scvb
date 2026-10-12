@@ -774,13 +774,20 @@ public:
     int channelOf(int lane) const { return lane + 1; }
     std::int64_t outCursor() const { return outHead_.cursor(); }
     std::int64_t laneCursor(int lane) const { return laneAt(lane).head.cursor(); }
-    // Output 下一块会报给插件的时间线位置(readerOffset 之后、不含还没消费的起播怪癖)。
-    std::int64_t outReportedNow() const { return outHead_.plan(cfg_.outBlock).tReported; }
+    // Output 在游标 cursor 处那一块会报给插件的时间线位置(readerOffset 之后、不含还没消费的起播怪癖;
+    // 按现在的 map 算,不含之后才生效的事件)。outReportedNow = 下一块。
+    std::int64_t outReportedAt(std::int64_t cursor) const { return map_.at(cursor + outHead_.readerOffset()).t; }
+    std::int64_t outReportedNow() const { return outReportedAt(outCursor()); }
 
-    // [M-inv-lsdrop] 开场定位钩子(一次性):下一次**立刻生效**的 seek 应用之前先调 fn(本台, 定位目标);
-    // 在那之前只要跑过一个周期就自动撤掉 —— 它只管「脚本的第一个动作就是定位」那一刻。场景卡的 runScenario
-    // 用它保证开场定位对 Output 是一次真跳变(见那里的注释);本台自己不做任何策略判断。
-    void armOpeningSeekGuard(std::function<void(SchedRig&, std::int64_t)> fn) { openingSeekGuard_ = std::move(fn); }
+    // [M-inv-lsdrop] 开场定位钩子(一次性):下一次**立刻生效**的 seek 应用之前先调
+    // fn(本台, 定位目标, 定位生效的 Output 游标)—— 生效游标 = 当前游标 + staleOutBlocks × b_out(Output 先放完
+    // 在途旧块才换位置),判「这次定位对 Output 是不是空操作」要看那个游标上报的位置。在那之前只要跑过一个周期
+    // 就自动撤掉 —— 它只管「脚本的第一个动作就是定位」那一刻。场景卡的 runScenario 用它保证开场定位对 Output
+    // 是一次真跳变(见那里的注释);本台自己不做任何策略判断。
+    void armOpeningSeekGuard(std::function<void(SchedRig&, std::int64_t, std::int64_t)> fn)
+    {
+        openingSeekGuard_ = std::move(fn);
+    }
     bool laneLive(int lane) const { return laneAt(lane).live; }
     std::int64_t cycles() const { return cycleIndex_; }
     double sr() const { return cfg_.sr; }
@@ -908,9 +915,9 @@ public:
         if (openingSeekGuard_ && (atCursor == kNow || atCursor <= outCursor()))
         {
             // [M-inv-lsdrop] 一次性:见 armOpeningSeekGuard。先取走再调,钩子里跑周期时不会再进来。
-            std::function<void(SchedRig&, std::int64_t)> guard = std::move(openingSeekGuard_);
+            std::function<void(SchedRig&, std::int64_t, std::int64_t)> guard = std::move(openingSeekGuard_);
             openingSeekGuard_ = nullptr;
-            guard(*this, s);
+            guard(*this, s, outCursor() + static_cast<std::int64_t>(staleOutBlocks) * cfg_.outBlock);
         }
         at(atCursor, [s, staleOutBlocks](SchedRig& r) {
             TransportEvent ev;
@@ -1722,7 +1729,7 @@ private:
     std::vector<Range> outputSuspendLog_;
     std::vector<Range> chainSuspendLog_;
 
-    std::function<void(SchedRig&, std::int64_t)> openingSeekGuard_; // [M-inv-lsdrop] armOpeningSeekGuard
+    std::function<void(SchedRig&, std::int64_t, std::int64_t)> openingSeekGuard_; // [M-inv-lsdrop] armOpeningSeekGuard
 
     bool pumping_ = true;
     double paceWall0_ = 0.0;
