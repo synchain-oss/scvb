@@ -13577,7 +13577,18 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     // ⚠ 不能推到 ≥ 0.5s(本格原先推 ~0.7s):Input 照写而 Output 一块不跑满 0.5s 就是 KI-6 的停调形状,
     // 停摆看门狗会闩住全部轨(#379 修 H5 之后不再只清一拍),Output 首块因 inject = 0 走早退 ——
     // 同样什么都证明不了;下面 checkNoResidualRelease 首块的 REQUIRE(本轨电平表读到 ch2)就是拦它的。
-    for (int k = 0; k < 10; ++k)
+    // [B 线 M12b-fix] 「~0.2s」与「< 0.5s」都是墙钟量(停摆看门狗按 steadyNowMs 判),所以按墙钟推,不按块数:
+    // 原写法固定 10 次 pump(20),Windows 上实测 219 ms;mac CI 上 runDispatchLoopUntil 被拉长,同样 10 次实测
+    // 591 ms(run 38194842347 的诊断格),已越过 0.5s。那次没红,是因为看门狗的基线取在 prepare 后的首拍(T1),
+    // 要从 T1 再满 500 ms、且恰有一拍落在那之后才判停摆 —— 余量全看拍点相位。改为:推到墙钟满 200 ms,且 [M] 在
+    // prepare 之后真跑过一拍(Input 读到这次关轨的广播:timerCallback 先 tick —— 重新 claim、绑定、填回 inject ——
+    // 拍末才发广播,且只在已 claim 时发)。成功路径在 max(200 ms, T1) 之后那次 pump 结束就退出,够不到 T1 + 500 ms;
+    // 墙钟上界 400 ms,到点 [M] 还没跑过一拍就红在这里,不让后面的判据替它背锅。
+    const scvb::u32 wantConfigSeq = r.out.runtime().configSeq + 1u;
+    const auto configSeen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
+    const scvb::u64 pushStartMs = scvb::steadyNowMs();
+    const auto pushedMs = [pushStartMs] { return scvb::steadyNowMs() - pushStartMs; };
+    while ((configSeen() < wantConfigSeq || pushedMs() < 200) && pushedMs() < 400)
     {
         for (int i = 0; i < MonoMultiRig::kCount; ++i)
         {
@@ -13594,6 +13605,8 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
         r.ph.timeSamples += kBlock;
         MonoMultiRig::pump(20);
     }
+    INFO("pushed Input-only blocks for " << pushedMs() << " ms wall after prepare");
+    REQUIRE(configSeen() >= wantConfigSeq);
 
     checkNoResidualRelease(r);
 }
