@@ -29,9 +29,9 @@
 //    微操作是「数据写一段 / 发布写头 / 换代 / 几何改写 / 写头归零」这一粒度,所以调度器能让
 //    读方落在写方一块的**中间**(换代了还没写、写了还没发布、写了一半)—— 多线程宿主上这些
 //    状态都真实存在。
-// 3. 读方:被测读方 = 现行 scvb::output::ShmRingMixSource(A-5 会改它,所有调用只经
-//    readUnderTest 一处);LegacyReader = 现行 bind()/read() 的测试内原样副本(来源见类头注),
-//    给 A-5 之后做差分用。读方侧的 Output 行为照 OutputProcessor.cpp:820-831(自身时间线代号
+// 3. 读方:被测读方 = scvb::output::ShmRingMixSource(A-5 已按设计稿 §3.3 重写换代处理,所有调用只经
+//    readUnderTest 一处);LegacyReader = A-5 之前那版 bind()/read() 的测试内原样副本(来源见类头注),
+//    给差分当下界。读方侧的 Output 行为照 OutputProcessor.cpp:820-831(自身时间线代号
 //    podEpoch)与 :870-875(负 t0 整段直通、不读环)建模;几何快照刷新照 OutputSession.cpp:190-205
 //    (按值比对,变了才重绑)。
 // 4. 调度族(见下方各 family 函数):同步;写方领先的循环;回跳与前跳;写方领先时从停调恢复;
@@ -50,13 +50,12 @@
 //     上一圈留下、位置也对的旧数据不算「可读」:读方读它不算错,不读它也不算丢。
 //   · 差分:同步调度下,被测读方的成功集合 ⊇ LegacyReader(现在两者是同一份逻辑,恒成立)。
 //
-// 现行代码在 H4(写方领先时从停调恢复)、读写目标不一致、H1 可用性等族上**预期失败**:
-// 这些用例打 [!shouldfail],另配同名「- precondition」普通用例,REQUIRE 场景确实跑到
-// (回绕次数、读次数、oracle 确实记录到可读数据 / 危险状态)。修复卡(A-5)去掉标记后转绿。
-// 设计稿 LS-13 列为「可能出现 WRONG」的几族(Δ 内两次定位、接近一个环距的跳变)在现行代码上
-// 实测安全的,写成普通用例(A-5 改读方时必须保持);只有构造出真实危险状态并实测出错帧的才打
-// [!shouldfail]。同一族里只有部分格出错时按格拆开(RunCfg::knownBad):[!shouldfail] 只收实测
-// 出错的格,其余格进普通用例 —— 否则族里现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
+// A-3 落地时,A-5 之前的实现在 H4(写方领先时从停调恢复)、读写目标不一致、H1 可用性等族上
+// **预期失败**,那些用例当时打 [!shouldfail];A-5 重写读方后全部转成普通用例(8 条,标记已去掉),
+// 同名「- precondition」普通用例照旧 REQUIRE 场景确实跑到(回绕次数、读次数、oracle 确实记录到
+// 可读数据 / 危险状态)。设计稿 LS-13 列为「可能出现 WRONG」的几族(Δ 内两次定位、接近一个环距的
+// 跳变)在旧实现上实测安全的,从一开始就是普通用例(A-5 改读方时必须保持)。同一族里只有部分格出错
+// 时按格拆开(RunCfg::knownBad 记的是「旧实现在这一格上出错」):两侧格数都 REQUIRE,某格换边当场红。
 //
 // 全部调度用固定种子,结果确定;不起线程(x86 上的双线程压力格测不出 ARM 内存序问题,
 // 本卡不做,见 PR 说明)。运行期文案一律 ASCII(本机 CP936 上中文字面量会触发 C4819)。
@@ -539,9 +538,9 @@ private:
 };
 
 // ===========================================================================
-// §4 LegacyReader —— 现行读方的测试内原样副本
+// §4 LegacyReader —— A-5 之前那版读方的测试内原样副本
 // ===========================================================================
-// 来源:取自本卡基点 21d4520(.cpp 最后一次改动在 c4c623d,.h 最后一次改动在 82d25c0):
+// 来源:取自 A-3 的基点 21d4520(.cpp 最后一次改动在 c4c623d,.h 最后一次改动在 82d25c0):
 //   · bind()  = src/core/output/ShmRingMixSource.cpp:7-30
 //   · read()  = src/core/output/ShmRingMixSource.cpp:75-167
 //   · 成员与初值 = src/core/output/ShmRingMixSource.h:59-85
@@ -549,8 +548,8 @@ private:
 // 另抄了两个只读 getter:acquire()(ShmRingMixSource.h:44)与 channels()(ShmRingMixSource.cpp:45-49),
 // 让旧读方一侧的几何刷新与记账都用它**自己**的快照,不借被测读方的(A-5 改被测读方的 bind /
 // channels() 语义时,旧读方这条下界不跟着变)。
-// A-5 会重写 ShmRingMixSource::read;本副本留作「旧读方」,差分判据拿它当下界。
-// 现在两者逐块等价,由「legacy pin」用例钉住(A-5 改读方时删掉那一条,保留 ⊇ 差分)。
+// A-5 已重写 ShmRingMixSource::read;本副本留作「旧读方」,差分判据拿它当下界(同步族:新读方的成功
+// 集合 ⊇ 旧读方)。A-3 时钉住「副本 == 旧实现」的那条 legacy pin 用例已随 A-5 删除(两者从此不再逐块等价)。
 namespace legacy
 {
 using scvb::AudioRingBinding;
@@ -712,11 +711,11 @@ private:
 using legacy::LegacyReader;
 
 // 被测读方的唯一调用点。readerEpoch = Output 自身时间线代号(OutputProcessor.cpp:820-831 的 podEpoch_),
-// 现行接口用不到;A-5 给 read() 加这个参数时只改这一行。
+// A-5 起由 read() 的第四个参数接收(读方据此分清「自己跳了」与「中间少读了几块」;本模型读方块不分段,
+// 宿主块尾 = t0+n,用四参数便捷版)。
 bool readUnderTest(scvb::output::ShmRingMixSource& src, int64_t t0, float* dst, int n, u64 readerEpoch) noexcept
 {
-    static_cast<void>(readerEpoch);
-    return src.read(t0, dst, n);
+    return src.read(t0, dst, n, readerEpoch);
 }
 
 // ===========================================================================
@@ -868,7 +867,7 @@ struct RunCfg
     int64_t refreshPeriod = 0;
     int64_t readerEnd = 0; // 读方走带计数上界
     u32 seed = 1;
-    // 按构造,现行实现在这一格上预期失败。族里只有部分格会红时,[!shouldfail] 用例只收这些格,
+    // 按构造,旧实现(A-5 之前)在这一格上出错。A-3 时 [!shouldfail] 用例只收这些格(A-5 起转为普通用例),
     // 其余格进普通用例 —— 否则族里现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
     bool knownBad = false;
 };
@@ -896,7 +895,7 @@ struct RunResult
 {
     std::string name;
     bool knownBad = false; // 抄自 RunCfg::knownBad
-    ReaderStat cur; // 被测读方 = 现行 scvb::output::ShmRingMixSource
+    ReaderStat cur; // 被测读方 = scvb::output::ShmRingMixSource(A-5 之后)
     ReaderStat legacy; // LegacyReader
     std::vector<LapStat> laps; // 按读方自身跳变(podEpoch)切圈,统计被测读方
     int64_t readerJumps = 0; // podEpoch 的跳变次数(不含起播那一次)
@@ -910,10 +909,11 @@ struct RunResult
     int64_t leadObservedReads = 0;
     int64_t staleSnapshotReads = 0; // 读方几何快照与段头 channels 不一致时的读次数
     // 读时本块至少有一个环槽里放的是**另一圈**的同槽数据(tag 位置 = 请求位置 ± k·R,布局相符):
-    // 读方若认这块,就是把 ≈ 10.9 s 前 / 后的音频当成本位置。现行实现靠 `w - t0 <= R` 挡它。
+    // 读方若认这块,就是把 ≈ 10.9 s 前 / 后的音频当成本位置。旧实现靠 `w - t0 <= R` 挡它。
     int64_t lapAliasReads = 0;
     int64_t partialBlockReads = 0; // micro:读时写方有一块只做了一半
     int64_t legacyOnlyOk = 0; // 差分:旧读方成功、被测读方失败的块数(⊇ 判据要求 0)
+    std::string firstLegacyOnly; // 第一个这样的块(诊断用:走带计数、位置、读方代号、写头、epoch)
     int64_t curOnlyOk = 0;
     int64_t pinMismatches = 0; // 两读方返回值 / 输出 / 计数任一不同的块数
 };
@@ -1309,6 +1309,13 @@ RunResult runOne(const RunCfg& cfg)
             if (okL && !okC)
             {
                 ++res.legacyOnlyOk;
+                if (res.firstLegacyOnly.empty())
+                {
+                    std::ostringstream os;
+                    os << "cR=" << cR << " t0=" << t0 << " n=" << len << " pod=" << podEpoch << " w=" << wNow
+                       << " epoch=" << ring.header.epoch.load() << " writerBumps=" << w.bumps();
+                    res.firstLegacyOnly = os.str();
+                }
             }
             if (okC && !okL)
             {
@@ -1387,6 +1394,10 @@ std::string summary(const RunResult& r)
        << " bumpBeforeWriteReads=" << r.bumpBeforeWriteReads << " staleSnapshotReads=" << r.staleSnapshotReads
        << " lapAliasReads=" << r.lapAliasReads << " partialBlockReads=" << r.partialBlockReads
        << " legacyOnlyOk=" << r.legacyOnlyOk << " pinMismatches=" << r.pinMismatches;
+    if (!r.firstLegacyOnly.empty())
+    {
+        os << " firstLegacyOnly{" << r.firstLegacyOnly << "}";
+    }
     if (!r.cur.firstWrong.empty())
     {
         os << " firstWrong{" << r.cur.firstWrong << "}";
@@ -1585,7 +1596,7 @@ std::vector<RunResult> runLeadSeekFamily(bool back)
     {
         // 起播位置 1000000、走带计数 100000 处定位:回跳 80000 落在放过的区间里,回跳 400000 落在
         // 从没放过的位置;前跳同样落在没放过的位置。
-        // 回跳超过 Δ/2 时,定位目标落在读方锚点(读方在旧位置上看到换代时的 t0)之前 —— 现行实现
+        // 回跳超过 Δ/2 时,定位目标落在读方锚点(读方在旧位置上看到换代时的 t0)之前 —— 旧实现
         // 读不到,直到读方重新走过锚点(LS-6),这几格 knownBad;回跳 Δ/2 落在锚点之后,不丢。
         const int64_t ds[] = {lead / 2, 2 * lead + 3000, 80000, 400000};
         for (const int64_t d : ds)
@@ -1700,7 +1711,7 @@ std::vector<RunResult> runTwoSeekAcrossRingFamily()
 // 同一次定位(从 1100000 回跳到 400000,那里从没放过),Output 拿到的目标比 Input 的偏 ε(宿主
 // 起播时间戳怪癖、各插件取到的位置不一致)。分两支:
 //   · 同块跳变(lead = 0):读方在自己跳变的那一块观测到换代,锚在 S+ε;
-//   · 写方领先(lead > 0):读方在还没跳的旧位置上先观测到换代,锚在旧位置 —— 现行实现里
+//   · 写方领先(lead > 0):读方在还没跳的旧位置上先观测到换代,锚在旧位置 —— 旧实现里
 //     validFrom_ 唯一真正挡下错读的地方就在这一支(锚点 > S+ε,于是 [S+ε, S) 一直读不出来)。
 std::vector<RunResult> runMismatchFamily(bool leading)
 {
@@ -1726,7 +1737,7 @@ std::vector<RunResult> runMismatchFamily(bool leading)
             std::ostringstream os;
             os << "mismatch lead=" << lead << " eps=" << eps;
             // 同块跳变、Output 目标在写方目标之前(ε < 0):[S+ε, S) 从没写过,而读方锚在 S+ε、写头已
-            // 覆盖 ⇒ 现行实现交出没写过的数据。ε > 0 时读方要的位置写方都写过(或还没覆盖到就读不到)。
+            // 覆盖 ⇒ 旧实现交出没写过的数据。ε > 0 时读方要的位置写方都写过(或还没覆盖到就读不到)。
             cfg.knownBad = !leading && eps < 0;
             cfg.name = os.str();
             out.push_back(runOne(cfg));
@@ -2307,11 +2318,11 @@ TEST_CASE("PROVENANCE oracle: the checks flag a planted stale frame, a wrong lay
 // 调度族判据
 // ===========================================================================
 // 约定:
-//   · 「no wrong frames」= 安全(I1)。现行实现安全的族里两个读方都断言(旧读方副本的注入在这里被抓)。
+//   · 「no wrong frames」= 安全(I1)。旧实现安全的族里两个读方都断言(旧读方副本的注入在这里被抓)。
 //   · 「every lap loses at most 1024 readable frames」= 可用性(按读方自身跳变切圈)。
-//   · [!shouldfail] = 现行实现预期失败;配同名「- precondition」普通用例 REQUIRE 场景确实跑到。
-//     修复卡去掉标记后,这条转成普通用例必须绿。
-//   · 族里只有部分格会红时按格拆开(RunCfg::knownBad):shouldfail 只收预期红的格,其余格进普通用例。
+//   · A-3 时打 [!shouldfail] 的 8 条(旧实现预期失败)已随 A-5 去掉标记,现在都是必须绿的普通用例;
+//     同名「- precondition」普通用例照旧 REQUIRE 场景确实跑到。旧读方只在它本来就安全的族里一起断言。
+//   · 族里只有部分格出错时按格拆开(RunCfg::knownBad = 旧实现在这一格上出错):两侧格数都 REQUIRE。
 namespace
 {
 std::vector<RunResult> cells(const std::vector<RunResult>& fam, bool knownBad)
@@ -2384,37 +2395,13 @@ TEST_CASE("PROVENANCE sync family: both readers are I1-safe and lose nothing, an
     CHECK(staleSnapshot == 0);
 }
 
-TEST_CASE("PROVENANCE legacy pin: LegacyReader is read-for-read identical to the current ShmRingMixSource on every "
-          "family (A-5 deletes this pin)",
-          "[mix][provenance]")
-{
-    // 钉住「副本 == 现行实现」:返回值、交出的样本(逐位)、gap / stall 计数增量,每一块都相同。
-    // A-5 改写 ShmRingMixSource::read 时删掉这一条;差分判据(⊇)留在同步族里。
-    int64_t reads = 0;
-    for (const NamedFamily& f : kAllFamilies)
-    {
-        for (const auto& r : f.get())
-        {
-            INFO(f.name << ": " << summary(r));
-            CHECK(r.pinMismatches == 0);
-            // 逐块相同,则错帧数与首个错帧也相同。旧读方一侧多半走「复用被测读方错帧数」那条路
-            // (account 的 badKnown),这两条钉住复用不丢账、也不丢首个错帧。
-            CHECK(r.legacy.wrongFrames == r.cur.wrongFrames);
-            CHECK(r.legacy.firstWrong == r.cur.firstWrong);
-            reads += r.cur.reads;
-        }
-    }
-    CHECK(reads > 50000);
-}
-
 // --- H1:写方领先的循环 -----------------------------------------------------------------------------
 TEST_CASE("PROVENANCE writer-leading loops (H1): no wrong frames", "[mix][provenance]")
 {
     checkNoWrongFrames(leadLoopFamily(), true);
 }
 
-TEST_CASE("PROVENANCE writer-leading loops (H1): every lap loses at most 1024 readable frames",
-          "[mix][provenance][!shouldfail]")
+TEST_CASE("PROVENANCE writer-leading loops (H1): every lap loses at most 1024 readable frames", "[mix][provenance]")
 {
     checkLapLoss(leadLoopFamily());
 }
@@ -2445,10 +2432,10 @@ TEST_CASE("PROVENANCE writer-leading back seeks (LS-6): no wrong frames", "[mix]
     checkNoWrongFrames(leadSeekBackFamily(), true);
 }
 
-// 回跳超过 Δ/2:目标落在读方锚点之前,现行实现要等读方重新走过锚点才读得到。
+// 回跳超过 Δ/2:目标落在读方锚点之前,旧实现要等读方重新走过锚点才读得到。
 TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) past the reader's anchor: every lap loses at most 1024 "
           "readable frames",
-          "[mix][provenance][!shouldfail]")
+          "[mix][provenance]")
 {
     checkLapLoss(cells(leadSeekBackFamily(), true));
 }
@@ -2470,7 +2457,7 @@ TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) past the reader's anchor:
     }
 }
 
-// 回跳 Δ/2:目标仍在读方锚点之后,现行实现不丢(A-5 必须保持)。
+// 回跳 Δ/2:目标仍在读方锚点之后,旧实现不丢(A-5 必须保持)。
 TEST_CASE("PROVENANCE writer-leading back seeks (LS-6) within half the lead: every lap loses at most 1024 readable "
           "frames",
           "[mix][provenance]")
@@ -2498,7 +2485,7 @@ TEST_CASE("PROVENANCE writer-leading forward seeks (LS-7): no wrong frames and e
 }
 
 // --- H4:写方领先时从停调恢复 -----------------------------------------------------------------------
-TEST_CASE("PROVENANCE writer-leading resume from a stall (H4): no wrong frames", "[mix][provenance][!shouldfail]")
+TEST_CASE("PROVENANCE writer-leading resume from a stall (H4): no wrong frames", "[mix][provenance]")
 {
     checkNoWrongFrames(leadResumeFamily(), false);
 }
@@ -2523,7 +2510,7 @@ TEST_CASE("PROVENANCE writer-leading resume from a stall (H4): no wrong frames -
 }
 
 // --- Δ 内两次定位 ----------------------------------------------------------------------------------
-// 两次定位都落在环距之内:写方写的每个环槽都是「本位置」的数据,现行实现在这里是安全的(实测)。
+// 两次定位都落在环距之内:写方写的每个环槽都是「本位置」的数据,旧实现在这里是安全的(实测)。
 // 设计稿 LS-13 把它列为「可能出现 WRONG」,这里钉成普通用例,A-5 改读方时必须保持。
 TEST_CASE("PROVENANCE two seeks within the lead: no wrong frames", "[mix][provenance]")
 {
@@ -2540,9 +2527,9 @@ TEST_CASE("PROVENANCE two seeks within the lead: no wrong frames", "[mix][proven
 }
 
 // 第一次往前跳将近一个环距、Δ 内又跳回来:读方前方的环槽里是下一圈的数据,写头却又回到了一个环距
-// 之内 —— 现行实现的套圈判据(`w - t0 <= R`)拦不住,读方把下一圈的数据当成本位置交出去。
+// 之内 —— 旧实现的套圈判据(`w - t0 <= R`)拦不住,读方把下一圈的数据当成本位置交出去。
 TEST_CASE("PROVENANCE two seeks within the lead, the first one nearly a ring forward (LS-13): no wrong frames",
-          "[mix][provenance][!shouldfail]")
+          "[mix][provenance]")
 {
     checkNoWrongFrames(twoSeekAcrossRingFamily(), false);
 }
@@ -2566,7 +2553,7 @@ TEST_CASE("PROVENANCE two seeks within the lead, the first one nearly a ring for
 // --- 读写目标不一致 --------------------------------------------------------------------------------
 TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output target before the writer's: no wrong "
           "frames",
-          "[mix][provenance][!shouldfail]")
+          "[mix][provenance]")
 {
     checkNoWrongFrames(cells(mismatchSyncFamily(), true), false);
 }
@@ -2588,7 +2575,7 @@ TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output ta
     }
 }
 
-// ε > 0:读方要的位置写方都写过,或者还没覆盖到就读不到 —— 现行实现安全(A-5 必须保持)。
+// ε > 0:读方要的位置写方都写过,或者还没覆盖到就读不到 —— 旧实现安全(A-5 必须保持)。
 TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output target after the writer's: no wrong "
           "frames",
           "[mix][provenance]")
@@ -2606,7 +2593,7 @@ TEST_CASE("PROVENANCE reader/writer target mismatch in the same block, Output ta
 
 TEST_CASE("PROVENANCE reader/writer target mismatch behind a leading writer: no wrong frames", "[mix][provenance]")
 {
-    // 现行实现里 validFrom_ 唯一真正挡下错读的一支(见 runMismatchFamily 头注)。
+    // 旧实现里 validFrom_ 唯一真正挡下错读的一支(见 runMismatchFamily 头注)。
     const std::vector<RunResult>& fam = mismatchLeadFamily();
     REQUIRE(fam.size() == 10u);
     checkNoWrongFrames(fam, true);
@@ -2621,7 +2608,7 @@ TEST_CASE("PROVENANCE reader/writer target mismatch behind a leading writer: no 
 }
 
 // --- 接近一个环距的跳变 ---------------------------------------------------------------------------
-// 写方领先时单次定位 ≈ R−Δ(前跳那几格会把读方前方的环槽换成下一圈的数据):现行实现靠套圈判据
+// 写方领先时单次定位 ≈ R−Δ(前跳那几格会把读方前方的环槽换成下一圈的数据):旧实现靠套圈判据
 // `w - t0 <= R` 拦住,实测安全。钉成普通用例,A-5 改读方时必须保持。
 TEST_CASE("PROVENANCE jumps of nearly one ring length (LS-13): no wrong frames", "[mix][provenance]")
 {
@@ -2646,7 +2633,7 @@ TEST_CASE("PROVENANCE garbage start position on the Output (H1'): no wrong frame
 }
 
 TEST_CASE("PROVENANCE garbage start position on the Output (H1'): every lap loses at most 1024 readable frames",
-          "[mix][provenance][!shouldfail]")
+          "[mix][provenance]")
 {
     checkLapLoss(garbageStartFamily());
 }
@@ -2667,8 +2654,7 @@ TEST_CASE("PROVENANCE garbage start position on the Output (H1'): every lap lose
 }
 
 // --- 几何重写 + 读方快照 25 Hz 刷新 ----------------------------------------------------------------
-TEST_CASE("PROVENANCE geometry rewrite seen through a stale reader snapshot: no wrong frames",
-          "[mix][provenance][!shouldfail]")
+TEST_CASE("PROVENANCE geometry rewrite seen through a stale reader snapshot: no wrong frames", "[mix][provenance]")
 {
     checkNoWrongFrames(geometryFamily(), false);
 }
@@ -2715,7 +2701,7 @@ TEST_CASE("PROVENANCE reads that land inside a writer block, loops: no wrong fra
 // t0,上一代的写头仍「覆盖」这一块,读方把从没写过的环槽交出去。
 TEST_CASE("PROVENANCE reads that land inside a writer block, same-block back seek to unplayed audio cut right after "
           "the bump: no wrong frames",
-          "[mix][provenance][!shouldfail]")
+          "[mix][provenance]")
 {
     checkNoWrongFrames(cells(interleaveSeekFamily(), true), false);
 }
@@ -2732,7 +2718,7 @@ TEST_CASE("PROVENANCE reads that land inside a writer block, same-block back see
     REQUIRE(bad[0].bumpBeforeWriteReads > 0); // 读方确实落在过「换代了还没写」的窗口里
 }
 
-// 同一族的其余格(随机前缀、写方领先):现行实现安全(A-5 必须保持)。
+// 同一族的其余格(随机前缀、写方领先):旧实现安全(A-5 必须保持)。
 TEST_CASE("PROVENANCE reads that land inside a writer block, back seek to unplayed audio, other cuts and leads: no "
           "wrong frames",
           "[mix][provenance]")

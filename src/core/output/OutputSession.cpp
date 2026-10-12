@@ -119,6 +119,7 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
     if (cr == Registry::ClaimResult::kConflict)
     {
         state_.store(OutputClaimState::kObserver, std::memory_order_release);
+        stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
         return state_.load(std::memory_order_relaxed);
     }
@@ -186,7 +187,8 @@ void OutputSession::refreshAudioGeometry(std::size_t idx)
     //
     // 重绑在 [M] 线程做是安全的:ShmRingMixSource::bind 是「不可变快照 + release-store」发布,
     // 旧绑定由 owned_ 保活到进程结束,音频线程 read() 每块 acquire 一次、靠**绑定指针变化**
-    // 自己重置代际状态 —— 音频线程仍然只读快照、一次都不回读段头几何(几何纪律未被放宽)。
+    // 自己重置代际状态 —— 音频线程仍然只按快照寻址、从不按段头几何寻址(几何纪律未被放宽;[A-5] 起
+    // 音频线程每块按值比对段头 channels、不一致整块不读,只比对不寻址,见 ShmRingMixSource::read)。
     const AudioRingBinding* b = sources_[idx].acquire();
     if (b == nullptr || !b->bound || b->header == nullptr || b->data == nullptr)
     {
@@ -309,7 +311,27 @@ void OutputSession::pullFeatures()
 
 void OutputSession::evaluateChannels(u64 nowMs)
 {
+    // [KI-6] 停摆看门狗的 hold:被闩住的轨本拍不上线 —— connected_mask 不置位、不注入(online 与 inject
+    // 同一个闸,inject 只在 online 分支里算)。修前 tick() 先在这里按在线判据把位置回去、再让看门狗清,
+    // 看门狗进入 tripped 后每拍直接返回,于是 mask 只空一拍、下一拍又被置回(H5):Input 的 5s 滞回永远
+    // 等不满,宿主停调 Output 期间人声一直无声。被闩期间走 else 分支清 onlinePrev_,所以 hold 释放后
+    // 这一轨按「新上线」重走 [J32] 握手(等 muted 确认位或 200ms 才注入)—— 这就是 §4.3-b 让位协议的
+    // 「重新静音 + 注入」;CtrlPlane 每 ≥200ms 只放一轨,所以各轨是逐轨接回的。
+    //
+    // 例外(只在恢复后的让位序列里,停摆期间一律闩):这一轨的 Input 此刻仍报 muted 确认位 —— 停调短于
+    // 约 5.5s,它还没等满滞回、没切直通。让位要防的是「直通原声 + 注入混音」叠在一起,而它现在没有原声,
+    // 当拍接回不会叠加;排队只会让它白白多静音 (k−1)×200ms(15 轨时末轨约 2.8s)。已经切直通的轨
+    // (muted 位已清)照旧排队、逐轨接回。
+    // ⚠ 残留上限(PR #379 第 2 轮评审):muted 位是 Input 的 [M] 按**目标档**近似发布的,切直通的同一拍就清
+    // (InputProcessor::timerCallback),与这里不同步。停调长度恰好 ≈5.5s、Input 切直通与 Output 恢复落在
+    // 同一两拍里时,这里可能读到旧的 muted=1 当拍放行注入、下一拍读到 0 又闩回去 —— ≤1~2 拍(40~80ms)的
+    // 「原声 + 混音」叠加加一次 connected 位抖动,之后照常排队接回;量级在 J32 的 200ms 窗之内。另:被放行的
+    // 轨仍在 CtrlPlane 的让位序列里占一个 200ms 的位,快照里 muted 轨与直通轨混在一起时直通轨要白等这些位 ——
+    // 各轨 Input 同一拍看到位被清、通常同时切换,混合形态基本只出现在上面那个边界上。
+    const u32 hold = ctrl_.watchdogHoldMask();
+    const bool tripped = ctrl_.watchdogTripped();
     u32 inject = 0;
+    u32 stalled = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
@@ -347,6 +369,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
         // 调用、缺口自然停止增长,只看「无新缺口」会把持续断流判成恢复(v4 实测 P0-2 假恢复)。
         // 开场条件之二:本拍确实有「写头没推到」的饿读。走带停止 / 宿主没在给块时写头同样
         // 冻结,但那时要么读得到数据、要么根本没在读 —— 一笔饿读都不会有,不该报。
+        // [A-8] 走带在跑时挂起轨保持在注入集里,read() 每块照调、饿读持续增长,开场判据照旧成立。
         const u32 sf = sources_[idx].stallFailCount();
         if (sf != lastStallFail_[idx])
         {
@@ -374,24 +397,59 @@ void OutputSession::evaluateChannels(u64 nowMs)
             misalignedSinceMs_[idx] = nowMs;
             lastGapCount_[idx] = gc;
         }
+        // [A-6] 正向在场:自最近一笔缺口以来这一轨确实读出过数据(见 positivePresence)。每拍每轨都要调(它顺带
+        // 维护「在注入集里却没被读」的计时),所以单列一行,不放进下面恢复判定的短路里。
+        // injectMask_ 此刻还是上一拍发布的值(本拍的在循环之后才写)。
+        const bool present =
+            positivePresence(idx, (injectMask_.load(std::memory_order_relaxed) & (1u << (ch - 1))) != 0, nowMs);
         const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
 
         // 恢复判定:必须「该轨数据真的在推进」,**不能只看「不再产生新缺口」**。
-        // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended →
-        // online=false → 退出 injectMask → processBlock 根本不再调 read() → 缺口自然不再增长。
+        // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended → 缺口不再增长
+        // (走带停住时它掉线、退出 injectMask,read() 根本不再被调;[A-8] 起走带在跑时它保持在线、照读,
+        // 但写头不动的失败读只记 stallFail、不计缺口 —— 两条路上缺口都不长)。
         // 只看「无新缺口」会把这种**持续断流的静默**判成恢复,横幅在实际仍无声时撤下。
         // 所以恢复要同时满足:槽活跃 + 心跳新鲜 + 采样率一致 + 已绑定 + 未挂起 + 有新帧写入。
         const bool dataHealthy = slotActive && hbFresh && srMatch && bound && !suspended && dataAdvancing;
-        if (!misaligned && dataHealthy)
+        if (!misaligned && dataHealthy && present)
         {
             // 本次失准发作结束 → 上桥的 misalignCount 归零,「路由失准」横幅与逐行 ⚠ 随之撤下
             // (进程累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
+            // [A-6] 还要求正向在场(present):写方在推进(dataAdvancing)不等于读方读得到。H3(读方一直领先写头,
+            // 见 ShmRingMixSource 头注「持续读不到」)里失准把本轨踢出注入集、read() 不再被调、缺口停止增长,1s 后
+            // 「无新缺口 ∧ 数据在推进」照样成立 —— 不加这一条横幅会在实际仍无声时撤下,本轨回到注入集、宽限走完再亮,
+            // 以约 1s 的周期闪(P0-2 的同族假恢复)。
             misalignBaseline_[idx] = gc;
         }
 
-        const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended;
+        const bool inHold = (hold & (1u << (ch - 1))) != 0;
+        const bool inputStillMuted = slot != nullptr && (slot->flags.load(std::memory_order_acquire) & kFlagMuted) != 0;
+        const bool held = inHold && (tripped || !inputStillMuted);
+        // [A-8] E2「挂起 ≠ 掉线」(设计稿 §3.6,用户裁定 U3(a)):走带在跑时写头冻结(宿主在静音段 / 无 region 处
+        // 暂停调用 Input,或用户旁路它)**不再让轨掉线** —— 其余条件(槽活跃 ∧ 心跳新鲜 ∧ 采样率一致 ∧ 已绑定 ∧
+        // ¬失准 ∧ 不在 hold 里)全都成立就照旧置 connected_mask 位、照旧注入。修前写头冻结 500ms 即掉线、退出注入集,
+        // Input 那边随之转「不健康」:下一句开头先要等 [M] 发现写头动了(≤40ms)、重新置位、再走 80ms 淡入
+        // (实测句首丢 85–150ms),停得比 5.5s 长时 Input 已切直通,句首还先出一段未平衡原声(E2-a);离线导出里
+        // 这些墙钟量按倍速放大(E2-b)。保持在线之后,写方一恢复,读方同一块就读到。
+        // · 走带停住时(transportPlaying_ 为假)沿用 500ms 规则掉线 —— 停走带期间所有写头本来就冻着,这条规则
+        //   决定的是起播时的接回方式,Cubase / REAPER 停走带的行为不变(LS-15 钉住)。离线导出走同一条规则。
+        // · 只看走带、不看 Output 自己被没被调用:Output 与 Input 一起被停调(整链停调、Output 的 playhead 快照停在
+        //   「在跑」)时看门狗不会触发(没有在写的写头),这里保持在线,恢复无缝;Output 被停调而 Input 在写,
+        //   由看门狗的 hold 闩住(上面 held,本条服从它:被闩的轨不因挂起被保持在线)。两者互为镜像。
+        // · 心跳陈旧照旧掉线(hbFresh);失准的轨照旧掉线(¬misaligned),失准恢复判据(dataHealthy;[A-6] 起另要求
+        //   正向在场,见上)不因挂起放宽。
+        // · 「挂起」照常上桥(stallEpisode_ → ChannelConnInfo::suspended,中性提示);Input 面板在宿主挂起期间
+        //   仍显示「已连接」(用户裁定 U3(c))。
+        // · 宿主因总线输入静音而停调 Output(H2)仍走 KI-6 路径,本条不涉及。
+        const bool keepThroughStall = transportPlaying_;
+        const bool online =
+            slotActive && hbFresh && srMatch && bound && !misaligned && (!suspended || keepThroughStall) && !held;
         if (online)
         {
+            if (suspended)
+            {
+                stalled |= (1u << (ch - 1)); // 保持在线的挂起轨([A] 判「注入轨全部停滞」用,U3(b)-ii)
+            }
             registry_.setConnectedMaskBit(ch);
             if (!onlinePrev_[idx])
             {
@@ -426,6 +484,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
             onlinePrev_[idx] = false;
         }
     }
+    stalledMask_.store(stalled, std::memory_order_release);
     injectMask_.store(inject, std::memory_order_release);
 }
 
@@ -531,16 +590,16 @@ void OutputSession::tick(u64 nowMs)
     pullFeatures(); // 在 evaluateChannels 之后:activeMask 用本拍刚算出的 connected_mask
 
     // 停摆看门狗(§4.2 [J52]):自身 blockCounter 停滞 + 在线轨 write_head 推进 → 清 mask。
+    // 清是当拍做(evaluateChannels 本拍已按在线判据置过位);此后由 hold 闩住,见 evaluateChannels 头注。
     const WatchdogResult wr = ctrl_.tickWatchdog(nowMs);
     if (wr.action == WatchdogAction::kClearMask)
     {
         registry_.clearConnectedMask();
+        stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
     }
-    else if (wr.action == WatchdogAction::kReacquireBit)
-    {
-        registry_.setConnectedMaskBit(wr.channel);
-    }
+    // kReacquireBit:CtrlPlane 已放开这一轨的 hold。这里**不**直接置位 —— 置位只有 evaluateChannels 一个
+    // 口子:下一拍它按与其它上线同一套判据置位(停摆期间掉线的轨不会被硬置一拍),并重走 [J32] 握手。
 
     refreshGlobalInfo(nowMs);
     consumeCommands(nowMs);
@@ -558,6 +617,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     // 只在**改组**清;release(同组 releaseResources/重新 prepare)不清 —— 那不该丢已采集的数据。
     frameStore_.reset();
     fpWatch_.reset(); // 基线随特征一起作废,失配定谳不得跨组留存(04 §4.5)
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 
@@ -574,6 +634,10 @@ void OutputSession::release(u64 nowMs)
     releaseSlot();
     releaseSegments();
     resetChannelTracking();
+    // [KI-6] 停用期间 tick 不跑看门狗、基线冻在停用前:不清的话重新 prepare 后首拍(宿主首块还没来)会把整段
+    // 停用时长算成停摆,误触发并闩住全部轨。停摆中则照旧闩着(见 CtrlPlane::resetWatchdogUnlessTripped)。
+    ctrl_.resetWatchdogUnlessTripped();
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
     reap(nowMs);
@@ -695,6 +759,38 @@ u32 OutputSession::misalignCountRecent(u32 channel) const
     return gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
 }
 
+bool OutputSession::positivePresence(std::size_t idx, bool wasInjected, u64 nowMs) noexcept
+{
+    // [A-6] 失准恢复的正向在场判据(设计稿 §3.4):自最近一笔缺口以来,读方确实从这一轨读出过数据。
+    // 「从最近一笔缺口」而不是「从发作开始」:发作期间读成功过几块、随后又持续读不到(H3 那一形)时,
+    // 早先那几块不能替后来的读不到作证。由读方自己在计缺口 / 读成功的同一处维护(readOkSinceLastGap),
+    // 精确到块 —— 缺口之后同一拍里紧接着读到的那一块也算,所以普通的瞬时失准撤下时机与修前相同。
+    const ShmRingMixSource& src = sources_[idx];
+    const u32 tries = src.readAttemptCount();
+    if (!wasInjected || tries != lastReadAttempts_[idx])
+    {
+        unreadInjectedSinceMs_[idx] = nowMs; // 被读了 / 本来就不在注入集里:「在注入集里却没被读」重新起算
+    }
+    lastReadAttempts_[idx] = tries;
+    if (src.readOkSinceLastGap())
+    {
+        return true;
+    }
+    // 兜底:本轨在注入集里待满 kUnreadInjectedFallbackMs、读方一次都没被调用 —— Output 根本没在读它(面板上关了
+    // 这一轨,混音时被启用位挡掉;或宿主没在调 Output),「读到过数据」无从谈起,退回旧判据(无新缺口 ∧ 数据在推进),
+    // 免得一条用户自己关掉的轨把失准横幅永久钉住。H3 不会走到这里:它在注入集里的每一块都在被读(只是读不到)。
+    return nowMs - unreadInjectedSinceMs_[idx] >= kUnreadInjectedFallbackMs;
+}
+
+u32 OutputSession::readOkCount(u32 channel) const
+{
+    if (channel < 1 || channel > kMaxChannels)
+    {
+        return 0;
+    }
+    return sources_[static_cast<std::size_t>(channel - 1)].readOkCount();
+}
+
 u64 OutputSession::writeHead(u32 channel) const
 {
     if (channel < 1 || channel > kMaxChannels)
@@ -716,6 +812,7 @@ u64 OutputSession::epoch(u32 channel) const
 void OutputSession::forceClearMask() noexcept
 {
     registry_.clearConnectedMask();
+    stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
 }
 
@@ -769,7 +866,9 @@ void OutputSession::resetChannelTracking() noexcept
         lastGapCount_[i] = gc;
         misalignBaseline_[i] = gc;
         lastStallFail_[i] = sources_[i].stallFailCount();
+        lastReadAttempts_[i] = sources_[i].readAttemptCount(); // [A-6] 同理:读方计数也是进程寿命的
     }
+    unreadInjectedSinceMs_.fill(0); // 调用方随后都把 injectMask 清零:下一拍按「不在注入集里」从那一拍重新起算
     stallEpisode_.fill(false);
     starvingSeen_.fill(false);
 }
