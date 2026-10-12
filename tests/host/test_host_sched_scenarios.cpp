@@ -1841,8 +1841,8 @@ std::string str(const AlarmTiming& a)
 // LS-16 宿主在 Output 自己的位置上重算预取轨(Output 的时间线不跳)
 // ===========================================================================
 //
-// lane 0 live;lane 1、2 预取(块长 1024)提前 L。正常开场定位、放 1 s,然后**定位到 Output 下一块正要报的那个
-// 位置**:Output 的时间线连续,读方代号不变(读方没跳);预取轨照样被冲刷回 Output 游标、从这里重新渲染到
+// lane 0 live;lane 1、2 预取(块长 1024)提前 L。交接走完后先放 1 s(不做开场定位),然后**定位到 Output 下一块
+// 正要报的那个位置**:Output 的时间线连续,读方代号不变(读方没跳);预取轨照样被冲刷回 Output 游标、从这里重新渲染到
 // C_O + L + b_out —— 写方单独往回跳了一个提前量、换了一代。真实宿主上的对应:播放中宿主把某条预取轨已经算好的
 // 音频作废、从当前播放位置重算(例如编辑了还没播到的 region),或者定位到恰好就是当前播放的位置。
 // 读方手里只有 epoch 与写头:换代后第一次看到的写头正好比上一代最后观测到的头多一个步长(「远超一步」暂定要求
@@ -1851,6 +1851,8 @@ std::string str(const AlarmTiming& a)
 // 是读方信息上分不出「写方往回重算」与「写方往前跳了不到一步」(后者那一段是上一圈的旧数据),只能不读
 // (A-5 头注 R4 / R5 一类)。M-inv-lsdrop 在 mac CI 上查到的那一族偶发红就是这个形状:开场定位碰巧落在脚本起点上
 // (见 runScenario 头注),LS-1 / LS-2 / LS-4 的开场于是变成了这里的「原地重算」。
+// 这一下定位是脚本里第一个定位、而它之前已经跑过周期:runScenario 的开场定位守卫不碰它(守卫只管第一个周期之前
+// 的定位),这一格同时钉住了这一点。
 // 判据分两条:前提用例钉修前修后都成立的事实(不错音、live 轨不丢、预取轨至多丢两块、不误报);`[!shouldfail]`
 // 那条按 LS-12 领先轨句首已裁定的「至多丢一个写方块」判 —— 现在丢两块,读方改动(或裁定接受两块)之前预期失败。
 struct Ls16Cell
@@ -1871,7 +1873,6 @@ const std::vector<Ls16Cell>& ls16Cells()
             std::ostringstream os;
             os << "LS-16 lead=" << lead;
             out.push_back(Ls16Cell{lead, runScenario(os.str(), cfg, [](SchedRig& rig, Run& run) {
-                                       rig.seek(sched::kNow, alignedSec(2.0));
                                        rig.runFor(alignedSec(1.0));
                                        markNow(rig, run, "reloc");
                                        run.val["relocT"] = rig.outReportedNow();
@@ -3498,7 +3499,7 @@ TEST_CASE("SCHED LS-16: re-rendering the prefetched lanes at the Output's own po
         REQUIRE(c.run.settled);
         const std::int64_t reloc = c.run.mark.at("reloc");
         const std::int64_t relocT = c.run.val.at("relocT");
-        // Output 的时间线在开场定位之后一处不连续都没有:那次「定位」对 Output 是空操作。
+        // Output 的时间线在脚本里一处不连续都没有:那次「定位」对 Output 是空操作(也没被开场定位守卫改成真定位)。
         REQUIRE(outputDiscontinuities(c.run, 0) == 0);
         // 预取轨确实从 Output 的位置重新渲染了一遍(同一个时间线位置渲染了两次);live 轨没有。
         for (int lane = 0; lane < 3; ++lane)
@@ -3523,7 +3524,7 @@ TEST_CASE("SCHED LS-16: re-rendering the prefetched lanes at the Output's own po
             const Tally pre = tally(c.run, lane, 0, reloc);
             const Tally post = tally(c.run, lane, reloc, kBig);
             REQUIRE(pre.total >= 40);
-            CHECK(pre.mixPresent == pre.total); // 开场定位是真定位:重算之前全在场
+            CHECK(pre.mixPresent == pre.total); // 重算之前全在场
             CHECK(pre.wrong == 0);
             CHECK(post.wrong == 0); // I1:读方不认的那两块也没有被读成别的位置的数据
             CHECK(post.total - post.mixPresent <= (lane == 0 ? 0 : 2));
