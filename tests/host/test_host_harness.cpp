@@ -10812,6 +10812,9 @@ TEST_CASE("HOST SL-255:防抖窗内重复布防 → 到点时刻从**最后一�
 //     自己重新排到队尾。JUCE 的消息队列是 FIFO(Windows 整批换出按序派发,mac 每次取下标 0),定时器回调与
 //     AsyncUpdater 走的都是这一个队列。起跑那条消息开始派发时,队列里恰好有一份探针,它是在起跑之前投的,
 //     所以排在收尾那条消息之前 ⇒ 起跑与收尾之间必有一次探针派发,它看到的一定是 running。抓手不再看泵的粒度。
+//     ⚠ 这两条(队列 FIFO、Timer 回调走 CallTimersMessage 进同一个队列)是 .juce-version 当前版本(8.0.8)在 Windows /
+//     mac 上的**实现细节**,不是公开 API 的保证。升 JUCE、加别的平台后端时要复核;这一格要是又退化成偶发红,先查这里。
+//     探针在泵里自旋(每轮几万次派发),只占消息线程;别把它挪进要求消息线程空闲的用例。
 //   · 重试轮数、取消之后的两条判据都不变;墙钟 3 s 内没抓到(= 这一轮根本没起跑)就进下一轮,8 轮都没有就红在
 //     REQUIRE(cancelledInFlight)。
 // ---------------------------------------------------------------------------
@@ -13647,7 +13650,9 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     // 要从 T1 再满 500 ms、且恰有一拍落在那之后才判停摆 —— 余量全看拍点相位。改为:推到墙钟满 200 ms,且 [M] 在
     // prepare 之后真跑过一拍(Input 读到这次关轨的广播:timerCallback 先 tick —— 重新 claim、绑定、填回 inject ——
     // 拍末才发广播,且只在已 claim 时发)。成功路径在 max(200 ms, T1) 之后那次 pump 结束就退出,够不到 T1 + 500 ms;
-    // 墙钟上界 400 ms,到点 [M] 还没跑过一拍就红在这里,不让后面的判据替它背锅。
+    // 墙钟上界 400 ms 只在每轮开头查,所以失败路径最坏是 400 ms 再加一整轮(三块 Input + pump(20);mac 上一轮实测
+    // 约 59 ms,单次泵偶尔更长),看门狗要从 T1 再满 500 ms 才闩,余量仍在。到点 [M] 还没跑过一拍就红在这里,不让后面
+    // 的判据替它背锅。
     const scvb::u32 wantConfigSeq = r.out.runtime().configSeq + 1u;
     const auto configSeen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
     const scvb::u64 pushStartMs = scvb::steadyNowMs();
