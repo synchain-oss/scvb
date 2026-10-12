@@ -12,9 +12,10 @@ name: macOS out-of-process host test (reusable)
 # `macos-oop` 调用(needs `macos-build`),所以跑不跑完全继承 build-vst3.yml 的触发规则
 # (pull_request→dev/feature/**、push→dev、workflow_dispatch);被 release.yml 经 build-vst3.yml 调起时,
 # caller 上的 `!startsWith(github.ref, 'refs/tags/')` 让它整个跳过 —— mac 失败绝不挡 Windows 发版。
-# macos-build 红了也照跑(caller 只在它被跳过 / 取消时不跑):bundle 在 macos-build 的第 10 步就上传了,
-# 后面某一道门红(例如 ctest)时 bundle 照样在,本 job 照样给出自己那一份结论;bundle 根本没传上来时,
-# 本 job 只出 warning、不测(macos-build 的红已经说明了原因),见步骤 2。
+# macos-build 红了也照跑(caller 只在它被跳过 / 取消时不跑):build-macos.yml 只要编出来、过了 bundle 断言
+# (步骤 8c)就会在步骤 10 上传 bundle —— 这两步不看 ctest / auval / pluginval 红没红,所以 macos-build 红在
+# 那些门上时 bundle 照样在,本 job 照样给出自己那一份结论;bundle 根本没传上来(编译红、bundle 断言红)时,
+# 本 job 只出 warning、不测(macos-build 的红已经说明了原因),见步骤 3。
 # **action**:只用 run: 步骤 + 仓里已 pin 的 GitHub 官方 action(checkout / upload-artifact 同 build-vst3.yml,
 # download-artifact 同 release.yml,同一个 40 位 SHA);org 白名单之外的 action 会让整个 run startup_failure。
 # 不编 JUCE:宿主只链 AudioToolbox / CoreFoundation,外加产品的 state 编码两个源文件(见 tests/macos/auhost/CMakeLists.txt)。

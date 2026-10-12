@@ -27,6 +27,9 @@
 //   F3 读方 H1:循环后领先轨整圈读不到 ⇒ LS-4 lane 1 / 2 每圈丢失 > 1,lane 0 与 LS-1 照绿
 //   F4 lane 0 从没交给 Output(Input 一直直通)⇒ LS-1 lane 0 只有原声,不算在场
 //   F5 Input 按渲染游标而不是时间线写环(HostCallbacks 没生效的形状)⇒ LS-4 全轨丢失
+//   F6 lane 0 有 2 帧读成上一圈环(错 R 样本,反相)⇒ LS-1 lane 0 只红在 Wrong = 0 这一条
+//      (2/234 帧,在场率仍 ≥ 99%:这一格专门给「Wrong = 0」那条判据配牙)
+//   F7 LS-4 每圈 lane 1 有 1 帧读成上一圈环 ⇒ 只红在 LS-4 的 Wrong = 0(每圈丢 1 帧,仍在 ≤ 1 的容差内)
 // 自测用例全部跑完再汇总(一格红不影响其余格的判断)。
 
 #include <algorithm>
@@ -375,7 +378,9 @@ enum class Fault
     MisreadLane2, // F2
     H1LeadLanes, // F3
     RawLane0, // F4
-    CursorTimeline // F5
+    CursorTimeline, // F5
+    WrongBurstLane0, // F6
+    WrongFrameEveryLap // F7
 };
 
 // 一组假 SCVB:Input 按时间线写环(帧位置 & (R−1)),Output 按自己的时间线读环并居中混音。
@@ -385,6 +390,10 @@ class FakeScvb
 {
 public:
     static constexpr int kHandoverCycles = 40;
+    // F6 那 2 帧的时间线起点:LS-1 判定窗(约 0.6–5.6 s 音频)里,帧对齐。
+    static constexpr std::int64_t kBurstT0 = (93 + 200) * presence::kFrame;
+    // F7 那 1 帧:LS-4 循环 [141, 141 + 93.75) 帧里的第 40 帧,每圈都读错一次。
+    static constexpr std::int64_t kLapBurstT0 = (141 + 40) * presence::kFrame;
     static constexpr float kMixGain = 0.5f; // 居中:L = R = kMixGain · x
 
     explicit FakeScvb(Fault f) : fault_(f)
@@ -446,6 +455,16 @@ public:
                 if (fault_ == Fault::MisreadLane2 && l == 2)
                 {
                     t -= 512;
+                }
+                const bool aliased = (fault_ == Fault::WrongBurstLane0 && l == 0 && t >= kBurstT0 &&
+                                      t < kBurstT0 + 2 * presence::kFrame) ||
+                                     (fault_ == Fault::WrongFrameEveryLap && l == 1 && t >= kLapBurstT0 &&
+                                      t < kLapBurstT0 + presence::kFrame);
+                if (aliased)
+                {
+                    // 读到的是环里早一圈(t − R)的内容:载波反相,与期望的相关 ≈ −1。
+                    mix += static_cast<float>(presence::sampleAt(presence::laneTone(l), t - presence::kRingR));
+                    continue;
                 }
                 const std::size_t idx = static_cast<std::size_t>(t & (presence::kRingR - 1));
                 if (ringT_[static_cast<std::size_t>(l)][idx] == t)
@@ -607,6 +626,29 @@ inline int selfTest()
         const fake::FakeRun r = fake::runFake(ls4, Fault::CursorTimeline);
         check(r.jd.measured && !r.jd.pass, "F5 cursor-as-timeline: LS-4 fails");
         check(!r.jd.lanePass[0] && !r.jd.lanePass[1] && !r.jd.lanePass[2], "F5 cursor-as-timeline: every lane fails");
+    }
+    // F6:lane 0 有 2 帧错音,在场率仍够 ⇒ 只有 Wrong = 0 那条判据接得住。
+    {
+        const fake::FakeRun r = fake::runFake(ls1, Fault::WrongBurstLane0);
+        const LaneStats& st = r.jd.total[0];
+        check(r.jd.measured && !r.jd.pass, "F6 2-frame ring-aliased read on lane 0: LS-1 fails");
+        check(!r.jd.lanePass[0] && r.jd.lanePass[1] && r.jd.lanePass[2], "F6: only lane 0 fails");
+        check(st.wrong == 2, "F6: exactly the 2 aliased frames are Wrong (" + std::to_string(st.wrong) + ")");
+        check(st.mixPresent >= static_cast<int>(std::ceil(ls1.minPresentFraction * st.frames)),
+              "F6: lane 0 presence alone would still pass (" + std::to_string(st.mixPresent) + "/" +
+                  std::to_string(st.frames) + "), so the red comes from the Wrong = 0 criterion");
+    }
+    // F7:LS-4 每圈 lane 1 错 1 帧 ⇒ 每圈丢失仍 ≤ 1,只有 Wrong = 0 接得住。
+    {
+        const fake::FakeRun r = fake::runFake(ls4, Fault::WrongFrameEveryLap);
+        check(r.jd.measured && !r.jd.pass, "F7 one ring-aliased frame per lap on lane 1: LS-4 fails");
+        check(!r.jd.lanePass[1] && r.jd.lanePass[0] && r.jd.lanePass[2], "F7: only lane 1 fails");
+        bool withinLost = !r.jd.windows.empty();
+        for (const WindowResult& w : r.jd.windows)
+        {
+            withinLost = withinLost && w.lanes[1].wrong == 1 && w.lanes[1].lost() <= ls4.maxLostPerLap;
+        }
+        check(withinLost, "F7: every lap has exactly 1 Wrong frame on lane 1 and stays within the lost <= 1 allowance");
     }
     std::printf("[self-test] %d cases, %d failed\n", cases, failed);
     return failed == 0 ? 0 : 1;

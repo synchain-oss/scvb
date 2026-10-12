@@ -8,7 +8,8 @@
 #
 # 复用的产品 / 测试源码(只读,路径相对仓库根):
 #   src/core/state/StateCodec.cpp、InputStateCodec.cpp —— 给 Input 写通道号用的 state 容器编码,
-#     与插件解码是同一份实现(写错格式时插件会整块拒载,宿主读回核对当场红);
+#     与插件解码是同一份实现(写错格式时插件会整块拒载,宿主读回核对当场红);StateCodec.cpp 的 CRVS
+#     解码引用 src/core/analysis/PanCurve.cpp 的 isPanCurvePointUsable,所以它也编进来(纯 C++,无依赖);
 #   src/core/ipc/SegmentLayout.h、Registry.h —— registry 段布局(只读映射,取 pid / connected_mask);
 #   tests/support/presence_meter.h —— A 线 A-1 的逐轨在场判据。
 # 本目录的 auhost_engine.h / auhost_judge.h 只用标准库,自测(scvb_auhost --self-test)可在任何平台编译。
@@ -36,7 +37,8 @@ get_filename_component(SCVB_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABS
 add_executable(scvb_auhost
   scvb_auhost.cpp
   ${SCVB_REPO_ROOT}/src/core/state/StateCodec.cpp
-  ${SCVB_REPO_ROOT}/src/core/state/InputStateCodec.cpp)
+  ${SCVB_REPO_ROOT}/src/core/state/InputStateCodec.cpp
+  ${SCVB_REPO_ROOT}/src/core/analysis/PanCurve.cpp)
 target_include_directories(scvb_auhost PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${SCVB_REPO_ROOT}/src/core
