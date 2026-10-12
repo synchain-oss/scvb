@@ -52,10 +52,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 // 同机独占守卫:本二进制已由 test_host_harness.cpp 引入一次;这里再引一次是为了让本文件的用例不依赖
-// 「别的 TU 恰好引过」(头注:每进程至多取一次锁,重复引入安全)。只在 Windows 上有这把锁。
-#if defined(_WIN32)
+// 「别的 TU 恰好引过」(头注:每进程至多取一次锁,重复引入安全)。[B 线 M12b] 两平台都有这把锁
+// (Windows 命名互斥体;macOS 按 uid 的 flock,M12a),不再只在 Windows 上引。
 #include "support/exclusive_guard.h"
-#endif
 
 #include <algorithm>
 #include <cstddef>

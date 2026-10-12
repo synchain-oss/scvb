@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_host_track_name —— [J150] 04 §7 步 2「轨道名自动填入 label」的宿主级用例。
 //
-// 真 ScvbInputAudioProcessor + 真 ScvbOutputAudioProcessor,经**真实** Win32 共享内存段(ctrl 段
+// 真 ScvbInputAudioProcessor + 真 ScvbOutputAudioProcessor,经**真实**共享内存段(PlatformSegmentBackend;ctrl 段
 // 轨道名区)通信,手工跑消息循环让两侧 25Hz Timer 真实触发。钉的是生产那几跳:
 //   宿主 updateTrackProperties → Input timer 写 ctrl 段轨道名区 → Output timer 读(三道门)→
 //   runtime_.channels[].label → 广播区(Input 侧可见)/ 存档(PRMS channels_auto_label)。

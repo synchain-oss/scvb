@@ -46,7 +46,7 @@
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
 #include "ipc/CtrlPlane.h" // [SL-463] CtrlHeader / kCtrlSegmentSize(坏 ctrl 段夹具)
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // [B 线 M12b] Windows = SegmentBackendWin32,mac = SegmentBackendPosix
 #include "ipc/VizPlane.h"
 #include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
 #include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
@@ -1324,7 +1324,7 @@ TEST_CASE("SL-458(集成,真 Processor):载入工程时目标组 ctrl 段打不�
 
     // 预置 kProjectGroup 的 ctrl 段并把 abi 写坏(同 tests/core 里「换组失败返回 kAbiMismatch」
     // 那格的构造,换成真 Win32 段)。句柄在本用例结束前一直持有,段不会被内核回收。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::SegmentView bad;
     REQUIRE(backend.createOrOpen(
                 L"Local\\" + scvb::segmentLogicalName(static_cast<scvb::u32>(kProjectGroup), scvb::SegmentKind::kCtrl),
@@ -3560,7 +3560,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
 
     // 先确认起点:旧组的 viz 段确实开着(否则下面的断言证明不了什么)。
     {
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::VizPlane probe(backend, kFromGroup);
         REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
     }
@@ -3579,7 +3579,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
     for (int waited = 0; waited < 3000 && !attached; waited += 100)
     {
         juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-        scvb::SegmentBackendWin32 backend;
+        scvb::PlatformSegmentBackend backend;
         scvb::VizPlane probe(backend, kToGroup);
         attached = (probe.attachReadOnly() == scvb::InitResult::kOk);
     }
@@ -4512,7 +4512,7 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
     // 取 ∓70 而不是 ∓100:硬左会让右声道恒 0,L/R 比就成了除零,判据反而不成立。
     // stereo 源 + width=100 → 子声像 = clamp(pan∓100),解析比:pan=−70 → L/R≈1.79,+70 → ≈0.56。
     constexpr float kCurvePan = -70.0f; // 曲线:偏左
-    constexpr float kAutomatedPan = 70.0f; // 宿主已录自动化:偏右,与曲线镜像
+    static constexpr float kAutomatedPan = 70.0f; // 宿主已录自动化:偏右,与曲线镜像(static:lambda 里不必捕获)
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, kCurvePan, replaced, replacedLocked));
     REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 1);
     CHECK(segmentsOfTrack(r.out, kTestChannel).front().pan == kCurvePan);
@@ -4522,7 +4522,7 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
 
     // 模拟宿主自动化 Read 档把已录值顶进参数。包 gesture 的理由同 setTrackManual 头注:
     // 裸写在 Read 档宿主上会被当场顶回去。
-    const auto writeAutomation = [panParam, kAutomatedPan] {
+    const auto writeAutomation = [panParam] {
         panParam->beginChangeGesture();
         panParam->setValueNotifyingHost(panParam->convertTo0to1(kAutomatedPan));
         panParam->endChangeGesture();
@@ -5975,7 +5975,7 @@ TEST_CASE("HOST SL-481:兄弟 Input 接手同一通道后,原实例析构不得�
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager(25Hz Timer 要它)
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kTestGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(probe.inputSlot(kTestChannel) != nullptr);
@@ -6031,11 +6031,11 @@ namespace
 template<typename Header>
 struct Sl463PoisonedSegment
 {
-    scvb::SegmentBackendWin32& backend;
+    scvb::PlatformSegmentBackend& backend;
     scvb::SegmentView view;
     Header* header = nullptr;
 
-    Sl463PoisonedSegment(scvb::SegmentBackendWin32& b, const std::wstring& fullName, std::size_t size,
+    Sl463PoisonedSegment(scvb::PlatformSegmentBackend& b, const std::wstring& fullName, std::size_t size,
                          std::size_t dataOffset)
         : backend(b)
     {
@@ -6079,7 +6079,7 @@ TEST_CASE("HOST SL-463:首次选通道时 registry abi 不符 → 请求结果 a
     constexpr int kGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     probe.header()->abi.store(scvb::kScvbAbi + 1, std::memory_order_release); // 本组 registry 由另一 abi 的 SCVB 建
@@ -6109,7 +6109,7 @@ TEST_CASE("HOST SL-463:换通道时目标 audio 段打不开 → 会话回滚到
     constexpr int kFrom = 5;
     constexpr int kTo = 6;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kGroup, kTo),
                                                          kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
     {
@@ -6141,7 +6141,7 @@ TEST_CASE("HOST SL-463:改组时新组 ctrl 段 abi 不符 → 组号不变,请�
     constexpr int kToGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::CtrlHeader> poisoned(backend, scvb::segmentCtrlName(kToGroup), scvb::kCtrlSegmentSize,
                                                     scvb::kCtrlBroadcastOffset);
     {
@@ -6172,7 +6172,7 @@ TEST_CASE("HOST SL-463:改组后新组 audio 段打不开 → 组号已换,请�
     constexpr int kToGroup = 4;
     constexpr int kCh = 5;
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     Sl463PoisonedSegment<scvb::AudioRingHeader> poisoned(backend, scvb::segmentAudioName(kToGroup, kCh),
                                                          kSl463AudioSegmentSize, sizeof(scvb::AudioRingHeader));
     {
@@ -8007,7 +8007,7 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
     Rig::pumpMessages(400);
 
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane probe(backend, static_cast<scvb::u32>(kTestGroup));
     REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
 
@@ -10160,7 +10160,7 @@ TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必�
     // 模拟「Output 进程挂死」:**不**调 releaseResources(state 仍 kSlotActive、mask 位仍在),
     // 只把 OutputSlot 的心跳**持续拨旧**。Output 的 [M] 仍在跑、每 250ms 会刷回心跳,所以
     // 必须在每次泵消息**之前**重新拨旧 —— 一次性拨旧会被它刷掉,那样测的就不是这条路了。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::Registry probe(backend, kTestGroup);
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     scvb::OutputSlot* os = probe.outputSlot();
@@ -10848,7 +10848,7 @@ scvb::state::Segment sl363Seg(double t0Sec, double t1Sec, float pan, float volDb
 // 只读 attach 本组 viz 段并读一帧;段不在 / 撕裂读满次数 ⇒ false。
 bool sl363ReadViz(scvb::u32 group, scvb::VizSnapshot& out)
 {
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane probe(backend, group);
     if (probe.attachReadOnly() != scvb::InitResult::kOk)
     {
@@ -11963,12 +11963,12 @@ TEST_CASE("HOST SL-399 H5:写回窗内全量分析没有段 ⇒ 窗内陈旧 aut
     const auto win = r.coverageWindow();
     REQUIRE(win.endS > win.startS);
 
-    const int ch = kTestChannel;
+    static constexpr int ch = kTestChannel; // static:lambda 里不必捕获(clang -Wunused-lambda-capture)
     const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
 
     // 全量重分析一趟,同时把 min_segment 档写进 runtime(写法同 SL-391 的 countAt:
     // 这里钉的是 `startAnalysis` 读不读这个字段,不走桥)。
-    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+    const auto analyzeAll = [&r, &win](int minSegmentMs) {
         r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
         return segmentsOfTrack(r.out, ch);
@@ -12137,10 +12137,10 @@ TEST_CASE("HOST SL-399 H5c:clearManual 档下窗内未锁手编段被清、锁�
     const auto win = r.coverageWindow();
     REQUIRE(win.endS > win.startS);
 
-    const int ch = kTestChannel;
+    static constexpr int ch = kTestChannel; // static:lambda 里不必捕获(clang -Wunused-lambda-capture)
     const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
 
-    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+    const auto analyzeAll = [&r, &win](int minSegmentMs) {
         r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
         return segmentsOfTrack(r.out, ch);
@@ -13085,6 +13085,29 @@ void setTrackEnabled(ScvbOutputAudioProcessor& out, int ch, bool on)
     ++out.runtime().configSeq;
 }
 
+// [B 线 M12b] 关轨之后,等 Output 的 [M] 真跑过一拍(启用位图已推给 [A])再推下一块,期间不推块。
+// 原先是固定的 pump(100)(SL-488 首格注释写「≥2 拍 [M] tick」):Windows 上 25Hz Timer 准点,100ms 里
+// 必有两拍;mac CI 上同一个 Timer 实得间隔 p50 92 ms / p90 179 ms,100ms 里可能一拍都没有 —— 位图没推
+// 下去,关掉的轨照常在母线上(SL-488 首格在 mac 上就这样红过:③ 的 12 块恒为 0.354、本轨电平表 0.5)。
+// soloBlock 不泵消息,所以这一拍只能落在这里。
+// 条件:Input 读到的广播区 config_seq 追上了这次递增。[M] 的 timerCallback 先存启用位图、同一拍末尾才
+// publishConfigBroadcast(config_seq = configSeq + 1),所以追上 ⇒ 位图已在 [A] 手里。上界是墙钟 400 ms
+// (steadyNowMs,与挂起判定同一个时钟;不按名义 ms 累加 —— mac 上 runDispatchLoopUntil 会被拉长)。截止只在
+// 两次 pump 之间查,mac 上单次 runDispatchLoopUntil 实测可被拉长到百 ms 量级(诊断里 40 ms 那档最长 199 ms),
+// 所以**失败路径**的总时长不严格保证低于写头冻结判挂起的 500 ms(kSuspendStallMs);那条路本来就要红 ——
+// 到点没追上就红在这里,不让后面的判据替它背锅。成功路径在 [M] 那一拍处理完就退出。
+void pumpUntilTrackConfigApplied(MonoMultiRig& r)
+{
+    const scvb::u32 want = r.out.runtime().configSeq + 1u;
+    const auto seen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
+    const scvb::u64 deadline = scvb::steadyNowMs() + 400;
+    while (seen() < want && scvb::steadyNowMs() < deadline)
+    {
+        MonoMultiRig::pump(10);
+    }
+    REQUIRE(seen() >= want);
+}
+
 // 跑到 ch1 的声音稳定混进母线(注入延迟走完、fade 到 1、busXfade 稳在替换态)。返回最后一块。
 SoloBlock settleSolo(MonoMultiRig& r)
 {
@@ -13140,7 +13163,7 @@ TEST_CASE("HOST SL-488:多轨在注入时面板关掉一轨,那一轨 80ms 淡�
     REQUIRE(corrWithSine(last) > 0.99);
 
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100); // ≥2 拍 [M] tick,把启用位图推给 [A];期间不推块
+    pumpUntilTrackConfigApplied(r); // 把启用位图推给 [A];期间不推块
 
     // ① 关轨后的首块:仍是 ch1 的声音、与继续走的正弦同相(修前逐位为 0)。
     const SoloBlock first = soloBlock(r, 0.5f);
@@ -13192,7 +13215,7 @@ TEST_CASE("HOST SL-488:总线直通期间关掉的轨,恢复混音后不被当�
         REQUIRE(r.out.meterSnapshot().trackPeak[0] == 0.0f);
     }
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f);
@@ -13216,7 +13239,7 @@ TEST_CASE("HOST SL-488:宿主 bypass 期间关掉的轨,解除 bypass 后不被�
         soloBlock(r, 0.5f, /*bypassed=*/true);
     }
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     for (int k = 0; k < 2; ++k)
     {
         soloBlock(r, 0.5f, /*bypassed=*/true);
@@ -13306,7 +13329,7 @@ TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,�
     // 先关 ch2/ch3,跑满它们的淡出,让 ch1 成为唯一还在 inject 里的轨。
     setTrackEnabled(r.out, 2, false);
     setTrackEnabled(r.out, 3, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     SoloBlock last;
     for (int k = 0; k < 12; ++k)
     {
@@ -13322,7 +13345,7 @@ TEST_CASE("HOST SL-521:播放中关掉最后一条轨,淡出乘在真样本上,�
 
     // 关掉最后一条轨。
     setTrackEnabled(r.out, 1, false);
-    MonoMultiRig::pump(100);
+    pumpUntilTrackConfigApplied(r);
     std::vector<SoloBlock> tail;
     for (int k = 0; k < 12; ++k)
     {

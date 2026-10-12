@@ -375,12 +375,15 @@ endif()
 #   · 那两个 TU 里的 createEditor() 会把 WebViewHost/WebView2 拖进来(harness 不需要 GUI);
 #   · createPluginFilter() 在两侧同名,同进程托管两个插件会撞符号。
 # 见 src/output/OutputPluginEntry.cpp 头注。
-# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**(Win32 CreateFileMapping),
-# 属重量级进程外资源测试,不该在非 Windows 上进默认 ctest 集合。
-if(WIN32)
+# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**,只在有真段后端的平台上定义。
+# [B 线 M12b] 原先仅 WIN32;M12b 起 Windows 与 macOS 都编都跑:用例里直接建段的地方一律写
+# PlatformSegmentBackend(Windows = SegmentBackendWin32 / CreateFileMapping,macOS = SegmentBackendPosix /
+# shm_open + flock),同机独占守卫 support/exclusive_guard.h 两平台都有真实现(M12a)。只放开条件,
+# 块内源列表不动,Windows 上的源集合逐字不变。其余非 Windows 平台没有真段后端,仍不定义。
+if(WIN32 OR APPLE)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
-  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
+  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真共享内存段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
   # [A-1] 宿主调度模拟器两份落点,用例一律打 `[.][sched]`:主条目默认不跑,由下面的
   # `scvb_host_sched_tests` 显式选中。
@@ -420,7 +423,6 @@ else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # [SL-311] 显式上界。此前这一套**没有** TIMEOUT 属性,吃 ctest 的默认 1500s ——
 # 一次真挂死要占住机器 25 分钟以上(实测见过 `***Timeout 2278.13 sec`),而它此刻
 # 正持着 `Local\SCVB-ipc-tests`,全机别的 agent 一起等。
@@ -457,7 +459,36 @@ add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # ⚠ 这个数字**不负责收残留**。受控复现里(注入永不返回的用例 + TIMEOUT 30)ctest 到点
 # 确实杀掉了被测进程,返回后立刻数与 5 秒后再数都是 0;但另一次真实场景里残留确实出现过,
 # 成因还没查清。兜底在 `scripts/gates.ps1` gate 6 前后那两次孤儿扫描,不在这里。
+#
+# [B 线 M12b] 上面这些观测与 900 都是 Windows 的;这一条只在 Windows 上登记,macOS 上同一套分成四片(else 段)。
+if(WIN32)
+add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
+else()
+# [B 线 M12b] macOS:同一个二进制按 Catch2 的 `--shard-count 4 --shard-index <i>` 分成四条,
+# scvb_host_tests_shard1of4 … shard4of4。分片按声明顺序连续切,四片的并集恰好是主条目的全部非隐藏格
+#(不加也不漏;`[.][sched]` 照旧只归下面的 scvb_host_sched_tests)。
+#
+# **为什么要分**(macos-15 arm64 CI 实测,run 38167022531 / 38169510581,不分片的一条):
+#   · 900 s 到点被杀,只跑完 182 / 181 格,其余没跑;跑完的格**全绿**。同一格的耗时中位数是 Windows CI
+#     的 2.34 倍,慢在等待而不是算力:同一进程里 25Hz juce::Timer 的实得间隔 p50 92 ms / p90 179 ms,
+#     runDispatchLoopUntil(1) 实得 p50 10 ms(Windows CI 同一测法 40.5 ms / 1.0 ms),而这里的用例多是
+#     「泵消息直到某个 Timer 驱动的条件成立」。整轮声明 NSProcessInfo 活动(App Nap 豁免,另试过加
+#     LatencyCritical)实测没有改善(Timer p50 102 / 144 ms),粒度来自 runner 环境,测试里改不了。
+#   · 整套估计约 1260 s(跑完的格取实测、其余按 2.34 倍外推)。不为一个平台把拦挂死的线抬到 1500 s
+#     附近(那就失去了 SL-311 要的「早拦」),改成分片,每片仍用上面那条 900 s 线。
+#   · 分片不省总时长:四条照样串行(exclusive_guard 互斥,mac 的 ctest 步不带 -j)。它保的是每条都在
+#     900 s 线下,以及一片挂死被杀时另几片的结论还在 —— 被杀的那片会在 POSIX 上留下无主段(SIGKILL 来不及
+#     shm_unlink),build-macos.yml 的 11a 残段基线随之红,这是对的。
+# 切点按格数、不按耗时,所以四片不等长。实测(run 38174830485,macos-15 arm64):144.8 / 249.2 / 544.4 /
+# 458.6 s,最长那片对 900 s 约 1.65 倍余量(分片前按格外推的估计是 141 / 251 / 530 / 334 s,第 4 片偏乐观)。
+foreach(scvb_host_shard RANGE 3)
+  math(EXPR scvb_host_shard_no "${scvb_host_shard} + 1")
+  add_test(NAME scvb_host_tests_shard${scvb_host_shard_no}of4
+           COMMAND scvb_host_tests --shard-count 4 --shard-index ${scvb_host_shard})
+  set_tests_properties(scvb_host_tests_shard${scvb_host_shard_no}of4 PROPERTIES TIMEOUT 900)
+endforeach()
+endif()
 
 # [A-1] scvb_host_sched_tests:宿主调度模拟器(A 线)的独立条目。同一个二进制,只靠 Catch2 的
 # 过滤串 `[sched]` 选出 `host/test_host_sched*.cpp` 里打 `[.][sched]` 的用例:
