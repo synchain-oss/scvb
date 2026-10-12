@@ -10,7 +10,7 @@
 - **是**:一个人在一台 Apple Silicon Mac 上、约 1 小时内能照着做完的清单,外加要带回的材料和回收表模板。
 - **不是**:对 LUNA 的"支持声明"。结果要由统筹脱敏后再回填到 [DAW_COMPATIBILITY.md](../DAW_COMPATIBILITY.md) 的 LUNA 节和 [daw-support-tiers.md](daw-support-tiers.md)(按其 §0 四处同改)。
 - **不做**:Pro Tools(不在 macOS beta 范围内)、GarageBand(不支持)、Logic(未在 Logic 实测)。
-- 统筹会先把不需要 DAW 的项目测完(zip 内容、哈希、`auval`),这些不派给验收人。
+- 统筹会先把不需要 DAW 的项目测完(zip 内容、哈希、统筹机器上的 `auval`),这些不派给验收人。验收人在自己的机器上再跑一次 `shasum` 和 `auval`(§2),用来确认本机的 AU 登记正常,不是重复统筹的工作。
 
 ## 1. 测什么包、用什么素材
 
@@ -47,7 +47,7 @@ killall -9 AudioComponentRegistrar
 - `killall` 提示 `No matching processes` 可以忽略。
 - 这个 beta **没有签名也没有公证**,所以 `xattr` 那两行不能省。
 
-**2. 验证三个 Audio Unit**(命令与 `INSTALL.txt` 第 7 步一致;每条都应以 `AU VALIDATION SUCCEEDED` 结尾)。把三条的最后几行保存下来,是要带回的材料之一:
+**2. 验证三个 Audio Unit**(命令与 `INSTALL.txt` 第 7 步相同,只是多截取了末三行(`| tail -3`);每条都应以 `AU VALIDATION SUCCEEDED` 结尾)。把三条的最后几行保存下来,是要带回的材料之一:
 
 ```
 auval -v aufx Scvi Snch | tail -3
@@ -71,7 +71,7 @@ auval -v aufx Scvm Snch | tail -3
 
 ## 4. 验收项
 
-级别:**P0** = 不过就挡发版;**P1** = 失败需要记录,所有者签字才能降级;**P2** = 只记录。
+级别:**P0** = 挡发版(其中 T4 / T5 失败可经所有者签字降级为 KI,见 §4.2);**P1** = 如实记录,由统筹定处置(写进 KNOWN_ISSUES 还是修);**P2** = 只记录。
 
 | 级别 | 项 | 操作 | 通过标准 | 要带回的东西 |
 |---|---|---|---|---|

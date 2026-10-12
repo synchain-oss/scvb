@@ -278,4 +278,4 @@ A 线(宿主调度加固)留下的残余(提前处理的轨恢复时句首少约
 | LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 尚未真机测试;首个 macOS beta 发布前计划做一次真机验收。设计上预期(未实测):自动化用 Latch,LUNA 没有 Write;Output 不能放在 Folder 轨上;Input 不能放进 Record FX 槽;用 Apollo 时请切到 Core Audio 模式或关闭 ARM;用 Power 硬停用 Output 会无声约 5.5 秒(KI-6) |
 | Logic Pro(macOS,Apple Silicon) | — | **Tier 3(beta / 未在 Logic 实测)** | 未在 Logic 实测。只有 Audio Unit(Logic 不加载 VST3)。设计上预期(未实测):用 Latch 全曲打印;只打印局部区间可能被平线覆盖;先 Create Track 建好 Aux 轨;旁路 Output 即停止调音;冻结用 Source Only。不支持 GarageBand |
 
-> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。
+> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3 / Audio Unit),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio(03 §4.7)不在 v1 支持矩阵内。macOS 的两行是 beta:macOS 上还没有任何宿主经过真机验证。
