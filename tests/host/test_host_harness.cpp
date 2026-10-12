@@ -1615,8 +1615,15 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
 //   ③ 解除旁路后接回:总线输入回到静音(Input 一直在静音档 —— 挂起期间它始终认为 Output 健康,U3(c)),
 //      Output 的混音在 80 ms 内由弱到满(不是当块满幅),随后稳态。
 // 宿主侧总线在这里手工接:Output 的输入 = Input 本块的输出(Rig::runBlocks 给 Output 喂空缓冲,测不出直通)。
-// 旁路走 JUCE 默认的 processBlockBypassed(Input 没覆写它 ⇒ 原样直通、不写环)。每块泵 10 ms 消息 ≈ 实时
-// (一块 10.7 ms):500 ms 停滞门限是墙钟量。多轨时只旁路一条不触发回原声,由 sched 的「E2 bypass lane 1 of 3」钉。
+// 旁路走 JUCE 默认的 processBlockBypassed(Input 没覆写它 ⇒ 原样直通、不写环)。多轨时只旁路一条不触发回原声,
+// 由 sched 的「E2 bypass lane 1 of 3」钉。
+// 两个时间域分开判([B 线 M12b-fix]):
+//   · 「旁路之后多久才回原声」由 [M] 决定 —— 写头冻结 ≥ kSuspendStallMs(500 ms)是**墙钟**量(steadyNowMs,
+//     [M] 25Hz 拍上判),所以它的上下界按墙钟量:逐块记 Output 处理这一块时的 steadyNowMs(与 [M] 同一个时钟),
+//     取旁路那一块与交叉开始那一块之差。每块泵 10 ms 消息:Windows 上近似实时(一块 10.7 ms 样本),样本差与
+//     墙钟差几乎相同;mac CI 上 runDispatchLoopUntil 被拉长,一块的墙钟是样本时长的两倍多,墙钟先到 500 ms 时
+//     样本才走了约 0.2 s —— 按样本量的下界在那里失真(run 38191293784 红过:+0.2027 s 样本)。
+//   · 交叉长度(3840 样本)、原声稳态、解除旁路后同块接回、淡入形状都在 [A] 上逐样本发生,照旧按样本判。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to raw through an 80 ms crossfade, "
           "un-bypassing rejoins the mix",
@@ -1629,7 +1636,8 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
 
     std::vector<float> busL; // 逐样本:Output 的输入(L)
     std::vector<float> outL; // 逐样本:Output 的输出(L)
-    const auto step = [&r, &busL, &outL](bool bypassed, float amp = 0.25f) {
+    std::vector<scvb::u64> outWallMs; // 逐块:Output 处理这一块时的 steadyNowMs(第 k 块 = 样本 [k·kBlock, (k+1)·kBlock))
+    const auto step = [&r, &busL, &outL, &outWallMs](bool bypassed, float amp = 0.25f) {
         Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
         if (bypassed)
         {
@@ -1645,6 +1653,7 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
         }
         const float* bus = r.outBuf.getReadPointer(0);
         busL.insert(busL.end(), bus, bus + kBlock);
+        outWallMs.push_back(scvb::steadyNowMs());
         r.out.processBlock(r.outBuf, r.midi);
         const float* o = r.outBuf.getReadPointer(0);
         outL.insert(outL.end(), o, o + kBlock);
@@ -1704,8 +1713,14 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     }
     INFO("bypass at " << sb << ", crossfade " << xStart << " .. " << xEnd << ", end " << su);
     REQUIRE(xStart < su); // ← 删掉「全部停滞回原声」时,旁路期间输出一直是空混音
-    CHECK(xStart - sb >= static_cast<std::size_t>(0.3 * kSr)); // 要等 [M] 坐实停滞,不是当块就切
-    CHECK(xStart - sb <= static_cast<std::size_t>(1.5 * kSr));
+    // 多久之后才回原声:按墙钟判(见头注)。旁路那一块与交叉开始那一块各自送进 Output 时的 steadyNowMs 之差;
+    // 样本差只记录、不判。
+    const std::size_t blockLen = static_cast<std::size_t>(kBlock);
+    const scvb::u64 wallToRawMs = outWallMs[xStart / blockLen] - outWallMs[sb / blockLen];
+    const double samplesToRawS = static_cast<double>(xStart - sb) / kSr;
+    INFO("raw crossfade starts " << wallToRawMs << " ms wall / " << samplesToRawS << " s of samples after bypass");
+    CHECK(wallToRawMs >= 300u); // 要等 [M] 坐实停滞,不是当块就切
+    CHECK(wallToRawMs <= 1500u);
     REQUIRE(xEnd >= xStart);
     CHECK(xEnd - xStart >= 3840 - 64); // 80 ms @48k
     CHECK(xEnd - xStart <= 3840 + 64);
@@ -1749,9 +1764,13 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     }
     CHECK(cleared);
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
-    WARN("A-8 U3(b)-ii: raw crossfade starts +" << static_cast<double>(xStart - sb) / kSr << " s after bypass, lasts "
-                                                << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
-                                                << " samples after un-bypass");
+    // 旁路段里一块的平均墙钟(一块的样本时长 = 10.67 ms):两个时间域差多少,一眼看得出。
+    const double bypassMsPerBlock = static_cast<double>(outWallMs[su / blockLen - 1] - outWallMs[sb / blockLen]) /
+                                    static_cast<double>((su - sb) / blockLen - 1);
+    WARN("A-8 U3(b)-ii: raw crossfade starts +"
+         << wallToRawMs << " ms wall / +" << samplesToRawS << " s of samples after bypass (bypass blocks ran at "
+         << bypassMsPerBlock << " ms wall each), lasts " << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
+         << " samples after un-bypass");
 }
 
 // ---------------------------------------------------------------------------
