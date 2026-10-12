@@ -1070,7 +1070,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     {
         injectHasData = injectHasData || ((inject & (1u << ch)) != 0 && hasData[static_cast<std::size_t>(ch)]);
     }
-    const bool allStalled = inject != 0 && (inject & ~session_.stalledMask()) == 0 && !injectHasData;
+    const bool allStalled = inject != 0 && !injectHasData;
     if (!allStalled)
     {
         stalledRawLatched_ = false;
