@@ -1930,57 +1930,6 @@ int suspendedBeats(const Run& r, int lane, std::int64_t rel0, std::int64_t rel1)
     return n;
 }
 
-// M12BFIX-DIAG: wall clock at a relative cursor, linearly interpolated between [M] beats.
-double diagWallAt(const Run& r, std::int64_t rel)
-{
-    const sched::MBeat* lo = nullptr;
-    const sched::MBeat* hi = nullptr;
-    for (const sched::MBeat& b : r.beats)
-    {
-        const std::int64_t br = b.outCursor - r.c0;
-        if (br <= rel)
-        {
-            lo = &b;
-        }
-        if (br >= rel)
-        {
-            hi = &b;
-            break;
-        }
-    }
-    if (lo == nullptr && hi == nullptr)
-    {
-        return -1.0;
-    }
-    if (lo == nullptr)
-    {
-        return hi->wallMs;
-    }
-    if (hi == nullptr || hi->outCursor == lo->outCursor)
-    {
-        return lo->wallMs;
-    }
-    return lo->wallMs + (hi->wallMs - lo->wallMs) * static_cast<double>(rel - (lo->outCursor - r.c0)) /
-                            static_cast<double>(hi->outCursor - lo->outCursor);
-}
-
-// M12BFIX-DIAG: max |(wall - wall[key]) - samples(rel - mark[key])| over beats in [rel0, rel1), ms.
-double diagMaxDriftMs(const Run& r, const std::string& key, std::int64_t rel0, std::int64_t rel1)
-{
-    double m = 0.0;
-    for (const sched::MBeat& b : r.beats)
-    {
-        const std::int64_t br = b.outCursor - r.c0;
-        if (br < rel0 || br >= rel1)
-        {
-            continue;
-        }
-        const double d = (b.wallMs - r.wall.at(key)) - 1000.0 * toSec(br - r.mark.at(key));
-        m = std::max(m, std::abs(d));
-    }
-    return m;
-}
-
 // 旁路格的共同前提:交接走完、旁路前该轨在场、旁路段宿主一块都没调用它、墙钟跨得过 500 ms 门限。
 void requireBypassScenario(const Run& r, int lane)
 {
@@ -2603,13 +2552,6 @@ TEST_CASE("SCHED LS-11a (H5): with the Output not called the vocals fall back to
         const std::int64_t back = firstFrame(r, lane, resume, kBig, isMix);
         CHECK(back >= 0);
         CHECK(back <= resume + sec(2.0));
-        FAIL_CHECK("M12BFIX-DIAG LS-11a lane " << lane << ": firstRaw +" << toSec(firstRaw - susp) << " s samples / +"
-                                               << (diagWallAt(r, firstRaw) - r.wall.at("suspend"))
-                                               << " ms wall after suspend (bounds 5.0..6.0 s); back +"
-                                               << toSec(back - resume) << " s samples / +"
-                                               << (diagWallAt(r, back) - r.wall.at("resume"))
-                                               << " ms wall after resume (bound 2.0 s); pace drift max "
-                                               << diagMaxDriftMs(r, "suspend", susp, resume + sec(2.0)) << " ms");
     }
 }
 
@@ -3399,11 +3341,6 @@ TEST_CASE("SCHED LS-15: stopping and restarting the transport with leading write
             }
             os << " | lane" << lane << " headLost " << headLost << " after[" << str(after) << "] maskOff(stop) "
                << m.first << "/" << m.second;
-            FAIL_CHECK("M12BFIX-DIAG " << c.run.name << " lane " << lane << ": headLost " << headLost
-                                       << " frames (bound " << (longStop ? 12 : 1) << "), head +"
-                                       << (diagWallAt(c.run, head) - c.run.wall.at("start"))
-                                       << " ms wall after start; pace drift max "
-                                       << diagMaxDriftMs(c.run, "start", start, start + sec(2.0)) << " ms");
         }
         CHECK(maxMisalignAll(c.run) == 0);
         WARN(os.str());
@@ -3447,10 +3384,6 @@ TEST_CASE("SCHED E2 (U3(b)-ii): bypassing the only Input brings the bus back to 
     CHECK(m.first == 0);
     CHECK(suspendedBeats(r, 0, b + sec(1.0), u) > 0);
     CHECK(maxMisalignAll(r) == 0);
-    FAIL_CHECK("M12BFIX-DIAG E2 solo: firstRaw +"
-               << toSec(firstRaw - b) << " s samples / +" << (diagWallAt(r, firstRaw) - r.wall.at("bypass"))
-               << " ms wall after bypass (bounds 0.4..1.0 s samples); pace drift max "
-               << diagMaxDriftMs(r, "bypass", b, u) << " ms over the bypass");
     WARN(r.name << ": firstRaw +" << toSec(firstRaw - b) << " s after bypass, mix back +" << (back - u) / kF
                 << " frames after un-bypass, during[" << str(tally(r, 0, b, u)) << "] after["
                 << str(tally(r, 0, u, kBig)) << "] maskOff " << m.first << "/" << m.second);

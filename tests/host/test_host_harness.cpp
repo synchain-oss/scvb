@@ -1771,8 +1771,6 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
          << wallToRawMs << " ms wall / +" << samplesToRawS << " s of samples after bypass (bypass blocks ran at "
          << bypassMsPerBlock << " ms wall each), lasts " << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
          << " samples after un-bypass");
-    FAIL_CHECK("M12BFIX-DIAG U3 main wallToRawMs=" << wallToRawMs << " samplesToRawS=" << samplesToRawS
-                                                   << " msPerBlock=" << bypassMsPerBlock);
 }
 
 // ---------------------------------------------------------------------------
@@ -1795,8 +1793,7 @@ TEST_CASE("HOST A-8 U3(b)-ii boundary: with a non-SCVB source on the bus, suspen
     static constexpr float kOtherAmp = 0.02f; // 没装 Input 的那路声源(220 Hz,约 -34 dBFS)
     std::vector<float> busL;
     std::vector<float> outL;
-    std::vector<scvb::u64> diagWall; // M12BFIX-DIAG
-    const auto step = [&r, &busL, &outL, &diagWall](bool inputCalled) {
+    const auto step = [&r, &busL, &outL](bool inputCalled) {
         Rig::fillSine(r.inBuf, 0.25f, r.ph.timeSamples);
         if (inputCalled)
         {
@@ -1816,7 +1813,6 @@ TEST_CASE("HOST A-8 U3(b)-ii boundary: with a non-SCVB source on the bus, suspen
         }
         const float* bus = r.outBuf.getReadPointer(0);
         busL.insert(busL.end(), bus, bus + kBlock);
-        diagWall.push_back(scvb::steadyNowMs()); // M12BFIX-DIAG
         r.out.processBlock(r.outBuf, r.midi);
         const float* o = r.outBuf.getReadPointer(0);
         outL.insert(outL.end(), o, o + kBlock);
@@ -1860,26 +1856,6 @@ TEST_CASE("HOST A-8 U3(b)-ii boundary: with a non-SCVB source on the bus, suspen
     const std::size_t sr = outL.size();
     CHECK(sameAsBus(sr - 20 * kBlock, sr));
     CHECK(maxAbs(outL, sr - 20 * kBlock, sr) <= kOtherAmp + 1.0e-4f);
-    {
-        // M12BFIX-DIAG: when did the output start following the bus (crossfade end), wall and samples,
-        // against the judged window start (sr - 20 blocks).
-        std::size_t xe = sr;
-        while (xe > s0 && outL[xe - 1] == busL[xe - 1])
-        {
-            --xe;
-        }
-        const std::size_t bl = static_cast<std::size_t>(kBlock);
-        const std::size_t judge = sr - 20 * bl;
-        const std::size_t xeB = std::min(xe / bl, diagWall.size() - 1);
-        FAIL_CHECK("M12BFIX-DIAG boundary: suspend at "
-                   << s0 << ", follows bus from " << xe << " (+" << static_cast<double>(xe - s0) / kSr
-                   << " s samples, +" << (diagWall[xeB] - diagWall[s0 / bl]) << " ms wall), judged window from "
-                   << judge << " (+" << static_cast<double>(judge - s0) / kSr << " s samples, +"
-                   << (diagWall[judge / bl] - diagWall[s0 / bl]) << " ms wall); margin "
-                   << (static_cast<double>(judge) - static_cast<double>(xe)) / kSr << " s samples / "
-                   << (static_cast<double>(diagWall[judge / bl]) - static_cast<double>(diagWall[xeB]))
-                   << " ms wall; msPerBlock " << static_cast<double>(diagWall[sr / bl - 1] - diagWall[s0 / bl]) / 99.0);
-    }
 
     // ② 恢复:写方同块读到,但总线要从原声交叉回混音 ⇒ 句首淡入(第一块远不到满幅),80 ms 之后回到稳态混音。
     for (int b = 0; b < 40; ++b)
@@ -13593,7 +13569,6 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     r.out.releaseResources();
     setTrackEnabled(r.out, 1, false);
     r.out.prepareToPlay(kSr, kBlock);
-    const scvb::u64 diagT0 = scvb::steadyNowMs(); // M12BFIX-DIAG
     // 只停用/重启 Output 所在轨、别的轨照常在播(宿主里最常见的一幕):Input 继续推块、Output 不推。
     // Input 必须在推 —— 写头冻结 ≥ kSuspendStallMs(500ms)该轨就判挂起、退出 inject,首块反而走
     // 早退把记账清掉,这一格就什么都证明不了(第一版用例只 pump 不推块,删掉复位行照样绿,就是这个原因)。
@@ -13619,8 +13594,6 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
         r.ph.timeSamples += kBlock;
         MonoMultiRig::pump(20);
     }
-    FAIL_CHECK("M12BFIX-DIAG SL-488 re-prepare: 10 Input-only blocks with pump(20) took "
-               << (scvb::steadyNowMs() - diagT0) << " ms wall (watchdog stall threshold 500 ms)");
 
     checkNoResidualRelease(r);
 }
