@@ -93,6 +93,7 @@ mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、�
   grep -h '^| sourceCommit |' package-summary.md package-summary-macos.md  # 两份一致,都是被打 tag 的那个提交
   unzip -Z1 SCVB-v*-macos-arm64.zip | grep -cE '^SCVB (Input|Output|Monitor)\.(vst3|component)/$'   # 6
   unzip -p SCVB-v*-macos-arm64.zip INSTALL.txt | grep -c 'tree/<tag>'    # >= 1:源码声明指向本 tag
+  cd - >/dev/null    # 回到 clone 目录(后面的清理要在 clone 里跑)
   ```
 
   `sha256sum -c` 对两个文件一起核,任何一行不是 `OK` 就停在草稿。重跑过的 tag(见上「同一个 tag 重跑」)尤其要核 `sourceCommit`,因为草稿上可能留着上一次的 mac 三件。
