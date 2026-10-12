@@ -7,7 +7,8 @@ name: Build & Validate
 #
 #   轻档  子 PR(base=`feature/**`)**且没碰 native 路径**:不跑本工作流。仍跑 format
 #         (clang-format / web-smoke / docs-truth)、compliance(gitleaks / REUSE /
-#         check-privacy / 设计盒)与三个 review bot。
+#         check-privacy / 设计盒)与 claude-review / deepseek-review 两个 review bot
+#         (pr-agent 只在 PR → dev 时运行)。
 #         **[SL-283] 修正**:碰了 native 路径(src / tests / cmake / CMakeLists.txt /
 #         **web** / third_party / 钉版文件 / 本文件)的子 PR **照跑全量** —— 判定见下面
 #         `detect-native` job。[J96] 原来一刀切跳过,结果是「动了 C++ 的子 PR 在 CI 侧
