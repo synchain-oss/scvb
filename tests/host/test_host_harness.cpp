@@ -821,6 +821,13 @@ TEST_CASE("HOST N2a: Output-first only for the first blocks - present right afte
 // 计时起点 = waitUntilHandedOver 返回(Input 侧静音之后再过约 120 ms)。
 // 「不灭」是 A-6 的第二半:告警亮起后失准把本轨踢出注入集、read() 不再被调,1 s 后「无新缺口 ∧ 数据在推进」照样
 // 成立 —— 恢复还要求本轨自上一笔缺口以来确实读到过数据(正向在场),否则横幅会以约 1 s 的周期假恢复。
+// [B 线 M12b-fix] 「0.5 s 内亮」按读方时间线(样本)判,不按墙钟:告警来自 [A] 的缺口计数(misalignCount 直读
+// gapCount,不等 [M] 的拍),而开始计缺口的宽限是 max(200 ms 读方时间线, …)、**按样本计**(ShmRingMixSource::
+// unreadGrace,离线导出同一条规则)。用例每块泵 10 ms:Windows 上一块 ≈ 实时,两种量相同(实测 80–83 ms);mac CI
+// 上 runDispatchLoopUntil 被拉长、一块 30–44 ms 墙钟,同样的样本量要 3–4 倍墙钟,墙钟量出来是 360–511 ms
+// (run 38194842347 / 38198202147 / 38201052045 / 38201012625 / 38204335369,最后那次红在旧的墙钟 500 ms 上)。
+// 所以首次告警按「t0 之后 Output 走过的样本」折成毫秒判 ≤ 500;墙钟只记录。踢出 / 放回的周期(maxMaskOffMs)
+// 来自 [M] 的 1 s 失准窗(墙钟量),照旧按墙钟判。
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on",
           "[.][sched][host][N2]")
 {
@@ -830,7 +837,9 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
     REQUIRE(r.waitUntilInjected());
     REQUIRE(waitUntilHandedOver(r));
     const double t0 = juce::Time::getMillisecondCounterHiRes();
-    double firstAlarmMs = -1.0;
+    const std::int64_t ph0 = r.ph.timeSamples; // 读方时间线起点(Output 每块按 kBlock 推进)
+    double firstAlarmMs = -1.0; // 墙钟(只记录)
+    double firstAlarmAudioMs = -1.0; // t0 之后 Output 走过的样本,折成毫秒(判据)
     int offAfterOn = 0;
     // Input 侧看到的 connected_mask 本位:告警期间本轨被失准踢出、1 s 失准窗一满放回、宽限走完又踢出。量最长的一段
     // 连续断开(墙钟):它必须远短于 Input 的 5 s 滞回,否则 Input 会切直通、把原声放进总线。
@@ -853,20 +862,23 @@ TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s o
         if (alarm && firstAlarmMs < 0.0)
         {
             firstAlarmMs = juce::Time::getMillisecondCounterHiRes() - t0;
+            firstAlarmAudioMs = static_cast<double>(r.ph.timeSamples - ph0) * 1000.0 / kSr;
         }
         else if (!alarm && firstAlarmMs >= 0.0)
         {
             ++offAfterOn;
         }
     }
-    INFO("first alarm " << firstAlarmMs << " ms after the hand-over, alarm-off samples after onset " << offAfterOn
+    INFO("first alarm " << firstAlarmAudioMs << " ms of audio / " << firstAlarmMs
+                        << " ms wall after the hand-over, alarm-off samples after onset " << offAfterOn
                         << ", longest connected_mask-off stretch " << maxMaskOffMs << " ms");
     CHECK(firstAlarmMs >= 0.0);
-    CHECK(firstAlarmMs <= 500.0);
+    CHECK(firstAlarmAudioMs <= 500.0);
     CHECK(offAfterOn == 0);
     CHECK(maxMaskOffMs >= 500.0); // 告警确实把本轨踢出过(online 只经由 misaligned 受影响)
     CHECK(maxMaskOffMs < 2000.0); // 按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红
-    WARN("N2b: first alarm " << firstAlarmMs << " ms, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
+    WARN("N2b: first alarm " << firstAlarmAudioMs << " ms of audio / " << firstAlarmMs
+                             << " ms wall, longest connected_mask-off stretch " << maxMaskOffMs << " ms");
 }
 
 TEST_CASE("HOST N2b: persistent Output-first - misalign is raised within 0.5 s of the hand-over and stays on - "
@@ -1615,8 +1627,16 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
 //   ③ 解除旁路后接回:总线输入回到静音(Input 一直在静音档 —— 挂起期间它始终认为 Output 健康,U3(c)),
 //      Output 的混音在 80 ms 内由弱到满(不是当块满幅),随后稳态。
 // 宿主侧总线在这里手工接:Output 的输入 = Input 本块的输出(Rig::runBlocks 给 Output 喂空缓冲,测不出直通)。
-// 旁路走 JUCE 默认的 processBlockBypassed(Input 没覆写它 ⇒ 原样直通、不写环)。每块泵 10 ms 消息 ≈ 实时
-// (一块 10.7 ms):500 ms 停滞门限是墙钟量。多轨时只旁路一条不触发回原声,由 sched 的「E2 bypass lane 1 of 3」钉。
+// 旁路走 JUCE 默认的 processBlockBypassed(Input 没覆写它 ⇒ 原样直通、不写环)。多轨时只旁路一条不触发回原声,
+// 由 sched 的「E2 bypass lane 1 of 3」钉。
+// 两个时间域分开判([B 线 M12b-fix]):
+//   · 「旁路之后多久才回原声」由 [M] 决定 —— 写头冻结 ≥ kSuspendStallMs(500 ms)是**墙钟**量(steadyNowMs,
+//     [M] 25Hz 拍上判),所以它的上下界按墙钟量:逐块记 Output 处理这一块时的 steadyNowMs(与 [M] 同一个时钟),
+//     取旁路那一块与交叉开始那一块之差。每块泵 10 ms 消息:Windows 上近似实时(一块 10.7 ms 样本),样本差与
+//     墙钟差几乎相同;mac CI 上 runDispatchLoopUntil 被拉长,旁路段一块平均 40–44 ms 墙钟(样本时长的 4 倍上下,
+//     run 38198202147 / 38194842347),墙钟先到 500 ms 时样本才走了约 0.14–0.2 s —— 按样本量的下界在那里失真
+//     (run 38191293784 红过:+0.2027 s 样本)。
+//   · 交叉长度(3840 样本)、原声稳态、解除旁路后同块接回、淡入形状都在 [A] 上逐样本发生,照旧按样本判。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to raw through an 80 ms crossfade, "
           "un-bypassing rejoins the mix",
@@ -1629,7 +1649,8 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
 
     std::vector<float> busL; // 逐样本:Output 的输入(L)
     std::vector<float> outL; // 逐样本:Output 的输出(L)
-    const auto step = [&r, &busL, &outL](bool bypassed, float amp = 0.25f) {
+    std::vector<scvb::u64> outWallMs; // 逐块:Output 处理这一块时的 steadyNowMs(第 k 块 = 样本 [k·kBlock, (k+1)·kBlock))
+    const auto step = [&r, &busL, &outL, &outWallMs](bool bypassed, float amp = 0.25f) {
         Rig::fillSine(r.inBuf, amp, r.ph.timeSamples);
         if (bypassed)
         {
@@ -1645,6 +1666,7 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
         }
         const float* bus = r.outBuf.getReadPointer(0);
         busL.insert(busL.end(), bus, bus + kBlock);
+        outWallMs.push_back(scvb::steadyNowMs());
         r.out.processBlock(r.outBuf, r.midi);
         const float* o = r.outBuf.getReadPointer(0);
         outL.insert(outL.end(), o, o + kBlock);
@@ -1704,8 +1726,14 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     }
     INFO("bypass at " << sb << ", crossfade " << xStart << " .. " << xEnd << ", end " << su);
     REQUIRE(xStart < su); // ← 删掉「全部停滞回原声」时,旁路期间输出一直是空混音
-    CHECK(xStart - sb >= static_cast<std::size_t>(0.3 * kSr)); // 要等 [M] 坐实停滞,不是当块就切
-    CHECK(xStart - sb <= static_cast<std::size_t>(1.5 * kSr));
+    // 多久之后才回原声:按墙钟判(见头注)。旁路那一块与交叉开始那一块各自送进 Output 时的 steadyNowMs 之差;
+    // 样本差只记录、不判。
+    const std::size_t blockLen = static_cast<std::size_t>(kBlock);
+    const scvb::u64 wallToRawMs = outWallMs[xStart / blockLen] - outWallMs[sb / blockLen];
+    const double samplesToRawS = static_cast<double>(xStart - sb) / kSr;
+    INFO("raw crossfade starts " << wallToRawMs << " ms wall / " << samplesToRawS << " s of samples after bypass");
+    CHECK(wallToRawMs >= 300u); // 要等 [M] 坐实停滞,不是当块就切
+    CHECK(wallToRawMs <= 1500u);
     REQUIRE(xEnd >= xStart);
     CHECK(xEnd - xStart >= 3840 - 64); // 80 ms @48k
     CHECK(xEnd - xStart <= 3840 + 64);
@@ -1749,9 +1777,13 @@ TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to ra
     }
     CHECK(cleared);
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
-    WARN("A-8 U3(b)-ii: raw crossfade starts +" << static_cast<double>(xStart - sb) / kSr << " s after bypass, lasts "
-                                                << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
-                                                << " samples after un-bypass");
+    // 旁路段里一块的平均墙钟(一块的样本时长 = 10.67 ms):两个时间域差多少,一眼看得出。
+    const double bypassMsPerBlock = static_cast<double>(outWallMs[su / blockLen - 1] - outWallMs[sb / blockLen]) /
+                                    static_cast<double>((su - sb) / blockLen - 1);
+    WARN("A-8 U3(b)-ii: raw crossfade starts +"
+         << wallToRawMs << " ms wall / +" << samplesToRawS << " s of samples after bypass (bypass blocks ran at "
+         << bypassMsPerBlock << " ms wall each), lasts " << (xEnd - xStart) << " samples; mix back +" << (yStart - su)
+         << " samples after un-bypass");
 }
 
 // ---------------------------------------------------------------------------
@@ -10766,7 +10798,55 @@ TEST_CASE("HOST SL-255:防抖窗内重复布防 → 到点时刻从**最后一�
 //
 // 改法:reason 随作业走(PendingAnalysis),代号一丢它跟着丢。
 // ★ 反向验证:把 reason 挪回成员、清位只留在 finishAnalysis ⇒ 末尾那条 == Analyze 立刻红。
+//
+// [B 线 M12b-fix] 「在飞行中取消」的抓法从「两次泵之间看一眼」改成「消息之间看一眼」:
+//   · 起跑与收尾都是消息线程上的一条消息:起跑 = 25Hz 定时器那条消息里 tickResegmentDebounce → startAnalysis
+//     置 running;收尾 = 工作线程算完 triggerAsyncUpdate,那条消息里 handleAsyncUpdate → finishAnalysis 清 running。
+//     原写法每次 pumpMessages(1) 之后看 analysisRunning():只要起跑、整趟分析、收尾都落进同一次泵,running
+//     一真一假全在泵里,两次查看都是 false。泵准时的机器上(Windows:U3(b)-ii 那格 pump(10) 一块实测 ~10.4 ms)
+//     一次 pump(1) 短于一趟分析,看得到;mac CI 上 runDispatchLoopUntil 被拉长(U3(b)-ii 那格「一块 + pump(10)」
+//     实测平均 40–44 ms,run 38198202147 / 38194842347;SL-488 那格「三块 Input + pump(20)」~59 ms),一次泵就
+//     装得下整条链,8 轮 × 1200 次全落空过(run 38195854472 红在 REQUIRE(cancelledInFlight))。判据本身没问题,
+//     是抓手的粒度随泵变粗了。
+//   · 现在往队列里放一个自我重投的探针(callAsync):每次派发看一眼 running,真就当场 cancelAnalysis(),假就把
+//     自己重新排到队尾。JUCE 的消息队列是 FIFO(Windows 整批换出按序派发,mac 每次取下标 0),定时器回调与
+//     AsyncUpdater 走的都是这一个队列。起跑那条消息开始派发时,队列里恰好有一份探针,它是在起跑之前投的,
+//     所以排在收尾那条消息之前 ⇒ 起跑与收尾之间必有一次探针派发,它看到的一定是 running。抓手不再看泵的粒度。
+//     ⚠ 这两条(队列 FIFO、Timer 回调走 CallTimersMessage 进同一个队列)是 .juce-version 当前版本(8.0.8)在 Windows /
+//     mac 上的**实现细节**,不是公开 API 的保证。升 JUCE、加别的平台后端时要复核;这一格要是又退化成偶发红,先查这里。
+//     探针在泵里自旋(每轮几万次派发),只占消息线程;别把它挪进要求消息线程空闲的用例。
+//   · 重试轮数、取消之后的两条判据都不变;墙钟 3 s 内没抓到(= 这一轮根本没起跑)就进下一轮,8 轮都没有就红在
+//     REQUIRE(cancelledInFlight)。
 // ---------------------------------------------------------------------------
+namespace
+{
+struct InFlightCancelProbe
+{
+    bool stop = false; // 测试体置位:队列里残留的那一份不再碰 Output(Output 可能已析构)
+    bool caught = false; // 在 analysisRunning() 为真的那次派发里调过 cancelAnalysis()
+    int dispatches = 0; // 派发次数(只记录,不判)
+};
+
+// 只在消息线程上投、也只在消息线程上跑,三个字段不需要原子。
+bool postInFlightCancelProbe(const std::shared_ptr<InFlightCancelProbe>& probe, ScvbOutputAudioProcessor& out)
+{
+    return juce::MessageManager::callAsync([probe, &out] {
+        if (probe->stop)
+        {
+            return;
+        }
+        ++probe->dispatches;
+        if (out.analysisRunning())
+        {
+            out.cancelAnalysis();
+            probe->caught = true;
+            return;
+        }
+        (void)postInFlightCancelProbe(probe, out);
+    });
+}
+} // namespace
+
 TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 reason 仍是 analyze", "[host][t37][v57][SL255]")
 {
     Rig r;
@@ -10782,29 +10862,35 @@ TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 r
     r.ph.playing = false; // 离开 PRINT
     Rig::pumpMessages(100);
 
-    // 布防松手档,然后**在它正跑着的时候**取消。
-    // 抓「正在跑」用 1ms 粒度的泵:finishAnalysis 只从消息循环里跑,抓到 running 就意味着
-    // 完成帧还没派发。允许重试几轮,免得被一次调度抖动判成失败。
+    // 布防松手档,然后**在它正跑着的时候**取消。抓「正在跑」用消息之间的探针(见头注 [B 线 M12b-fix]):
+    // finishAnalysis 只从消息循环里跑,探针看到 running 就意味着收尾那条消息还没派发。
     bool cancelledInFlight = false;
+    int attempts = 0;
+    scvb::u64 waitedMs = 0;
+    int dispatches = 0;
     for (int attempt = 0; attempt < 8 && !cancelledInFlight; ++attempt)
     {
+        ++attempts;
+        auto probe = std::make_shared<InFlightCancelProbe>();
         r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
-        for (int i = 0; i < 1200; ++i)
+        REQUIRE(postInFlightCancelProbe(probe, r.out));
+        const scvb::u64 startMs = scvb::steadyNowMs();
+        while (!probe->caught && scvb::steadyNowMs() - startMs < 3000)
         {
-            Rig::pumpMessages(1);
-            if (r.out.analysisRunning())
-            {
-                r.out.cancelAnalysis();
-                cancelledInFlight = true;
-                break;
-            }
+            Rig::pumpMessages(10);
         }
+        probe->stop = true;
+        waitedMs = scvb::steadyNowMs() - startMs;
+        dispatches = probe->dispatches;
+        cancelledInFlight = probe->caught;
         if (!cancelledInFlight)
         {
-            waitAnalysis(r); // 这一轮跑完了:清干净再试
+            waitAnalysis(r); // 这一轮没抓到:清干净再试
             (void)r.out.takeAnalysisDone();
         }
     }
+    INFO("attempts " << attempts << ", last attempt waited " << waitedMs << " ms wall, probe dispatched " << dispatches
+                     << " times");
     REQUIRE(cancelledInFlight); // 前置:确实在飞行中取消了(否则本例什么都没测)
 
     Rig::pumpMessages(300);
@@ -13558,7 +13644,20 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
     // ⚠ 不能推到 ≥ 0.5s(本格原先推 ~0.7s):Input 照写而 Output 一块不跑满 0.5s 就是 KI-6 的停调形状,
     // 停摆看门狗会闩住全部轨(#379 修 H5 之后不再只清一拍),Output 首块因 inject = 0 走早退 ——
     // 同样什么都证明不了;下面 checkNoResidualRelease 首块的 REQUIRE(本轨电平表读到 ch2)就是拦它的。
-    for (int k = 0; k < 10; ++k)
+    // [B 线 M12b-fix] 「~0.2s」与「< 0.5s」都是墙钟量(停摆看门狗按 steadyNowMs 判),所以按墙钟推,不按块数:
+    // 原写法固定 10 次 pump(20),Windows 上实测 219 ms;mac CI 上 runDispatchLoopUntil 被拉长,同样 10 次实测
+    // 591 ms(run 38194842347 的诊断格),已越过 0.5s。那次没红,是因为看门狗的基线取在 prepare 后的首拍(T1),
+    // 要从 T1 再满 500 ms、且恰有一拍落在那之后才判停摆 —— 余量全看拍点相位。改为:推到墙钟满 200 ms,且 [M] 在
+    // prepare 之后真跑过一拍(Input 读到这次关轨的广播:timerCallback 先 tick —— 重新 claim、绑定、填回 inject ——
+    // 拍末才发广播,且只在已 claim 时发)。成功路径在 max(200 ms, T1) 之后那次 pump 结束就退出,够不到 T1 + 500 ms;
+    // 墙钟上界 400 ms 只在每轮开头查,所以失败路径最坏是 400 ms 再加一整轮(三块 Input + pump(20);mac 上一轮实测
+    // 约 59 ms,单次泵偶尔更长),看门狗要从 T1 再满 500 ms 才闩,余量仍在。到点 [M] 还没跑过一拍就红在这里,不让后面
+    // 的判据替它背锅。
+    const scvb::u32 wantConfigSeq = r.out.runtime().configSeq + 1u;
+    const auto configSeen = [&r] { return r.ins.front()->bridgeTickSnapshot().configSeq; };
+    const scvb::u64 pushStartMs = scvb::steadyNowMs();
+    const auto pushedMs = [pushStartMs] { return scvb::steadyNowMs() - pushStartMs; };
+    while ((configSeen() < wantConfigSeq || pushedMs() < 200) && pushedMs() < 400)
     {
         for (int i = 0; i < MonoMultiRig::kCount; ++i)
         {
@@ -13575,6 +13674,8 @@ TEST_CASE("HOST SL-488:release 期间关掉的轨,重新 prepare 后不被当成
         r.ph.timeSamples += kBlock;
         MonoMultiRig::pump(20);
     }
+    INFO("pushed Input-only blocks for " << pushedMs() << " ms wall after prepare");
+    REQUIRE(configSeen() >= wantConfigSeq);
 
     checkNoResidualRelease(r);
 }
