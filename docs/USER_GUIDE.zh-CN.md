@@ -253,7 +253,9 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 - **`%APPDATA%\Synchain\SCVB\sessions\`** —— 只有早期版本保存、把特征存在工程外的工程才会用到(见上面「会话与文件」)。本版不会在那里新建目录。
 - **导出的建议表 `.csv`** —— 只在你导出时写,位置由你选。
 
-SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调试工具才看得到。
+在 Windows 上,SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调试工具才看得到。
+
+**在 macOS(beta)上**,同一份偏好文件在 `~/Library/Application Support/Synchain/SCVB/`,旁边有一个很小的 `ipc` 文件夹,是三个插件管理共享内存用的锁文件(DAW 运行期间别动它)。每个插件还会往 `~/Library/Logs/Synchain/SCVB/` 写一份文本诊断日志(`input.log`、`output.log`、`monitor.log`;写到约 1 MB 时改名为 `<名字>.1.log`,所以每个角色最多约 2 MB)。日志只留在你的电脑上,不会发往任何地方。某一行里可能带有你的用户名(形如 `/Users/<名字>/...` 的路径),贴进公开 issue 之前请先看一遍。
 
 想清掉偏好和浏览器缓存:先关掉 DAW,再删除上面两个 `Synchain\SCVB` 目录。如果还有早期版本的工程在用 `sessions`,请保留这个子目录。
 
@@ -262,10 +264,12 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 | 现象 | 可能原因 | 怎么办 |
 |---|---|---|
 | **顶部红 pill + 红横幅"版本不匹配"** | 只更新了两个插件中的一个 | SCVB 拒绝半兼容连接。把 Input 与 Output 一起升到同一版本 |
-| **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
+| **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底:人声先无声约 5.5 秒,之后在宿主继续不调用 Output 期间一直是未平衡的原始声像。宿主重新调用 Output 后,已转成原声的轨按通道号每隔约 0.2 秒逐条接回(没轮到的轨暂时无声),停调不到约 5.5 秒的轨当即接回,恢复后最初约 80 毫秒是停调前混音的淡出。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某条人声轨没声音** | 该轨 Input 连上了健康 Output,但 Output 侧没拿到它的数据(channel 没选 / 组选错 / channel 冲突) | 检查该 Input 的 channel 与组;看 Output 轨道页该轨是否在线 |
 | **装了 Input 就整轨没声音** | 不应该发生 | 检测不到健康 Output 时 Input 自动直通(硬约束 3)。若该轨确实没有声音,收集设置页"复制诊断信息"的输出并提 issue |
 | **在 DAW 里静音、独奏人声轨或拉它的推子,SCVB 输出里这条人声不变** | 设计如此:Input 在插件链最后一格(推子之前)就把这条轨的声音交给了 Output,DAW 的静音、独奏与推子作用在那之后 | 在 SCVB 里操作:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关;要改音量,在 SCVB 里改。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-8 |
+| **出现「路由失准」横幅,或某条已连接的人声轨无声且横幅亮着** | 除了路由被改过:**人声轨没有送进装 Output 的总线**,或宿主先处理总线、后处理人声轨(Aux 一类位置没做延迟补偿时常见)。Output 与该轨 Input 已连接,但一直读不到它的数据 | 检查这条轨的输出是否送进了装 Output 的总线,再看 Output 轨道页。横幅要等 Output 重新读到这条轨的数据后才撤下。亮起时间与宿主提前处理的量有关:通常约 0.5 秒内,宿主提前得越多亮得越晚(约为提前量的 2 倍)。宿主只是暂停调用的轨不算失准(见下一行) |
+| **走带在跑时,Output 轨道页上某条轨显示「暂无数据(挂起)」** | 宿主暂停调用了该 Input(静音段、没有 region 的段落;Cubase 的「无信号时挂起 VST3 处理」可能这样)。挂起不等于掉线:这条轨保持在线,「已连接」状态不变 | 通常不用处理:宿主恢复调用的同一块这条轨就回来了。若本该有声的轨一直停在「挂起」,检查它是否在宿主里被停用、冻结或旁路。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-11 |
 | **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel(打开工程时通道已被占用也会提示) | 改其中一个的 channel id,或把它换到别的组。占用的那个释放通道(删轨或改号)后,等着的那个约一秒内会自己接上 |
 | **"组 X 已有主 Output,本实例只读观察"** | 同组已经有一个生效的 Output | 一个组只能有一个生效 Output(硬约束 6)。删掉多余的那个,或把它换到别的组 |
 | **点通道卡 / 切组后弹出"未能连接:插件间通信用的内存段打不开"** | Input 没能打开或建立它与 Output 通信用的共享内存段(例如同名的段是别的 SCVB 版本建的) | 再点一次;仍不行就重启宿主,并确认同一台机器上没有开着装了其他版本 SCVB 的 DAW。换通道时出现的话,本轨仍留在原来的通道上照常工作 |
@@ -286,7 +290,13 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 
 **能超过 15 轨吗?** v1 不能,每组 15 轨。真的需要更多可以用第二个组(独立总线域),但两组之间不做联合平衡。
 
-**支持 macOS 吗?** v1 只有 Windows x64 / VST3。后续会考虑编译 mac 版本。
+**支持 macOS 吗?** 有一个面向 Apple Silicon Mac 的 **beta**(只有 arm64,macOS 11 或更高),提供 VST3 与 Audio Unit。它没有代码签名、没有公证,复制完插件后要自己用 `xattr` 去掉隔离属性;步骤在 macOS zip 里的 `INSTALL.txt` 和 README 里。不支持 Intel Mac、在 Rosetta 下运行的宿主和 GarageBand。Windows 仍然是主要的、测得更充分的平台。
+
+**在 Mac 上的 Logic Pro 或 LUNA 里能用吗?** 两个都还没有验证过。Logic Pro:beta / 未在 Logic 实测(Tier 3);Logic 只加载 Audio Unit。LUNA:Tier 3,真机验收还没做。按各宿主的设计我们预期会怎样,写在 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) 里;那些都不是实测结果。
+
+**Mac 上的诊断日志在哪?要怎么处理?** 在 `~/Library/Logs/Synchain/SCVB/`(见「隐私与本机文件」)。报告 macOS 上的问题时,把相关文件附上,附之前先把里面的用户名去掉。
+
+**我的 Mac 宿主为什么不列出 SCVB,或者拒绝加载?** 常见原因按顺序是:没有去掉隔离属性(执行 `INSTALL.txt` 里那两行 `xattr`);Audio Unit 登记表里还留着旧条目(`killall -9 AudioComponentRegistrar`,再重新扫描);宿主在 Rosetta 下运行(插件只有 arm64,请在宿主的「显示简介」里取消勾选「使用 Rosetta 打开」);宿主关掉了 VST3 或 Audio Unit(LUNA 默认不启用 VST3)。macOS 上的已知限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-12 起。
 
 **分析结果不满意能手改吗?** 能,见"手动微调";改过的段自动重分析不会覆盖。
 
@@ -305,4 +315,5 @@ SCVB 不写日志文件。诊断信息只发到 Windows 调试输出,要用调�
 - Input 侧只做就地 gain,不做就地 pan(否则会和 Output 的 dual-pan 双重处理);
 - **DAW 的静音(Mute)、独奏(Solo)与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关。详见 `docs/KNOWN_ISSUES.md` 的 KI-8;
 - **波形页上建选区、选段与改分段(拖动、分割或删除段边界)暂时只能用鼠标或触控板**,计划在 v1.0.0 之前补上键盘做法。详见 `docs/KNOWN_ISSUES.md` 的 KI-10;
+- **macOS 是 beta**:只有 Apple Silicon、没有签名、还没有任何宿主经过验证(Logic:beta / 未在 Logic 实测)。详见 `docs/KNOWN_ISSUES.md` 的 KI-12 起;
 - v2 方向:精确模式 VAD(Silero)、更多平台。

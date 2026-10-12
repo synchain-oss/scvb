@@ -4,7 +4,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/synchain-oss/scvb/build-vst3.yml?branch=dev&style=flat-square&label=build)](https://github.com/synchain-oss/scvb/actions)
 [![pluginval](https://img.shields.io/badge/pluginval-strictness%205-brightgreen?style=flat-square)](https://github.com/Tracktion/pluginval)
 [![Release](https://img.shields.io/github/v/release/synchain-oss/scvb?include_prereleases&style=flat-square)](https://github.com/synchain-oss/scvb/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%C2%B7%20VST3-blue?style=flat-square)](#系统要求)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%C2%B7%20macOS%20arm64%20beta-blue?style=flat-square)](#系统要求)
 
 # SCVB — Synchain Vocal Balancer
 
@@ -28,9 +28,19 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 
 ## 系统要求
 
+**Windows**
+
 - Windows 10 1809+ 或 Windows 11,x64
 - 任一 VST3 宿主
 - WebView2 Evergreen Runtime,用于编辑器 UI(Windows 通常已预装)
+
+**macOS(beta)**
+
+- Apple Silicon(M1 及以后)的 Mac,macOS 11 Big Sur 或更高版本。不支持 Intel Mac
+- 宿主必须以 Apple Silicon 原生方式运行:插件只含 arm64 代码,在 Rosetta 下运行的宿主不会列出它们
+- 支持 VST3 或 Audio Unit 的宿主。不支持 GarageBand。Logic Pro 只加载 Audio Unit
+- 编辑器界面用系统 WebKit(Safari 15.4 或更高);系统 Safari 低于 26.4 时,插件界面的缩放固定在 100%
+- macOS 版是 **beta**,**没有代码签名、没有公证**:复制完插件后要用 `xattr` 去掉隔离属性(见「安装」)
 
 ## 支持的 DAW
 
@@ -45,18 +55,39 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 | REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
 | Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
+| LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 尚未真机测试;首个 macOS beta 发布前计划做一次真机验收。设计上预期(未实测):自动化用 Latch,LUNA 没有 Write;Output 不能放在 Folder 轨上;Input 不能放进 Record FX 槽;用 Apollo 时请切到 Core Audio 模式或关闭 ARM;用 Power 硬停用 Output 会无声约 5.5 秒(KI-6) |
+| Logic Pro(macOS,Apple Silicon) | — | **Tier 3(beta / 未在 Logic 实测)** | 未在 Logic 实测。只有 Audio Unit(Logic 不加载 VST3)。设计上预期(未实测):用 Latch 全曲打印;只打印局部区间可能被平线覆盖;先 Create Track 建好 Aux 轨;旁路 Output 即停止调音;冻结用 Source Only。不支持 GarageBand |
 
-> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio 不在 v1 支持矩阵内。
+> **支持等级说明**:未验证的宿主不代表不能用(插件是标准 VST3 / Audio Unit),只是还没有人在真机上确认过;等级只在真机实测之后才上调。FL Studio 不在 v1 支持矩阵内。macOS 的两行是 beta:macOS 上还没有任何宿主经过真机验证。
 
 ## 安装
 
 预发布版(rc)与之后的正式版都发布在本仓库的 [Releases 页](https://github.com/synchain-oss/scvb/releases);也可以从源码自行构建(见下)。
+
+### Windows
 
 1. 从 Releases 页下载 `SCVB-v<版本号>-win64.zip` 与对应的 `.sha256`;
 2. 用 `.sha256` 校验下载到的 zip。**权威校验值以 GitHub Release 正文里的 SHA-256 为准**(它由 CI 在构建时产出),两处应当一致;**对不上就不要安装,并告诉我们**;
 3. **SCVB 没有做代码签名。** 浏览器或 Windows 可能提示「未知发布者」;解压之前,右键 zip → **属性** → 勾选 **解除锁定** → **确定**。分步说明见[用户手册](docs/USER_GUIDE.zh-CN.md#安装);
 4. 解压,把 `SCVB Input.vst3`、`SCVB Output.vst3` 与(可选的)`SCVB Monitor.vst3` **整个 bundle 文件夹**复制到 `C:\Program Files\Common Files\VST3\`;
 5. 在 DAW 里重新扫描插件。
+
+### macOS(Apple Silicon,beta)
+
+macOS 的 zip 叫 `SCVB-v<版本号>-macos-arm64.zip`(另有 `.sha256`),里面是三个插件的 VST3 与 Audio Unit(`.component`)bundle,以及 `INSTALL.txt`;下面的步骤以 `INSTALL.txt` 为准。这个版本**没有代码签名、没有公证**,所以安装步骤里要去掉隔离属性。在「终端」里执行:
+
+```
+cd ~/Downloads
+shasum -a 256 -c SCVB-v<version>-macos-arm64.zip.sha256
+ditto -x -k SCVB-v<version>-macos-arm64.zip SCVB-v<version>-macos-arm64 && cd SCVB-v<version>-macos-arm64
+for b in SCVB\ *.vst3; do ditto "$b" ~/Library/Audio/Plug-Ins/VST3/"$b"; done
+for b in SCVB\ *.component; do ditto "$b" ~/Library/Audio/Plug-Ins/Components/"$b"; done
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/SCVB\ *.vst3
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SCVB\ *.component
+killall -9 AudioComponentRegistrar
+```
+
+`shasum` 必须输出 `OK`。升级时先删掉旧的 `SCVB *.vst3` 与 `SCVB *.component` bundle(`INSTALL.txt` 里有完整的 `rm` 命令)。`killall` 提示 No matching processes 可以忽略。然后在宿主里重新扫描插件。LUNA 默认启用 Audio Unit:打开 Plug-In Manager,执行 Scan New(或 Rescan All),三个 SCVB Audio Unit 的状态必须是 scanned,不能是 rejected;macOS 上的 LUNA 默认不启用 VST3,要用 `.vst3` 得先在 Plug-In Manager 里启用。复制 bundle 请用 `ditto`,不要用 `cp -r`。
 
 **Input 与 Output 都要装。** 这两个插件是一对,共用同一个版本号。**升级时所有 SCVB 插件一起升**:两侧的共享内存协议版本不同时,它们会**拒绝连接**,这是刻意的;即便能连上,混装不同版本也不受支持(新 Output 配旧 Input 时,离线渲染的人声可能被叠加两次)。
 
@@ -86,7 +117,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 
 ## 隐私
 
-SCVB 不联网:没有更新检查、没有使用统计、没有账号。它只会在你点击时,用默认浏览器打开说明文档和 WebView2 下载这两类网页。它在 `%APPDATA%\Synchain\SCVB` 下存几项跨工程的偏好,在 `%LOCALAPPDATA%\Synchain\SCVB` 下存界面的浏览器缓存;除了你自己导出的文件,其余都存在你的工程里。完整清单见[用户手册「隐私与本机文件」](docs/USER_GUIDE.zh-CN.md)。
+SCVB 不联网:没有更新检查、没有使用统计、没有账号。它只会在你点击时,用默认浏览器打开说明文档和 WebView2 下载这两类网页。在 Windows 上,它在 `%APPDATA%\Synchain\SCVB` 下存几项跨工程的偏好,在 `%LOCALAPPDATA%\Synchain\SCVB` 下存界面的浏览器缓存;除了你自己导出的文件,其余都存在你的工程里。在 macOS(beta)上,跨工程的偏好在 `~/Library/Application Support/Synchain/SCVB`,插件为共享内存留一个很小的锁文件夹 `~/Library/Application Support/Synchain/SCVB/ipc`,每个插件还会往 `~/Library/Logs/Synchain/SCVB/` 写一份诊断日志(约 1 MB 轮转;`input.log`、`output.log`、`monitor.log`);这些内容不会发往任何地方,日志行里可能带有你的用户名,分享之前请先看一眼。完整清单见[用户手册「隐私与本机文件」](docs/USER_GUIDE.zh-CN.md)。
 
 ## 从源码构建
 
@@ -98,6 +129,8 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 完整工具链见 [CLAUDE.md](CLAUDE.md) §6;本地质量门禁跑 `pwsh scripts/gates.ps1`。
 
+macOS(Apple Silicon):暂时还没有单独的构建说明;CI 用的步骤在 [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml),`scripts/package-macos.sh` 用构建结果打 zip。
+
 ## 已知限制
 
 下面几条是 v1 已裁定接受的限制;现象、原因与规避办法见 [KNOWN_ISSUES](docs/KNOWN_ISSUES.md) 里对应的条目。
@@ -105,7 +138,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 - **别单独渲染装了 SCVB Input 的人声轨**:单轨就地渲染(Render in Place)、冻结(Freeze)或单轨导出得到的是静音文件,选了「替换原音频」会把原素材换成静音。请对人声总线整体导出(KI-4)。
 - **DAW 的静音、独奏与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关(KI-8)。
 - **同一台电脑同一时间只开一个使用 SCVB 的工程**;确实要同时开,让两个工程用不同的组(KI-5)。
-- **宿主停止调用 Output 时**(Ableton Live 停用设备、FL Studio 的 smart disable 等),人声约 5.5 秒无声,之后变成未平衡的原始声像(KI-6)。
+- **宿主停止调用 Output 时**(Ableton Live 停用设备、FL Studio 的 smart disable 等),人声约 5.5 秒无声,之后变成未平衡的原始声像,直到宿主重新调用 Output;之后各轨逐条接回,没轮到的轨暂时无声(KI-6)。
 - **齐唱 / 加倍段落的平衡估算有偏差**:几条轨唱同一句、声音高度相似时,合起来往往比分析预想的更响(KI-9)。
 - **SCVB Output 不向 DAW 报告延迟**,对齐靠时间线寻址;不要用延迟补偿(PDC)去「修正」它(九条规则第 8 条)。
 - **Input 只在本轨调音量,不做声像**;声像统一由 Output 处理。
