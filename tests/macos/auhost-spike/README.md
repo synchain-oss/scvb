@@ -2,7 +2,9 @@
 
 一次性的测量工具,回答一个问题:SCVB 的 AU 被宿主**进程外**加载时(Logic 的做法:插件跑在 `AUHostingService` 里),POSIX 共享内存、真实 home 下的锁文件、ObjC 运行时会合还能不能用。结论与判定记录在 [`docs/spikes/S5-macos-auhost-oop.md`](../../../docs/spikes/S5-macos-auhost-oop.md)。
 
-这是独立 CMake 工程:根工程和 `tests/CMakeLists.txt` 都不引用本目录,Windows 构建与 `gates.ps1` 不受影响。CI 入口是 `.github/workflows/macos-oop.yml`(由 `build-vst3.yml` 的 caller job `macos-oop` 调用)。
+这是独立 CMake 工程:根工程和 `tests/CMakeLists.txt` 都不引用本目录,Windows 构建与 `gates.ps1` 不受影响。M01 时的 CI 入口是 `.github/workflows/macos-oop.yml`(由 `build-vst3.yml` 的 caller job `macos-oop` 调用)。
+
+**B 线 M13 起 CI 不再编、不再跑本工具**:G0 已判(A),`macos-oop.yml` 里的 `auhost-spike` job 由加载真实 SCVB component 的 [`tests/macos/auhost/`](../auhost/README.md)(`scvb-auhost` job,进程内 / 进程外 × LS-1 / LS-4)取代。本目录留作 G0 的证据记录;要复现 spike,按下面「在 Mac 上手动运行」一节自己编。
 
 ## 文件
 

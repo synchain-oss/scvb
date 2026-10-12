@@ -632,7 +632,7 @@ jobs:
   # workflow_call 调用本文件,`release` 又 needs `build` —— mac 步骤若直接写在这里,mac 一红
   # `build` 就整体失败,Windows 发不出版(违反「mac 失败不挡 Windows」)。
   #
-  # 条件四件事,两个 caller 逐字相同:
+  # 条件四件事,两个 caller 逐字相同(macos-oop 另加一件,见它自己的注释):
   #   `!cancelled()` 与 `!= 'false'`  —— 与 build-and-validate 同一对:detect-native 挂掉时输出为
   #                                       空串,`!= 'false'` 为真 ⇒ 照跑,不因探测坏了而静默跳过。
   #   `!startsWith(github.ref, 'refs/tags/')` —— 被 release.yml 调起时 ref 是 refs/tags/v…,两个
@@ -663,17 +663,24 @@ jobs:
     with:
       ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
 
+  # [B 线 M13] macos-oop 另 needs macos-build:它的 scvb-auhost 测的就是 macos-build 在同一个 run 里上传的
+  # bundle(设计稿写者链「从 M13 起 needs macos-build,并下载同一个 run 的 artifact」)。条件在上面四件之外多一件:
+  # macos-build 跑了(success 或 failure)才跑 —— 它被跳过 / 取消时没有 bundle 可测。macos-build 红也照跑,
+  # 是因为 bundle 在它的第 10 步就上传了,后面某道门红时 bundle 照样在(没传上来时 scvb-auhost 只出 warning,
+  # 见 macos-oop.yml 步骤 3);build-result 把这个结论传进去。tag 守卫不变。
   macos-oop:
     name: macos-oop
-    needs: detect-native
+    needs: [detect-native, macos-build]
     if: >
       !cancelled() &&
       !startsWith(github.ref, 'refs/tags/') &&
       github.event.action != 'labeled' &&
       github.event.action != 'unlabeled' &&
-      needs.detect-native.outputs.native != 'false'
+      needs.detect-native.outputs.native != 'false' &&
+      (needs.macos-build.result == 'success' || needs.macos-build.result == 'failure')
     permissions:
       contents: read
     uses: ./.github/workflows/macos-oop.yml
     with:
       ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
+      build-result: ${{ needs.macos-build.result }}
