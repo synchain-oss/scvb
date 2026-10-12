@@ -1621,8 +1621,9 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
 //   · 「旁路之后多久才回原声」由 [M] 决定 —— 写头冻结 ≥ kSuspendStallMs(500 ms)是**墙钟**量(steadyNowMs,
 //     [M] 25Hz 拍上判),所以它的上下界按墙钟量:逐块记 Output 处理这一块时的 steadyNowMs(与 [M] 同一个时钟),
 //     取旁路那一块与交叉开始那一块之差。每块泵 10 ms 消息:Windows 上近似实时(一块 10.7 ms 样本),样本差与
-//     墙钟差几乎相同;mac CI 上 runDispatchLoopUntil 被拉长,一块的墙钟是样本时长的两倍多,墙钟先到 500 ms 时
-//     样本才走了约 0.2 s —— 按样本量的下界在那里失真(run 38191293784 红过:+0.2027 s 样本)。
+//     墙钟差几乎相同;mac CI 上 runDispatchLoopUntil 被拉长,旁路段一块平均 40–44 ms 墙钟(样本时长的 4 倍上下,
+//     run 38198202147 / 38194842347),墙钟先到 500 ms 时样本才走了约 0.14–0.2 s —— 按样本量的下界在那里失真
+//     (run 38191293784 红过:+0.2027 s 样本)。
 //   · 交叉长度(3840 样本)、原声稳态、解除旁路后同块接回、淡入形状都在 [A] 上逐样本发生,照旧按样本判。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to raw through an 80 ms crossfade, "
@@ -10791,9 +10792,10 @@ TEST_CASE("HOST SL-255:防抖窗内重复布防 → 到点时刻从**最后一�
 //     置 running;收尾 = 工作线程算完 triggerAsyncUpdate,那条消息里 handleAsyncUpdate → finishAnalysis 清 running。
 //     原写法每次 pumpMessages(1) 之后看 analysisRunning():只要起跑、整趟分析、收尾都落进同一次泵,running
 //     一真一假全在泵里,两次查看都是 false。泵准时的机器上(Windows:U3(b)-ii 那格 pump(10) 一块实测 ~10.4 ms)
-//     一次 pump(1) 短于一趟分析,看得到;mac CI 上 runDispatchLoopUntil 被拉长(同一 runner 上「一块 + pump(10)」
-//     实测 ~47 ms、「三块 Input + pump(20)」~59 ms,run 38194842347),一次泵就装得下整条链,8 轮 × 1200 次全
-//     落空过(run 38195854472 红在 REQUIRE(cancelledInFlight))。判据本身没问题,是抓手的粒度随泵变粗了。
+//     一次 pump(1) 短于一趟分析,看得到;mac CI 上 runDispatchLoopUntil 被拉长(U3(b)-ii 那格「一块 + pump(10)」
+//     实测平均 40–44 ms,run 38198202147 / 38194842347;SL-488 那格「三块 Input + pump(20)」~59 ms),一次泵就
+//     装得下整条链,8 轮 × 1200 次全落空过(run 38195854472 红在 REQUIRE(cancelledInFlight))。判据本身没问题,
+//     是抓手的粒度随泵变粗了。
 //   · 现在往队列里放一个自我重投的探针(callAsync):每次派发看一眼 running,真就当场 cancelAnalysis(),假就把
 //     自己重新排到队尾。JUCE 的消息队列是 FIFO(Windows 整批换出按序派发,mac 每次取下标 0),定时器回调与
 //     AsyncUpdater 走的都是这一个队列。起跑那条消息开始派发时,队列里恰好有一份探针,它是在起跑之前投的,
