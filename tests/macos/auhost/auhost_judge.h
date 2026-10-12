@@ -267,6 +267,10 @@ inline Judgement judge(const Engine& e, const DriveResult& d, bool keepRows)
 // 里面的旧 pid 本来就 ≠ 宿主 pid,只看「≠ 宿主 pid」会在没有新证据时判过。不要求各实例同在一个进程:
 // 实例怎么分进程由系统决定,不是 API 的承诺(实测都在同一个 AUHostingService 里,数字记在 registry.distinct_pids)。
 // 进程内时 pid 等于宿主 pid 本身就是新证据(旧段里的 pid 不可能是本进程),路径不另核。
+// 边界(本条排除不了的):XPC 服务在客户端断开后可能还会多活一会儿(launchd 按需回收)。若本格读到的 registry
+// 恰好是前一格残留的旧段,而前一格的 AUHostingService 此刻还没退,旧 pid 仍指向一个活着的 /System/ 进程,这一条
+// 会判过。兜住它的是在场判据(要求本次的 Output 真的出了混音)与每格收尾实测的 cleanup.leftover_segments = 0。
+// 要彻底钉死,可再核该进程的启动时间晚于宿主启动(proc_pidinfo PROC_PIDTBSDINFO 的 pbi_start_tvsec),本卡没做。
 inline bool processCheck(bool outOfProcess, long long hostPid, const std::vector<long long>& pids,
                          const std::vector<std::string>& paths)
 {
