@@ -75,7 +75,7 @@ grep -E ':[0-9]+:[0-9]+: warning:' build.log | grep -vE '^([^:]*/)?(_deps|JUCE|v
 
 ### 4.1 ctest 条目
 
-CI 不带 `-R` 之外的隐式选择,而是**按名字列出**要跑的十二条,「mac 上跑哪几套」是写下来的事实:
+CI 用 `-R` **按名字精确列出**要跑的十二条,并先断言每条恰好注册一次(`ctest --test-dir build -N -R '^<名字>$'` 必须命中 1 条),不靠 ctest 的隐式全选,「mac 上跑哪几套」因此是写下来的事实:
 
 ```bash
 ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 \
@@ -132,7 +132,7 @@ killall -9 AudioComponentRegistrar 2>/dev/null || true   # 让系统重扫
 auval -v aufx Scvi Snch
 auval -v aufx Scvo Snch
 auval -v aufx Scvm Snch
-auval -a | grep Snch        # 应恰好各有一行:每个三元组恰好对应一个组件
+auval -a | grep Snch        # 每个三元组应恰好对应一个组件(多出来的行先查 ~/Library/Audio/Plug-Ins/Components 与 /Library/Audio/Plug-Ins/Components 里的旧安装)
 ```
 
 CI 的判据是**输出含 `AU VALIDATION SUCCEEDED` 且退出码为 0**,两样缺一不可(auval 的退出码历史上不可靠,所以不单看它)。`auval -strict -v ...` 只记录、不作门;不过 pluginval 在 strictness 5 自带一项会跑 `auval -strict -v`。注册刚改过时 `auval -a` 里可能要等几秒才出现,CI 轮询至多 30 s。
