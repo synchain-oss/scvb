@@ -169,10 +169,13 @@ struct Run
     std::map<std::string, std::int64_t> val; // 脚本里记下的其他数值(例:定位目标的时间线位置)
     std::vector<InputSample> inputs;
     std::function<void(SchedRig&)> sampler; // sampleInputs 的自续调度体(只在脚本运行期间被调用)
-    // [M-inv-lsdrop] 脚本开始那一刻 Output 下一块要报的时间线位置,以及开场定位是否因为「正好落在它上面」
-    // 而先多跑了一块(见 runScenario)。
+    // [M-inv-lsdrop] 脚本开始那一刻 Output 下一块要报的时间线位置,以及开场定位因为对谁是空操作而先多跑了几块
+    // (见 runScenario;0 = 没撞上)。
     std::int64_t tAtScript = 0;
     int openingNudged = 0;
+    // [A-14] 开场定位撞上的是哪一条(openingSeekNoop 的返回值,按位):1 = 落在 Output 生效那一块要报的位置上;
+    // 2 = 落在某条要被冲刷的轨(预取轨)写方下一块要写的位置上。0 = 没撞上。
+    int openingNoop = 0;
 };
 
 using Script = std::function<void(SchedRig&, Run&)>;
@@ -181,6 +184,45 @@ using Script = std::function<void(SchedRig&, Run&)>;
 // 一旦有一台走不完,多半是全局性的(组号撞车、段建不出来),后面每台都会等满预算 —— 一百多台 × 8 s 会把
 // 整套拖过 ctest 上界,真正的失败原文反而来不及打出来。所以第一台失败之后,后面的台只给 1.5 s。
 bool gSettleFailed = false;
+
+// [A-14] 该轨 Input 下一块报的位置不等于它就换代:InputProcessor 的 expectedNext_ = 上一次被调用的块报的位置 + 块长
+// (只看宿主真的调用了的块;从没被调用过 ⇒ 下一块必换代,返回 -kBig)。
+std::int64_t writerExpectedNext(const SchedRig& r, int lane)
+{
+    const std::vector<sched::LaneBlock>& log = r.laneLog(lane);
+    for (auto it = log.rbegin(); it != log.rend(); ++it)
+    {
+        if (it->reason == sched::CallReason::Called)
+        {
+            return it->tReported + it->n;
+        }
+    }
+    return -kBig;
+}
+
+// 开场定位(目标 target,在 Output 游标 effectiveAt 生效)对谁是空操作(见 runScenario 头注),按位返回:
+//   1 = Output:生效那一块 Output 要报的位置就是 target(时间线连续,读方代号不变)—— M-inv-lsdrop;
+//   2 = [A-14] 某条要被冲刷的轨的写方:游标已超过生效点(预取轨)的轨会被冲刷回生效点、从 target 重新渲染,它的写方
+//       下一块本来就要写 target 时不换代。游标没超过生效点的轨(live 轨)走到生效点时接着的是 Output 那一格,归第 1 条。
+//       「游标已超过生效点」这一条目前没有删除式证据:去掉它只会把 live 轨也纳进来,而 live 轨写方的下一块恒等于 Output
+//       那一格,与第 1 条重合,现有脚本分不出来(评审第 1 轮)。
+// 0 = 对谁都是真跳变。
+int openingSeekNoop(const SchedRig& r, std::int64_t target, std::int64_t effectiveAt)
+{
+    int why = r.outReportedAt(effectiveAt) == target ? 1 : 0;
+    for (int i = 0; i < r.laneCount(); ++i)
+    {
+        if (r.laneCursor(i) > effectiveAt && writerExpectedNext(r, i) == target)
+        {
+            why |= 2;
+        }
+    }
+    return why;
+}
+
+// 开场定位撞上之后最多多跑几个 Output 周期(见 runScenario 头注)。写方最多隔「预取块长 / Output 块长」个周期就往前写
+// 一块,本文件里这个比值最大是 1024 / 32 = 32(LS-9);多跑的周期数记在 Run::openingNudged。
+constexpr int kOpeningNudgeMax = 256;
 
 // 建台 → 交接走完(settle)→ 丢掉交接期录音 → 跑脚本 → 判定。不断言:交接没走完时 settled=false,
 // 由前提用例 REQUIRE。
@@ -196,11 +238,18 @@ bool gSettleFailed = false;
 // 所以:开场定位应用之前若发现目标就是它生效那一块 Output 要报的位置(带在途旧块时是
 // 放完旧块之后那一块),先多跑一块,让这次定位成为往回跳一块的真定位,并把脚本起点(c0、录音、[M] 拍、墙钟)
 // 挪到这一块之后 —— 各判据、理想调度差分的对齐都只看 c0 之后,不受影响。没撞上时(绝大多数台)什么都不做。
-// 边界:脚本在开场定位**之前**已经做掉的事(例如 sampleInputs 的第一次采样、markNow)发生在多跑的那一块之前;
-// 它们已记下的相对游标(run.inputs、run.mark)随 c0 一起平移,落到 c0 之前,如实反映它们发生的时刻(run.wall
-// 记的是墙钟,不平移,同样是它们真实发生的时刻)。在开场定位之前**挂**到将来的事件(markAt(rel)、
-// rig.at(run.c0 + X, …))是按旧 c0 算出的绝对游标,撞上时会比新 c0 早一块触发 —— 现在没有脚本这样写;要这样写,
-// 先做开场定位、再挂事件。
+// [A-14] 第二条判别:目标正好是某条要被冲刷的轨(游标已超过生效点,即预取轨)写方下一块要写的位置。这一下定位对 Output
+// 是真跳变,对那条轨的写方却是空操作:它冲刷后从目标重新渲染,报的位置接着上一块,InputProcessor 不换代;
+// 宿主却在同一代里一口气补渲染到「游标 + 提前量 + 块长」,读方把这口突发当成一步,在途保护被放大到突发长度并带进下一圈
+// —— 场景同样悄悄变了(A-13 附带调查:Windows CI 上 LS-4 lead=48000 loop=12s 第 0 圈两条预取轨各丢 47 帧;本机仿 mac
+// 泵复现,脚本起点 96256 时开场定位目标 144384 正好是预取轨的下一块,次次丢。读方层面的同一形状见 test_mix_source
+// [a14],产品层面待裁定)。撞上这一条时同样先多跑:写方往前写了一块,这次定位对它就是往回跳一块、换代。预取块长大于 Output
+// 块长时,写方在一个 Output 周期里可能还没往前写,就接着跑,直到这次定位对 Output 与每条要冲刷的轨都不再是空操作(上界
+// kOpeningNudgeMax 个周期)。
+// 边界:脚本在开场定位**之前**已经做掉的事(例如 sampleInputs 的第一次采样、markNow)发生在多跑的那几块之前;
+// 它们已记下的相对游标(run.inputs、run.mark)随 c0 一起平移,落到 c0 之前,如实反映它们发生的时刻(run.wall 记的是墙钟,
+// 不平移,同样是它们真实发生的时刻)。在开场定位之前**挂**到将来的事件(markAt(rel)、rig.at(run.c0 + X, …))是按旧 c0
+// 算出的绝对游标,撞上时会比新 c0 早触发(多跑了几块就早几块)—— 现在没有脚本这样写;要这样写,先做开场定位、再挂事件。
 // preRollFrom ≥ 0 只给框架自测用:交接走完后先定位到这里再跑 0.1 s,让脚本起点落在一个确定的位置上。
 Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Script& script,
                 const presence::Thresholds& th = presence::Thresholds{}, std::int64_t preRollFrom = -1)
@@ -229,11 +278,26 @@ Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Scrip
     std::size_t beat0 = rig.beats().size();
     double w0 = sched::wallMs();
     rig.armOpeningSeekGuard([&run, &beat0, &w0](SchedRig& r, std::int64_t target, std::int64_t effectiveAt) {
-        if (r.outReportedAt(effectiveAt) != target)
+        const int why = openingSeekNoop(r, target, effectiveAt);
+        if (why == 0)
         {
             return; // 开场定位本来就是一次真跳变
         }
-        r.runCycles(1);
+        // 先多跑一块;对某条要冲刷的轨仍是空操作(预取块长大于 Output 块长,写方这一块里还没往前写)就接着跑。
+        // 定位生效点始终是「当时的 Output 游标 + 在途旧块」。
+        const std::int64_t stale = effectiveAt - r.outCursor();
+        int extra = 0;
+        do
+        {
+            r.runCycles(1);
+            ++extra;
+        } while (extra < kOpeningNudgeMax && openingSeekNoop(r, target, r.outCursor() + stale) != 0);
+        if (openingSeekNoop(r, target, r.outCursor() + stale) != 0)
+        {
+            // 跑满上界仍是空操作:场景照样会悄悄退化,不能当成「本来就是真跳变」放过去 —— 这一台判负(评审第 1 轮)。
+            FAIL_CHECK(run.name << ": opening seek guard exhausted after " << extra << " cycles, the opening seek to "
+                                << target << " is still a no-op for the Output or a prefetched writer");
+        }
         r.clearRecording();
         const std::int64_t shift = r.outCursor() - run.c0;
         run.c0 = r.outCursor();
@@ -247,7 +311,8 @@ Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Scrip
         }
         beat0 = r.beats().size();
         w0 = sched::wallMs();
-        ++run.openingNudged;
+        run.openingNudged = extra;
+        run.openingNoop = why;
     });
     script(rig, run);
     run.scriptWallMs = sched::wallMs() - w0;
@@ -2065,6 +2130,26 @@ void requireBypassScenario(const Run& r, int lane)
     REQUIRE(r.inputs.size() >= 50u);
 }
 
+// [A-14] 该轨被开场定位冲刷之后、从时间线位置 t 重新渲染的第一块(游标 = 脚本起点 c0),按 InputProcessor 的规则是不是一次
+// 换代:报的位置不接着它前一个被调用的块(writerExpectedNext 同一条规则)。找不到这一块返回 false。
+bool writerJumpedAtRerender(const Run& r, int lane, std::int64_t t)
+{
+    const sched::LaneBlock* prev = nullptr;
+    for (const sched::LaneBlock& b : r.laneLogs[static_cast<std::size_t>(lane)])
+    {
+        if (b.reason != sched::CallReason::Called)
+        {
+            continue;
+        }
+        if (b.cursor == r.c0 && b.tReported == t)
+        {
+            return prev != nullptr && prev->tReported + prev->n != b.tReported;
+        }
+        prev = &b;
+    }
+    return false;
+}
+
 } // namespace
 
 // ###########################################################################
@@ -2129,6 +2214,7 @@ TEST_CASE("SCHED scenarios scaffold: an opening seek that lands on the script st
         CHECK(t.wrong == 0);
     }
     CHECK(run.openingNudged == 1);
+    CHECK(run.openingNoop == 1); // 撞上的是 Output 那一条
     CHECK(run.mark.at("beforeSeek") == -1024);
     REQUIRE(!run.inputs.empty());
     CHECK(run.inputs.front().rel == -1024);
@@ -2167,8 +2253,144 @@ TEST_CASE("SCHED scenarios scaffold: an opening seek with a stale Output block t
         CHECK(t.wrong == 0);
     }
     CHECK(run.openingNudged == 1);
+    CHECK(run.openingNoop == 1);
     WARN(run.name << ": tAtScript " << run.tAtScript << " nudged " << run.openingNudged << " | lane1 "
                   << str(tally(run, 1)) << " non-mix l1" << describeNonMix(run, 1));
+}
+
+// [A-14] 开场定位守卫的第二条判别(见 runScenario 头注):开场定位目标正好是预取轨写方下一块要写的位置。Windows CI 上
+// LS-4 lead=48000 loop=12s 第 0 圈两条预取轨各丢 47 帧就是这一形(A-13 附带调查;本机仿 mac 泵复现时,脚本起点 96256
+// 次次丢)。这里用 preRollFrom 把脚本起点放在「预取轨写方下一块 = 开场定位目标」上(脚本起点 96256、目标 144384,
+// 与那一次逐数相同),确定地造出重合,不靠计时器。守卫要先多跑一块,让写方往回跳一块、换代;LS-4 那一格的判据(每圈至多丢一
+// 帧、不错音,环里确实有数据)照样成立。没有这条判别时红在 `openingNoop == 2`、`openingNudged == 1`、两条预取轨的
+// `writerJumpedAtRerender`,以及第 0 圈的 `d.lost <= 1`(两条预取轨各丢约 47 帧)。读方层面的同一形状与产品层面的证据见
+// test_mix_source [a14]。
+TEST_CASE("SCHED scenarios scaffold: an opening seek that lands on the prefetched writers' next block is still a real "
+          "jump for those writers (LS-4 lead=48000 loop=12s does not degrade)",
+          "[.][sched]")
+{
+    constexpr std::int64_t kLead = 48000;
+    const std::int64_t len = sec(12.0);
+    const int laps = ls4Laps(len);
+    const std::int64_t preRoll = ((sec(0.1) + 1023) / 1024) * 1024; // runFor(0.1 s) 按整块走(块长 1024)
+    // 稳态时预取轨写方的下一块领先 Output 的下一块 ceil(L / 1024) 块:每个周期开头推到「Output 游标 + L + b_out」之上,
+    // 整块推。
+    const std::int64_t writerAhead = ((kLead + 1023) / 1024) * 1024;
+    sched::SchedCfg cfg = lanesCfg(3, kFastPace);
+    makePrefetch(cfg, 1, kLead);
+    makePrefetch(cfg, 2, kLead);
+    const Run run = runScenario(
+        "scaffold opening seek on the prefetched writers' next block", cfg,
+        [len, laps](SchedRig& rig, Run& run) {
+            for (int lane : {1, 2})
+            {
+                run.val["writerNext" + std::to_string(lane)] = writerExpectedNext(rig, lane);
+            }
+            rig.seek(sched::kNow, kLs4LoopB);
+            rig.cycle(kLs4LoopB, kLs4LoopB + len);
+            rig.runFor(static_cast<std::int64_t>(laps) * len);
+        },
+        presence::Thresholds{}, kLs4LoopB - writerAhead - preRoll);
+    REQUIRE(run.settled);
+    // 重合确实造出来了(与守卫无关):开场定位对 Output 是真跳变,对两条预取轨的写方却是空操作。
+    REQUIRE(run.tAtScript == kLs4LoopB - writerAhead); // 96256
+    for (int lane : {1, 2})
+    {
+        REQUIRE(run.val.at("writerNext" + std::to_string(lane)) == kLs4LoopB);
+    }
+    // 守卫按写方那一条命中,多跑了一块;之后两条预取轨冲刷后重新渲染的第一块确实换代。
+    CHECK(run.openingNoop == 2);
+    CHECK(run.openingNudged == 1);
+    for (int lane : {1, 2})
+    {
+        INFO("lane " << lane);
+        CHECK(writerJumpedAtRerender(run, lane, kLs4LoopB));
+    }
+    // 场景不退化:LS-4 lead=48000 loop=12s 同一套判据。
+    const Run& ideal = ls4IdealFor(len);
+    const std::vector<sched::Range> lapRanges = lapsOf(run);
+    REQUIRE(static_cast<int>(lapRanges.size()) == laps);
+    const Oracle o = ringOracle(run);
+    REQUIRE(o.supported);
+    std::ostringstream os;
+    os << run.name << ": tAtScript " << run.tAtScript << " noop " << run.openingNoop << " nudged " << run.openingNudged;
+    for (std::size_t li = 0; li < lapRanges.size(); ++li)
+    {
+        const sched::Range& lap = lapRanges[li];
+        for (int lane : {1, 2})
+        {
+            INFO("lane " << lane << " lap " << li << " [" << lap.begin << "," << lap.end << ")");
+            // 环可用性:Output 读的那一刻环里写着本位置的有声数据(除换圈处至多一帧)—— 丢的帧只能怪读方。
+            const std::pair<int, int> av = oracleFrames(run, o, lane, lap.begin, lap.end);
+            REQUIRE(av.second >= 90);
+            REQUIRE(av.first >= av.second - 1);
+            const Diff d = diffVsIdeal(ideal, lane, run, lane, lap.begin, lap.end);
+            REQUIRE(d.unmatched == 0);
+            CHECK(d.lost <= 1);
+            CHECK(d.wrong == 0);
+            os << " | lap" << li << " lane" << lane << " " << str(d) << " oracle " << av.first << "/" << av.second;
+        }
+    }
+    const Diff ctl = diffVsIdeal(ideal, 0, run, 0);
+    CHECK(ctl.lost == 0); // 对照轨(live)全在场
+    WARN(os.str() << " | lane0 " << str(ctl) << " | maxMisalign " << maxMisalignAll(run));
+}
+
+// [A-14] 同上,但预取块长(1024)大于 Output 块长(256):写方每 4 个 Output 周期才往前写一块,多跑一个周期之后它的下一块还是
+// 定位目标(仍是空操作),守卫要接着跑,直到它往前写了为止。形状取 LS-1 lead=4096 bout=256 那一格,判据也与它相同(理想调度差
+// 分不丢帧、不错音)。只多跑一个周期时红在 `openingNudged == 2` 与两条预取轨的 `writerJumpedAtRerender`。
+TEST_CASE("SCHED scenarios scaffold: with prefetch blocks longer than the Output block the guard keeps running "
+          "until the opening seek is a real jump for the prefetched writers",
+          "[.][sched]")
+{
+    const std::int64_t s0 = alignedSec(2.0);
+    const std::int64_t preRoll = ((sec(0.1) + 255) / 256) * 256; // runFor(0.1 s) 按整块走(块长 256)
+    // 交接走完后定位到 preRollFrom、Output 又跑了 k = preRoll / 256 块:预取轨写方(提前 4096、块长 1024,
+    // 每个周期开头推到「Output 游标 + 4096 + 256」之上,整块推)此时下一块领先 Output 的下一块 4096 + 1024·ceil(k / 4) −
+    // 256·k。
+    const std::int64_t k = preRoll / 256;
+    const std::int64_t writerAhead = 4096 + 1024 * ((k + 3) / 4) - 256 * k;
+    sched::SchedCfg cfg = lanesCfg(3, kFastPace);
+    cfg.outBlock = 256;
+    makePrefetch(cfg, 1, 4096);
+    makePrefetch(cfg, 2, 4096);
+    const Run run = runScenario(
+        "scaffold opening seek on the prefetched writers' next block bout=256", cfg,
+        [s0](SchedRig& rig, Run& run) {
+            for (int lane : {1, 2})
+            {
+                run.val["writerNext" + std::to_string(lane)] = writerExpectedNext(rig, lane);
+            }
+            rig.seek(sched::kNow, s0);
+            rig.runFor(sec(2.0));
+        },
+        presence::Thresholds{}, s0 - writerAhead - preRoll);
+    REQUIRE(run.settled);
+    REQUIRE(run.tAtScript == s0 - writerAhead); // 重合确实造出来了(与守卫无关)
+    for (int lane : {1, 2})
+    {
+        REQUIRE(run.val.at("writerNext" + std::to_string(lane)) == s0);
+    }
+    CHECK(run.openingNoop == 2);
+    CHECK(run.openingNudged == 2); // 多跑一个周期写方还停在 s0 上,第二个周期才往前写
+    for (int lane : {1, 2})
+    {
+        INFO("lane " << lane);
+        CHECK(writerJumpedAtRerender(run, lane, s0));
+    }
+    const Run& ideal = ls1IdealFor(256);
+    for (int lane = 0; lane < 3; ++lane)
+    {
+        INFO("lane " << lane);
+        const Tally t = tally(run, lane);
+        REQUIRE(t.total >= 90);
+        const Diff d = diffVsIdeal(ideal, lane, run, lane);
+        CHECK(d.unmatched == 0);
+        CHECK(d.lost == 0);
+        CHECK(t.wrong == 0);
+    }
+    WARN(run.name << ": tAtScript " << run.tAtScript << " noop " << run.openingNoop << " nudged " << run.openingNudged
+                  << " | lane1 " << str(tally(run, 1)) << " non-mix l1" << describeNonMix(run, 1));
 }
 
 // ---------------------------------------------------------------------------
