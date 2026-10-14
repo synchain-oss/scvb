@@ -1776,6 +1776,11 @@ std::vector<A16WorldPair> a16Worlds()
     {
         p.w1.recordSeen = true;
         p.w2.recordSeen = true;
+        const std::size_t at = p.w2.name.find("world1");
+        if (at != std::string::npos)
+        {
+            p.w2.name.replace(at, 6, "world2"); // 世界 2 的名字由世界 1 的名字派生
+        }
     }
     return v;
 }
@@ -2249,10 +2254,11 @@ TEST_CASE("ShmRingMixSource A-16 PX1 闩死判定:写方单独换代、新一代
         REQUIRE(r.head() == oldHead + r.n);
         r.steady(t, px::kLead, 12, 1, 0);
         REQUIRE(t > oldHead + r.n);
-        REQUIRE(r.src.privateLatchOffCount() >= 1u); // 副本确实交接过、又被闩死判定作废
+        REQUIRE(r.src.preCopyFrameCount() > 0u); // 本代确实拷过(换代时有副本可交接)
         INFO(r.stats());
         CHECK(r.wrong == 0);
         CHECK(r.stale == 0);
+        CHECK(r.src.privateLatchOffCount() >= 1u); // 交接之后当场闩死(闩死判定去掉时这一条与世界 2 的 stale 一起红)
     }
 }
 

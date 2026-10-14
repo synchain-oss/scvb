@@ -965,8 +965,9 @@ struct ReaderStat
     int64_t staleFrames = 0; // I1'(a) 违例:交出的代号既不是该位置最近一次已发布、也不是最近一次已写入的那一代
     int64_t privGhostFrames = 0; // I1'(b) 违例:从私有副本交出的是上一遍的数据(那次写入的走带计数 < 本帧的)
     int64_t ringGhostFrames = 0; // 从环交出、那次写入在本帧的走带时刻之前的(含读写目标不一致的那一点滞后;只打印)
-    // 从环交出、那次写入在读方这一遍开始(读方上一次自己跳变)之前的 —— 上一遍的音频(头注「既有口径」:读方自己回绕之后
-    // 环路径的上一代窗不撤,写方领先、又在新一圈停调时可能出现)。只打印,数字交统筹 / 用户裁定。
+    // 从环交出、那次写入比读方这一遍开始(读方上一次自己跳变)还早一个以上提前量的 —— 写方领先不会早于那时就写这一遍的
+    // 数据,所以只能是上一遍的音频(头注「既有口径」:读方自己回绕之后环路径的上一代窗不撤,写方领先、又在新一圈停调时
+    // 可能出现)。只打印,数字交统筹 / 用户裁定。
     int64_t ringPrevPassFrames = 0;
     std::string firstBadA16;
 };
@@ -1511,8 +1512,10 @@ RunResult runOne(const RunCfg& cfg)
             const bool availN = nchN == nch ? avail : oracleAvailable(ring, cR, t0, len, nchN, inst);
             account(res.noPc, nullptr, okN, availN, dstNoPc.data(), t0, len, nchN, inst);
             const bool availInf = oracleAvailableInf(ring, cR, t0, len, inst);
-            accountA16(res.cur, lap, okC, availInf, dstCur.data(), ring, cR, t0, len, nch, passStartC);
-            accountA16(res.noPc, nullptr, okN, availInf, dstNoPc.data(), ring, cR, t0, len, nchN, passStartC);
+            // 这一遍的数据最早在「这一遍开始 − 提前量(含抖动)− 一块」时写下;比它更早写的只能是上一遍的。
+            const int64_t passWriteFloor = passStartC - cfg.lead - cfg.leadJitter - 2 * cfg.readerBlock;
+            accountA16(res.cur, lap, okC, availInf, dstCur.data(), ring, cR, t0, len, nch, passWriteFloor);
+            accountA16(res.noPc, nullptr, okN, availInf, dstNoPc.data(), ring, cR, t0, len, nchN, passWriteFloor);
             if (okN && !okC)
             {
                 ++res.noPcOnlyOk;
