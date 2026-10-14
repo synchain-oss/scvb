@@ -231,6 +231,7 @@ private:
     int64_t curVf_ = 0;
     int64_t curHi_ = 0; // 本代观测到的最大写头(降级成上一代窗时的 hi)
     bool anchorOnUnconfirmed_ = false; // 当前锚点是在写头尚未确认时下的(确认时要核一致)
+    bool anchorAtStepHead_ = false; // [A-13] ……而且是保守规则对着「正好多一步」的暂定头下的(写头首动时只抬这种锚)
     bool jumpedInGen_ = false; // 读方在本代首次被观测之时或之后自己跳过
     bool jumpedAtGenStart_ = false; // ……而且就是在首次观测的那一块跳的(同步规则),否则是推迟锚定
     bool syncUsed_ = false; // 同步规则 / 推迟锚定本代已用过(每代一次)

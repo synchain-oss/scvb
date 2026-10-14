@@ -133,6 +133,7 @@ void ShmRingMixSource::clearWindows() noexcept
     curAnchored_ = false;
     curVf_ = 0;
     anchorOnUnconfirmed_ = false;
+    anchorAtStepHead_ = false;
     prevOn_ = false;
     prevBLowKnown_ = false;
     refHiValid_ = false;
@@ -286,6 +287,7 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
     curAnchored_ = false;
     curVf_ = 0;
     anchorOnUnconfirmed_ = false;
+    anchorAtStepHead_ = false;
     headConfirmed_ = false;
     headTentative_ = false;
     headAtStep_ = false;
@@ -360,19 +362,21 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
             curAnchored_ = false;
             curHi_ = 0;
         }
-        else if (curAnchored_ && headAtStep_ && curVf_ == lastW_)
+        else if (curAnchored_ && anchorAtStepHead_)
         {
-            // [A-13] 锚还在本代第一次看到的那个「正好多一步」的暂定头 h(= lastW_)上(保守规则下的)。h 只有两种来历:
+            // [A-13] 锚是保守规则对着本代第一次看到的那个「正好多一步」的暂定头 h(= lastW_)下的。h 只有两种来历:
             // 新一代的头(新一代起点 ≤ h),或 R1 窗口里上一代的旧头 —— 那样的话新一代是在 h 之后才开始发布的,到这一次
             // 至少已经发布了一笔;一笔的长度按上一代里量到过的最小步长估(观测值,不是上界),新一代起点就 ≤ w − 最小步长。
             // 锚点抬到不低于 w − 最小步长:两种来历下都不低于新一代起点(I2)。原地重算 / 位置连续的换代(写方这一步就是
             // 一块)锚点还是 h,只丢 [上一代最后观测到的头, h) 那一块;R1 窗口里新一代往前跳了不到 spanBound(上面那道
-            // 复核拦不住)时,锚点被抬到新一代起点之上。只抬保守规则下在 h 上的锚:锁步 / 同步 / 推迟锚定按读方自己的位置
-            // 论证过本代起点,不动 —— 同步宿主上读方块会在事件点被切短,最小步长可能远小于一块,照抬会把读方正在读的块
-            // 抬出当前窗(A-3 同步族实测:成功集合 ⊇ 旧读方当场不成立)。残余见头注 R5。
+            // 复核拦不住)时,锚点被抬到新一代起点之上。只抬保守规则下的这种锚(显式记在 anchorAtStepHead_,不靠锚点数值
+            // 相等去猜):锁步 / 同步 / 推迟锚定按读方自己的位置论证过本代起点,不动 —— 同步宿主上读方块会在事件点被切短,
+            // 最小步长可能远小于一块,照抬会把读方正在读的块抬出当前窗(A-3 同步族实测:成功集合 ⊇ 旧读方当场不成立;锁步锚
+            // 恰好落在 h 上的那一形见 test_mix_source [a13] (5))。残余见头注 R5。
             curVf_ = std::max(curVf_, stepMinPrev_ > 0 ? w - stepMinPrev_ : w);
         }
         anchorOnUnconfirmed_ = false;
+        anchorAtStepHead_ = false;
         // 确认之前记下的写头(firstObservation 的 curHi_ = w)可能是上一代的旧头,不能算进本代的最大写头。
         curHi_ = 0;
         headTentative_ = false;
@@ -430,6 +434,7 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
         }
         curVf_ = curAnchored_ ? std::min(curVf_, t0) : t0;
         curAnchored_ = true;
+        anchorAtStepHead_ = false; // [A-13] 锚改按读方自己的落点论证,不再是对着暂定头下的
         syncUsed_ = true;
         return;
     }
@@ -445,6 +450,7 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
         curVf_ = t0;
         curAnchored_ = true;
         anchorOnUnconfirmed_ = !headConfirmed_;
+        anchorAtStepHead_ = false;
         return;
     }
     // 规则 3 保守规则:写头已确认是本代写的,就锚在它上面(它之下的本代数据从哪开始无从得知,
@@ -454,6 +460,7 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
         curVf_ = w;
         curAnchored_ = true;
         anchorOnUnconfirmed_ = !headConfirmed_;
+        anchorAtStepHead_ = headAtStep_ && !headConfirmed_; // [A-13] 对着「正好多一步」的暂定头下的锚
     }
 }
 

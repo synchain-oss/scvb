@@ -835,6 +835,51 @@ TEST_CASE("ShmRingMixSource A-13 写头正好多一步(4) 跨代与别名:两次
     }
 }
 
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(5) 锁步写方单独换代、前后各一块先算 Output:锁步锚恰在暂定头上也不抬",
+          "[mix][ring][a13]")
+{
+    // 同步宿主(先 Input 后 Output,读写同块长 64)上写方单独换代(例:重新 prepare 之后第一块),换代前后各有一块宿主先算
+    // 了 Output(N2a 那一形)。读方在新一代第一次看到的写头 = 本块块首 = 上一代最后观测到的头 + 一块:「正好多一步」;
+    // 锁步规则把锚下在本块块首,数值上恰好也等于那个暂定头。上一代里宿主在事件点给过一块 32 帧的短块,量到的最小步长
+    // 只有半块。下一块恢复先算 Input,写头一次动两块:锁步锚若被当成暂定头的锚按最小步长抬(写头 − 32),这一块的前半截
+    // 就被抬出当前窗,环里明明是新一代为本位置写下的数据也读不到。
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    int64_t t = 1000;
+    const auto inputFirst = [&](int n) {
+        writePositions(f, t, n);
+        const bool ok = src.read(t, out.data(), n, 1) && holdsPositions(out, t, n);
+        t += n;
+        return ok;
+    };
+    for (int k = 0; k < 6; ++k)
+    {
+        REQUIRE(inputFirst(64));
+    }
+    REQUIRE(inputFirst(32)); // 事件点上的短块
+    for (int k = 0; k < 6; ++k)
+    {
+        REQUIRE(inputFirst(64));
+    }
+    // 先算 Output 的第一块(写头还停在块首,读不到),随后 Input 重新 prepare 之后的第一块:换代、写本块。
+    CHECK_FALSE(src.read(t, out.data(), 64, 1));
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, t, 64);
+    t += 64;
+    // 先算 Output 的第二块:看到「新一代、写头 = 本块块首」(这一格要的形状),读不到;随后 Input 写本块。
+    REQUIRE(static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire)) == t);
+    CHECK_FALSE(src.read(t, out.data(), 64, 1));
+    writePositions(f, t, 64);
+    t += 64;
+    // 恢复先算 Input:本块整块是新一代为本位置写下的数据。
+    CHECK(inputFirst(64));
+    CHECK(inputFirst(64));
+    CHECK(src.gapCount() == 0);
+}
+
 // ---------------------------------------------------------------------------
 // [A-6] 持续读不到 → 失准(E1b,设计稿 §3.4;ShmRingMixSource 头注「持续读不到」)。块长 480 = 10 ms @ 48 kHz,
 // 宽限下限 200 ms = 9600 样本 = 20 块(这些用例里读方一块都没在当前窗里读成功过,或提前量很小,宽限就是这一项)。
