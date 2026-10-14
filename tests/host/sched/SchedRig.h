@@ -783,7 +783,7 @@ public:
     // fn(本台, 定位目标, 定位生效的 Output 游标)—— 生效游标 = 当前游标 + staleOutBlocks × b_out(Output 先放完
     // 在途旧块才换位置),判「这次定位对 Output 是不是空操作」要看那个游标上报的位置。在那之前只要跑过一个周期
     // 就自动撤掉 —— 它只管「脚本的第一个动作就是定位」那一刻。场景卡的 runScenario 用它保证开场定位对 Output
-    // 是一次真跳变(见那里的注释);本台自己不做任何策略判断。
+    // 与各条预取轨的写方都是一次真跳变([A-14] 起含后者,见那里的注释);本台自己不做任何策略判断。
     void armOpeningSeekGuard(std::function<void(SchedRig&, std::int64_t, std::int64_t)> fn)
     {
         openingSeekGuard_ = std::move(fn);

@@ -4,8 +4,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -534,6 +537,713 @@ TEST_CASE("ShmRingMixSource A-5 「远超一步」只是暂定:换代后看到�
     CHECK_FALSE(src.read(2040, out.data(), 64, 1));
     CHECK_FALSE(src.read(2104, out.data(), 64, 1));
     CHECK(src.gapCount() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [A-13] 换代后第一次看到的写头**正好**比上一代最后观测到的头多一个步长(LS-16 在读方这一层的形状)。
+// 读方只有 epoch 与写头两个数,同一个读数有好几种成因,分不出来:
+//   ① 原地重算:宿主播放中把预取轨已算好的音频作废、从 Output 游标重新渲染到「游标 + 提前量 + 块长」——
+//      写方单独往回跳了一个提前量、换代,新一代的头恰好比上一代最后观测到的头多一个写方块(LS-16);
+//   ② 位置连续的换代:写方换代(例:重新 prepare 之后第一块)但位置接着上一代写,新一代的头 = 上一代的头 + 一块;
+//   ③ R1 并发窗口:上一代在读方最后一次观测之后恰好又写了一块,随后换代,新一代第一段还没发布 —— 读方看到的
+//      「多一步」的头其实是**上一代的旧头**,新一代往哪写都有可能(往回、原地接着、往前跳);
+//   ④ 跨代(两次观测之间换了不止一代)/ 别名(新一代第一段写到读方还要读的上一代窗的同槽)。
+// 判据与 A-3 oracle 同口径:读方返回 true 的每一帧都必须是本位置写下的数据(错帧 = 0),哪种成因都一样。
+// 台子:环 2^17(装得下提前量 48000 的跨度),读写块长都是 1024(LS-16 的预取块长);写方领先 L,每个读方块之前
+// 把写头推到「读方块首 + L + 块长」(A-3 预取条件同形),读方自己从不跳(读方代号恒 1)。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr u32 kA13Ring = 1u << 17;
+constexpr int kA13Block = 1024;
+
+struct LeadRig
+{
+    RingFixture f;
+    ShmRingMixSource src;
+    std::vector<float> out;
+    int64_t lead = 0;
+    int n = kA13Block;
+    int64_t t = 0; // 读方下一块的 t0
+    int64_t wPos = 0; // 写方下一笔的位置
+    int64_t seenHead = 0; // 读方最近一块读时的写头(测试侧记账,前提断言用)
+    u64 seenEpoch = 0;
+    int64_t wrongFrames = 0; // 返回 true 的块里不是本位置数据的帧(I1 违例)
+    int64_t lostBlocks = 0; // 环里整块都是本位置的数据、读方却没读的块
+    int64_t hazardBlocks = 0; // 写头已越过块尾、环里却不全是本位置数据的块(读方若认就是错音)
+    std::string firstWrong;
+
+    LeadRig(int64_t leadIn, int64_t t0)
+        : f(kA13Ring, 2), out(static_cast<std::size_t>(kA13Block) * 2), lead(leadIn), t(t0), wPos(t0)
+    {
+        f.header.epoch.store(1, std::memory_order_release);
+        src.bind(&f.header, f.data.data());
+    }
+
+    int64_t head() const { return static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire)); }
+    void bump() { f.header.epoch.fetch_add(1, std::memory_order_release); }
+    // 写方本代接着写到 target(一块一块写,每块发布一次写头)。已经在 target 之上就不写(领先够了先停)。
+    void writeTo(int64_t target)
+    {
+        while (wPos < target)
+        {
+            writePositions(f, wPos, n);
+            wPos += n;
+        }
+    }
+    // 写方换代之后的第一段:从 p 起写 m 帧并发布(此后接着从 p + m 往后写)。
+    void jumpWrite(int64_t p, int m)
+    {
+        writePositions(f, p, m);
+        wPos = p + m;
+    }
+    bool ringHolds(int64_t t0) const
+    {
+        const u32 mask = kA13Ring - 1;
+        for (int i = 0; i < n; ++i)
+        {
+            const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(t0 + i)) & mask);
+            if (f.data[slot * 2] != static_cast<float>(t0 + i) || f.data[slot * 2 + 1] != static_cast<float>(t0 + i))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    bool read()
+    {
+        const bool avail = ringHolds(t);
+        seenHead = head();
+        seenEpoch = f.header.epoch.load(std::memory_order_acquire);
+        if (!avail && seenHead >= t + n)
+        {
+            ++hazardBlocks;
+        }
+        std::fill(out.begin(), out.end(), -1.0f);
+        const bool ok = src.read(t, out.data(), n, 1);
+        if (ok)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                if (out[static_cast<std::size_t>(i) * 2] != static_cast<float>(t + i) ||
+                    out[static_cast<std::size_t>(i) * 2 + 1] != static_cast<float>(t + i))
+                {
+                    if (firstWrong.empty())
+                    {
+                        firstWrong = "t0=" + std::to_string(t) + " frame=" + std::to_string(i) +
+                                     " got=" + std::to_string(out[static_cast<std::size_t>(i) * 2]);
+                    }
+                    ++wrongFrames;
+                }
+            }
+        }
+        else if (avail)
+        {
+            ++lostBlocks;
+        }
+        t += n;
+        return ok;
+    }
+    // 稳态一块:写方先推到「读方块首 + L + 块长」,读方再读。
+    void steady()
+    {
+        writeTo(t + lead + n);
+        read();
+    }
+    void steadyFor(int blocks)
+    {
+        for (int k = 0; k < blocks; ++k)
+        {
+            steady();
+        }
+    }
+    // 事件之后放够:读方越过新一代写头与提前量之后再多读几块。
+    void runOut() { steadyFor(static_cast<int>(lead / n) + 8); }
+};
+} // namespace
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(1)(2):原地重算 / 位置连续的换代都不错音,读方至多丢一个写方块",
+          "[mix][ring][a13]")
+{
+    for (const int64_t lead : {int64_t{4096}, int64_t{48000}})
+    {
+        for (const bool rerender : {true, false})
+        {
+            INFO("lead=" << lead << (rerender ? " in-place re-render" : " contiguous new generation"));
+            LeadRig r(lead, 200000);
+            r.steadyFor(8);
+            REQUIRE(r.lostBlocks == 0);
+            REQUIRE(r.wrongFrames == 0);
+            const int64_t refHi = r.seenHead; // 上一代最后观测到的头
+            const int64_t lost0 = r.lostBlocks;
+            r.bump();
+            if (rerender)
+            {
+                r.wPos = r.t; // ① 从读方游标起重新渲染(一块一块)
+            }
+            r.writeTo(r.t + lead + r.n); // ① 渲染到游标 + L + 块长;② 新一代接着上一代的位置写一块
+            REQUIRE(r.head() == refHi + r.n); // 这一格要的形状:新一代的头 = 上一代最后观测到的头 + 一个步长
+            r.runOut();
+            REQUIRE(r.t > refHi + 2 * r.n); // 读方确实读过了 [上一代的头, 新一代的头 + 一块) 那一段
+            INFO(r.firstWrong);
+            CHECK(r.wrongFrames == 0);
+            // 新一代真正从哪写起读方不知道:[上一代最后观测到的头, 新一代第一次看到的头) 那一块读方证明不了,不读
+            // (与 LS-12 领先轨句首同一条裁定:至多一个写方块)。A-13 之前这里还要多丢「写头再动一次」的那一块。
+            CHECK(r.lostBlocks - lost0 <= 1);
+            CHECK(r.src.gapCount() == 0);
+        }
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(3) R1 并发窗口:那个头是上一代的旧头,新一代往哪写都不错音",
+          "[mix][ring][a13]")
+{
+    // 上一代在读方最后一次观测之后恰好又写了一块(写头 = refHi + 一块),随后写方单独跳变:换代,新一代第一段还没发布
+    // (InputProcessor 换代与发布之间,只出现在 Input 与 Output 真正并发的宿主上)。读方这一块看到「新一代、写头 =
+    // refHi + 一块」—— 与①②的读数一模一样,但这个头是上一代的。下一块之前新一代第一段发布,落点分几种。
+    constexpr int64_t kLead = 4096;
+    struct Shape
+    {
+        const char* name;
+        int64_t offset; // 新一代第一段起点 − 那个旧头;kBackToCursor = 回到读方游标重新渲染
+    };
+    constexpr int64_t kBackToCursor = std::numeric_limits<int64_t>::min();
+    const Shape shapes[] = {
+        {"back to the Output cursor (in-place re-render)", kBackToCursor},
+        {"contiguous with the old head", 0},
+        {"forward by half a block", kA13Block / 2},
+        {"forward by one block", kA13Block},
+        {"forward by the lead", kLead},
+        {"forward by twice the lead (beyond the span bound)", 2 * kLead},
+    };
+    for (const Shape& s : shapes)
+    {
+        INFO(s.name);
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n); // 上一代多写的那一块(读方没看到)
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump(); // 换代,新一代第一段还没发布
+        r.read(); // 读方落在这个窗口里
+        REQUIRE(r.seenHead == oldHead);
+        REQUIRE(r.seenEpoch == 2u);
+        if (s.offset == kBackToCursor)
+        {
+            r.wPos = r.t;
+            r.writeTo(r.t + kLead + r.n);
+        }
+        else
+        {
+            r.jumpWrite(oldHead + s.offset, r.n);
+        }
+        r.runOut();
+        if (s.offset > 0)
+        {
+            // [旧头, 新一代起点) 两代都没写过:读方后来确实读到过写头已越过、环里却不是本位置数据的块(这一格有牙)。
+            CHECK(r.hazardBlocks > 0);
+        }
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+        CHECK(r.src.gapCount() == 0);
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(3) R1 窗口 + 写方节拍不稳:最大步长两块时新一代往前跳半块也不错音",
+          "[mix][ring][a13]")
+{
+    // 并发宿主上写方的节拍会抖:两次读方观测之间写方偶尔写两块(读方量到的最大步长 = 两块,最小步长 = 一块)。
+    // 这时「正好多一步」= 多两块。上一代在读方最后一次观测之后恰好又写了两块、随后换代(R1),新一代往前跳半块、
+    // 写一块。按「最大步长」复核分不出它和「新一代的头、写方又推进了 1.5 块」;按「最小步长」复核分得出。
+    constexpr int64_t kLead = 4096;
+    LeadRig r(kLead, 200000);
+    r.steadyFor(4);
+    r.writeTo(r.t + kLead + 2 * r.n); // 抖一下:这一块之前写方多写了一块(步长两块)
+    r.read();
+    r.steadyFor(4); // 之后照常(下一块写方已经够了,不写;再往后每块一块)
+    const int64_t refHi = r.seenHead;
+    r.writeTo(r.t + kLead + 2 * r.n); // 上一代又写了两块(读方没看到)
+    const int64_t oldHead = r.head();
+    REQUIRE(oldHead == refHi + 2 * r.n);
+    r.bump();
+    r.read();
+    REQUIRE(r.seenHead == oldHead);
+    r.jumpWrite(oldHead + r.n / 2, r.n); // 新一代往前跳半块,写一块
+    r.runOut();
+    CHECK(r.hazardBlocks > 0);
+    INFO(r.firstWrong);
+    CHECK(r.wrongFrames == 0);
+    CHECK(r.src.gapCount() == 0);
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(4) 跨代与别名:两次观测间换了两代 / 新一代写到上一代窗同槽,都不错音",
+          "[mix][ring][a13]")
+{
+    constexpr int64_t kLead = 4096;
+    SECTION("two generations between two reads, the second one starting half a block past the old head")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.bump();
+        r.jumpWrite(refHi + 30000, r.n); // 第一代:往前跳到远处写了一块
+        r.bump();
+        r.jumpWrite(refHi + r.n / 2, r.n / 2); // 第二代:跳回来,从旧头之后半块写到旧头 + 一块
+        REQUIRE(r.head() == refHi + r.n);
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
+    SECTION("R1 window, then another generation before the first publication")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n);
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump();
+        r.read(); // 看到「新一代、旧头 + 一块」
+        r.bump(); // 又换一代,往前跳半块写一块
+        r.jumpWrite(oldHead + r.n / 2, r.n);
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
+    SECTION("R1 window, then the first publication aliases slots of the previous-generation window still to be read")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n);
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump();
+        r.read();
+        // 新一代往前跳将近一个环长:第一段写在读方再过一块要读的那些位置 + 环长,与它们同槽。
+        const int64_t aliased = r.t + r.n;
+        r.jumpWrite(aliased + static_cast<int64_t>(kA13Ring), r.n);
+        REQUIRE_FALSE(r.ringHolds(aliased)); // 那一块的环槽里现在是下一圈的数据
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(5) 锁步写方单独换代、前后各一块先算 Output:锁步锚恰在暂定头上也不抬",
+          "[mix][ring][a13]")
+{
+    // 同步宿主(先 Input 后 Output,读写同块长 64)上写方单独换代(例:重新 prepare 之后第一块),换代前后各有一块宿主先算
+    // 了 Output(N2a 那一形)。读方在新一代第一次看到的写头 = 本块块首 = 上一代最后观测到的头 + 一块:「正好多一步」;
+    // 锁步规则把锚下在本块块首,数值上恰好也等于那个暂定头。上一代里宿主在事件点给过一块 32 帧的短块,量到的最小步长
+    // 只有半块。下一块恢复先算 Input,写头一次动两块:锁步锚若被当成暂定头的锚按最小步长抬(写头 − 32),这一块的前半截
+    // 就被抬出当前窗,环里明明是新一代为本位置写下的数据也读不到。
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    int64_t t = 1000;
+    const auto inputFirst = [&](int n) {
+        writePositions(f, t, n);
+        const bool ok = src.read(t, out.data(), n, 1) && holdsPositions(out, t, n);
+        t += n;
+        return ok;
+    };
+    for (int k = 0; k < 6; ++k)
+    {
+        REQUIRE(inputFirst(64));
+    }
+    REQUIRE(inputFirst(32)); // 事件点上的短块
+    for (int k = 0; k < 6; ++k)
+    {
+        REQUIRE(inputFirst(64));
+    }
+    // 先算 Output 的第一块(写头还停在块首,读不到),随后 Input 重新 prepare 之后的第一块:换代、写本块。
+    CHECK_FALSE(src.read(t, out.data(), 64, 1));
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, t, 64);
+    t += 64;
+    // 先算 Output 的第二块:看到「新一代、写头 = 本块块首」(这一格要的形状),读不到;随后 Input 写本块。
+    REQUIRE(static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire)) == t);
+    CHECK_FALSE(src.read(t, out.data(), 64, 1));
+    writePositions(f, t, 64);
+    t += 64;
+    // 恢复先算 Input:本块整块是新一代为本位置写下的数据。
+    CHECK(inputFirst(64));
+    CHECK(inputFirst(64));
+    CHECK(src.gapCount() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [A-14] 同一代里写方一口突发、随后循环回绕:上一圈尾段读不到。这是 A-13 附带调查的读方层面确定性形状 —— Windows CI 上
+// LS-4 lead=48000 loop=12s 第 0 圈两条预取轨各丢 47 帧。产品层面改不改读方待裁定,本卡只钉证据,不动 src/。
+//
+// 机制:写方在**同一代**里、读方相邻两次观测之间一口气写了远大于一块的一笔(突发 S)。读方把它记成一步:本代最大步长
+// stepMaxCur_ = S,在途保护 inflightGuard() 跟着变成 S,换代时作为 stepMaxPrev_ 带进下一代。写方领先 A(写头 −
+// 读方块首),先于读方循环回绕(换代)。之后读方还在上一圈尾段,这一段由上一代窗读;别名判据要求新一圈写到的位置加在途保护碰
+// 不到它的同槽。圈长 len ≥ 环长 R 时,余量是 len − R − A:保护是一块时,余量够一块就照读;保护被突发放大到 S、余量又不到 S
+// 时,从写方回绕到读方回绕这一整段(约一个提前量)都不认 —— 不错音、不报警。所以分得出来的是余量落在 [块长, S)
+// 这一带(圈长 [R + A + 块长, R + A + S))。余量不到一块的圈(圈长 [R, R + A + 块长))没有突发也读不到尾段,那是另一回事,
+// 不归这里。
+// 突发的两种来历:
+//   ① 开场定位对写方是空操作:定位目标正好是写方下一块要写的位置,写方不换代;宿主照样冲刷,从定位点一口气补渲染到「游标 +
+//      提前量 + 块长」。LS-4 那一次就是这样:脚本起点 96256 时,定位目标 144384 正好是预取轨的下一块;
+//   ② 宿主的预取停了几块,又一口补齐(读方时间线连续,写方不换代)。
+// 判据与 A-3 oracle 同口径:
+//   · 安全:返回 true 的每一帧都必须是本位置写下的数据(错帧 = 0),必须绿;
+//   · 期望:读时环里整块是本位置数据、读方却没读的块记丢失,每圈至多丢一个写方块。现行读方在带内做不到,打 [!shouldfail]
+//     留证据。
+// 台子:生产环长 2^19,提前量 48000,读写块长 1024,循环起点 144384,与 LS-4 那一格逐数相同(稳态 A = 49152;12 s 圈余量
+// 576000 − 524288 − 49152 = 2560)。写方按 InputProcessor 的规则换代(报的位置不接着上一块就 epoch+1);读方按
+// OutputProcessor 的规则换自己的代号(位置不接着上一块就 +1)。每个读方块之前,写方先处理到「读方游标 + 提前量 +
+// 块长」(SchedRig 的预取条件)。时间线是一张「游标 → 位置」表:起播一段直线,读方游标 kA14SeekAt 处开场定位到 B,同时开
+// Cycle [B, B + len)。定位之前写方按直线渲染;定位时写方超过定位点的部分冲刷回定位点,从那里重新渲染(SchedRig 同款)。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr u32 kA14Ring = scvb::kDefaultRingFrames; // 2^19 = 生产环长(与 LS-4 同)
+constexpr int64_t kA14R = static_cast<int64_t>(kA14Ring);
+constexpr int kA14Block = 1024;
+constexpr int64_t kA14Lead = 48000;
+// 稳态时写头领先读方块首的量:写方按整块推到「块首 + 提前量 + 块长」之上 ⇒ ceil((L + 块长) / 块长) 块。
+constexpr int64_t kA14Ahead = (kA14Lead + kA14Block + kA14Block - 1) / kA14Block * kA14Block;
+static_assert(kA14Ahead == 49152, "LS-4 lead=48000 shape: the writer head leads the reader block start by 48 blocks");
+constexpr int64_t kA14LoopB = 141 * kA14Block; // 144384,与 LS-4 的 kLs4LoopB 同值
+constexpr int64_t kA14SeekAt = 8 * kA14Block; // 起播 8 块之后开场定位(读方游标)
+constexpr int64_t kA14StallAt = kA14SeekAt + 40 * kA14Block; // ② 第 0 圈里写方停下的读方游标
+constexpr int64_t kA14Len12s = 576000; // LS-4 的 12 s 圈(48 kHz)
+static_assert(kA14Len12s - kA14R - kA14Ahead == 2560, "LS-4 12 s loop: margin 2560 over ring + lead");
+constexpr int kA14Laps = 3;
+
+struct A14Cell
+{
+    std::string name;
+    int64_t len = 0; // 圈长
+    bool writerNoopSeek = false; // ① 开场定位目标 = 写方下一块要写的位置;否则比它低一块(写方往回跳一块、换代)
+    int stallBlocks = 0; // ② 第 0 圈里写方停的读方块数(0 = 不停),停完一口补齐:突发 = (停的块数 + 1) 块
+};
+
+struct A14Lap
+{
+    int64_t blocks = 0;
+    int64_t availBlocks = 0; // 读时环里整块是本位置数据
+    int64_t lostBlocks = 0; // 其中读方没读的
+    int64_t lostFrames = 0;
+    int64_t firstLost = -1; // 第一个丢失块的时间线位置
+    int64_t lostEnd = -1; // 最后一个丢失块的块尾
+};
+
+struct A14Result
+{
+    std::vector<A14Lap> laps; // 按读方自己的跳变切:[0] = 起播(开场定位之前),[1] = 第 0 圈,……
+    int64_t wrongFrames = 0; // 返回 true 的块里不是本位置数据的帧(I1 违例)
+    std::string firstWrong;
+    int64_t writerNextAtSeek = -1; // 开场定位那一刻写方下一块要写的位置(InputProcessor 的 expectedNext_)
+    int64_t bumpsAtSeek = 0; // 开场定位让写方换了几代(0 = 空操作)
+    int64_t maxSameGenStep = 0; // 测试侧记账:第 0 圈里读方相邻两次观测之间、同一代里写头的最大前进量
+    int64_t wrapAt = -1; // 写方第 0 圈回绕(换代)之后读方读的第一块的时间线位置
+    u32 gaps = 0;
+};
+
+std::string str(const A14Lap& l)
+{
+    std::string s = "lost " + std::to_string(l.lostBlocks) + "/" + std::to_string(l.availBlocks) + " blocks (" +
+                    std::to_string(l.lostFrames) + " frames)";
+    if (l.availBlocks != l.blocks)
+    {
+        s += " of " + std::to_string(l.blocks) + " read";
+    }
+    if (l.firstLost >= 0)
+    {
+        s += " in [" + std::to_string(l.firstLost) + "," + std::to_string(l.lostEnd) + ")";
+    }
+    return s;
+}
+
+A14Result runA14(const A14Cell& cell)
+{
+    const int64_t len = cell.len;
+    // 起播位置:定位那一刻写方下一块 = 起播位置 + 定位游标 + 稳态提前量 − 块长。① 让它正好等于 B;否则比 B 高一块,定位对
+    // 写方是往回跳一块(SchedRig 开场守卫多跑一块之后就是这一形)。
+    const int64_t pre0 = kA14LoopB - kA14SeekAt - (kA14Ahead - kA14Block) + (cell.writerNoopSeek ? 0 : kA14Block);
+    bool seeked = false;
+    const auto posAt = [&](int64_t c) {
+        return (!seeked || c < kA14SeekAt) ? pre0 + c : kA14LoopB + (c - kA14SeekAt) % len;
+    };
+    const auto toEdge = [&](int64_t c) {
+        return (!seeked || c < kA14SeekAt) ? int64_t{kA14Block} : len - (c - kA14SeekAt) % len;
+    };
+
+    RingFixture f(kA14Ring, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(static_cast<std::size_t>(kA14Block) * 2);
+    A14Result res;
+
+    int64_t wC = 0;
+    int64_t wExpected = std::numeric_limits<int64_t>::lowest(); // InputProcessor:prepare 之后的哨兵(第一块必换代)
+    int64_t bumps = 0;
+    const auto writeTo = [&](int64_t target) {
+        while (wC < target)
+        {
+            const int m = static_cast<int>(std::min<int64_t>(kA14Block, toEdge(wC)));
+            const int64_t p = posAt(wC);
+            if (p != wExpected)
+            {
+                f.header.epoch.fetch_add(1, std::memory_order_release);
+                ++bumps;
+            }
+            writePositions(f, p, m);
+            wExpected = p + m;
+            wC += m;
+        }
+    };
+    const auto ringHolds = [&](int64_t t0, int m) {
+        const u32 mask = kA14Ring - 1;
+        for (int i = 0; i < m; ++i)
+        {
+            const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(t0 + i)) & mask);
+            if (f.data[slot * 2] != static_cast<float>(t0 + i) || f.data[slot * 2 + 1] != static_cast<float>(t0 + i))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const int64_t stallEnd = kA14StallAt + static_cast<int64_t>(cell.stallBlocks) * kA14Block;
+    const int64_t rEnd = kA14SeekAt + kA14Laps * len;
+    int64_t rC = 0;
+    int64_t rExpected = std::numeric_limits<int64_t>::lowest();
+    u64 rEpoch = 0;
+    int64_t lastHead = -1;
+    u64 lastEpoch = 0;
+    while (rC < rEnd)
+    {
+        if (rC == kA14SeekAt)
+        {
+            // 开场定位 + 开 Cycle。宿主冲刷:写方游标超过定位点的部分作废,从定位点按新时间线重新渲染。
+            res.writerNextAtSeek = wExpected;
+            seeked = true;
+            wC = std::min(wC, kA14SeekAt);
+            const int64_t before = bumps;
+            writeTo(rC + kA14Lead + kA14Block);
+            res.bumpsAtSeek = bumps - before;
+        }
+        else if (rC < kA14StallAt || rC >= stallEnd)
+        {
+            writeTo(rC + kA14Lead + kA14Block);
+        }
+        const int m = static_cast<int>(std::min<int64_t>(kA14Block, toEdge(rC)));
+        const int64_t t0 = posAt(rC);
+        if (t0 != rExpected)
+        {
+            ++rEpoch; // OutputProcessor 的 podEpoch_:读方自己的时间线跳了
+            res.laps.emplace_back();
+        }
+        rExpected = t0 + m;
+        const int64_t head = static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire));
+        const u64 ep = f.header.epoch.load(std::memory_order_acquire);
+        if (res.laps.size() == 2u)
+        {
+            if (ep == lastEpoch && head > lastHead)
+            {
+                res.maxSameGenStep = std::max(res.maxSameGenStep, head - lastHead);
+            }
+            if (res.wrapAt < 0 && ep != lastEpoch && rC > kA14SeekAt)
+            {
+                res.wrapAt = t0;
+            }
+        }
+        lastHead = head;
+        lastEpoch = ep;
+        const bool avail = ringHolds(t0, m);
+        std::fill(out.begin(), out.end(), -1.0f);
+        const bool ok = src.read(t0, out.data(), m, rEpoch);
+        A14Lap& lap = res.laps.back();
+        ++lap.blocks;
+        lap.availBlocks += avail ? 1 : 0;
+        if (ok)
+        {
+            for (int i = 0; i < m; ++i)
+            {
+                if (out[static_cast<std::size_t>(i) * 2] != static_cast<float>(t0 + i) ||
+                    out[static_cast<std::size_t>(i) * 2 + 1] != static_cast<float>(t0 + i))
+                {
+                    if (res.firstWrong.empty())
+                    {
+                        res.firstWrong = "t0=" + std::to_string(t0) + " frame=" + std::to_string(i) +
+                                         " got=" + std::to_string(out[static_cast<std::size_t>(i) * 2]);
+                    }
+                    ++res.wrongFrames;
+                }
+            }
+        }
+        else if (avail)
+        {
+            ++lap.lostBlocks;
+            lap.lostFrames += m;
+            lap.firstLost = lap.firstLost < 0 ? t0 : lap.firstLost;
+            lap.lostEnd = t0 + m;
+        }
+        rC += m;
+    }
+    res.gaps = src.gapCount();
+    return res;
+}
+
+// 场景确实造出来了(与读方怎么读无关):圈确实回绕了、每圈读方读的时候环里都有本位置的数据、写方先于读方约一个提前量
+// 回绕、开场定位对写方是不是空操作、第 0 圈同一代里读方量到的最大一步就是设计的突发。
+void requireA14Shape(const A14Cell& c, const A14Result& r, bool hazard = false)
+{
+    REQUIRE(r.laps.size() == static_cast<std::size_t>(kA14Laps + 1));
+    for (std::size_t i = 0; i < r.laps.size(); ++i)
+    {
+        const A14Lap& lap = r.laps[i];
+        REQUIRE(lap.blocks >= 8);
+        if (hazard && i > 0)
+        {
+            REQUIRE(lap.availBlocks < lap.blocks); // 有牙:这一圈里确实有读方要的块已被新一圈换掉(读了就是错音)
+        }
+        else
+        {
+            REQUIRE(lap.availBlocks == lap.blocks); // oracle:每一块读的时候环里都是本位置的数据(读得到是可能的)
+        }
+    }
+    REQUIRE(r.wrapAt >= kA14LoopB + c.len - kA14Ahead - kA14Block);
+    REQUIRE(r.wrapAt <= kA14LoopB + c.len - kA14Ahead + kA14Block);
+    if (c.writerNoopSeek)
+    {
+        REQUIRE(r.writerNextAtSeek == kA14LoopB); // ①:定位目标就是写方下一块要写的位置……
+        REQUIRE(r.bumpsAtSeek == 0); // ……写方不换代
+    }
+    else
+    {
+        REQUIRE(r.writerNextAtSeek == kA14LoopB + kA14Block);
+        REQUIRE(r.bumpsAtSeek == 1); // 写方往回跳一块、换代
+    }
+    const int64_t burst = c.writerNoopSeek ? kA14Ahead : (c.stallBlocks > 0 ? (c.stallBlocks + 1) * kA14Block : 0);
+    REQUIRE(r.maxSameGenStep == std::max<int64_t>(burst, kA14Block));
+}
+
+std::string lapsStr(const A14Result& r)
+{
+    std::string s;
+    for (std::size_t i = 1; i < r.laps.size(); ++i)
+    {
+        s += " | lap" + std::to_string(i - 1) + " " + str(r.laps[i]);
+    }
+    return s;
+}
+
+// 带内(余量 len − R − A 落在 [块长, 突发) 里):现行读方第 0 圈整段尾巴不认。后两格是带的内沿。
+const A14Cell kA14OpeningNoop12s{"(1) opening seek onto the writer's next block, 12 s loop (LS-4)", kA14Len12s, true,
+                                 0};
+const A14Cell kA14Stall23At12s{"(2) writer stalls 23 blocks then catches up (burst 24 blocks), 12 s loop", kA14Len12s,
+                               false, 23};
+const A14Cell kA14InBandEdges[] = {
+    {"(1) opening seek onto the writer's next block, margin burst - 1024", kA14R + kA14Ahead + kA14Ahead - kA14Block,
+     true, 0},
+    {"(2) writer stalls 3 blocks then catches up (burst 4 blocks > margin 2560), 12 s loop", kA14Len12s, false, 3},
+};
+// 带外与对照:每圈至多丢一块。没有突发(SchedRig 开场守卫生效后的那一形)、突发不超过余量、余量正好等于突发。
+const A14Cell kA14OutOfBand[] = {
+    {"control: opening seek one block below the writer's next block (writer jumps back), 12 s loop", kA14Len12s, false,
+     0},
+    {"(2) writer stalls 1 block then catches up (burst 2 blocks <= margin 2560), 12 s loop", kA14Len12s, false, 1},
+    {"(2) writer stalls 3 blocks then catches up, margin = burst (4096)", kA14R + kA14Ahead + 4 * kA14Block, false, 3},
+    {"(2) writer stalls 23 blocks then catches up, margin = burst (24576)", kA14R + kA14Ahead + 24 * kA14Block, false,
+     23},
+    {"(1) opening seek onto the writer's next block, margin = burst (49152)", kA14R + kA14Ahead + kA14Ahead, true, 0},
+};
+// 安全判据的牙:圈长不到「环长 + 提前量」(余量 −24576),新一圈在读方读到之前就把上一圈尾段的一部分同槽换掉了 —— 读方要是
+// 认这些块就是错音。有没有突发都一样必须不错音(丢多少不判:这一带没有突发也读不到尾段,不归本卡)。
+const A14Cell kA14Hazard[] = {
+    {"hazard: no burst, margin -24576", kA14R + kA14Ahead - 24 * kA14Block, false, 0},
+    {"hazard: (1) opening seek onto the writer's next block, margin -24576", kA14R + kA14Ahead - 24 * kA14Block, true,
+     0},
+    {"hazard: (2) writer stalls 23 blocks then catches up, margin -24576", kA14R + kA14Ahead - 24 * kA14Block, false,
+     23},
+};
+} // namespace
+
+TEST_CASE("ShmRingMixSource A-14 同一代里写方一口突发后循环回绕:不错音;突发不超过余量或没有突发时每圈至多丢一块",
+          "[mix][ring][a14]")
+{
+    std::vector<A14Cell> inBand = {kA14OpeningNoop12s, kA14Stall23At12s};
+    inBand.insert(inBand.end(), std::begin(kA14InBandEdges), std::end(kA14InBandEdges));
+    for (const A14Cell& c : inBand)
+    {
+        INFO(c.name << " len=" << c.len);
+        const A14Result r = runA14(c);
+        requireA14Shape(c, r);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0); // 安全(I1):带内也必须成立
+        // 带内只有第 0 圈受影响:下一次换代带进去的是第 1 圈量到的步长(一块),后面几圈每圈至多丢一块。
+        for (std::size_t i = 2; i < r.laps.size(); ++i)
+        {
+            INFO("lap " << i - 1);
+            CHECK(r.laps[i].lostBlocks <= 1);
+        }
+        WARN(c.name << " (margin " << c.len - kA14R - kA14Ahead << "): wrapAt " << r.wrapAt << " maxSameGenStep "
+                    << r.maxSameGenStep << " gaps " << r.gaps << " wrong " << r.wrongFrames << lapsStr(r));
+    }
+    for (const A14Cell& c : kA14OutOfBand)
+    {
+        INFO(c.name << " len=" << c.len);
+        const A14Result r = runA14(c);
+        requireA14Shape(c, r);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+        for (std::size_t i = 1; i < r.laps.size(); ++i)
+        {
+            INFO("lap " << i - 1);
+            CHECK(r.laps[i].lostBlocks <= 1);
+        }
+        WARN(c.name << " (margin " << c.len - kA14R - kA14Ahead << "): wrapAt " << r.wrapAt << " maxSameGenStep "
+                    << r.maxSameGenStep << " gaps " << r.gaps << " wrong " << r.wrongFrames << lapsStr(r));
+    }
+    for (const A14Cell& c : kA14Hazard)
+    {
+        INFO(c.name << " len=" << c.len);
+        const A14Result r = runA14(c);
+        requireA14Shape(c, r, true);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+        WARN(c.name << ": wrapAt " << r.wrapAt << " maxSameGenStep " << r.maxSameGenStep << " gaps " << r.gaps
+                    << " wrong " << r.wrongFrames << lapsStr(r));
+    }
+}
+
+// 期望(待裁定:改读方,或接受并写进 KI-11):带内第 0 圈也至多丢一个写方块。现行读方把写方回绕之后的那一整段尾巴都不认
+// (12 s 圈两格都是 48 块 = 48640 帧,位置 [671744, 720384),即相对循环起点 [527360, 576000);数字由上一条用例的 WARN
+// 打印)。这两条失败 = 通过;哪天读方改了、转绿,Catch2 判红,逼着去掉标记。
+// 读这两条的「failed as expected」时要同时看上一条用例是绿的:场景前提(同两格同一套 requireA14Shape)在那里 REQUIRE。
+// 这里也调一次只为下标安全 —— 它一红同样会被记成 failed as expected,自己分不出是读方丢块还是台子坏了(评审第 1 轮)。
+TEST_CASE("ShmRingMixSource A-14 (1) 开场定位对写方是空操作(LS-4 那一形)之后循环回绕:上一圈尾段至多丢一个写方块",
+          "[mix][ring][a14][!shouldfail]")
+{
+    const A14Result r = runA14(kA14OpeningNoop12s);
+    requireA14Shape(kA14OpeningNoop12s, r);
+    INFO("lap0 " << str(r.laps[1]));
+    CHECK(r.laps[1].lostBlocks <= 1);
+}
+
+TEST_CASE("ShmRingMixSource A-14 (2) 写方停几块又一口补齐之后循环回绕:上一圈尾段至多丢一个写方块",
+          "[mix][ring][a14][!shouldfail]")
+{
+    const A14Result r = runA14(kA14Stall23At12s);
+    requireA14Shape(kA14Stall23At12s, r);
+    INFO("lap0 " << str(r.laps[1]));
+    CHECK(r.laps[1].lostBlocks <= 1);
 }
 
 // ---------------------------------------------------------------------------
