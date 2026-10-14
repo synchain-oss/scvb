@@ -204,6 +204,8 @@ std::int64_t writerExpectedNext(const SchedRig& r, int lane)
 //   1 = Output:生效那一块 Output 要报的位置就是 target(时间线连续,读方代号不变)—— M-inv-lsdrop;
 //   2 = [A-14] 某条要被冲刷的轨的写方:游标已超过生效点(预取轨)的轨会被冲刷回生效点、从 target 重新渲染,它的写方
 //       下一块本来就要写 target 时不换代。游标没超过生效点的轨(live 轨)走到生效点时接着的是 Output 那一格,归第 1 条。
+//       「游标已超过生效点」这一条目前没有删除式证据:去掉它只会把 live 轨也纳进来,而 live 轨写方的下一块恒等于 Output
+//       那一格,与第 1 条重合,现有脚本分不出来(评审第 1 轮)。
 // 0 = 对谁都是真跳变。
 int openingSeekNoop(const SchedRig& r, std::int64_t target, std::int64_t effectiveAt)
 {
@@ -290,6 +292,12 @@ Run runScenario(const std::string& name, const sched::SchedCfg& cfg, const Scrip
             r.runCycles(1);
             ++extra;
         } while (extra < kOpeningNudgeMax && openingSeekNoop(r, target, r.outCursor() + stale) != 0);
+        if (openingSeekNoop(r, target, r.outCursor() + stale) != 0)
+        {
+            // 跑满上界仍是空操作:场景照样会悄悄退化,不能当成「本来就是真跳变」放过去 —— 这一台判负(评审第 1 轮)。
+            FAIL_CHECK(run.name << ": opening seek guard exhausted after " << extra << " cycles, the opening seek to "
+                                << target << " is still a no-op for the Output or a prefetched writer");
+        }
         r.clearRecording();
         const std::int64_t shift = r.outCursor() - run.c0;
         run.c0 = r.outCursor();
