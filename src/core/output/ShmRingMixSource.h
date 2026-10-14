@@ -28,11 +28,12 @@
 // 不变式:
 //   I1 安全:返回 true 的每一帧,环里该槽的内容都是写方为时间线位置 t0+i 写下的数据(哪一代都行)。
 //   I2 锚点:当前窗的起点 vf 只在「能论证 vf ≥ b_new」时才设(规则见 read())。
-//   I3 尾段可读:上一代已确认写过、且新一代不可能覆盖到的区间,换代后继续可读(上一代窗)。
+//   I3 尾段可读:上一代已确认写过、且新一代不可能覆盖到的区间,换代后继续可读(上一代窗)。[A-16] 上一代尾段里由读方
+//      私有副本覆盖的那一段不再查环(见下「读方预拷贝」)。
 //   I4 同步宿主不变:读写在同一块里一起跳变(先 Input 后 Output 的宿主)时,与旧实现逐块同读
 //      (A-3 同步族差分:新读方成功集合 ⊇ 旧读方)。
 //   I5 不越界:不改布局 / abi / 写方行为;下面的状态全是定长成员,只由音频线程访问,
-//      read() 不分配、不加锁。
+//      read() 不分配、不加锁。[A-16] 私有副本的存储在第一次 bind()(非实时线程)一次分配,read() 只用。
 //
 // 两个窗:
 //   当前窗 cur  = [vf, 写头) —— 本代从 vf 起连续写过(vf ≥ b_new);
@@ -47,7 +48,8 @@
 //      暂定(它其实是上一代的旧头时只会更保守),在途的那第一段落点仍不明。若写方这第一段恰好写到
 //      读方要读的同一批环槽(概率约 (块长+段长)/环长),拷出的可能是新一代的数据。只出现在 Input
 //      与 Output 真正并发处理的宿主上,窗口为写方一次 processBlock 的时长;图依赖成立的宿主
-//      (先 Input 后 Output)看不到这个状态。
+//      (先 Input 后 Output)看不到这个状态。[A-16] 写方循环回绕恰好撞上这个窗口时,上一代私有副本当场闩死(新一代
+//      第一次被看到的写头还是上一代的、在读方之上),这一圈退回环路径(残余 RP7)。
 //   R2 读方自己跳变的那一块(同步规则 / 推迟锚定)默认「宿主给读写两方的跳变目标是同一个位置」;
 //      目标不一致(起播时间戳怪癖)时靠「写头相对读方的位置不超过实测提前量上界」挡:读方目标
 //      早于写方目标的偏差小于提前量锯齿宽度时挡不住。
@@ -89,6 +91,50 @@
 // 一段时间又回来)。段头 channels 与快照不一致的块(几何改写、[M] 还没换绑,≤ 一拍)单独计 layoutMismatch:
 // 它既不把这段失败续长(不让几何改写的短暂丢失凑满宽限),也不让它重新起算(不让几何改写掩盖真的读不到)。
 // primed 之后的失败仍走旧口径(写方在推进 / 套圈即计,停着只记 stallFail),A-6 不动。
+//
+// ## [A-16] 读方预拷贝(私有副本;设计依据 A-16 设计稿 §2/§3,判据 = test_mix_source [a16] / A-3 oracle I1' / LS-4b)
+//
+// 圈长落在 k·环长前后一个提前量一带时(③' (R−A, R]、物理段 (R, R+A)、② 余量 [0, 896),以及突发之后的第 0 圈),
+// 写方回绕之后读方还要播的上一圈尾段在环路径上读不出来:要么已被新一圈换掉,要么别名判据 / 在途保护不放行 ——
+// A-15 证明这两样都放宽不得(读方逐块输入相同、环里不同的四对世界 X1 / X2 / X3 / B256)。所以改成「不再需要从环里
+// 读这些帧」:
+//   · 拷:本代写头已确认、当前窗已锚定(锚点此后只降不升)时,每块把 [max(锚点, 写头 − P), 写头) 里还没拷的部分
+//     (每块至多 C 帧)从环拷进私有副本 pcCur_。拷完在规则 7 那一次「acquire 栅栏 + epoch / 写头」上复核:没换代、
+//     写头没往回走、拷贝期间写方前进不足半环才提交,否则这一截作废。上沿是写头(先写数据后发布写头,写头之下都已
+//     完整可见);下沿是写头 − P,不是「写头 + 在途保护 − 环长」—— 本代在途写都在写头之上,踩的是 [写头 − 环长, …)
+//     的槽,P ≤ 环长/4 时与拷贝区间不相交,不需要知道在途有多少、有几笔(DEP-2)。
+//   · 交接:换代且当前窗降为上一代窗的同一刻、同一判据(正好隔一代、读方这一块没跳没漏读……),pcCur_ 降为上一代
+//     副本 pcPrev_。
+//   · 交:每块先做闩死判定 —— 新一代已发布的最高写头 + λ > 本块起点(λ = min(P, 实测提前量上界 + 本块长);没量到过
+//     提前量也算)⇒ pcPrev_ 作废,本代不再打开。没作废时本块整个在新一代已发布的跨度之上(所以一定不与当前窗相交),
+//     落在 pcPrev_ 里的那一段直接从副本交出,不查环、不复核;其余部分照旧走上一代窗,判据一字不改。
+//   · 作废:读方跳了 / 漏读了 / 静止重读 ⇒ pcPrev_ 作废(读方离开了那一遍);漏读 / 静止重读 / 同代写头回退 ⇒
+//     pcCur_ 清空(写方可能同代原地重写过);换代但不降级 ⇒ 两个都清;写头归 0 / 重绑 ⇒ clearWindows 两个都清;
+//     段头 channels 与快照不一致的块既不拷也不交。
+// 私有副本交出的每一帧满足 I1,另满足:(a) 是读方这次观测时写方为该位置最后一次已发布的写入;(b) 读方自做副本的那一遍
+// 以来没离开过那一遍;(c) 宿主已作废、正在重算的旧版本按闩死判定尽力不交(LS-16 原地重算:新一代第一次被看到的头就在
+// 本块之上 ⇒ 当场作废)。证明不用在途保护、别名判据、新一代跨度下界,也不依赖 λ 准不准(λ 只影响用不用副本)。
+// 私有段只替换来源 ⇒ 成功集合 ⊇ 关预拷贝的读方;同步宿主上新一代一换代就闩死、私有段恒空 ⇒ I4 不变。
+// 容量 P = min(构造参数(默认 2^17 帧), 环长/4):生产环 2^19 时 2^17 帧(48 kHz 约 2.7 s)。存储在第一次 bind()
+// (非实时线程、发布绑定之前)一次分配 2 × P × 2 个 float(约 2 MiB / 每条已绑定的轨),此后不再写这个指针;
+// 分配失败或构造参数 0 ⇒ 不拷不交,行为与 A-16 之前逐位相同(测试与紧急回退都用它)。
+// 依赖:
+//   DEP-1 新一代的数据不先于这次 epoch+1 被读方看见。x86 TSO 天然成立;arm64 靠 B 线 M04 在 AudioRing::bumpEpoch 之后
+//         加的 release fence(与本类规则 7 的 acquire 栅栏配对)。A 线这一份 AudioRing.cpp 没有那道 fence ⇒ arm64 包
+//         只从含 M04 的树(B 线 feature/macos-au)出。缺它时回绕前最后一次拷贝可能把新一圈的数据当上一圈拷下,
+//         epoch 复核看不出来(受害帧的槽正是新一圈第一笔写的槽)。
+//   DEP-2 本代在途写总量 ≤ 环长/4(生产环约 2.7 s),一次拷贝期间写方前进不足半环。不依赖「同一时刻只有一笔在途」。
+//   DEP-3 同一代里位置连续、写头单调,唯一例外是停走带静止重写(写方协议,A-5 前提)。
+// 预拷贝之后的残余(带内带外同一口径):
+//   RP1 上一代最后一次被观测之后写方又写的那一截(稳态 ≤ 一个写方块;宿主一口气渲染 k 块时 ≤ k 块)来历证明不了,不读。
+//   RP2 回绕之前突发还没拷完(每块至多 C 帧):突发紧贴回绕时,没拷到的那一截照旧走环路径。
+//   RP3 P 不够:提前量 + 本块长 > P 时尾段前面那一截照旧走环路径(生产环、48 kHz 下提前量超过约 2.7 s 才会出现)。
+//   RP4 往前定位约 k·环长:新一代发布在读方之上 ⇒ 闩死,别名照旧读不到(与 A-16 之前相同)。
+//   RP5 私有段之外仍走环路径的上一代帧,照旧依赖「在途写不超过在途保护」(A-15 指出的既有残余,本卡不放大)。
+//   RP6 宿主从读方游标之前很远处重算:新一代追到读方 λ 之内以前,副本交的是重算前的版本((a) 仍成立,(c) 尽力而为)。
+//   RP7 回绕恰好撞上 R1:闩死,这一圈退回环路径(只在读写真正并发的宿主上)。
+// 既有口径(A-16 不修):读方自己回绕进下一圈之后,环路径的上一代窗不撤(读方跳变不关它);写方领先、又在新一圈停调时,
+// 读方走到写头之上可能把上一圈的音频交出来(A-3 oracle 明文接受这一类)。私有路径用「读方跳变即作废」,不扩进这一口径。
 
 #include <atomic>
 #include <cstdint>
@@ -105,7 +151,12 @@ namespace scvb::output
 class ShmRingMixSource final : public IMixSource
 {
 public:
-    ShmRingMixSource() = default;
+    // [A-16] 私有副本容量上限的产品默认值(帧,2 的幂;实际容量还要不超过环长/4,见头注)。
+    static constexpr int64_t kPreCopyFrames = int64_t{1} << 17;
+
+    ShmRingMixSource() noexcept : ShmRingMixSource(kPreCopyFrames) {}
+    // preCopyFrames:私有副本容量上限(帧,向下取到 2 的幂);0 = 关预拷贝(行为与 A-16 之前逐位相同:测试 / 紧急回退)。
+    explicit ShmRingMixSource(int64_t preCopyFrames) noexcept : pcFrames_(floorPow2(preCopyFrames)) {}
 
     // 绑定段头与环数据;一次性快照几何。channels ∉ {1,2} 或 ring_frames 非 2^k 或
     // magic/abi 不符 → 发布 bound==false 的绑定(或 nullptr),read() 恒 false 且不计数。
@@ -156,7 +207,27 @@ public:
     // 紧接着读到的那一块也算(普通的瞬时失准撤下时机与修前相同)。
     bool readOkSinceLastGap() const noexcept { return readOkSinceGap_.load(std::memory_order_relaxed); }
 
+    // [A-16] 预拷贝的进程内计数(只计数,不报警)。[A] 写(relaxed),任意线程读。
+    // privateRead / privateFrame:从私有副本交出过帧的块数 / 帧数(成功的块才算)。
+    u32 privateReadCount() const noexcept { return privateReadCount_.load(std::memory_order_relaxed); }
+    u64 privateFrameCount() const noexcept { return privateFrameCount_.load(std::memory_order_relaxed); }
+    // preCopyFrame:提交进私有副本的帧数;preCopyDiscard:拷完复核不过、作废的那几截。
+    u64 preCopyFrameCount() const noexcept { return preCopyFrameCount_.load(std::memory_order_relaxed); }
+    u32 preCopyDiscardCount() const noexcept { return preCopyDiscardCount_.load(std::memory_order_relaxed); }
+    // privateLatchOff:上一代副本被闩死判定作废的次数(新一代发布到读方附近)。
+    u32 privateLatchOffCount() const noexcept { return privateLatchOffCount_.load(std::memory_order_relaxed); }
+
 private:
+    static constexpr int64_t floorPow2(int64_t v) noexcept
+    {
+        int64_t p = 1;
+        while (v > 0 && p <= v / 2)
+        {
+            p *= 2;
+        }
+        return v > 0 ? p : 0;
+    }
+
     // 一代里观测到的「写头相对读方」的提前量(只在整块落在当前窗里、成功读出的块上量)。
     struct LeadStat
     {
@@ -173,6 +244,27 @@ private:
         int64_t curLen = 0;
         int64_t prevA0 = 0, prevA1 = 0; // 由上一代窗认领的至多两段
         int64_t prevB0 = 0, prevB1 = 0;
+        int64_t privLo = 0; // [A-16] 由上一代私有副本交出的那一段(privLen > 0 时有效;不查环、不复核)
+        int64_t privLen = 0;
+    };
+
+    // [A-16] 读方私有副本的一个窗:连续位置 [lo, hi)(hi − lo ≤ 容量 P),帧 x 存在 buf[(x & (P−1)) × 声道数]。
+    // 窗里的帧都是同一代、同一绑定下连续拷的;代号与来历记在窗上,不逐帧记。
+    struct PrivWin
+    {
+        float* buf = nullptr;
+        bool on = false;
+        int64_t lo = 0;
+        int64_t hi = 0;
+    };
+
+    // [A-16] 本块要追加进 pcCur_ 的 [a, b)(拷完复核过才提交)。
+    struct PreCopyPlan
+    {
+        bool on = false;
+        bool restart = false; // pcCur_ 从 a 重新起(否则接在 pcCur_.hi 之后)
+        int64_t a = 0;
+        int64_t b = 0;
     };
 
     // 上一代窗别名判的参照(certify 与拷贝后复核共用一份,见 aliasRef)。
@@ -202,9 +294,19 @@ private:
     // 新一代在被首次观测前可能已写的跨度上界(prevN = 上一次 read() 的块长)。
     int64_t spanBound(int64_t prevN, int64_t ring) const noexcept;
     int64_t inflightGuard() const noexcept { return stepMaxPrev_ > stepMaxCur_ ? stepMaxPrev_ : stepMaxCur_; }
+    // [A-16] 本块的预拷贝:定 [a, b) 并从环拷进 pcCur_ 的缓冲(还不提交)。
+    PreCopyPlan planPreCopy(const AudioRingBinding& b, int64_t w, bool flux, int n) noexcept;
+    // [A-16] 拷完复核:commit = 拷贝期间没换代、写头没往回走、写方前进不足半环。
+    void commitPreCopy(const PreCopyPlan& plan, bool commit) noexcept;
 
     std::atomic<const AudioRingBinding*> binding_{nullptr}; // [M] 写 / [A] 读
     std::vector<std::unique_ptr<AudioRingBinding>> owned_; // 旧绑定保活(进程寿命;T16 已改回收,SL-445)
+
+    // [A-16] 私有副本的容量上限与存储。pcFrames_ 构造时定;pcStore_ 由 [M] 在第一次 bind() 里、发布绑定之前分配一次
+    // (2 × pcFrames_ × 2 个 float),此后不再写 —— 音频线程只在 acquire 到绑定之后读这个指针,写入先于那次 release 发布。
+    const int64_t pcFrames_;
+    std::unique_ptr<float[]> pcStore_;
+    bool pcAllocTried_ = false; // [M] 独占:只试分配一次(失败就一直关着,不在之后的 bind 里改指针)
 
     // ---- 以下全部音频线程独占(仅 read() 访问;重绑由 lastBinding_ 指针变化检测,不回读成员)----
     const AudioRingBinding* lastBinding_ = nullptr; // 上次块所用绑定(变指针 → 清窗、代际重来)
@@ -251,6 +353,11 @@ private:
     int64_t refHi_ = 0; // 上一代最后观测到的写头(规则 3:新写头低于它 ⇒ 必是新一代写的)
     bool refHiValid_ = false;
 
+    // [A-16] 读方私有副本(头注「读方预拷贝」)。pcCap_ = 本绑定上的容量 P(min(pcFrames_, 环长/4);0 = 关),重绑时重算。
+    int64_t pcCap_ = 0;
+    PrivWin pcCur_; // 本代(gen_)从当前窗拷下的帧:只备着,不直接交出
+    PrivWin pcPrev_; // 上一代(gen_ − 1):降级那一刻由 pcCur_ 交接而来,只服务上一代尾段
+
     // 跨代保留的测量(调度关系是宿主的性质,不随换代 / 重绑重来)。
     LeadStat leadPrev_{};
     int64_t stepMaxPrev_ = 0;
@@ -292,6 +399,12 @@ private:
     std::atomic<u32> readAttemptCount_{0};
     std::atomic<bool> readOkSinceGap_{false}; // [A] 写(relaxed),[M] 读;见 readOkSinceLastGap()
     static_assert(decltype(readOkSinceGap_)::is_always_lock_free, "readOkSinceGap_ must be lock-free (audio thread)");
+    std::atomic<u32> privateReadCount_{0};
+    std::atomic<u64> privateFrameCount_{0};
+    std::atomic<u64> preCopyFrameCount_{0};
+    std::atomic<u32> preCopyDiscardCount_{0};
+    std::atomic<u32> privateLatchOffCount_{0};
+    static_assert(decltype(privateFrameCount_)::is_always_lock_free, "u64 counters must be lock-free (audio thread)");
 };
 
 } // namespace scvb::output
