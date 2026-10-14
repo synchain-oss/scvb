@@ -4,8 +4,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -534,6 +537,302 @@ TEST_CASE("ShmRingMixSource A-5 「远超一步」只是暂定:换代后看到�
     CHECK_FALSE(src.read(2040, out.data(), 64, 1));
     CHECK_FALSE(src.read(2104, out.data(), 64, 1));
     CHECK(src.gapCount() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [A-13] 换代后第一次看到的写头**正好**比上一代最后观测到的头多一个步长(LS-16 在读方这一层的形状)。
+// 读方只有 epoch 与写头两个数,同一个读数有好几种成因,分不出来:
+//   ① 原地重算:宿主播放中把预取轨已算好的音频作废、从 Output 游标重新渲染到「游标 + 提前量 + 块长」——
+//      写方单独往回跳了一个提前量、换代,新一代的头恰好比上一代最后观测到的头多一个写方块(LS-16);
+//   ② 位置连续的换代:写方换代(例:重新 prepare 之后第一块)但位置接着上一代写,新一代的头 = 上一代的头 + 一块;
+//   ③ R1 并发窗口:上一代在读方最后一次观测之后恰好又写了一块,随后换代,新一代第一段还没发布 —— 读方看到的
+//      「多一步」的头其实是**上一代的旧头**,新一代往哪写都有可能(往回、原地接着、往前跳);
+//   ④ 跨代(两次观测之间换了不止一代)/ 别名(新一代第一段写到读方还要读的上一代窗的同槽)。
+// 判据与 A-3 oracle 同口径:读方返回 true 的每一帧都必须是本位置写下的数据(错帧 = 0),哪种成因都一样。
+// 台子:环 2^17(装得下提前量 48000 的跨度),读写块长都是 1024(LS-16 的预取块长);写方领先 L,每个读方块之前
+// 把写头推到「读方块首 + L + 块长」(A-3 预取条件同形),读方自己从不跳(读方代号恒 1)。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr u32 kA13Ring = 1u << 17;
+constexpr int kA13Block = 1024;
+
+struct LeadRig
+{
+    RingFixture f;
+    ShmRingMixSource src;
+    std::vector<float> out;
+    int64_t lead = 0;
+    int n = kA13Block;
+    int64_t t = 0; // 读方下一块的 t0
+    int64_t wPos = 0; // 写方下一笔的位置
+    int64_t seenHead = 0; // 读方最近一块读时的写头(测试侧记账,前提断言用)
+    u64 seenEpoch = 0;
+    int64_t wrongFrames = 0; // 返回 true 的块里不是本位置数据的帧(I1 违例)
+    int64_t lostBlocks = 0; // 环里整块都是本位置的数据、读方却没读的块
+    int64_t hazardBlocks = 0; // 写头已越过块尾、环里却不全是本位置数据的块(读方若认就是错音)
+    std::string firstWrong;
+
+    LeadRig(int64_t leadIn, int64_t t0)
+        : f(kA13Ring, 2), out(static_cast<std::size_t>(kA13Block) * 2), lead(leadIn), t(t0), wPos(t0)
+    {
+        f.header.epoch.store(1, std::memory_order_release);
+        src.bind(&f.header, f.data.data());
+    }
+
+    int64_t head() const { return static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire)); }
+    void bump() { f.header.epoch.fetch_add(1, std::memory_order_release); }
+    // 写方本代接着写到 target(一块一块写,每块发布一次写头)。已经在 target 之上就不写(领先够了先停)。
+    void writeTo(int64_t target)
+    {
+        while (wPos < target)
+        {
+            writePositions(f, wPos, n);
+            wPos += n;
+        }
+    }
+    // 写方换代之后的第一段:从 p 起写 m 帧并发布(此后接着从 p + m 往后写)。
+    void jumpWrite(int64_t p, int m)
+    {
+        writePositions(f, p, m);
+        wPos = p + m;
+    }
+    bool ringHolds(int64_t t0) const
+    {
+        const u32 mask = kA13Ring - 1;
+        for (int i = 0; i < n; ++i)
+        {
+            const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(t0 + i)) & mask);
+            if (f.data[slot * 2] != static_cast<float>(t0 + i) || f.data[slot * 2 + 1] != static_cast<float>(t0 + i))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    bool read()
+    {
+        const bool avail = ringHolds(t);
+        seenHead = head();
+        seenEpoch = f.header.epoch.load(std::memory_order_acquire);
+        if (!avail && seenHead >= t + n)
+        {
+            ++hazardBlocks;
+        }
+        std::fill(out.begin(), out.end(), -1.0f);
+        const bool ok = src.read(t, out.data(), n, 1);
+        if (ok)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                if (out[static_cast<std::size_t>(i) * 2] != static_cast<float>(t + i) ||
+                    out[static_cast<std::size_t>(i) * 2 + 1] != static_cast<float>(t + i))
+                {
+                    if (firstWrong.empty())
+                    {
+                        firstWrong = "t0=" + std::to_string(t) + " frame=" + std::to_string(i) +
+                                     " got=" + std::to_string(out[static_cast<std::size_t>(i) * 2]);
+                    }
+                    ++wrongFrames;
+                }
+            }
+        }
+        else if (avail)
+        {
+            ++lostBlocks;
+        }
+        t += n;
+        return ok;
+    }
+    // 稳态一块:写方先推到「读方块首 + L + 块长」,读方再读。
+    void steady()
+    {
+        writeTo(t + lead + n);
+        read();
+    }
+    void steadyFor(int blocks)
+    {
+        for (int k = 0; k < blocks; ++k)
+        {
+            steady();
+        }
+    }
+    // 事件之后放够:读方越过新一代写头与提前量之后再多读几块。
+    void runOut() { steadyFor(static_cast<int>(lead / n) + 8); }
+};
+} // namespace
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(1)(2):原地重算 / 位置连续的换代都不错音,读方至多丢一个写方块",
+          "[mix][ring][a13]")
+{
+    for (const int64_t lead : {int64_t{4096}, int64_t{48000}})
+    {
+        for (const bool rerender : {true, false})
+        {
+            INFO("lead=" << lead << (rerender ? " in-place re-render" : " contiguous new generation"));
+            LeadRig r(lead, 200000);
+            r.steadyFor(8);
+            REQUIRE(r.lostBlocks == 0);
+            REQUIRE(r.wrongFrames == 0);
+            const int64_t refHi = r.seenHead; // 上一代最后观测到的头
+            const int64_t lost0 = r.lostBlocks;
+            r.bump();
+            if (rerender)
+            {
+                r.wPos = r.t; // ① 从读方游标起重新渲染(一块一块)
+            }
+            r.writeTo(r.t + lead + r.n); // ① 渲染到游标 + L + 块长;② 新一代接着上一代的位置写一块
+            REQUIRE(r.head() == refHi + r.n); // 这一格要的形状:新一代的头 = 上一代最后观测到的头 + 一个步长
+            r.runOut();
+            REQUIRE(r.t > refHi + 2 * r.n); // 读方确实读过了 [上一代的头, 新一代的头 + 一块) 那一段
+            INFO(r.firstWrong);
+            CHECK(r.wrongFrames == 0);
+            // 新一代真正从哪写起读方不知道:[上一代最后观测到的头, 新一代第一次看到的头) 那一块读方证明不了,不读
+            // (与 LS-12 领先轨句首同一条裁定:至多一个写方块)。A-13 之前这里还要多丢「写头再动一次」的那一块。
+            CHECK(r.lostBlocks - lost0 <= 1);
+            CHECK(r.src.gapCount() == 0);
+        }
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(3) R1 并发窗口:那个头是上一代的旧头,新一代往哪写都不错音",
+          "[mix][ring][a13]")
+{
+    // 上一代在读方最后一次观测之后恰好又写了一块(写头 = refHi + 一块),随后写方单独跳变:换代,新一代第一段还没发布
+    // (InputProcessor 换代与发布之间,只出现在 Input 与 Output 真正并发的宿主上)。读方这一块看到「新一代、写头 =
+    // refHi + 一块」—— 与①②的读数一模一样,但这个头是上一代的。下一块之前新一代第一段发布,落点分几种。
+    constexpr int64_t kLead = 4096;
+    struct Shape
+    {
+        const char* name;
+        int64_t offset; // 新一代第一段起点 − 那个旧头;kBackToCursor = 回到读方游标重新渲染
+    };
+    constexpr int64_t kBackToCursor = std::numeric_limits<int64_t>::min();
+    const Shape shapes[] = {
+        {"back to the Output cursor (in-place re-render)", kBackToCursor},
+        {"contiguous with the old head", 0},
+        {"forward by half a block", kA13Block / 2},
+        {"forward by one block", kA13Block},
+        {"forward by the lead", kLead},
+        {"forward by twice the lead (beyond the span bound)", 2 * kLead},
+    };
+    for (const Shape& s : shapes)
+    {
+        INFO(s.name);
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n); // 上一代多写的那一块(读方没看到)
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump(); // 换代,新一代第一段还没发布
+        r.read(); // 读方落在这个窗口里
+        REQUIRE(r.seenHead == oldHead);
+        REQUIRE(r.seenEpoch == 2u);
+        if (s.offset == kBackToCursor)
+        {
+            r.wPos = r.t;
+            r.writeTo(r.t + kLead + r.n);
+        }
+        else
+        {
+            r.jumpWrite(oldHead + s.offset, r.n);
+        }
+        r.runOut();
+        if (s.offset > 0)
+        {
+            // [旧头, 新一代起点) 两代都没写过:读方后来确实读到过写头已越过、环里却不是本位置数据的块(这一格有牙)。
+            CHECK(r.hazardBlocks > 0);
+        }
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+        CHECK(r.src.gapCount() == 0);
+    }
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(3) R1 窗口 + 写方节拍不稳:最大步长两块时新一代往前跳半块也不错音",
+          "[mix][ring][a13]")
+{
+    // 并发宿主上写方的节拍会抖:两次读方观测之间写方偶尔写两块(读方量到的最大步长 = 两块,最小步长 = 一块)。
+    // 这时「正好多一步」= 多两块。上一代在读方最后一次观测之后恰好又写了两块、随后换代(R1),新一代往前跳半块、
+    // 写一块。按「最大步长」复核分不出它和「新一代的头、写方又推进了 1.5 块」;按「最小步长」复核分得出。
+    constexpr int64_t kLead = 4096;
+    LeadRig r(kLead, 200000);
+    r.steadyFor(4);
+    r.writeTo(r.t + kLead + 2 * r.n); // 抖一下:这一块之前写方多写了一块(步长两块)
+    r.read();
+    r.steadyFor(4); // 之后照常(下一块写方已经够了,不写;再往后每块一块)
+    const int64_t refHi = r.seenHead;
+    r.writeTo(r.t + kLead + 2 * r.n); // 上一代又写了两块(读方没看到)
+    const int64_t oldHead = r.head();
+    REQUIRE(oldHead == refHi + 2 * r.n);
+    r.bump();
+    r.read();
+    REQUIRE(r.seenHead == oldHead);
+    r.jumpWrite(oldHead + r.n / 2, r.n); // 新一代往前跳半块,写一块
+    r.runOut();
+    CHECK(r.hazardBlocks > 0);
+    INFO(r.firstWrong);
+    CHECK(r.wrongFrames == 0);
+    CHECK(r.src.gapCount() == 0);
+}
+
+TEST_CASE("ShmRingMixSource A-13 写头正好多一步(4) 跨代与别名:两次观测间换了两代 / 新一代写到上一代窗同槽,都不错音",
+          "[mix][ring][a13]")
+{
+    constexpr int64_t kLead = 4096;
+    SECTION("two generations between two reads, the second one starting half a block past the old head")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.bump();
+        r.jumpWrite(refHi + 30000, r.n); // 第一代:往前跳到远处写了一块
+        r.bump();
+        r.jumpWrite(refHi + r.n / 2, r.n / 2); // 第二代:跳回来,从旧头之后半块写到旧头 + 一块
+        REQUIRE(r.head() == refHi + r.n);
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
+    SECTION("R1 window, then another generation before the first publication")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n);
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump();
+        r.read(); // 看到「新一代、旧头 + 一块」
+        r.bump(); // 又换一代,往前跳半块写一块
+        r.jumpWrite(oldHead + r.n / 2, r.n);
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
+    SECTION("R1 window, then the first publication aliases slots of the previous-generation window still to be read")
+    {
+        LeadRig r(kLead, 200000);
+        r.steadyFor(8);
+        const int64_t refHi = r.seenHead;
+        r.writeTo(r.t + kLead + r.n);
+        const int64_t oldHead = r.head();
+        REQUIRE(oldHead == refHi + r.n);
+        r.bump();
+        r.read();
+        // 新一代往前跳将近一个环长:第一段写在读方再过一块要读的那些位置 + 环长,与它们同槽。
+        const int64_t aliased = r.t + r.n;
+        r.jumpWrite(aliased + static_cast<int64_t>(kA13Ring), r.n);
+        REQUIRE_FALSE(r.ringHolds(aliased)); // 那一块的环槽里现在是下一圈的数据
+        r.runOut();
+        CHECK(r.hazardBlocks > 0);
+        INFO(r.firstWrong);
+        CHECK(r.wrongFrames == 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
