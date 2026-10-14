@@ -22,6 +22,8 @@
 //   另有环可用性 oracle(LS-4,见 ringOracle):按 LaneBlock / OutBlock 的处理顺序号重放各 Input 的写环,
 //   判「Output 读这一帧的那一刻,环里是不是正好写着本位置的有声数据」。任何 I1 安全的读方都只能读到
 //   这些帧,所以它是在场率的物理上界:oracle 说读得到、被测读方没读到的帧,缺陷在读方,不在调度。
+//   [A-16] 读方预拷贝之后,环里已被新一圈换掉、读方回绕之前拷下了的帧也读得到,物理上界换成无限环可用性 oracle
+//   (LS-4b,见 infOracle):这一遍写方已为这个位置写好有声数据(环无限长时读得到)。
 //
 // ## [!shouldfail] 约定(同 A-3)
 //
@@ -798,6 +800,83 @@ Oracle ringOracle(const Run& r)
     return o;
 }
 
+// [A-16] 无限环可用性 oracle(LS-4b):同样按处理顺序号重放,判「Output 读这一帧的那一刻,该 lane 在 Output 上一次读
+// 这个位置之后、已经为它写过有声数据」—— 环无限长时读得到(环槽后来有没有被新一圈换掉不管)。同样只支持 ringOracle
+// 支持的脚本。
+Oracle infOracle(const Run& r)
+{
+    Oracle o;
+    const std::int64_t len = r.c1 - r.c0;
+    const std::size_t nl = static_cast<std::size_t>(r.lanes);
+    o.avail.assign(nl, std::vector<char>(static_cast<std::size_t>(std::max<std::int64_t>(len, 0)), 0));
+    std::int64_t maxPos = 0;
+    for (const std::vector<sched::LaneBlock>& log : r.laneLogs)
+    {
+        for (const sched::LaneBlock& b : log)
+        {
+            maxPos = std::max(maxPos, b.tReported + b.n);
+        }
+    }
+    for (const sched::OutBlock& ob : r.outBlocks)
+    {
+        maxPos = std::max(maxPos, ob.tReported + ob.n);
+    }
+    // 每个位置:该 lane 最近一次写有声数据的处理顺序号(-1 = 没写过 / 写的是静音),Output 最近一次读它的处理顺序号。
+    std::vector<std::vector<std::int64_t>> written(nl,
+                                                   std::vector<std::int64_t>(static_cast<std::size_t>(maxPos + 1), -1));
+    std::vector<std::int64_t> lastRead(static_cast<std::size_t>(maxPos + 1), -1);
+    std::vector<std::size_t> next(nl, 0);
+    for (const sched::OutBlock& ob : r.outBlocks)
+    {
+        for (std::size_t lane = 0; lane < nl; ++lane)
+        {
+            const std::vector<sched::LaneBlock>& log = r.laneLogs[lane];
+            while (next[lane] < log.size() && log[next[lane]].seq < ob.seq)
+            {
+                const sched::LaneBlock& b = log[next[lane]];
+                ++next[lane];
+                if (b.reason != sched::CallReason::Called)
+                {
+                    continue;
+                }
+                if (b.quirked || b.tReported != b.tBus || b.tReported < 0)
+                {
+                    o.supported = false;
+                    continue;
+                }
+                for (std::int64_t i = 0; i < b.n; ++i)
+                {
+                    written[lane][static_cast<std::size_t>(b.tReported + i)] = b.contentActive ? b.seq : -1;
+                }
+            }
+        }
+        if (ob.reason != sched::CallReason::Called || !ob.playingReported)
+        {
+            continue;
+        }
+        if (ob.quirked || ob.tReported != ob.tBus || ob.tReported < 0)
+        {
+            o.supported = false;
+            continue;
+        }
+        for (std::int64_t i = 0; i < ob.n; ++i)
+        {
+            const std::size_t p = static_cast<std::size_t>(ob.tReported + i);
+            const std::int64_t rel = ob.cursor + i - r.c0;
+            if (rel >= 0 && rel < len)
+            {
+                for (std::size_t lane = 0; lane < nl; ++lane)
+                {
+                    o.avail[lane][static_cast<std::size_t>(rel)] =
+                        static_cast<char>(written[lane][p] >= 0 && written[lane][p] > lastRead[p] ? 1 : 0);
+                }
+            }
+            lastRead[p] = ob.seq;
+        }
+    }
+    return o;
+}
+
 // 窗口内(帧对齐)oracle 判「整帧可读」的帧数与帧总数。
 std::pair<int, int> oracleFrames(const Run& r, const Oracle& o, int lane, std::int64_t rel0, std::int64_t rel1)
 {
@@ -1113,6 +1192,58 @@ std::vector<sched::Range> lapsOf(const Run& r)
     }
     laps.push_back(sched::Range{begin, r.c1 - r.c0});
     return laps;
+}
+
+// ===========================================================================
+// [A-16] LS-4b 圈长落在环长整数倍前后一个提前量一带(读方预拷贝)
+// ===========================================================================
+//
+// LS-4 的台子(lane 0 live 对照,lane 1、2 预取提前 lead,Cycle [B, B + len),三圈),圈长换成 A-16 那一带:
+//   ③'    lead 48000、len = R − 24000:数据全在环里,环路径判据保守,A-16 之前每圈丢约一个提前量;
+//   物理段 lead 48000、len = R + 24000 / lead 9600、len = R + 4800 / lead 48000、len = 2R + 24000:上一圈尾段在 Output
+//          读到之前已被新一圈换掉了 m = len − k·R 帧(环装不下「一圈 + 提前量」);
+//   ②     lead 48000、len = R + 49152 + 512:余量 512,在途保护让开下一笔写。
+// 读方预拷贝之后,上一圈尾段由读方回绕之前拷下的副本交出(ShmRingMixSource 头注「读方预拷贝」),每圈只剩换圈处那一截。
+struct Ls4bCell
+{
+    std::int64_t lead = 0;
+    std::int64_t loopLen = 0;
+    std::int64_t physical = 0; // 上一圈尾段在读之前被新一圈换掉的帧数(物理段;其余格 0)
+    int laps = 0;
+    Run run;
+    Run ideal;
+};
+
+const std::vector<Ls4bCell>& ls4b()
+{
+    static const std::vector<Ls4bCell> cells = [] {
+        struct Shape
+        {
+            std::int64_t lead;
+            std::int64_t len;
+            std::int64_t physical;
+        };
+        const Shape shapes[] = {
+            {48000, kRing - 24000, 0},  {48000, kRing + 24000, 24000},     {48000, kRing + 49152 + 512, 0},
+            {9600, kRing + 4800, 4800}, {48000, 2 * kRing + 24000, 24000},
+        };
+        std::vector<Ls4bCell> out;
+        for (const Shape& sh : shapes)
+        {
+            sched::SchedCfg cfg = lanesCfg(3, kFastPace);
+            makePrefetch(cfg, 1, sh.lead);
+            makePrefetch(cfg, 2, sh.lead);
+            std::ostringstream os;
+            os << "LS-4b lead=" << sh.lead << " loop=" << sh.len;
+            std::ostringstream is;
+            is << "LS-4b ideal loop=" << sh.len;
+            const int laps = 3;
+            out.push_back(Ls4bCell{sh.lead, sh.len, sh.physical, laps, runLoop(os.str(), cfg, kLs4LoopB, sh.len, laps),
+                                   runLoop(is.str(), lanesCfg(3, kFastPace), kLs4LoopB, sh.len, laps)});
+        }
+        return out;
+    }();
+    return cells;
 }
 
 // ===========================================================================
@@ -2626,6 +2757,101 @@ TEST_CASE("SCHED LS-4 (H1): with Cycle and mixed leads every lap of a led lane l
         // 对照轨(live)每圈全在场。
         const Diff ctl = diffVsIdeal(ideal, 0, c.run, 0);
         REQUIRE(ctl.lost == 0);
+        os << " | lane0 " << str(ctl) << " | maxMisalign " << maxMisalignAll(c.run) << " nudged "
+           << c.run.openingNudged;
+        WARN(os.str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [A-16] LS-4b
+// ---------------------------------------------------------------------------
+TEST_CASE("SCHED LS-4b: loops within one lead of a whole number of ring lengths lose at most one frame per lap on the "
+          "led lanes and read no stale audio",
+          "[.][sched]")
+{
+    for (const Ls4bCell& c : ls4b())
+    {
+        INFO(c.run.name);
+        for (const sched::Range& lap : lapsOf(c.run))
+        {
+            for (int lane : {1, 2})
+            {
+                INFO("lane " << lane << " lap [" << lap.begin << "," << lap.end << ")");
+                const Diff d = diffVsIdeal(c.ideal, lane, c.run, lane, lap.begin, lap.end);
+                CHECK(d.lost <= 1);
+                CHECK(d.wrong == 0);
+            }
+        }
+        const Diff ctl = diffVsIdeal(c.ideal, 0, c.run, 0);
+        CHECK(ctl.lost == 0); // live 轨
+        CHECK(maxMisalignAll(c.run) == 0u);
+    }
+}
+
+TEST_CASE("SCHED LS-4b: loops within one lead of a whole number of ring lengths lose at most one frame per lap on the "
+          "led lanes and read no stale audio - precondition",
+          "[.][sched]")
+{
+    const std::vector<Ls4bCell>& cells = ls4b();
+    REQUIRE(cells.size() == 5u);
+    for (const Ls4bCell& c : cells)
+    {
+        INFO(c.run.name);
+        REQUIRE(c.run.settled);
+        REQUIRE(c.ideal.settled);
+        for (int lane = 0; lane < 3; ++lane)
+        {
+            const Tally t = tally(c.ideal, lane);
+            REQUIRE(t.total >= 360);
+            REQUIRE(t.mixPresent == t.total); // 理想调度每圈全在场:差分的分母可信
+        }
+        const std::vector<sched::Range> laps = lapsOf(c.run);
+        REQUIRE(static_cast<int>(laps.size()) == c.laps); // 圈确实回绕了 laps-1 次
+        const Oracle ring = ringOracle(c.run);
+        const Oracle inf = infOracle(c.run);
+        REQUIRE(ring.supported);
+        REQUIRE(inf.supported);
+        std::ostringstream os;
+        os << c.run.name << ":";
+        for (int lane : {1, 2})
+        {
+            INFO("lane " << lane);
+            // 写方确实比读方早约一个提前量跨过循环点(预取轨先回绕)。
+            const sched::LaneBlock* wrap = laneFirstBackJump(c.run, lane);
+            REQUIRE(wrap != nullptr);
+            REQUIRE(wrap->tBus == kLs4LoopB);
+            const std::int64_t outAtWrap = outRelAtSeq(c.run, wrap->seq);
+            const std::int64_t leadObserved = laps[1].begin - outAtWrap;
+            REQUIRE(leadObserved >= c.lead);
+            REQUIRE(leadObserved <= c.lead + 2048);
+            os << " lane" << lane << " leadObserved=" << leadObserved;
+            for (std::size_t li = 0; li < laps.size(); ++li)
+            {
+                const sched::Range& lap = laps[li];
+                INFO("lap " << li);
+                // 无限环:这一遍写方已写好的帧每圈全可读(换圈处至多一帧)—— 被测读方的物理上界。
+                const std::pair<int, int> avInf = oracleFrames(c.run, inf, lane, lap.begin, lap.end);
+                REQUIRE(avInf.second >= 90);
+                REQUIRE(avInf.first >= avInf.second - 1);
+                // 环:物理段那几格每圈确实有帧在读之前就被新一圈换掉了(最后一圈不判:那一圈尾段要看写方停之前写到了
+                // 哪)—— 丢的是数据,不只是判据;其余格环里全可读(A-16 之前丢的是判据)。
+                const std::pair<int, int> avRing = oracleFrames(c.run, ring, lane, lap.begin, lap.end);
+                if (c.physical == 0)
+                {
+                    REQUIRE(avRing.first >= avRing.second - 1);
+                }
+                else if (li + 1 < laps.size())
+                {
+                    REQUIRE(avRing.second - avRing.first >= static_cast<int>(c.physical / kF) - 1);
+                }
+                const Diff d = diffVsIdeal(c.ideal, lane, c.run, lane, lap.begin, lap.end);
+                REQUIRE(d.unmatched == 0);
+                os << " | lap" << li << " inf " << avInf.first << "/" << avInf.second << " ring " << avRing.first << "/"
+                   << avRing.second << " " << str(d);
+            }
+        }
+        const Diff ctl = diffVsIdeal(c.ideal, 0, c.run, 0);
         os << " | lane0 " << str(ctl) << " | maxMisalign " << maxMisalignAll(c.run) << " nudged "
            << c.run.openingNudged;
         WARN(os.str());

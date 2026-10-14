@@ -12,6 +12,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "output/BusXfade.h"
@@ -1034,8 +1035,9 @@ private:
     int64_t validFrom_ = 0;
 };
 
+// 同一张时间线上并排跑几个读方(写方、环、两份 oracle 都只有一份;读方不影响写方,所以与各跑一遍逐块相同)。
 template<class Reader>
-Result run(const Cell& cell, Reader& src)
+std::vector<Result> runAll(const Cell& cell, const std::vector<Reader*>& readers)
 {
     const int64_t len = cell.len;
     const int rb = cell.rBlock;
@@ -1056,7 +1058,10 @@ Result run(const Cell& cell, Reader& src)
 
     RingFixture f(kRing, 2);
     f.header.epoch.store(1, std::memory_order_release);
-    src.bind(&f.header, f.data.data());
+    for (Reader* src : readers)
+    {
+        src->bind(&f.header, f.data.data());
+    }
     std::vector<float> out(static_cast<std::size_t>(rb) * 2);
     std::vector<char> ringOk(static_cast<std::size_t>(rb));
     std::vector<char> infOk(static_cast<std::size_t>(rb));
@@ -1066,7 +1071,8 @@ Result run(const Cell& cell, Reader& src)
         std::fill_n(pubPass.begin() + static_cast<std::ptrdiff_t>(p), static_cast<std::size_t>(m),
                     static_cast<signed char>(pass));
     };
-    Result res;
+    Result res; // 与读方无关的记账(场景本身);每个读方各自的那几项在 per 里
+    std::vector<Result> per(readers.size());
 
     int64_t wC = 0;
     int64_t wExpected = std::numeric_limits<int64_t>::lowest(); // InputProcessor:prepare 之后的哨兵(第一块必换代)
@@ -1129,6 +1135,10 @@ Result run(const Cell& cell, Reader& src)
         {
             ++rEpoch; // OutputProcessor 的 podEpoch_:读方自己的时间线跳了
             res.laps.emplace_back();
+            for (Result& r : per)
+            {
+                r.laps.emplace_back();
+            }
         }
         rExpected = t0 + m;
         const int64_t head = static_cast<int64_t>(f.header.write_head_samples.load(std::memory_order_acquire));
@@ -1198,44 +1208,49 @@ Result run(const Cell& cell, Reader& src)
             avail = avail && ringOk[static_cast<std::size_t>(i)] != 0;
             infAvail += infOk[static_cast<std::size_t>(i)] != 0 ? 1 : 0;
         }
-        std::fill(out.begin(), out.end(), -1.0f);
-        const u64 priv0 = src.privateFrameCount();
-        const bool ok = src.read(t0, out.data(), m, rEpoch);
-        Lap& lap = res.laps.back();
-        lap.privFrames += static_cast<int64_t>(src.privateFrameCount() - priv0);
-        ++lap.blocks;
-        lap.ringAvail += avail ? 1 : 0;
-        lap.infFrames += infAvail;
-        if (ok)
+        for (std::size_t k = 0; k < readers.size(); ++k)
         {
-            for (int i = 0; i < m; ++i)
+            Reader& src = *readers[k];
+            Result& rr = per[k];
+            std::fill(out.begin(), out.end(), -1.0f);
+            const u64 priv0 = src.privateFrameCount();
+            const bool ok = src.read(t0, out.data(), m, rEpoch);
+            Lap& lap = rr.laps.back();
+            lap.privFrames += static_cast<int64_t>(src.privateFrameCount() - priv0);
+            ++lap.blocks;
+            lap.ringAvail += avail ? 1 : 0;
+            lap.infFrames += infAvail;
+            if (ok)
             {
-                const bool right = out[static_cast<std::size_t>(i) * 2] == static_cast<float>(t0 + i) &&
-                                   out[static_cast<std::size_t>(i) * 2 + 1] == static_cast<float>(t0 + i);
-                if (!right)
+                for (int i = 0; i < m; ++i)
                 {
-                    if (res.firstWrong.empty())
+                    const bool right = out[static_cast<std::size_t>(i) * 2] == static_cast<float>(t0 + i) &&
+                                       out[static_cast<std::size_t>(i) * 2 + 1] == static_cast<float>(t0 + i);
+                    if (!right)
                     {
-                        res.firstWrong = "t0=" + std::to_string(t0) + " frame=" + std::to_string(i) +
-                                         " got=" + std::to_string(out[static_cast<std::size_t>(i) * 2]);
+                        if (rr.firstWrong.empty())
+                        {
+                            rr.firstWrong = "t0=" + std::to_string(t0) + " frame=" + std::to_string(i) +
+                                            " got=" + std::to_string(out[static_cast<std::size_t>(i) * 2]);
+                        }
+                        ++rr.wrong;
                     }
-                    ++res.wrong;
-                }
-                else if (ringOk[static_cast<std::size_t>(i)] == 0)
-                {
-                    ++lap.rescuedFrames;
+                    else if (ringOk[static_cast<std::size_t>(i)] == 0)
+                    {
+                        ++lap.rescuedFrames;
+                    }
                 }
             }
-        }
-        else
-        {
-            lap.lostInfFrames += infAvail;
-            if (avail)
+            else
             {
-                ++lap.lost;
-                lap.lostFrames += m;
-                lap.firstLost = lap.firstLost < 0 ? t0 : lap.firstLost;
-                lap.lostEnd = t0 + m;
+                lap.lostInfFrames += infAvail;
+                if (avail)
+                {
+                    ++lap.lost;
+                    lap.lostFrames += m;
+                    lap.firstLost = lap.firstLost < 0 ? t0 : lap.firstLost;
+                    lap.lostEnd = t0 + m;
+                }
             }
         }
         if (bigPending)
@@ -1253,8 +1268,25 @@ Result run(const Cell& cell, Reader& src)
         ++reads;
         rC += m;
     }
-    res.gaps = src.gapCount();
-    return res;
+    for (std::size_t k = 0; k < readers.size(); ++k)
+    {
+        Result& rr = per[k];
+        const std::vector<Lap> laps = std::move(rr.laps);
+        const int64_t wrong = rr.wrong;
+        const std::string firstWrong = std::move(rr.firstWrong);
+        rr = res;
+        rr.laps = laps;
+        rr.wrong = wrong;
+        rr.firstWrong = firstWrong;
+        rr.gaps = readers[k]->gapCount();
+    }
+    return per;
+}
+
+template<class Reader>
+Result run(const Cell& cell, Reader& src)
+{
+    return runAll<Reader>(cell, {&src})[0];
 }
 } // namespace a16
 } // namespace
@@ -1344,20 +1376,8 @@ std::string str(const A14Lap& l)
     return s;
 }
 
-// A-14 的一格放到 A-16 台子上跑(提前量 48000、读写块长 1024、三圈)。preCopy = 开预拷贝的读方(产品默认),否则关。
-A14Result runA14(const A14Cell& cell, bool preCopy)
+A14Result toA14(const a16::Result& r)
 {
-    a16::Cell c;
-    c.name = cell.name;
-    c.len = cell.len;
-    c.rBlock = kA14Block;
-    c.wBlock = kA14Block;
-    c.lead = kA14Lead;
-    c.laps = kA14Laps;
-    c.noopSeek = cell.writerNoopSeek;
-    c.stall = cell.stallBlocks;
-    ShmRingMixSource src(preCopy ? ShmRingMixSource::kPreCopyFrames : 0);
-    const a16::Result r = a16::run(c, src);
     A14Result res;
     for (const a16::Lap& l : r.laps)
     {
@@ -1379,6 +1399,25 @@ A14Result runA14(const A14Cell& cell, bool preCopy)
     res.wrapAt = r.wrapAt;
     res.gaps = r.gaps;
     return res;
+}
+
+// A-14 的一格放到 A-16 台子上跑(提前量 48000、读写块长
+// 1024、三圈):关预拷贝与开预拷贝(产品默认)两个读方并排读同一遍台子。 返回 {关, 开}。
+std::pair<A14Result, A14Result> runA14(const A14Cell& cell)
+{
+    a16::Cell c;
+    c.name = cell.name;
+    c.len = cell.len;
+    c.rBlock = kA14Block;
+    c.wBlock = kA14Block;
+    c.lead = kA14Lead;
+    c.laps = kA14Laps;
+    c.noopSeek = cell.writerNoopSeek;
+    c.stall = cell.stallBlocks;
+    ShmRingMixSource off(0);
+    ShmRingMixSource on;
+    const std::vector<a16::Result> r = a16::runAll<ShmRingMixSource>(c, {&off, &on});
+    return {toA14(r[0]), toA14(r[1])};
 }
 
 // 场景确实造出来了(与读方怎么读无关):圈确实回绕了、每圈读方读的时候环里都有本位置的数据、写方先于读方约一个提前量
@@ -1471,9 +1510,8 @@ std::string onLaps(const A14Result& r)
     return s;
 }
 
-void checkA14PreCopy(const A14Cell& c, bool hazard)
+void checkA14PreCopy(const A14Cell& c, const A14Result& r, bool hazard)
 {
-    const A14Result r = runA14(c, true);
     requireA14Shape(c, r, hazard);
     INFO("pre-copy on: " << c.name << onLaps(r));
     CHECK(r.wrongFrames == 0);
@@ -1496,7 +1534,7 @@ TEST_CASE("ShmRingMixSource A-14 同一代里写方一口突发后循环回绕:�
     for (const A14Cell& c : inBand)
     {
         INFO(c.name << " len=" << c.len);
-        const A14Result r = runA14(c, false);
+        const auto [r, on] = runA14(c);
         requireA14Shape(c, r);
         INFO(r.firstWrong);
         CHECK(r.wrongFrames == 0); // 安全(I1):带内也必须成立
@@ -1508,12 +1546,12 @@ TEST_CASE("ShmRingMixSource A-14 同一代里写方一口突发后循环回绕:�
         }
         WARN(c.name << " (margin " << c.len - kA14R - kA14Ahead << "): wrapAt " << r.wrapAt << " maxSameGenStep "
                     << r.maxSameGenStep << " gaps " << r.gaps << " wrong " << r.wrongFrames << lapsStr(r));
-        checkA14PreCopy(c, false);
+        checkA14PreCopy(c, on, false);
     }
     for (const A14Cell& c : kA14OutOfBand)
     {
         INFO(c.name << " len=" << c.len);
-        const A14Result r = runA14(c, false);
+        const auto [r, on] = runA14(c);
         requireA14Shape(c, r);
         INFO(r.firstWrong);
         CHECK(r.wrongFrames == 0);
@@ -1524,19 +1562,19 @@ TEST_CASE("ShmRingMixSource A-14 同一代里写方一口突发后循环回绕:�
         }
         WARN(c.name << " (margin " << c.len - kA14R - kA14Ahead << "): wrapAt " << r.wrapAt << " maxSameGenStep "
                     << r.maxSameGenStep << " gaps " << r.gaps << " wrong " << r.wrongFrames << lapsStr(r));
-        checkA14PreCopy(c, false);
+        checkA14PreCopy(c, on, false);
     }
     for (const A14Cell& c : kA14Hazard)
     {
         INFO(c.name << " len=" << c.len);
-        const A14Result r = runA14(c, false);
+        const auto [r, on] = runA14(c);
         requireA14Shape(c, r, true);
         INFO(r.firstWrong);
         CHECK(r.wrongFrames == 0);
         WARN(c.name << ": wrapAt " << r.wrapAt << " maxSameGenStep " << r.maxSameGenStep << " gaps " << r.gaps
                     << " wrong " << r.wrongFrames << lapsStr(r));
         // 危险格开预拷贝:被新一圈换掉的 24 块与另丢的 23 块都从副本交出,只剩圈尾那一截(RP1)。
-        checkA14PreCopy(c, true);
+        checkA14PreCopy(c, on, true);
     }
 }
 
@@ -1547,9 +1585,8 @@ namespace
 {
 void checkA14Flip(const A14Cell& c)
 {
-    const A14Result off = runA14(c, false);
+    const auto [off, on] = runA14(c);
     requireA14Shape(c, off);
-    const A14Result on = runA14(c, true);
     requireA14Shape(c, on);
     INFO("lap0 pre-copy off " << str(off.laps[1]) << " | on " << str(on.laps[1]));
     CHECK(off.wrongFrames == 0);
@@ -1586,8 +1623,9 @@ TEST_CASE("ShmRingMixSource A-14 (2) 写方停几块又一口补齐之后循环�
 // 本节用例在现行读方上必须绿(错帧 0);它们同时是那几种放宽的删除式牙齿(落点与红在哪见 PR 的删除式表)。
 //   · 世界对 X1 / X2 / X3 / B256:前提 REQUIRE(圈确实回绕、写方先于读方约一个提前量回绕、世界 2 的在途写确实注入、
 //     世界 2 的环里确实有块被换掉、两个世界读方的输入逐块相同),判据 CHECK 错帧 0;
-//   · 边界扫描:圈长取 A-15 两套扫描的并集 × 突发 {无 / ① / ②}(读方块长 1024;读方块长 256 只扫没有突发的一组,
-//     带内各余量另有 B256 世界对),另加提前量 4096 一组与 2R 附近三格。
+//   · 边界扫描:圈长取 A-15 两套扫描的并集 × 突发 {无 / ① / ②}(突发两组只取物理段中部以上,再往下与没有突发逐格
+//     相同;读方块长 1024,读方块长 256 只扫没有突发的一组,带内各余量另有 B256 世界对),另加提前量 4096 一组与
+//     2R 附近三格。
 // 每圈丢失按无限环口径计帧(写方这一遍已发布、读方却没交出)。现行读方每圈至多丢「稳态提前量 + 一个写方块」——
 // 这是现状上界,一并 CHECK;逐格数字由 WARN 打印。rc.1 读方的对照数字只在隐藏用例 [a16-report] 里打印。
 // ---------------------------------------------------------------------------
@@ -1641,6 +1679,15 @@ a16::Result a16Run(const a16::Cell& c, bool preCopy)
 {
     ShmRingMixSource src(preCopy ? ShmRingMixSource::kPreCopyFrames : 0);
     return a16::run(c, src);
+}
+
+// 关、开预拷贝两个读方并排读同一张时间线(一遍台子;与各跑一遍逐块相同)。返回 {关, 开}。
+std::pair<a16::Result, a16::Result> a16RunOffOn(const a16::Cell& c)
+{
+    ShmRingMixSource off(0);
+    ShmRingMixSource on;
+    std::vector<a16::Result> r = a16::runAll<ShmRingMixSource>(c, {&off, &on});
+    return {std::move(r[0]), std::move(r[1])};
 }
 
 // 每圈(无限环口径)丢失不超过 bound 帧。
@@ -1766,6 +1813,7 @@ std::vector<a16::Cell> a16Sweep()
             {
                 continue; // 读方块长 256 只扫没有突发的一组(带内各余量另有 B256 世界对)
             }
+            const bool burst = k.noop || k.stall > 0;
             constexpr int64_t kA = 49152;
             const std::set<int64_t> lens = {kR - kA - 4 * kN,
                                             kR - kA - 2 * kN,
@@ -1791,6 +1839,10 @@ std::vector<a16::Cell> a16Sweep()
                                             kR + kA + k.burst + kN};
             for (const int64_t len : lens)
             {
+                if (burst && len < kR + kA - 24 * kN)
+                {
+                    continue; // 突发只放大在途保护:圈长在物理段中部以下时整段尾巴本来就读不到,与没有突发逐格相同
+                }
                 add(std::string(k.name) + ", rb " + std::to_string(rb), len, rb, 48000, k.noop, k.stall);
             }
         }
@@ -1820,9 +1872,9 @@ TEST_CASE("ShmRingMixSource A-16 世界对 X1 / X2 / X3 / B256:读方逐块输�
     for (const A16WorldPair& p : a16Worlds())
     {
         INFO(p.w2.name);
-        // 关预拷贝:环路径的见证(判据与第 1 步逐格相同)。
-        const a16::Result r1 = a16Run(p.w1, false);
-        const a16::Result r2 = a16Run(p.w2, false);
+        // 关预拷贝:环路径的见证(判据与第 1 步逐格相同)。开预拷贝的读方在同一遍台子里并排读(o1 / o2)。
+        const auto [r1, o1] = a16RunOffOn(p.w1);
+        const auto [r2, o2] = a16RunOffOn(p.w2);
         requireA16Shape(p.w1, r1);
         requireA16Shape(p.w2, r2);
         if (p.w2.inflight > 0)
@@ -1850,8 +1902,6 @@ TEST_CASE("ShmRingMixSource A-16 世界对 X1 / X2 / X3 / B256:读方逐块输�
         WARN("off world2 " << a16Line(p.w2, r2));
 
         // 开预拷贝:上一圈尾段由读方回绕之前拷下的副本交出,环槽被新一圈 / 在途写换掉的那些帧也照读,而且帧帧是本位置。
-        const a16::Result o1 = a16Run(p.w1, true);
-        const a16::Result o2 = a16Run(p.w2, true);
         requireA16Shape(p.w1, o1);
         requireA16Shape(p.w2, o2);
         REQUIRE(o2.injected == r2.injected);
@@ -1903,18 +1953,17 @@ TEST_CASE("ShmRingMixSource A-16 边界扫描:圈长落在 k 倍环长前后一�
           "[mix][ring][a16]")
 {
     const std::vector<a16::Cell> cells = a16Sweep();
-    REQUIRE(cells.size() == 94u);
+    REQUIRE(cells.size() == 74u);
     for (const a16::Cell& c : cells)
     {
         INFO(c.name << " len=" << c.len);
-        // 关预拷贝:现状(与第 1 步逐格相同)。
-        const a16::Result off = a16Run(c, false);
+        // 关预拷贝:现状(与第 1 步逐格相同)。开预拷贝的读方在同一遍台子里并排读。
+        const auto [off, on] = a16RunOffOn(c);
         requireA16Shape(c, off);
         INFO("off " << a16Line(c, off));
         CHECK(off.wrong == 0);
         checkA16Laps(off, a16CurrentBound(c));
         // 开预拷贝:不错音,每圈至多丢一个写方块(上一代最后一次观测之后写方又写的那一截,RP1)。
-        const a16::Result on = a16Run(c, true);
         requireA16Shape(c, on);
         INFO("on " << a16Line(c, on));
         CHECK(on.wrong == 0);
@@ -1938,8 +1987,9 @@ TEST_CASE("ShmRingMixSource A-16 report: pre-copy off / on vs rc.1 on every worl
     for (const a16::Cell& c : cells)
     {
         a16::Rc1Reader rc1;
-        WARN("OFF " << a16Line(c, a16Run(c, false)));
-        WARN("ON  " << a16Line(c, a16Run(c, true)));
+        const auto [off, on] = a16RunOffOn(c);
+        WARN("OFF " << a16Line(c, off));
+        WARN("ON  " << a16Line(c, on));
         WARN("RC1 " << a16Line(c, a16::run(c, rc1)));
     }
     SUCCEED();

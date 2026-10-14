@@ -49,6 +49,12 @@
 //     的帧记为丢失;按读方自身跳变切圈,每圈丢失 ≤ 1024 帧(≈ 1 个分析帧,设计稿 §1.4 第 4 条 LS-4)。
 //     上一圈留下、位置也对的旧数据不算「可读」:读方读它不算错,不读它也不算丢。
 //   · 差分:同步调度下,被测读方的成功集合 ⊇ LegacyReader(现在两者是同一份逻辑,恒成立)。
+//   · [A-16] 读方预拷贝:被测读方(产品默认,开预拷贝)旁边并跑一个关预拷贝的同款读方(构造参数 0)。私有副本交出的帧
+//     另判 I1'(a)(交出的是读方这次观测时写方为该位置最后一次已发布 / 在途的写入:tag 的代号对得上位置影子)与
+//     I1'(b)(交出的是读方这一遍的数据:那一次写入的走带计数 ≥ 本帧的走带计数);全部族上开预拷贝的成功集合 ⊇ 关预拷贝的
+//     (L4)。环路径交出上一遍数据(读方自己回绕之后上一代窗不撤,既有口径)只计 ringGhost、只打印。tag 为此腾出 2 位记
+//     写方代号(位置降到 22 位),另有按位置分页的影子(每个位置最近一次已发布的写入:走带计数、代号、写方实例;最近一次
+//     已写入的代号),还给出无限环可用性(这一遍已写好并发布了、读方却没交出 = lostInf)。
 //
 // A-3 落地时,A-5 之前的实现在 H4(写方领先时从停调恢复)、读写目标不一致、H1 可用性等族上
 // **预期失败**,那些用例当时打 [!shouldfail];A-5 重写读方后全部转成普通用例(8 条,标记已去掉),
@@ -172,11 +178,12 @@ constexpr int64_t kLapLossAllowance = 1024;
 // ===========================================================================
 // §1 溯源 tag
 // ===========================================================================
-// 一个 float 编码一份出处。code(29 bit)= pos(24 bit)| ch << 24 | stereo << 25 | writer << 26;
+// 一个 float 编码一份出处。code(29 bit)= pos(22 bit)| gen << 22(2 bit)| ch << 24 | stereo << 25 | writer << 26;
 // 位型 = (64 + code >> 23) << 23 | (code & 0x7FFFFF):指数域落在 [64,127],恒为正规正数 ——
 // 不是 0、不是非正规数、不是 NaN/Inf,所以读方按 float 赋值拷贝时逐位不变。0.0f(指数域 0)
-// 解不出来,当作「从未写过」。时间线位置必须 < 2^24(写方模型生成操作时 REQUIRE)。
-constexpr int64_t kTagPosLimit = int64_t{1} << 24;
+// 解不出来,当作「从未写过」。时间线位置必须 < 2^22(写方模型生成操作时 REQUIRE)。
+// [A-16] gen = 写方写这一笔时已经换过几代(mod 4):判 I1'(a) 用(交出的是不是该位置最近一次写入的那一代)。
+constexpr int64_t kTagPosLimit = int64_t{1} << 22;
 
 struct Tag
 {
@@ -184,17 +191,18 @@ struct Tag
     u32 ch = 0;
     u32 layout = 0; // 写它时的声道数(1|2)
     u32 writer = 0; // 写方实例号(0..7)
+    u32 gen = 0; // [A-16] 写方代号 mod 4
 
     bool operator==(const Tag& o) const noexcept
     {
-        return pos == o.pos && ch == o.ch && layout == o.layout && writer == o.writer;
+        return pos == o.pos && ch == o.ch && layout == o.layout && writer == o.writer && gen == o.gen;
     }
 };
 
 float encodeTag(const Tag& t) noexcept
 {
-    const u32 code = (static_cast<u32>(t.pos) & 0xFFFFFFu) | ((t.ch & 1u) << 24) | ((t.layout == 2u ? 1u : 0u) << 25) |
-                     ((t.writer & 7u) << 26);
+    const u32 code = (static_cast<u32>(t.pos) & 0x3FFFFFu) | ((t.gen & 3u) << 22) | ((t.ch & 1u) << 24) |
+                     ((t.layout == 2u ? 1u : 0u) << 25) | ((t.writer & 7u) << 26);
     const u32 bits = ((64u + (code >> 23)) << 23) | (code & 0x7FFFFFu);
     float f = 0.0f;
     std::memcpy(&f, &bits, sizeof f);
@@ -211,7 +219,8 @@ bool decodeTag(float f, Tag& t) noexcept
         return false;
     }
     const u32 code = ((e - 64u) << 23) | (bits & 0x7FFFFFu);
-    t.pos = static_cast<int64_t>(code & 0xFFFFFFu);
+    t.pos = static_cast<int64_t>(code & 0x3FFFFFu);
+    t.gen = (code >> 22) & 3u;
     t.ch = (code >> 24) & 1u;
     t.layout = ((code >> 25) & 1u) != 0u ? 2u : 1u;
     t.writer = (code >> 26) & 7u;
@@ -236,7 +245,7 @@ std::string describe(float f)
     }
     else
     {
-        os << "pos=" << t.pos << " ch=" << t.ch << " layout=" << t.layout << " writer=" << t.writer;
+        os << "pos=" << t.pos << " ch=" << t.ch << " layout=" << t.layout << " writer=" << t.writer << " gen=" << t.gen;
     }
     return os.str();
 }
@@ -244,6 +253,50 @@ std::string describe(float f)
 // ===========================================================================
 // §2 环(heap,非共享内存)+ oracle 影子
 // ===========================================================================
+// [A-16] 按位置分页的影子(私有副本里的帧不在环里,只能按位置记):每个位置最近一次**已发布**写入的走带计数、代号、
+// 写方实例,以及最近一次已写入(可能还没发布)的代号。页按需分配,每次运行换一个戳记作废全部页(不逐页清零)。
+struct PosShadow
+{
+    static constexpr int kPageBits = 12;
+    static constexpr int64_t kPageSize = int64_t{1} << kPageBits;
+    struct Page
+    {
+        int64_t pubCounter[kPageSize];
+        signed char pubGen[kPageSize];
+        signed char pubWriter[kPageSize];
+        signed char wrGen[kPageSize];
+        u32 stamp = 0;
+    };
+    std::vector<std::unique_ptr<Page>> pages;
+    u32 stamp = 1;
+
+    PosShadow() : pages(static_cast<std::size_t>(kTagPosLimit >> kPageBits)) {}
+    void reset() noexcept { ++stamp; }
+    Page& page(int64_t p)
+    {
+        std::unique_ptr<Page>& pg = pages[static_cast<std::size_t>(p >> kPageBits)];
+        if (!pg)
+        {
+            pg = std::make_unique<Page>();
+        }
+        if (pg->stamp != stamp)
+        {
+            std::fill(std::begin(pg->pubCounter), std::end(pg->pubCounter), kNever);
+            std::fill(std::begin(pg->pubGen), std::end(pg->pubGen), static_cast<signed char>(-1));
+            std::fill(std::begin(pg->pubWriter), std::end(pg->pubWriter), static_cast<signed char>(-1));
+            std::fill(std::begin(pg->wrGen), std::end(pg->wrGen), static_cast<signed char>(-1));
+            pg->stamp = stamp;
+        }
+        return *pg;
+    }
+    const Page* peek(int64_t p) const noexcept
+    {
+        const std::unique_ptr<Page>& pg = pages[static_cast<std::size_t>(p >> kPageBits)];
+        return (pg && pg->stamp == stamp) ? pg.get() : nullptr;
+    }
+    static std::size_t at(int64_t p) noexcept { return static_cast<std::size_t>(p & (kPageSize - 1)); }
+};
+
 struct Ring
 {
     scvb::AudioRingHeader header{};
@@ -254,6 +307,7 @@ struct Ring
     // AudioRing::write 的写头也已发布)发生时,写方所在的走带计数。写了还没发布的数据读方按协议
     // 看不见,不该算「可读」;所以影子在发布那一步才更新,数据本身在写那一步就落进环里。
     std::vector<int64_t> writtenAt;
+    PosShadow pos; // [A-16] 按位置的影子(见 PosShadow)
 
     Ring()
     {
@@ -290,6 +344,7 @@ struct WOp
     u32 channels = 0; // kWrite:写方绑定快照的声道数;kGeometry:新声道数
     u32 writer = 0; // kWrite / kAttach:写方实例号
     int64_t counter = 0; // kWrite:首帧所在的走带计数(oracle 影子用)
+    u32 gen = 0; // [A-16] kWrite:执行时写方的代号(apply 时填,mod 4 进 tag)
 };
 
 class WriterModel
@@ -401,16 +456,20 @@ public:
             // 逐帧循环用裸指针:Debug 构建里 vector::operator[] 带越界检查,这里是全文件最热的几处之一。
             float* data = ring_.data.data();
             const u32 mask = kRingFrames - 1;
+            const u32 gen = static_cast<u32>(bumps_) & 3u;
             for (int i = 0; i < o.n; ++i)
             {
                 const int64_t p = o.pos + i;
                 const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(p)) & mask);
                 for (u32 c = 0; c < o.channels; ++c)
                 {
-                    data[slot * o.channels + c] = encodeTag(Tag{p, c, o.channels, o.writer});
+                    data[slot * o.channels + c] = encodeTag(Tag{p, c, o.channels, o.writer, gen});
                 }
+                ring_.pos.page(p).wrGen[PosShadow::at(p)] = static_cast<signed char>(gen);
             }
-            unpublished_.push_back(o);
+            WOp written = o;
+            written.gen = gen;
+            unpublished_.push_back(written);
             if (genOpen_)
             {
                 genStart_ = o.pos;
@@ -432,6 +491,11 @@ public:
                     {
                         writtenAt[slot * wr.channels + c] = wr.counter + i;
                     }
+                    PosShadow::Page& pg = ring_.pos.page(wr.pos + i);
+                    const std::size_t k = PosShadow::at(wr.pos + i);
+                    pg.pubCounter[k] = wr.counter + i;
+                    pg.pubGen[k] = static_cast<signed char>(wr.gen);
+                    pg.pubWriter[k] = static_cast<signed char>(wr.writer);
                 }
             }
             unpublished_.clear();
@@ -870,6 +934,9 @@ struct RunCfg
     // 按构造,旧实现(A-5 之前)在这一格上出错。A-3 时 [!shouldfail] 用例只收这些格(A-5 起转为普通用例),
     // 其余格进普通用例 —— 否则族里现在安全的格以后退化了,会被同一条 shouldfail 吞掉。
     bool knownBad = false;
+    // [A-16] 宿主原地重算:读方走带计数到这些值(块边界)时,写方超过读方游标的部分作废,从读方游标起重新渲染
+    // (SchedRig 的冲刷同款;写方报的位置接不上 ⇒ 换代)。按升序。
+    std::vector<int64_t> flushAt;
 };
 
 struct LapStat
@@ -877,6 +944,7 @@ struct LapStat
     int64_t startPos = 0;
     int64_t availFrames = 0;
     int64_t lostFrames = 0;
+    int64_t lostInfFrames = 0; // [A-16] 被测读方:无限环可读(这一遍已写好并发布)却没交出的帧
 };
 
 struct ReaderStat
@@ -889,13 +957,26 @@ struct ReaderStat
     int64_t availFrames = 0; // oracle 判整块可读(本走带时刻写下的新鲜数据)的帧数
     int64_t lostFrames = 0; // 其中读方返回 false 的帧数
     std::string firstWrong;
+    // [A-16] 读方预拷贝的判据(I1'):
+    int64_t availInfFrames = 0; // 无限环可读:每一帧这一遍都已写好并发布(不管环槽还在不在)
+    int64_t lostInfFrames = 0; // 其中读方没交出的
+    int64_t privFrames = 0; // 交出的帧与读的那一刻环槽里的内容不同 —— 只能来自私有副本
+    int64_t rescuedFrames = 0; // 其中环槽里已不是本位置的数据(环路径读不到、副本救回)
+    int64_t staleFrames = 0; // I1'(a) 违例:交出的代号既不是该位置最近一次已发布、也不是最近一次已写入的那一代
+    int64_t privGhostFrames = 0; // I1'(b) 违例:从私有副本交出的是上一遍的数据(那次写入的走带计数 < 本帧的)
+    int64_t ringGhostFrames = 0; // 从环交出、那次写入在本帧的走带时刻之前的(含读写目标不一致的那一点滞后;只打印)
+    // 从环交出、那次写入在读方这一遍开始(读方上一次自己跳变)之前的 —— 上一遍的音频(头注「既有口径」:读方自己回绕之后
+    // 环路径的上一代窗不撤,写方领先、又在新一圈停调时可能出现)。只打印,数字交统筹 / 用户裁定。
+    int64_t ringPrevPassFrames = 0;
+    std::string firstBadA16;
 };
 
 struct RunResult
 {
     std::string name;
     bool knownBad = false; // 抄自 RunCfg::knownBad
-    ReaderStat cur; // 被测读方 = scvb::output::ShmRingMixSource(A-5 之后)
+    ReaderStat cur; // 被测读方 = scvb::output::ShmRingMixSource(产品默认:开预拷贝)
+    ReaderStat noPc; // [A-16] 同款读方、关预拷贝(构造参数 0)
     ReaderStat legacy; // LegacyReader
     std::vector<LapStat> laps; // 按读方自身跳变(podEpoch)切圈,统计被测读方
     int64_t readerJumps = 0; // podEpoch 的跳变次数(不含起播那一次)
@@ -916,6 +997,9 @@ struct RunResult
     std::string firstLegacyOnly; // 第一个这样的块(诊断用:走带计数、位置、读方代号、写头、epoch)
     int64_t curOnlyOk = 0;
     int64_t pinMismatches = 0; // 两读方返回值 / 输出 / 计数任一不同的块数
+    int64_t noPcOnlyOk = 0; // [A-16] 关预拷贝的读方成功、开预拷贝的失败的块数(L4:要求 0)
+    std::string firstNoPcOnly;
+    u32 latchOffs = 0; // [A-16] 被测读方的闩死次数(ShmRingMixSource::privateLatchOffCount)
 };
 
 // oracle 可用性:读方(以它的绑定快照布局 nch)按地址能读到的每个 float,都是写方在本走带时刻
@@ -947,6 +1031,110 @@ bool oracleAvailable(const Ring& r, int64_t cR, int64_t t0, int n, u32 nch, u32 
         }
     }
     return true;
+}
+
+// [A-16] 无限环可用性:每个位置这一遍都已由当前写方实例写好并发布(走带计数 >= 本帧的),不管环槽现在是什么。
+bool oracleAvailableInf(const Ring& r, int64_t cR, int64_t t0, int n, u32 writer)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        const PosShadow::Page* pg = r.pos.peek(t0 + i);
+        const std::size_t k = PosShadow::at(t0 + i);
+        if (pg == nullptr || pg->pubCounter[k] < cR + i || pg->pubWriter[k] != static_cast<signed char>(writer))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// [A-16] I1' 记账(只对返回 true 的块逐帧看声道 0;返回 false 的块只记无限环丢失)。fromRing = 交出的与读的那一刻环槽里的
+// 内容逐位相同(两个声道都同);不同就只能来自私有副本。
+void accountA16(ReaderStat& s, LapStat* lap, bool ok, bool availInf, const float* dst, const Ring& r, int64_t cR,
+                int64_t t0, int n, u32 nch, int64_t passStart = kNever)
+{
+    if (availInf)
+    {
+        s.availInfFrames += n;
+        if (!ok)
+        {
+            s.lostInfFrames += n;
+            if (lap != nullptr)
+            {
+                lap->lostInfFrames += n;
+            }
+        }
+    }
+    if (!ok || (nch != 1u && nch != 2u))
+    {
+        return;
+    }
+    const float* data = r.data.data();
+    const u32 mask = kRingFrames - 1;
+    for (int i = 0; i < n; ++i)
+    {
+        const int64_t p = t0 + i;
+        const std::size_t slot = static_cast<std::size_t>(static_cast<u32>(static_cast<u64>(p)) & mask);
+        bool fromRing = true;
+        for (u32 c = 0; c < nch; ++c)
+        {
+            u32 a = 0;
+            u32 b = 0;
+            std::memcpy(&a, &dst[static_cast<std::size_t>(i) * nch + c], sizeof a);
+            std::memcpy(&b, &data[slot * nch + c], sizeof b);
+            fromRing = fromRing && a == b;
+        }
+        Tag got;
+        if (!decodeTag(dst[static_cast<std::size_t>(i) * nch], got) || got.pos != p || got.layout != nch)
+        {
+            continue; // 错帧由 account() 记(I1)
+        }
+        const PosShadow::Page* pg = r.pos.peek(p);
+        const std::size_t k = PosShadow::at(p);
+        const int pubGen = pg != nullptr ? pg->pubGen[k] : -1;
+        const int wrGen = pg != nullptr ? pg->wrGen[k] : -1;
+        const bool fresh =
+            pg != nullptr && pg->pubGen[k] == static_cast<signed char>(got.gen) && pg->pubCounter[k] >= cR + i;
+        const bool stale = static_cast<int>(got.gen) != pubGen && static_cast<int>(got.gen) != wrGen;
+        Tag inRing;
+        const bool ringHoldsP = decodeTag(data[slot * nch], inRing) && inRing.pos == p && inRing.layout == nch;
+        const char* why = nullptr;
+        if (stale)
+        {
+            ++s.staleFrames;
+            why = "stale(a)";
+        }
+        if (!fromRing)
+        {
+            ++s.privFrames;
+            if (!ringHoldsP)
+            {
+                ++s.rescuedFrames;
+            }
+            if (!fresh && !stale)
+            {
+                ++s.privGhostFrames;
+                why = "ghost(b)";
+            }
+        }
+        else if (!fresh && !stale)
+        {
+            ++s.ringGhostFrames;
+            if (pg != nullptr && pg->pubCounter[k] < passStart)
+            {
+                ++s.ringPrevPassFrames;
+            }
+        }
+        if (why != nullptr && s.firstBadA16.empty())
+        {
+            std::ostringstream os;
+            os << why << " cR=" << cR << " t0=" << t0 << " frame=" << i << " got{"
+               << describe(dst[static_cast<std::size_t>(i) * nch]) << "} pubGen=" << pubGen << " wrGen=" << wrGen
+               << " pubCounter=" << (pg != nullptr ? pg->pubCounter[k] : kNever)
+               << (fromRing ? " (ring)" : " (private)");
+            s.firstBadA16 = os.str();
+        }
+    }
 }
 
 // oracle 危险状态:本块里有没有环槽放着「同一环槽、另一圈」的数据(只看声道 0)。
@@ -1067,6 +1255,7 @@ void resetRing(Ring& r)
 {
     std::fill(r.data.begin(), r.data.end(), 0.0f);
     std::fill(r.writtenAt.begin(), r.writtenAt.end(), kNever);
+    r.pos.reset();
     r.header.sample_rate = 0;
     r.header.ring_frames = kRingFrames;
     r.header.channels = 0;
@@ -1101,15 +1290,20 @@ RunResult runOne(const RunCfg& cfg)
 
     // Output 侧 attach(OutputSession::attachAudioRings → ShmRingMixSource::bind)。
     scvb::output::ShmRingMixSource cur;
+    scvb::output::ShmRingMixSource noPc(0); // [A-16] 关预拷贝的同款读方
     LegacyReader leg;
     cur.bind(&ring.header, ring.data.data());
+    noPc.bind(&ring.header, ring.data.data());
     leg.bind(&ring.header, ring.data.data());
     REQUIRE(cur.bound());
 
     std::mt19937 rng(cfg.seed);
     const std::size_t bufLen = static_cast<std::size_t>(cfg.readerBlock) * 2u;
     std::vector<float> dstCur(bufLen);
+    std::vector<float> dstNoPc(bufLen);
     std::vector<float> dstLeg(bufLen);
+    std::size_t flushIdx = 0;
+    int64_t passStartC = 0; // [A-16] 读方这一遍开始时(上一次自己跳变)的走带计数
 
     int64_t cW = 0;
     int64_t cR = 0;
@@ -1197,6 +1391,11 @@ RunResult runOne(const RunCfg& cfg)
         const int len = static_cast<int>(std::min<int64_t>(cfg.readerBlock, edge - cR));
         const int64_t jitter =
             cfg.leadJitter > 0 ? static_cast<int64_t>(rng() % static_cast<u32>(cfg.leadJitter + 1)) : 0;
+        while (flushIdx < cfg.flushAt.size() && cfg.flushAt[flushIdx] <= cR)
+        {
+            cW = std::min(cW, cR); // [A-16] 宿主原地重算:写方超过读方游标的部分作废,从游标起重新渲染
+            ++flushIdx;
+        }
         const int64_t need = cR + cfg.lead + jitter + len;
         bool partial = false;
         while (cW < need)
@@ -1230,11 +1429,13 @@ RunResult runOne(const RunCfg& cfg)
             if (cfg.refreshPeriod == 0)
             {
                 refreshGeometry(cur);
+                refreshGeometry(noPc);
                 refreshGeometry(leg);
             }
             else if (cR >= nextRefresh)
             {
                 refreshGeometry(cur);
+                refreshGeometry(noPc);
                 refreshGeometry(leg);
                 while (nextRefresh <= cR)
                 {
@@ -1253,6 +1454,7 @@ RunResult runOne(const RunCfg& cfg)
                 ++podEpoch;
                 res.laps.push_back(LapStat{t0, 0, 0});
                 bumpsAtPodJump = w.bumps();
+                passStartC = cR;
             }
             lastT0Out = t0;
             expectedNextOut = t0 + len;
@@ -1290,18 +1492,38 @@ RunResult runOne(const RunCfg& cfg)
             }
 
             std::memset(dstCur.data(), 0, dstCur.size() * sizeof(float));
+            std::memset(dstNoPc.data(), 0, dstNoPc.size() * sizeof(float));
             std::memset(dstLeg.data(), 0, dstLeg.size() * sizeof(float));
             const u32 gapC0 = cur.gapCount();
             const u32 stallC0 = cur.stallFailCount();
             const u32 gapL0 = leg.gapCount();
             const u32 stallL0 = leg.stallFailCount();
             const bool okC = readUnderTest(cur, t0, dstCur.data(), len, podEpoch);
+            const bool okN = readUnderTest(noPc, t0, dstNoPc.data(), len, podEpoch);
             const bool okL = leg.read(t0, dstLeg.data(), len);
 
             LapStat* lap = res.laps.empty() ? nullptr : &res.laps.back();
             const int64_t wrongBefore = res.cur.wrongFrames;
             account(res.cur, lap, okC, avail, dstCur.data(), t0, len, nch, inst);
             const int badC = static_cast<int>(res.cur.wrongFrames - wrongBefore);
+            // [A-16] 关预拷贝的同款读方(I1)与两者的 I1' 记账;开预拷贝的成功集合 ⊇ 关预拷贝的(L4)。
+            const u32 nchN = noPc.channels();
+            const bool availN = nchN == nch ? avail : oracleAvailable(ring, cR, t0, len, nchN, inst);
+            account(res.noPc, nullptr, okN, availN, dstNoPc.data(), t0, len, nchN, inst);
+            const bool availInf = oracleAvailableInf(ring, cR, t0, len, inst);
+            accountA16(res.cur, lap, okC, availInf, dstCur.data(), ring, cR, t0, len, nch, passStartC);
+            accountA16(res.noPc, nullptr, okN, availInf, dstNoPc.data(), ring, cR, t0, len, nchN, passStartC);
+            if (okN && !okC)
+            {
+                ++res.noPcOnlyOk;
+                if (res.firstNoPcOnly.empty())
+                {
+                    std::ostringstream os;
+                    os << "cR=" << cR << " t0=" << t0 << " n=" << len << " pod=" << podEpoch << " w=" << wNow
+                       << " epoch=" << ring.header.epoch.load();
+                    res.firstNoPcOnly = os.str();
+                }
+            }
             const bool sameBytes = nchL == nch && std::memcmp(dstCur.data(), dstLeg.data(),
                                                               static_cast<std::size_t>(len) * nch * sizeof(float)) == 0;
             account(res.legacy, nullptr, okL, availL, dstLeg.data(), t0, len, nchL, inst,
@@ -1333,6 +1555,7 @@ RunResult runOne(const RunCfg& cfg)
     applyAll();
     res.readerJumps = podEpoch > 0 ? static_cast<int64_t>(podEpoch) - 1 : 0;
     res.writerBumps = w.bumps();
+    res.latchOffs = cur.privateLatchOffCount();
     return res;
 }
 
@@ -1401,6 +1624,38 @@ std::string summary(const RunResult& r)
     if (!r.cur.firstWrong.empty())
     {
         os << " firstWrong{" << r.cur.firstWrong << "}";
+    }
+    return os.str();
+}
+
+int64_t maxLapLostInf(const RunResult& r)
+{
+    int64_t m = 0;
+    for (const auto& lap : r.laps)
+    {
+        m = std::max(m, lap.lostInfFrames);
+    }
+    return m;
+}
+
+// [A-16] 预拷贝相关的数字(单独一行,summary() 那一行的格式与 A-16 之前逐字相同)。
+std::string summaryA16(const RunResult& r)
+{
+    std::ostringstream os;
+    os << "a16: privFrames=" << r.cur.privFrames << " rescued=" << r.cur.rescuedFrames
+       << " lostInf=" << r.cur.lostInfFrames << "/" << r.cur.availInfFrames << " maxLapLostInf=" << maxLapLostInf(r)
+       << " stale=" << r.cur.staleFrames << " privGhost=" << r.cur.privGhostFrames
+       << " ringGhost=" << r.cur.ringGhostFrames << " ringPrevPass=" << r.cur.ringPrevPassFrames
+       << " latchOff=" << r.latchOffs << " | no-pre-copy: ok=" << r.noPc.ok << " wrongFrames=" << r.noPc.wrongFrames
+       << " lostInf=" << r.noPc.lostInfFrames << " ringGhost=" << r.noPc.ringGhostFrames
+       << " ringPrevPass=" << r.noPc.ringPrevPassFrames << " noPcOnlyOk=" << r.noPcOnlyOk;
+    if (!r.firstNoPcOnly.empty())
+    {
+        os << " firstNoPcOnly{" << r.firstNoPcOnly << "}";
+    }
+    if (!r.cur.firstBadA16.empty())
+    {
+        os << " firstBad{" << r.cur.firstBadA16 << "}";
     }
     return os.str();
 }
@@ -1861,6 +2116,141 @@ std::vector<RunResult> runInterleaveFamily(bool seekBack)
     return out;
 }
 
+// --- [A-16] 圈长落在环长整数倍前后一个提前量一带(③' / 物理段 / ②;读方预拷贝)-------------------------------------
+// 写方领先 lead 的循环,圈长取 R − lead/2、R、R + 1、R + 512、R + lead/2、R + lead + 512、2R + lead/2。
+// 环路径在这一带每圈丢约一个提前量(test_mix_source [a16]);开预拷贝的读方每圈至多丢一个写方块(无限环口径)。
+RunCfg makeBandCfg(int64_t lead, int64_t len, const char* tag)
+{
+    RunCfg cfg;
+    const int64_t b = 3 * kSec;
+    cfg.writer.loop(0, b, b, b + len, 3 * len + lead + 4096);
+    cfg.reader = cfg.writer;
+    cfg.lead = lead;
+    cfg.readerBlock = 1024;
+    cfg.readerEnd = 2 * len; // 两圈:第 0 圈与第 1 圈的尾段各经历一次写方回绕
+    std::ostringstream os;
+    os << tag << " lead=" << lead << " loop=" << len;
+    cfg.name = os.str();
+    return cfg;
+}
+
+constexpr int64_t kBandLeads[] = {4096, 48000};
+
+std::vector<RunResult> runLeadLoopBandFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        for (const int64_t len : {kRing - lead / 2, kRing, kRing + 1, kRing + 512, kRing + lead / 2, kRing + lead + 512,
+                                  2 * kRing + lead / 2})
+        {
+            out.push_back(runOne(makeBandCfg(lead, len, "lead-loop-band")));
+        }
+    }
+    return out;
+}
+
+// 同一带 × 读方落在写方一块中间(随机前缀 / 恰好停在换代之后:R1 窗口,回绕撞上它时副本闩死,残余 RP7)。只判安全。
+std::vector<RunResult> runBandInterleaveFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        for (const int64_t len : {kRing + lead / 2})
+        {
+            for (const Micro micro : {Micro::kRandomPrefix, Micro::kCutAfterBump})
+            {
+                RunCfg cfg = makeBandCfg(lead, len, "band-interleave");
+                cfg.readerBlock = 256; // 与 interleave 族同:读方块短于写方块,才会落在写方一块的中间
+                // 抖动不超过一个写方块:否则写方一次补好几块,「恰好停在换代之后」那一刀很少落在回绕那一块上。
+                cfg.leadJitter = std::min<int64_t>(lead / 4, 1024);
+                cfg.micro = micro;
+                cfg.chunk = 256;
+                cfg.seed = micro == Micro::kRandomPrefix ? 1u : 4u;
+                cfg.name += micro == Micro::kRandomPrefix ? " random-prefix" : " cut-after-bump";
+                out.push_back(runOne(cfg));
+            }
+        }
+    }
+    return out;
+}
+
+// 写方领先时往回定位约 R + lead/2(定位前尾段的环槽被新位置的同槽数据换掉)。
+std::vector<RunResult> runBackSeekBandFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        out.push_back(runOne(makeSeekCfg(lead, kRing + lead / 2, true, "back-seek-band")));
+    }
+    return out;
+}
+
+// 同一带 + 宿主原地重算(读方游标处冲刷写方、从游标重新渲染):重算之后不交重算之前的版本(I1'(a))。两种时刻:第 0 圈中间
+// (写方还没回绕)/ 第 0 圈尾段(写方已回绕、读方还在播上一圈尾段)。
+std::vector<RunResult> runBandRerenderFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        const int64_t len = kRing + lead / 2;
+        for (const int64_t at : {len / 2, len - lead / 2})
+        {
+            RunCfg cfg = makeBandCfg(lead, len, "band-rerender");
+            cfg.flushAt = {at};
+            cfg.name += at == len / 2 ? " at=mid-lap" : " at=old-lap-tail";
+            out.push_back(runOne(cfg));
+        }
+    }
+    return out;
+}
+
+// 同一带 + 上一圈尾段中途一块 Output 拿到离谱的 t0(H1' 那一类),随后回到真位置:读方离开过那一遍,副本作废(I1'(b))。
+std::vector<RunResult> runBandGarbageFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        for (const int64_t len : {kRing, kRing + lead / 2})
+        {
+            RunCfg cfg = makeBandCfg(lead, len, "band-garbage-t0");
+            const int64_t cg = len - lead / 2; // 第 0 圈尾段中间(写方已回绕)
+            bool playing = true;
+            const int64_t back = cfg.reader.posAt(cg + cfg.readerBlock, playing);
+            cfg.reader.segs.push_back(Seg{cg, 3 * kRing + 12345, true});
+            cfg.reader.segs.push_back(Seg{cg + cfg.readerBlock, back, true});
+            std::sort(cfg.reader.segs.begin(), cfg.reader.segs.end(),
+                      [](const Seg& a, const Seg& b2) { return a.c < b2.c; });
+            out.push_back(runOne(cfg));
+        }
+    }
+    return out;
+}
+
+// 头注「既有口径」那一形(A-16 不修,只量):写方领先的短循环(圈长 2 s < 环长),写方回绕进新一圈之后不久停调
+// (无 region / 宿主挂起 Input,停 1 s),读方照常往前、越过冻住的写头。环路径的上一代窗不因读方自己回绕而撤,
+// 读方可能把上一圈的音频交出来(ringPrevPass);私有副本在读方回绕时已作废,不交(privGhost 必须 0)。
+std::vector<RunResult> runLoopWriterStallFamily()
+{
+    std::vector<RunResult> out;
+    for (const int64_t lead : kBandLeads)
+    {
+        RunCfg cfg;
+        const int64_t b = 3 * kSec;
+        const int64_t len = 2 * kSec;
+        cfg.writer.loop(0, b, b, b + len, 4 * len + lead + 4096);
+        cfg.reader = cfg.writer;
+        cfg.writer.gap(len + 4096, len + 4096 + kSec); // 写方回绕进第 1 圈 4096 帧之后停 1 s
+        cfg.lead = lead;
+        cfg.readerEnd = 3 * len;
+        std::ostringstream os;
+        os << "loop-writer-stall lead=" << lead << " loop=" << len << " stall=" << kSec;
+        cfg.name = os.str();
+        out.push_back(runOne(cfg));
+    }
+    return out;
+}
+
 // 每族只跑一次,同族的几个用例共用结果。
 const std::vector<RunResult>& syncFamily()
 {
@@ -1932,6 +2322,36 @@ const std::vector<RunResult>& interleaveSeekFamily()
     static const std::vector<RunResult> r = runInterleaveFamily(true);
     return r;
 }
+const std::vector<RunResult>& leadLoopBandFamily()
+{
+    static const std::vector<RunResult> r = runLeadLoopBandFamily();
+    return r;
+}
+const std::vector<RunResult>& bandInterleaveFamily()
+{
+    static const std::vector<RunResult> r = runBandInterleaveFamily();
+    return r;
+}
+const std::vector<RunResult>& backSeekBandFamily()
+{
+    static const std::vector<RunResult> r = runBackSeekBandFamily();
+    return r;
+}
+const std::vector<RunResult>& bandRerenderFamily()
+{
+    static const std::vector<RunResult> r = runBandRerenderFamily();
+    return r;
+}
+const std::vector<RunResult>& bandGarbageFamily()
+{
+    static const std::vector<RunResult> r = runBandGarbageFamily();
+    return r;
+}
+const std::vector<RunResult>& loopWriterStallFamily()
+{
+    static const std::vector<RunResult> r = runLoopWriterStallFamily();
+    return r;
+}
 
 struct NamedFamily
 {
@@ -1954,6 +2374,12 @@ const NamedFamily kAllFamilies[] = {
     {"geometry-25hz", &geometryFamily},
     {"interleave-loop", &interleaveLoopFamily},
     {"interleave-seek", &interleaveSeekFamily},
+    {"lead-loop-band", &leadLoopBandFamily},
+    {"band-interleave", &bandInterleaveFamily},
+    {"back-seek-band", &backSeekBandFamily},
+    {"band-rerender", &bandRerenderFamily},
+    {"band-garbage-t0", &bandGarbageFamily},
+    {"loop-writer-stall", &loopWriterStallFamily},
 };
 
 } // namespace prov
@@ -1975,9 +2401,32 @@ TEST_CASE("PROVENANCE report: per-family numbers for every schedule", "[.][prove
            << " wrongFrames=" << t.wrongFrames << " availability=" << pct(t.availFrames - t.lostFrames, t.availFrames)
            << " (lost " << t.lostFrames << " of " << t.availFrames << ") legacyWrongFrames=" << t.legacyWrongFrames
            << " legacyOnlyOk=" << t.legacyOnlyOk << " pinMismatches=" << t.pinMismatches << "\n";
+        int64_t rescued = 0;
+        int64_t lostInf = 0;
+        int64_t ringGhost = 0;
+        int64_t ringGhostNoPc = 0;
+        int64_t prevPass = 0;
+        int64_t prevPassNoPc = 0;
+        int64_t stale = 0;
+        int64_t latchOff = 0;
+        for (const auto& r : fam)
+        {
+            rescued += r.cur.rescuedFrames;
+            lostInf += r.cur.lostInfFrames;
+            ringGhost += r.cur.ringGhostFrames;
+            ringGhostNoPc += r.noPc.ringGhostFrames;
+            prevPass += r.cur.ringPrevPassFrames;
+            prevPassNoPc += r.noPc.ringPrevPassFrames;
+            stale += r.cur.staleFrames;
+            latchOff += r.latchOffs;
+        }
+        os << "   a16 totals: rescued=" << rescued << " lostInf=" << lostInf << " ringGhost=" << ringGhost
+           << " (no-pre-copy " << ringGhostNoPc << ") ringPrevPass=" << prevPass << " (no-pre-copy " << prevPassNoPc
+           << ") stale=" << stale << " latchOff=" << latchOff << "\n";
         for (const auto& r : fam)
         {
             os << "   " << summary(r) << "\n";
+            os << "      " << summaryA16(r) << "\n";
         }
         WARN(os.str());
     }
@@ -2002,17 +2451,20 @@ TEST_CASE("PROVENANCE oracle: the tag codec round-trips every field and a never-
             {
                 for (u32 wr = 0; wr < 8u; ++wr)
                 {
-                    const Tag want{p, ch, layout, wr};
-                    const float f = encodeTag(want);
-                    Tag got;
-                    allOk = allOk && decodeTag(f, got) && got == want && frameMatches(f, want);
-                    allNormal = allNormal && std::fpclassify(f) == FP_NORMAL && f > 0.0f;
-                    ++roundTrips;
+                    for (u32 gen = 0; gen < 4u; ++gen)
+                    {
+                        const Tag want{p, ch, layout, wr, gen};
+                        const float f = encodeTag(want);
+                        Tag got;
+                        allOk = allOk && decodeTag(f, got) && got == want && frameMatches(f, want);
+                        allNormal = allNormal && std::fpclassify(f) == FP_NORMAL && f > 0.0f;
+                        ++roundTrips;
+                    }
                 }
             }
         }
     }
-    CHECK(roundTrips == 7 * 2 * 2 * 8);
+    CHECK(roundTrips == 7 * 2 * 2 * 8 * 4);
     CHECK(allOk);
     CHECK(allNormal); // 正规正数:按 float 赋值拷贝逐位不变
 
@@ -2029,6 +2481,7 @@ TEST_CASE("PROVENANCE oracle: the tag codec round-trips every field and a never-
     CHECK_FALSE(frameMatches(f, Tag{4242, 0, 2, 3}));
     CHECK_FALSE(frameMatches(f, Tag{4242, 1, 1, 3}));
     CHECK(frameMatches(f, Tag{4242, 1, 2, 4}));
+    CHECK(frameMatches(f, Tag{4242, 1, 2, 3, 2})); // [A-16] 代号也不进 I1 的比较(它只给 I1'(a) 用)
     CHECK_FALSE(frameMatches(0.0f, base));
 }
 
@@ -2057,6 +2510,7 @@ TEST_CASE("PROVENANCE writer model: its ops leave the same ring bytes as the rea
         int64_t pendingStart = kNever;
         u32 pendingCh = 0;
         int ops = 0;
+        u32 bumpsSeen = 0; // [A-16] 模型往 tag 里记写方代号(换过几代 mod 4),这边照样记
         auto drain = [&] {
             while (!q.empty())
             {
@@ -2068,6 +2522,7 @@ TEST_CASE("PROVENANCE writer model: its ops leave the same ring bytes as the rea
                 {
                 case OpKind::kBump:
                     scvb::AudioRing::bumpEpoch(realRing.acquire());
+                    ++bumpsSeen;
                     break;
                 case OpKind::kWrite:
                     if (pendingStart == kNever)
@@ -2080,7 +2535,7 @@ TEST_CASE("PROVENANCE writer model: its ops leave the same ring bytes as the rea
                     {
                         for (u32 c = 0; c < o.channels; ++c)
                         {
-                            pending.push_back(encodeTag(Tag{o.pos + i, c, o.channels, o.writer}));
+                            pending.push_back(encodeTag(Tag{o.pos + i, c, o.channels, o.writer, bumpsSeen & 3u}));
                         }
                     }
                     break;
@@ -2312,6 +2767,37 @@ TEST_CASE("PROVENANCE oracle: the checks flag a planted stale frame, a wrong lay
     CHECK(countWrongFrames(dst.data(), 5000, 256, 2, 0, &first) == 1);
     CHECK(first.find("frame=10 ") != std::string::npos);
     CHECK_FALSE(oracleAvailable(r, 777, 5000, 256, 2, 0));
+
+    // [A-16] I1' 的两条判据自己要有牙(V5)。块 [5256, 5512) 是本走带时刻(计数 1033)、第 1 代写下的。
+    REQUIRE(readUnderTest(src, 5256, dst.data(), 256, 1));
+    ReaderStat a;
+    accountA16(a, nullptr, true, true, dst.data(), r, 1033, 5256, 256, 2);
+    CHECK(a.staleFrames == 0);
+    CHECK(a.privFrames == 0);
+    CHECK(a.privGhostFrames == 0);
+    CHECK(a.ringGhostFrames == 0);
+    CHECK(oracleAvailableInf(r, 1033, 5256, 256, 0));
+    CHECK_FALSE(oracleAvailableInf(r, 1034, 5256, 256, 0)); // 要更晚的走带时刻写下的才算这一遍的
+    // (a) 交出的一帧是这个位置更早一代的写入(代号对不上影子):记 stale。
+    std::vector<float> planted = dst;
+    planted[20 * 2] = encodeTag(Tag{5256 + 20, 0, 2, 0, 3});
+    ReaderStat b;
+    accountA16(b, nullptr, true, true, planted.data(), r, 1033, 5256, 256, 2);
+    CHECK(b.staleFrames == 1);
+    CHECK(b.privFrames == 1); // 与环槽不同 ⇒ 只能来自私有副本
+    // (b) 那一次写入在本帧的走带时刻之前(上一遍的数据):从环交出只记 ringGhost(既有口径,只打印)……
+    ReaderStat d;
+    accountA16(d, nullptr, true, true, dst.data(), r, 1033 + 4096, 5256, 256, 2);
+    CHECK(d.privGhostFrames == 0);
+    CHECK(d.ringGhostFrames == 256);
+    // ……与环槽不同(只能来自私有副本)就记 privGhost(I1'(b) 违例)。
+    const std::size_t slot30 = static_cast<std::size_t>((5256 + 30) & (kRing - 1));
+    r.data[slot30 * 2 + 1] = encodeTag(Tag{5256 + 30 + kRing, 1, 2, 0, 2});
+    ReaderStat c;
+    accountA16(c, nullptr, true, true, dst.data(), r, 1033 + 4096, 5256, 256, 2);
+    CHECK(c.privFrames == 1);
+    CHECK(c.privGhostFrames == 1);
+    CHECK(c.ringGhostFrames == 255);
 }
 
 // ===========================================================================
@@ -2744,4 +3230,163 @@ TEST_CASE("PROVENANCE reads that land inside a writer block, back seek to unplay
     INFO("partialBlockReads=" << partial);
     CHECK(partial > 1000);
     CHECK(cutAfterBump == 2);
+}
+
+// ===========================================================================
+// [A-16] 读方预拷贝的判据(I1' 与 L4)
+// ===========================================================================
+// 全部族:开预拷贝的被测读方不交陈旧的写入(I1'(a))、不从私有副本交上一遍的数据(I1'(b)),而且成功集合包含关预拷贝的
+// 同款读方(L4)。关预拷贝的读方本身照旧 I1 安全(A-5 起各族的安全判据,这里给它也判一遍)。
+TEST_CASE("PROVENANCE A-16 every family: the pre-copy reader serves no stale write and no previous-pass frame from its "
+          "private copy, and its successes include the no-pre-copy reader's",
+          "[mix][provenance]")
+{
+    int64_t privFrames = 0;
+    int64_t latchOffs = 0;
+    for (const NamedFamily& f : kAllFamilies)
+    {
+        for (const RunResult& r : f.get())
+        {
+            INFO(f.name << ": " << summary(r));
+            INFO(summaryA16(r));
+            CHECK(r.cur.staleFrames == 0);
+            CHECK(r.cur.privGhostFrames == 0);
+            CHECK(r.noPcOnlyOk == 0);
+            CHECK(r.noPc.wrongFrames == 0);
+            CHECK(r.noPc.privFrames == 0);
+            privFrames += r.cur.privFrames;
+            latchOffs += r.latchOffs;
+        }
+    }
+    // 前提:私有副本确实交过帧,闩死判定也确实触发过(否则上面几条是对空气的判断)。
+    INFO("privFrames=" << privFrames << " latchOffs=" << latchOffs);
+    CHECK(privFrames > 100000);
+    CHECK(latchOffs > 10);
+}
+
+// 圈长落在环长整数倍前后一个提前量一带:开预拷贝的读方不错音、每圈(无限环口径)至多丢一个写方块;关预拷贝的读方在带内
+// 每圈丢得更多(这一族有牙),物理段那几格里副本确实救回了环里已被换掉的帧。
+TEST_CASE("PROVENANCE A-16 loops near a whole number of ring lengths: no wrong frames and every lap loses at most one "
+          "writer block that an infinite ring could serve",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = leadLoopBandFamily();
+    REQUIRE(fam.size() == 14u);
+    int64_t inBandNoPcWorse = 0;
+    int64_t rescued = 0;
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        REQUIRE(r.laps.size() == 2u);
+        REQUIRE(r.readerJumps == 1);
+        REQUIRE(r.leadObservedReads > 0);
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.noPc.wrongFrames == 0);
+        CHECK(maxLapLostInf(r) <= kLapLossAllowance);
+        inBandNoPcWorse += r.noPc.lostInfFrames > r.cur.lostInfFrames + 3 * kLapLossAllowance ? 1 : 0;
+        rescued += r.cur.rescuedFrames;
+    }
+    CHECK(inBandNoPcWorse >= 10); // 关预拷贝的读方在带内每圈丢约一个提前量
+    CHECK(rescued > 0); // 环里已被换掉的帧确实由副本救回
+}
+
+TEST_CASE("PROVENANCE A-16 loops near a whole number of ring lengths with reads landing inside a writer block: "
+          "no wrong frames",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = bandInterleaveFamily();
+    REQUIRE(fam.size() == 4u);
+    int64_t partial = 0;
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.noPc.wrongFrames == 0);
+        partial += r.partialBlockReads;
+        if (r.name.find(" cut-after-bump") != std::string::npos)
+        {
+            CHECK(r.bumpBeforeWriteReads > 0); // 读方确实落进过「换代了还没写」的窗口(R1)
+        }
+    }
+    CHECK(partial > 1000);
+}
+
+TEST_CASE("PROVENANCE A-16 back seeks of about one ring plus half the lead: no wrong frames and the old tail loses at "
+          "most one writer block",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = backSeekBandFamily();
+    REQUIRE(fam.size() == 2u);
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        REQUIRE(r.readerJumps == 1);
+        REQUIRE(r.leadObservedReads > 0);
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.noPc.wrongFrames == 0);
+        CHECK(maxLapLostInf(r) <= kLapLossAllowance);
+        CHECK(r.cur.rescuedFrames > 0); // 定位前尾段的环槽被新位置的同槽数据换掉了,副本救回
+    }
+}
+
+TEST_CASE("PROVENANCE A-16 in-place re-render of a leading lane inside the band: the old render is never served after "
+          "the new one is published",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = bandRerenderFamily();
+    REQUIRE(fam.size() == 4u);
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        REQUIRE(r.writerBumps >= 4); // 新段 + 起播 + 回绕 + 重算
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.cur.staleFrames == 0);
+        if (r.name.find("at=mid-lap") != std::string::npos)
+        {
+            CHECK(r.latchOffs >= 1u); // 重算的新一代发布在读方附近:副本当场闩死
+        }
+        // 尾段那一格:写方重算到圈尾又回绕,读方两次观测之间写方换了两代 —— 副本按「只在正好隔一代时交接」整个作废。
+    }
+}
+
+TEST_CASE("PROVENANCE A-16 one garbage Output position in the middle of the old-lap tail: no wrong frames and no "
+          "previous-pass frame from the private copy",
+          "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = bandGarbageFamily();
+    REQUIRE(fam.size() == 4u);
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        REQUIRE(r.readerJumps == 3); // 回绕 + 垃圾那一块跳出去、跳回来
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.cur.privGhostFrames == 0);
+    }
+}
+
+// 头注「既有口径」那一形:只量环路径交出上一圈音频的帧数(交统筹 / 用户裁定),判的只有私有路径不扩进去、也不错音。
+TEST_CASE(
+    "PROVENANCE A-16 a leading writer stalling in the new lap of a short loop: no wrong frames and no previous-lap "
+    "frame from the private copy (the ring path is only measured)",
+    "[mix][provenance]")
+{
+    const std::vector<RunResult>& fam = loopWriterStallFamily();
+    REQUIRE(fam.size() == 2u);
+    for (const RunResult& r : fam)
+    {
+        INFO(summary(r));
+        INFO(summaryA16(r));
+        REQUIRE(r.readerJumps == 2);
+        CHECK(r.cur.wrongFrames == 0);
+        CHECK(r.noPc.wrongFrames == 0);
+        CHECK(r.cur.privGhostFrames == 0);
+        WARN("existing scope (A-16 does not change it): "
+             << r.name << ": the ring path served " << r.noPc.ringPrevPassFrames
+             << " previous-lap frames without pre-copy, " << r.cur.ringPrevPassFrames << " with it");
+    }
 }
