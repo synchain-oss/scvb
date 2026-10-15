@@ -299,7 +299,9 @@
          [data-gb="master-range"]    data-range="follow|loop|manual" data-loop-missing="0|1"
          [data-gb="master-pancurve"] data-empty="0|1"
          [data-gb="footer"]          data-mode="default|print|printDone|follow"
-         [data-gb="footer-scale"]    data-open="0|1";档位项 data-current/data-over
+         [data-gb="footer-scale-select"] / [data-gb="settings-scale-select"]
+                                     data-open="0|1" data-placement="up|down" data-align="start|end";
+                                     档位项 data-current/data-over([UI-1] web/shared/scale-select.js 写)
        ---- Wave 2 追加的 data 属性(由事件/交互写,DevTools 里改同样生效)----
          [data-gb="master-group-selector"] data-disabled="0|1"(**只有** PRINT 态整组不可操作;
                                      [SL-381] 只读观察态**不锁**——改组是那一态唯一的出口)
@@ -453,12 +455,8 @@
                     rgba(120, 176, 142, 0.95),
                     rgba(120, 176, 142, 0.55)
                 ); /* 设计稿 L2049 原值 */
-                --zoom-panel-bg: linear-gradient(
-                    158deg,
-                    rgba(34, 31, 44, 0.92),
-                    rgba(22, 20, 30, 0.94)
-                ); /* 设计稿 L1026 原值 */
-                --zoom-panel-shadow: 0 18px 40px rgba(18, 14, 26, 0.4); /* 设计稿 L1026 原值 */
+                /* --zoom-panel-bg / --zoom-panel-shadow(缩放下拉浮层,设计稿 L1026)[UI-1] 起挪进
+                   web/shared/tokens.css:Monitor / Input 的缩放下拉也用这套浮层,不能只在本页定义。 */
             }
 
             /* ---- [hidden] 兜底(布局脚手架,非视觉规则;T27b 起沿用) ----
@@ -1255,7 +1253,7 @@
                 color: var(--sem-green-ink);
             }
             /* ---- 自定义下拉(用户反馈 2026-08-18:选项列表要做样式)----
-               面板 = 缩放下拉同款深色玻璃配方(.footer-scale__panel),向下展开;
+               面板 = 缩放下拉同款深色玻璃配方(base.css .sc-scale__panel),向下展开;
                16 项超高走内部滚动,不撑破 780 设计盒。 */
             .lead-select-wrap {
                 position: relative;
@@ -4822,80 +4820,8 @@
                 font-size: var(--fs-110);
                 color: var(--txt-min);
             }
-            /* 缩放下拉:触发钮 + 深色浮层面板(设计稿 L1017-1020 / L1026-1033) */
-            .footer-scale {
-                position: relative;
-            }
-            .footer-scale__trigger {
-                position: relative;
-                overflow: hidden;
-                display: inline-flex;
-                align-items: center;
-                gap: var(--sp-6);
-                padding: var(--sp-4) var(--sp-10);
-                border-radius: var(--r-xs);
-                background: var(--w-16);
-                border: 1px solid var(--w-32);
-                cursor: pointer;
-                font-family: var(--ff-mono);
-                font-variant-numeric: tabular-nums lining-nums;
-                font-size: var(--fs-100);
-                color: var(--txt-2);
-            }
-            .footer-scale__trigger svg {
-                fill: none;
-                stroke: var(--txt-3);
-                stroke-width: 1.6px;
-                stroke-linecap: round;
-            }
-            .footer-scale__panel {
-                position: absolute;
-                z-index: 9;
-                right: 0;
-                bottom: calc(100% + var(--sp-9));
-                width: 168px;
-                padding: var(--sp-5);
-                border-radius: var(--r-md);
-                background-color: var(--dark-solid);
-                background-image: var(--zoom-panel-bg);
-                border: 1px solid var(--dark-window-border);
-                box-shadow: var(--zoom-panel-shadow);
-            }
-            .footer-scale[data-open="0"] .footer-scale__panel {
-                display: none;
-            }
-            .footer-scale__opt {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: var(--sp-10);
-                width: 100%;
-                padding: var(--sp-7) var(--sp-10);
-                border-radius: var(--r-xs);
-                cursor: pointer;
-                background: transparent;
-                border: 0;
-                font-family: var(--ff-mono);
-                font-variant-numeric: tabular-nums lining-nums;
-                font-size: var(--fs-110);
-                color: var(--txt-dark-2);
-            }
-            .footer-scale__opt[data-current="1"] {
-                background: var(--w-10);
-            }
-            /* 超屏档位:灰掉 + 说明,不隐藏(05 §1.2) */
-            .footer-scale__opt[data-over="1"] {
-                cursor: not-allowed;
-                color: var(--txt-dark-dim);
-            }
-            .footer-scale__note {
-                font-size: var(--fs-90);
-                letter-spacing: var(--mono-ls-pill);
-                color: rgba(var(--wh), 0.45);
-            }
-            .footer-scale__opt[data-over="1"] .footer-scale__note {
-                color: rgba(var(--sem-amber), 0.75);
-            }
+            /* 缩放下拉(触发钮 + 深色浮层)的样式 [UI-1] 起在 web/shared/base.css 的 .sc-scale*:
+               Output 右下角与设置页、Monitor / Input 右下角四处共用一件(原 .footer-scale* 搬过去)。 */
             .footer-version {
                 font-family: var(--ff-mono);
                 font-size: var(--fs-95);
@@ -9028,13 +8954,46 @@
                                         class="sc-eyebrow"
                                         data-t="scale"
                                     ></span>
-                                    <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源);
-                                         10 秒确认防呆 scrim 在卡片层 data-gb="scale-confirm"(app.js 状态机)。 -->
-                                    <select
-                                        class="sc-select"
-                                        data-t-aria="scale"
+                                    <!-- [UI-1] 与右下角同一件缩放下拉(web/shared/scale-select.js;原生 <select>
+                                         的展开列表是浏览器自绘的,换不了深色样式)。档位项由 app.js 按
+                                         DESIGN.output.presets 装配(05 §1.2 常量真源),向下展开;
+                                         10 秒确认防呆 scrim 在卡片层 data-gb="scale-confirm"(app.js 状态机),
+                                         与右下角共用同一个状态机与同一个当前档,改一处另一处跟着变。 -->
+                                    <div
+                                        class="sc-scale"
                                         data-gb="settings-scale-select"
-                                    ></select>
+                                        data-open="0"
+                                    >
+                                        <button
+                                            type="button"
+                                            class="sc-scale__trigger"
+                                            data-glow="1"
+                                            data-t-aria="scale"
+                                            aria-haspopup="listbox"
+                                            aria-expanded="false"
+                                            data-gb="settings-scale-trigger"
+                                        >
+                                            <span data-gb="settings-scale-label"
+                                                >100%</span
+                                            >
+                                            <svg
+                                                width="10"
+                                                height="10"
+                                                viewBox="0 0 12 12"
+                                                aria-hidden="true"
+                                            >
+                                                <path
+                                                    d="M3 4.8 6 7.8l3-3"
+                                                ></path>
+                                            </svg>
+                                        </button>
+                                        <div
+                                            class="sc-scale__panel"
+                                            role="listbox"
+                                            data-t-aria="scale"
+                                            data-gb="settings-scale-panel"
+                                        ></div>
+                                    </div>
                                 </div>
 
                                 <div
@@ -9233,14 +9192,17 @@
                     <div class="footer-right" data-gb="footer-right">
                         <!-- 缩放下拉(设计稿 L1017-1020 触发钮 + L1026-1033 深色浮层)。
              档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2),
-             7 个档位项由 app.js 生成;超屏档位 data-over="1" 灰掉不隐藏,当前档 data-current="1"。 -->
+             7 个档位项由共享组件 web/shared/scale-select.js 生成(app.js 装配);超屏档位
+             data-over="1" 灰掉不隐藏,当前档 data-current="1"。[UI-1] 起与设置页、Monitor、Input
+             的缩放下拉是同一件(样式 base.css .sc-scale*)。 -->
                         <div
-                            class="footer-scale"
+                            class="sc-scale"
                             data-gb="footer-scale-select"
                             data-open="0"
                         >
                             <button
-                                class="footer-scale__trigger"
+                                type="button"
+                                class="sc-scale__trigger"
                                 data-glow="1"
                                 data-t-aria="scale"
                                 aria-haspopup="listbox"
@@ -9258,7 +9220,7 @@
                                 </svg>
                             </button>
                             <div
-                                class="footer-scale__panel"
+                                class="sc-scale__panel"
                                 role="listbox"
                                 data-t-aria="scale"
                                 data-gb="footer-scale-panel"

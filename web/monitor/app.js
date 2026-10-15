@@ -39,6 +39,7 @@ import {
     scalePresets,
     zoomLocked,
 } from "../shared/shell-fit.js";
+import { createScaleSelect } from "../shared/scale-select.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { GROUPS_JSON_KEY, VIZ_ABI } from "./viz-contract.js";
@@ -367,7 +368,8 @@ function setHighlight(ch) {
 // 它写的是**本实例自己的 UI 偏好**,不是被观察组的状态 —— 不违反只读。
 // ============================================================================
 const scaleUi = {
-    select: $("monitor-scale"),
+    // [UI-1] 共享缩放下拉(web/shared/scale-select.js)的句柄,buildScaleOptions 里装
+    select: null,
     confirm: $("monitor-scale-confirm"),
     countdown: $("monitor-scale-confirm-countdown"),
     pre: $("monitor-scale-confirm-pre"),
@@ -390,21 +392,23 @@ function scaleOverflows(f) {
 }
 
 function buildScaleOptions() {
-    if (!scaleUi.select) return;
-    scaleUi.select.replaceChildren();
+    // [UI-1] 与 Output 右下角同一件下拉:开合、键盘、超屏档**灰掉但不隐藏**(05 §1.2 逐字)、
+    // 当前档标记都在共享组件里;本页只给档位表、超屏判据与「选中 → previewScale」。
     // [M09] scalePresets:旧 rect 语义下只留 1 档;新语义下原样返回同一张档位表。
-    for (const f of scalePresets(MONITOR_DESIGN.presets)) {
-        const opt = document.createElement("option");
-        opt.value = String(f);
-        opt.textContent = Math.round(f * 100) + "%";
-        // 超屏档位**灰掉但不隐藏**(05 §1.2 逐字)
-        opt.disabled = scaleOverflows(f);
-        if (f === 1) opt.selected = true;
-        scaleUi.select.appendChild(opt);
-    }
-    scaleUi.select.addEventListener("change", () =>
-        previewScale(Number(scaleUi.select.value)),
-    );
+    scaleUi.select = createScaleSelect({
+        wrap: $("monitor-scale"),
+        trigger: $("monitor-scale-trigger"),
+        label: $("monitor-scale-label"),
+        panel: $("monitor-scale-panel"),
+        presets: scalePresets(MONITOR_DESIGN.presets),
+        overflows: scaleOverflows,
+        optGb: (pct) => `monitor-scale-opt-${pct}`,
+        getT: () => dictNow,
+        onPick: (f) => previewScale(f),
+        placement: "up",
+        align: "end",
+        value: store.scale,
+    });
     // [M09] 旧 rect 语义 ⇒ 缩放锁 100%:footer 里那一行提示摘掉 hidden。
     // 只在锁定时动它 —— 新语义下这个节点一个属性都不碰(HTML 里默认 hidden)。
     if (zoomLocked()) {
@@ -484,7 +488,7 @@ addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新�
 function applyScale(f) {
     if (!Number.isFinite(f) || f <= 0) return;
     store.scale = f;
-    if (scaleUi.select) scaleUi.select.value = String(f);
+    if (scaleUi.select) scaleUi.select.setValue(f);
     // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1,
     // 回执不是拒绝(`{ok:false}`)就就地记 1 —— 与 previewScale 同一口径(state 回推 1Hz,
     // 不等它)。桥缺席或抛错时 call() 回 null,同样记 1:目标本来就是 1,记早了无害。
