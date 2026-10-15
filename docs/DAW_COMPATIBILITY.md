@@ -211,7 +211,7 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声先无声约 5.5s、再转直通(未经平衡),并在整个停调期间保持直通;宿主重新调用后长停调的轨逐条(约每隔 0.2s)接回、未轮到的轨暂时无声,短停调当即接回,恢复后最初约 80ms 是停调前混音的淡出。FL 用户请对总线关 smart disable。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-6。
 11. **同机双工程限制**(未修复,v1 明示限制):共享内存段名只按组号区分、不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 用同一个组时后开者抢 channel)。v2 走 documentToken 隔离。详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-5。
 
-A 线(宿主调度加固)留下的残余(提前处理的轨恢复时句首少约 21 毫秒、旁路超过约 5.5 秒再解除旁路、总线上另有没装 Input 的声源、「路由失准」亮得晚、一代开始就冻着的轨无提示)不在上面的编号里,统一见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-11,宿主触发条件都只是「可能」。
+A 线(宿主调度加固)留下的残余(提前处理的轨恢复时句首少约 21 毫秒、旁路超过约 5.5 秒再解除旁路、总线上另有没装 Input 的声源、「路由失准」亮得晚、一代开始就冻着的轨无提示、提前处理的轨循环时每圈结尾少约 21 毫秒、循环中途改了内容且宿主停调 Input 时可能听到上一圈的旧音频)不在上面的编号里,统一见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-11,宿主触发条件都只是「可能」。
 
 ### 3.3 环境依赖与通用路由坑
 
