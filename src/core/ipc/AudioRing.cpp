@@ -43,6 +43,8 @@ void AudioRing::write(const AudioRingBinding* b, int64_t t0, const float* interl
     // `w + inflightGuard() − 环长`、拷完复核 `w2 + guard ≤ 下沿 + 环长`、上一代窗别名判据里新一代跨度的上沿
     // `写头 + guard`,都以这一条为前提(guard 不小于一笔的长度)。有这道 fence,读方只要拷到第 k+1 笔的任何一个
     // 样本,拷完之后的 acquire 栅栏 + 复核就必然读到写头 ≥ h(k),复核接得住。
+    // A 线 A-16 预拷贝拷完复核里「拷贝期间写方前进不足半环」那一条(其头注 DEP-2)在 arm64 上同样靠它:拷到的
+    // 样本是哪一笔写下的,复核读到的写头就不低于它前一笔发布的写头,写方真跑远了复核看得出来。
     // 放在开头而不是上一笔末尾:本线程先 publishWriteHead / bumpEpoch、再 write() 时同样成立,不必每条发布路径
     // 各补一道。与 bumpEpoch 那道的分工:那道管「epoch+1 先于新一代样本」(跨代);这道管「上一笔写头先于本笔样本」
     // (同一代里相邻两笔,含 [SL-523] 一块按段连写的几笔)。bumpEpoch 之后再 write() 时两道都会执行。
