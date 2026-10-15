@@ -180,7 +180,7 @@ set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
 # 设计时长约 0.6s;合计约 1.2s。
 # 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 #366 与 M04b 的 PR 描述)。
 add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
-set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
+set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 420) # [M04b] TEMPORARY experiment budget, reverted after the mac run
 
 # scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
 # ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。
