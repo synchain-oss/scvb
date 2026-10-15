@@ -160,7 +160,24 @@ Verdict classify(const std::vector<float>& buf, std::int64_t lo, int n, u32 ch)
     return v;
 }
 
-RoundResult runRound(const Config& cfg)
+// [M04b TEMPORARY X2] test-local copy of AudioRing::write that publishes the head one write late (control C2).
+void writeLagging(const scvb::AudioRingBinding* b, std::int64_t t0, const float* in, int n)
+{
+    std::atomic_thread_fence(std::memory_order_release);
+    const u32 mask = b->geo.ringFrames - 1;
+    const u32 ch = b->geo.channels;
+    for (int i = 0; i < n; ++i)
+    {
+        const u32 frame = static_cast<u32>(static_cast<u64>(t0 + i)) & mask;
+        for (u32 c = 0; c < ch; ++c)
+        {
+            b->data[static_cast<std::size_t>(frame) * ch + c] = in[static_cast<std::size_t>(i) * ch + c];
+        }
+    }
+    b->header->write_head_samples.store(static_cast<u64>(t0), std::memory_order_release);
+}
+
+RoundResult runRound(const Config& cfg, bool readerFence = true, bool lagHead = false)
 {
     const u32 ch = cfg.channels;
     const int m = cfg.m;
@@ -217,7 +234,14 @@ RoundResult runRound(const Config& cfg)
         {
             for (int j = 0; j < chunk; ++j)
             {
-                scvb::AudioRing::write(b, t, srcAt(t), m);
+                if (lagHead)
+                {
+                    writeLagging(b, t, srcAt(t), m);
+                }
+                else
+                {
+                    scvb::AudioRing::write(b, t, srcAt(t), m);
+                }
                 t += m;
             }
             k += static_cast<std::uint64_t>(chunk);
@@ -254,7 +278,10 @@ RoundResult runRound(const Config& cfg)
                     buf[static_cast<std::size_t>(i) * ch + c] = data[static_cast<std::size_t>(slot) * ch + c];
                 }
             }
-            std::atomic_thread_fence(std::memory_order_acquire);
+            if (readerFence)
+            {
+                std::atomic_thread_fence(std::memory_order_acquire);
+            }
             const std::int64_t w2 = static_cast<std::int64_t>(hdr->write_head_samples.load(std::memory_order_relaxed));
             const bool ok = w2 + guard <= lo + static_cast<std::int64_t>(kRing);
             const Verdict v = classify(buf, lo, n, ch);
@@ -302,4 +329,92 @@ TEST_CASE("AudioRing write: back-to-back writes never surface a newer lap inside
         CHECK(r.writes >= kMinWrites);
         CHECK(r.raced >= kMinRaced);
     }
+}
+
+// ---- [M04b] TEMPORARY arm64 experiment X2 (reverted right after the mac run; not part of the PR's net diff) ----
+// E2: the four configs above x kExpIters on the product AudioRing::write as it is in this tree (fence present).
+// C1 (control, test side only): same reader with its acquire fence removed -> does this hardware reorder the
+//     reader's loads? (teeth of the harness on the read side).
+// C2 (control, test side only): a test-local copy of write() that publishes the head one write late -> the exact
+//     visibility order the write-side fence forbids, built in software (teeth of criterion 1 on this machine).
+// The canary fails on purpose so that ctest --output-on-failure shows this output; verdicts are read from the
+// per-tag TOTAL lines (expected: E2 newer 0; C1 / C2 recorded as observed).
+#include <cstdio>
+
+namespace
+{
+constexpr int kExpIters = 300;
+constexpr int kCtlIters = 50;
+struct ExpTotals
+{
+    std::uint64_t writes = 0, accepted = 0, rejected = 0, raced = 0, newer = 0, older = 0, other = 0;
+    std::uint64_t minAccepted = ~std::uint64_t{0};
+    int rounds = 0, redRounds = 0;
+};
+unsigned long long ull(std::uint64_t v)
+{
+    return static_cast<unsigned long long>(v);
+}
+void runExperiment(const char* tag, int iters, bool readerFence, bool lagHead)
+{
+    constexpr std::size_t kN = sizeof(kConfigs) / sizeof(kConfigs[0]);
+    ExpTotals tot[kN];
+    const auto t0 = Clock::now();
+    for (int it = 0; it < iters; ++it)
+    {
+        for (std::size_t k = 0; k < kN; ++k)
+        {
+            const RoundResult r = runRound(kConfigs[k], readerFence, lagHead);
+            ExpTotals& t = tot[k];
+            t.writes += r.writes;
+            t.accepted += r.accepted;
+            t.rejected += r.rejected;
+            t.raced += r.raced;
+            t.newer += r.badNewer;
+            t.older += r.badOlder;
+            t.other += r.badOther;
+            t.minAccepted = std::min(t.minAccepted, r.accepted);
+            ++t.rounds;
+            if (r.badNewer != 0 || r.badOlder != 0 || r.badOther != 0)
+            {
+                ++t.redRounds;
+                if (t.redRounds <= 5)
+                {
+                    std::fprintf(stderr,
+                                 "%s RED iter %d %s: newer %llu older %llu other %llu accepted %llu raced %llu\n", tag,
+                                 it, kConfigs[k].name, ull(r.badNewer), ull(r.badOlder), ull(r.badOther),
+                                 ull(r.accepted), ull(r.raced));
+                }
+            }
+        }
+        if (it % 50 == 0)
+        {
+            std::fprintf(stderr, "%s progress iter %d\n", tag, it);
+        }
+    }
+    const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
+    for (std::size_t k = 0; k < kN; ++k)
+    {
+        const ExpTotals& t = tot[k];
+        std::fprintf(stderr,
+                     "%s TOTAL %s: rounds %d red %d writes %llu accepted %llu rejected %llu raced %llu newer %llu "
+                     "older %llu other %llu minAcceptedPerRound %llu\n",
+                     tag, kConfigs[k].name, t.rounds, t.redRounds, ull(t.writes), ull(t.accepted), ull(t.rejected),
+                     ull(t.raced), ull(t.newer), ull(t.older), ull(t.other), ull(t.minAccepted));
+    }
+    std::fprintf(stderr, "%s elapsed %.1f s\n", tag, secs);
+}
+} // namespace
+
+TEST_CASE("M04b experiment X2: E2 product x300, C1 reader without acquire fence, C2 lagging-head writer",
+          "[.][stress][m04bexp]")
+{
+    runExperiment("M04B-E2", kExpIters, true, false);
+    runExperiment("M04B-C1", kCtlIters, false, false);
+    runExperiment("M04B-C2", kCtlIters, true, true);
+}
+
+TEST_CASE("M04b experiment canary: deliberate failure so ctest prints the output", "[.][stress][m04bexp]")
+{
+    FAIL_CHECK("canary (temporary experiment commit)");
 }
