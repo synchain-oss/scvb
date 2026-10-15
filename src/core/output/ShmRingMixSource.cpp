@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <new>
+#include <utility>
 
 namespace scvb::output
 {
@@ -33,6 +35,35 @@ static_assert(sizeof(AudioRingHeader::channels) == 4, "header channels must be a
 static_assert(offsetof(AudioRingHeader, channels) % alignof(u32) == 0, "header channels must be 4-byte aligned");
 static_assert(alignof(AudioRingHeader) >= alignof(u32), "AudioRingHeader alignment must cover u32");
 
+constexpr u64 kLinear = ~u64{0}; // dst 不取模(读进调用方的块缓冲)
+
+// 时间线位置 [x0, x1) 的帧:从 src 的 ((x & srcMask) × nch) 拷到 dst 的 (((x − dstBase) & dstMask) × nch)。
+// 读环(dst 线性)、交私有副本、预拷贝(dst 按私有容量取模)三处共用。按「两边都不回绕」切成连续段,每段是一个
+// 逐元素的连续循环(交给编译器向量化;interleaved 声道在段内本来就连续)。
+void copyFrames(float* dst, int64_t dstBase, u64 dstMask, const float* src, u64 srcMask, u32 nch, int64_t x0,
+                int64_t x1) noexcept
+{
+    int64_t x = x0;
+    while (x < x1)
+    {
+        const u64 from = static_cast<u64>(x) & srcMask;
+        const u64 to = static_cast<u64>(x - dstBase) & dstMask;
+        u64 run = std::min<u64>(static_cast<u64>(x1 - x), srcMask - from + 1u);
+        if (dstMask != kLinear)
+        {
+            run = std::min<u64>(run, dstMask - to + 1u);
+        }
+        const float* s = src + static_cast<std::size_t>(from) * nch;
+        float* d = dst + static_cast<std::size_t>(to) * nch;
+        const std::size_t count = static_cast<std::size_t>(run) * nch;
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            d[i] = s[i];
+        }
+        x += static_cast<int64_t>(run);
+    }
+}
+
 } // namespace
 
 void ShmRingMixSource::bind(AudioRingHeader* header, float* data) noexcept
@@ -41,6 +72,16 @@ void ShmRingMixSource::bind(AudioRingHeader* header, float* data) noexcept
     {
         binding_.store(nullptr, std::memory_order_release);
         return;
+    }
+
+    // [A-16] 私有副本的存储:第一次真绑定时一次分配(非实时线程;bind 只从持 lifecycleMutex_ 的 [M] 路径调),
+    // 写指针先于下面那次 release 发布,音频线程 acquire 到绑定之后才读它。只试一次:失败就一直关着(pcCap_ 恒 0,
+    // 行为与 A-16 之前相同),之后的 bind 不再写这个指针。bind 是 noexcept,用 nothrow new;值初始化(清零)顺带把
+    // 每一页都摸一遍,音频线程第一次往里拷时不再撞缺页。
+    if (!pcAllocTried_ && pcFrames_ > 0)
+    {
+        pcAllocTried_ = true;
+        pcStore_.reset(new (std::nothrow) float[static_cast<std::size_t>(pcFrames_) * 4u]());
     }
 
     // 构造不可变绑定:magic/abi 校验 + 几何快照(bind 时读一次,此后寻址只用快照,绝不按段头几何寻址;
@@ -137,6 +178,8 @@ void ShmRingMixSource::clearWindows() noexcept
     prevOn_ = false;
     prevBLowKnown_ = false;
     refHiValid_ = false;
+    pcCur_.on = false; // [A-16] 写头归 0 / 重绑:私有副本跟着两个窗一起作废(旧布局 / 旧采样率 / 另一个写方)
+    pcPrev_.on = false;
 }
 
 void ShmRingMixSource::onRebind() noexcept
@@ -271,11 +314,20 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
         prevLo_ = std::max(curVf_, curHi_ + stepMaxPrev_ - ring);
         prevHi_ = curHi_;
         prevOn_ = prevLo_ < prevHi_;
+        // [A-16] 私有副本与上一代窗同一刻、同一判据交接(交换两个缓冲)。pcCur_ ⊂ [curVf_, curHi_):只在写头确认之后拷,
+        // 确认之后锚点只降不升、curHi_ 只增。它不受上一代窗下沿 prevLo_ 约束 —— 那一截环槽可能已被上一代自己没观测到的
+        // 尾段换掉,副本是在那之前拷的。
+        std::swap(pcCur_.buf, pcPrev_.buf);
+        pcPrev_.on = pcCur_.on && pcCur_.lo < pcCur_.hi;
+        pcPrev_.lo = pcCur_.lo;
+        pcPrev_.hi = pcCur_.hi;
     }
     else
     {
         prevOn_ = false;
+        pcPrev_.on = false; // [A-16] 隔了不止一代 / 读方这一块跳了或漏读了 / 上一代没锚定 / 写头 0:副本不交接
     }
+    pcCur_.on = false; // [A-16] 新一代从头拷
     prevBLowKnown_ = false;
     refHiValid_ = had && d == 1 && headConfirmed_ && headMonotonic_ && curHi_ > 0;
     refHi_ = curHi_;
@@ -392,6 +444,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
         // 但这一代的写头从此不再单调:换代后「新写头低于上一代最后观测到的头 ⇒ 一定是新一代写的」
         // (规则 3 保守规则前半)的前提没了 —— 上一代的旧头可能又退到了更低处。本代结束时不交出 refHi。
         headMonotonic_ = false;
+        pcCur_.on = false; // [A-16] 写方同代原地重写过:之前拷下的版本可能已不是最后一次写入,从头拷
     }
     else
     {
@@ -539,6 +592,22 @@ ShmRingMixSource::Cover ShmRingMixSource::certify(int64_t t0, int64_t t1, int64_
             restB1 = t1;
         }
     }
+    // [A-16] 私有段:上一代副本覆盖的那一段不查环。read() 的闩死判定没把副本作废时,本块整个在新一代已发布的最高写头
+    // 之上,所以不会与当前窗相交(curLen == 0);万一相交就不用副本(只会少读,不会读错)。
+    if (pcPrev_.on && c.curLen == 0)
+    {
+        const int64_t q0 = std::max(t0, pcPrev_.lo);
+        const int64_t q1 = std::min(t1, pcPrev_.hi);
+        if (q1 > q0)
+        {
+            c.privLo = q0;
+            c.privLen = q1 - q0;
+            rest0 = t0; // 副本下方那一段
+            rest1 = q0;
+            restB0 = q1; // 副本上方那一段
+            restB1 = t1;
+        }
+    }
     // 新一代已发布过的最高写头:停走带静止重写会让写头退回,但退回之前写到过的位置照样换掉了同槽内容。
     const int64_t newHi = std::max(w, curHi_);
     // 新一代可能写过的跨度下界(别名判据用),判法见 aliasRef。
@@ -664,6 +733,65 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
     }
 }
 
+ShmRingMixSource::PreCopyPlan ShmRingMixSource::planPreCopy(const AudioRingBinding& b, int64_t w, bool flux,
+                                                            int n) noexcept
+{
+    // [A-16] 拷贝条件比读当前窗更严:写头已确认是本代的、当前窗已锚定且锚点不是对着未确认写头下的、写头不是 0、
+    // 写头归属明确(没有 flux)。确认之后锚点只降不升,所以拷下的帧恒在当时与此后的 [curVf_, curHi_) 里。
+    PreCopyPlan plan;
+    if (pcCap_ <= 0 || flux || w <= 0 || !curAnchored_ || !headConfirmed_ || headZero_ || anchorOnUnconfirmed_)
+    {
+        return plan;
+    }
+    // 区间:下沿 max(锚点, 写头 − P)(不是「写头 + 在途保护 − 环长」:本代在途写都在写头之上,P ≤ 环长/4 时踩不到
+    // 这一段,见头注 DEP-2),上沿写头;接着 pcCur_ 往后拷,接不上(头一回 / 中间隔了超过 P)就从下沿重新起。
+    // 每块至多拷 C = min(P, max(4096, 16 × 本块长)) 帧:突发之后分几块追平,不让一块的开销打爆小块长。
+    const int64_t lo0 = std::max(curVf_, w - pcCap_);
+    plan.restart = !(pcCur_.on && pcCur_.hi >= lo0);
+    plan.a = plan.restart ? lo0 : pcCur_.hi;
+    const int64_t budget = std::min<int64_t>(pcCap_, std::max<int64_t>(4096, int64_t{16} * n));
+    plan.b = std::min(w, plan.a + budget);
+    plan.on = plan.b > plan.a;
+    if (plan.on)
+    {
+        copyFrames(pcCur_.buf, 0, static_cast<u64>(pcCap_ - 1), b.data, static_cast<u64>(b.geo.ringFrames) - 1u,
+                   b.geo.channels, plan.a, plan.b);
+    }
+    return plan;
+}
+
+void ShmRingMixSource::commitPreCopy(const PreCopyPlan& plan, bool commit) noexcept
+{
+    if (!plan.on)
+    {
+        return;
+    }
+    if (commit)
+    {
+        if (plan.restart)
+        {
+            pcCur_.lo = plan.a;
+        }
+        pcCur_.hi = plan.b;
+        pcCur_.lo = std::max(pcCur_.lo, plan.b - pcCap_); // 环形缓冲:新拷的这一截换掉了 P 帧之前的旧槽
+        pcCur_.on = true;
+        preCopyFrameCount_.fetch_add(static_cast<u64>(plan.b - plan.a), std::memory_order_relaxed);
+        return;
+    }
+    // 拷贝期间换了代 / 写头往回走了 / 写方前进超过半环:这一截不可信,作废。接着往后拷的那种,缓冲里被这一截写坏的旧槽
+    // 也让出(hi 不动);重新起的那种整个清空。
+    if (plan.restart)
+    {
+        pcCur_.on = false;
+    }
+    else
+    {
+        pcCur_.lo = std::max(pcCur_.lo, plan.b - pcCap_);
+        pcCur_.on = pcCur_.lo < pcCur_.hi;
+    }
+    preCopyDiscardCount_.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int64_t hostBlockEnd) noexcept
 {
     // 硬约束:本方法 acquire 的绑定裸指针只在「本块」内有效 —— 底层共享内存段由 OutputSession 的
@@ -683,6 +811,14 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         const bool otherRing = lastBinding_ == nullptr || lastBinding_->header != b->header;
         lastBinding_ = b;
         onRebind();
+        // [A-16] 私有副本的容量按新绑定的环长重算(P = min(上限, 环长/4),见头注 DEP-2);onRebind 已清掉两个副本窗。
+        pcCap_ = 0;
+        if (pcStore_ != nullptr && pcFrames_ > 0)
+        {
+            pcCap_ = std::min<int64_t>(pcFrames_, static_cast<int64_t>(b->geo.ringFrames) / 4);
+            pcCur_.buf = pcStore_.get();
+            pcPrev_.buf = pcStore_.get() + pcFrames_ * 2;
+        }
         if (otherRing)
         {
             // 另一条环 = 另一个写方:上一条环上量到的提前量与步长不属于它。
@@ -712,6 +848,17 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         // [A-6] 读方自己跳了 / 中间漏读了块(本轨被移出注入集一段时间又回来):这一段读不到的时间线不连续,
         // 「持续读不到」重新起算(漏读期间读没读得到无从得知,不把它算进宽限)。停走带静止重读不在此列。
         unreadRun_ = false;
+    }
+    // [A-16] 私有副本的失效(头注「读方预拷贝」):读方跳了 / 漏读了 / 静止重读 ⇒ 离开了做上一代副本的那一遍,上一代副本
+    // 作废;漏读 / 静止重读 ⇒ 写方可能在读方没看见的时候同代原地重写过,本代副本也清空(读方跳变不清它:写方本代写的
+    // 照旧是这些位置的数据)。
+    if (jumped || skipped || reread)
+    {
+        pcPrev_.on = false;
+    }
+    if (skipped || reread)
+    {
+        pcCur_.on = false;
     }
 
     // 规则 2:装载顺序 epoch → 写头 → epoch。两次 epoch 不同 = 装载期间正在换代,写头属于哪一代不明。
@@ -758,33 +905,55 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     }
 
     const int64_t guard = inflightGuard();
+    // [A-16] 闩死判定:新一代已发布的最高写头 + λ 没有落到本块起点之下(新一代发布到了读方附近:原地重算 / 位置连续的
+    // 换代 / 前跳 / 停调恢复 / R1),或者还没量到过提前量 ⇒ 上一代副本作废,本代不再打开。
+    // λ = min(P, 提前量上界 + 本块长)。
+    if (pcPrev_.on)
+    {
+        const int64_t lead = leadHiRef();
+        const int64_t newHi = std::max(w, curHi_);
+        if (lead < 0 || newHi + std::min<int64_t>(pcCap_, lead + n) > t0)
+        {
+            pcPrev_.on = false;
+            privateLatchOffCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     const Cover c = certify(t0, t1, w, guard, prevN, ring);
+
+    // 读样本(重叠语义:同一时间线位置后写覆盖先写 → 按地址读到的即「时间线正确者」)。
+    // [J57] 按快照 channels(1|2)解码:stereo = interleaved LR(契约 v1.4)。[A-16] 私有段从上一代副本拷。
+    const u64 mask = static_cast<u64>(b->geo.ringFrames) - 1u;
+    const u32 nch = b->geo.channels;
+    if (c.ok)
+    {
+        const int64_t p0 = c.privLen > 0 ? c.privLo : t1;
+        const int64_t p1 = c.privLen > 0 ? c.privLo + c.privLen : t1;
+        copyFrames(dst, t0, kLinear, b->data, mask, nch, t0, p0);
+        copyFrames(dst, t0, kLinear, pcPrev_.buf, static_cast<u64>(pcCap_ - 1), nch, p0, p1);
+        copyFrames(dst, t0, kLinear, b->data, mask, nch, p1, t1);
+    }
+    // [A-16] 预拷贝:成败都做(读不出这一块不妨碍把本代刚发布的帧备下)。
+    const PreCopyPlan plan = planPreCopy(*b, w, flux, n);
+
+    // 规则 7 撕裂复核:先 acquire 栅栏(让上面的数据读不会被挪到下面两次装载之后 —— 弱内存序平台
+    // 上 seqlock 读侧的必要条件;x86 上它是空指令),再读 epoch 与写头。拷贝期间换了代,或本代在途的写
+    // 套圈到了当前窗里那一段,整块弃用;上一代窗认领的段在新写头下重判一次别名。[A-16] 同一次 epoch / 写头决定
+    // 预拷贝这一截提不提交;私有段不复核(私有缓冲没有并发写方)。
+    u64 e2 = 0;
+    int64_t w2 = 0;
+    if (c.ok || plan.on)
+    {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        e2 = h->epoch.load(std::memory_order_relaxed);
+        w2 = asPos(h->write_head_samples.load(std::memory_order_relaxed));
+    }
+    commitPreCopy(plan, e2 == e && w2 >= w && w2 - w <= ring / 2);
     if (!c.ok)
     {
         countFailure(t0, t1, w, guard, ring, b->geo.sampleRate);
         framesSinceGen_ += n;
         return false;
     }
-
-    // 读样本(重叠语义:同一时间线位置后写覆盖先写 → 按地址读到的即「时间线正确者」)。
-    // [J57] 按快照 channels(1|2)解码:stereo = interleaved LR(契约 v1.4)。
-    const u32 mask = b->geo.ringFrames - 1;
-    const u32 nch = b->geo.channels;
-    for (int i = 0; i < n; ++i)
-    {
-        const u32 frame = static_cast<u32>(static_cast<u64>(t0 + i)) & mask;
-        for (u32 c2 = 0; c2 < nch; ++c2)
-        {
-            dst[static_cast<std::size_t>(i) * nch + c2] = b->data[static_cast<std::size_t>(frame) * nch + c2];
-        }
-    }
-
-    // 规则 7 撕裂复核:先 acquire 栅栏(让上面的数据读不会被挪到下面两次装载之后 —— 弱内存序平台
-    // 上 seqlock 读侧的必要条件;x86 上它是空指令),再读 epoch 与写头。拷贝期间换了代,或本代在途的写
-    // 套圈到了当前窗里那一段,整块弃用;上一代窗认领的段在新写头下重判一次别名。
-    std::atomic_thread_fence(std::memory_order_acquire);
-    const u64 e2 = h->epoch.load(std::memory_order_relaxed);
-    const int64_t w2 = asPos(h->write_head_samples.load(std::memory_order_relaxed));
     bool ok = e2 == e;
     if (ok && c.curLen > 0)
     {
@@ -824,6 +993,11 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         leadCur_.hi = leadCur_.samples > 0 ? std::max(leadCur_.hi, ahead) : ahead;
         leadCur_.lo = leadCur_.samples > 0 ? std::min(leadCur_.lo, past) : past;
         ++leadCur_.samples;
+    }
+    if (c.privLen > 0)
+    {
+        privateReadCount_.fetch_add(1, std::memory_order_relaxed);
+        privateFrameCount_.fetch_add(static_cast<u64>(c.privLen), std::memory_order_relaxed);
     }
     sawFail_ = false; // 成功一块即清停滞账:下一次失败重新从「写头是否在动」问起
     unreadRun_ = false; // [A-6] 读到了(哪个窗都算):「持续读不到」重新起算
