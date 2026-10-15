@@ -1346,11 +1346,36 @@
                         hidden
                         >WebKit 低于 26.4,缩放固定为 100%</span
                     >
-                    <select
-                        class="sc-select"
-                        data-gb="monitor-scale"
-                        data-t-aria="scale"
-                    ></select>
+                    <!-- [UI-1] 缩放下拉 = 与 Output 右下角同一件(web/shared/scale-select.js +
+                         base.css .sc-scale*):原生 <select> 的展开列表是浏览器自绘的白底系统列表,
+                         换不了深色样式。档位项由 app.js 按 MONITOR_DESIGN.presets 装配,向上展开;
+                         超屏档 data-over="1" 灰掉不隐藏,当前档 data-current="1"。 -->
+                    <div class="sc-scale" data-gb="monitor-scale" data-open="0">
+                        <button
+                            type="button"
+                            class="sc-scale__trigger"
+                            data-t-aria="scale"
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            data-gb="monitor-scale-trigger"
+                        >
+                            <span data-gb="monitor-scale-label">100%</span>
+                            <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 12 12"
+                                aria-hidden="true"
+                            >
+                                <path d="M3 4.8 6 7.8l3-3"></path>
+                            </svg>
+                        </button>
+                        <div
+                            class="sc-scale__panel"
+                            role="listbox"
+                            data-t-aria="scale"
+                            data-gb="monitor-scale-panel"
+                        ></div>
+                    </div>
                     <span
                         class="mon-footer__version sc-mono"
                         data-gb="monitor-version"

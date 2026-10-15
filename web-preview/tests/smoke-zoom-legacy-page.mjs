@@ -31,7 +31,10 @@
 //     (l0) 前提:模拟生效 —— 页内探针 rect 宽 = offsetWidth;
 //     (l4) 快照带着 1.5 ⇒ 页面经现有 setUiScale 请回 1:窗口回到设计盒(1.5 倍的 iframe 只有
 //          这一条请求能把它改回去),且 zoomLocked() = true;
-//     (l2) 档位只剩 1 档(Output 两处入口都只剩 100%);
+//     (l2) 档位只剩 1 档(Output 两处入口都只剩 100%;[UI-1] 起四处都是共享下拉
+//          web/shared/scale-select.js,读的是浮层里的档位项,不再是原生 <select> 的 options);
+//     (l6)[UI-1] 每一处下拉点开 ⇒ 浮层展开、只有 100% 一项且标着当前档;点它 ⇒ 浮层收起、
+//          **不**弹 10 秒防呆框(同值不发预览 —— 锁定时唯一那一档就是当前档);
 //     (l3) 锁定提示可见、文案 = 当前语言的 `scale.lockedLegacy`、整句不被截断、footer 不溢出;
 //     (l1) 宿主**自己**把窗口改成 1.5 倍(不经档位,state 不变)⇒ 倍率仍锁在 1,不随视口变
 //          (降级而不是换算);
@@ -46,7 +49,8 @@
 //   D3 enforceZoomLock() 不发请求 ⇒ 红在 (l4);
 //   D4 三页不摘提示的 hidden ⇒ 红在 (l3);
 //   D5 trajectory-chart.js 的 `e.ctrlKey || e.metaKey` 改回 `e.ctrlKey` ⇒ 红在 (m1);
-//   D6 hit.js classifyZoomRect 恒返回 standard(探测失效)⇒ 旧语义段 (l1)–(l5) 全红。
+//   D6 hit.js classifyZoomRect 恒返回 standard(探测失效)⇒ 旧语义段 (l1)–(l5) 全红;
+//   D7 [UI-1] scale-select.js pick() 里「选的就是当前档 ⇒ 只收起」那一句删掉 ⇒ 红在 (l6)。
 //
 // 用法:node web-preview/tests/smoke-zoom-legacy-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -449,8 +453,22 @@ const ROLES = [
         footer: "footer",
         entries: `[
             { name: "footer 下拉", values: Array.from(gb("footer-scale-panel").querySelectorAll("[data-scale]")).map((o) => o.getAttribute("data-scale")) },
-            { name: "设置页 select", values: Array.from(gb("settings-scale-select").options).map((o) => o.value) },
+            { name: "设置页下拉", values: Array.from(gb("settings-scale-panel").querySelectorAll("[data-scale]")).map((o) => o.getAttribute("data-scale")) },
         ]`,
+        // [UI-1] (l6) 逐个点开的下拉(根 / 触发钮 / 浮层)与本页的 10 秒防呆框
+        pickers: [
+            [
+                "footer-scale-select",
+                "footer-scale-trigger",
+                "footer-scale-panel",
+            ],
+            [
+                "settings-scale-select",
+                "settings-scale-trigger",
+                "settings-scale-panel",
+            ],
+        ],
+        confirm: "scale-confirm",
         // 页面把 state 回推的档位落到界面上的那个读数(新语义 (n4) 的「已经跟到」信号)
         shown: `gb("footer-scale-label").textContent`,
         shownFor: (f) => Math.round(f * 100) + "%",
@@ -460,24 +478,36 @@ const ROLES = [
         page: "web-preview/input.html",
         sel: "#ipt-shell",
         box: DESIGN.input,
-        ready: `!!gb("input.footer.scale")`,
+        ready: `!!gb("input.footer.scale.panel")`,
         lock: "input.footer.scaleLock",
         footer: "input.footer",
-        entries: `[{ name: "footer select", values: Array.from(gb("input.footer.scale").options).map((o) => o.value) }]`,
-        shown: `gb("input.footer.scale").value`,
-        shownFor: (f) => String(f),
+        entries: `[{ name: "footer 下拉", values: Array.from(gb("input.footer.scale.panel").querySelectorAll("[data-scale]")).map((o) => o.getAttribute("data-scale")) }]`,
+        shown: `gb("input.footer.scale.label").textContent`,
+        shownFor: (f) => Math.round(f * 100) + "%",
+        pickers: [
+            [
+                "input.footer.scale",
+                "input.footer.scale.trigger",
+                "input.footer.scale.panel",
+            ],
+        ],
+        confirm: "input.scale.confirm",
     },
     {
         role: "monitor",
         page: "web-preview/monitor.html",
         sel: "#card",
         box: DESIGN.monitor,
-        ready: `!!(w.__SCVB_MONITOR__ && gb("monitor-scale"))`,
+        ready: `!!(w.__SCVB_MONITOR__ && gb("monitor-scale-panel"))`,
         lock: "monitor-scale-lock",
         footer: "monitor-footer",
-        entries: `[{ name: "footer select", values: Array.from(gb("monitor-scale").options).map((o) => o.value) }]`,
-        shown: `gb("monitor-scale").value`,
-        shownFor: (f) => String(f),
+        entries: `[{ name: "footer 下拉", values: Array.from(gb("monitor-scale-panel").querySelectorAll("[data-scale]")).map((o) => o.getAttribute("data-scale")) }]`,
+        shown: `gb("monitor-scale-label").textContent`,
+        shownFor: (f) => Math.round(f * 100) + "%",
+        pickers: [
+            ["monitor-scale", "monitor-scale-trigger", "monitor-scale-panel"],
+        ],
+        confirm: "monitor-scale-confirm",
         // Monitor 的 `scvb.state` 处理器不读 `ui.scale`(见头注 (n4)),宿主推档位它不跟
         stateEchoScale: false,
     },
@@ -690,6 +720,17 @@ try {
     });
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
+    // [UI-1] 屏幕可用区钉大:无头 Chrome 的 screen 恒报 800×600,Output(1180×780)与
+    // Monitor(960×720)的 100% 档会被判「超出当前屏幕」—— (l6) 点它不发预览就成了超屏
+    // 分支拦下的,测不到「同值只收起」。每个文档(含 iframe)脚本运行之前生效。
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+            try {
+                Object.defineProperty(screen, "availWidth", { get: () => 7680 });
+                Object.defineProperty(screen, "availHeight", { get: () => 4320 });
+            } catch (e) {}
+        })();`,
+    });
 
     // =========================================================================
     log("=== 【新语义】真 Chromium:行为与改前逐字相同 ===");
@@ -814,6 +855,45 @@ try {
         for (const e of s.entries) {
             eq(e.values, ["1"], `${tag}(l2)${e.name}:只剩 1 档`);
         }
+
+        // (l6)[UI-1] 锁定态的下拉:点开只看到 100% 一项且它就是当前档;点它只收起,不发预览。
+        for (const [wrapGb, trigGb, panelGb] of cfg.pickers) {
+            const opened = await evaluate(
+                IN(`const t = gb(${JSON.stringify(trigGb)});
+                    if (!t) return null;
+                    t.click();
+                    const wr = gb(${JSON.stringify(wrapGb)});
+                    const opts = Array.from(gb(${JSON.stringify(panelGb)}).querySelectorAll("[data-scale]"));
+                    return {
+                        open: wr.getAttribute("data-open"),
+                        opts: opts.map((o) => [o.getAttribute("data-scale"), o.getAttribute("data-current"), o.getAttribute("aria-selected"), o.getAttribute("data-over")]),
+                    };`),
+            );
+            eq(
+                opened,
+                { open: "1", opts: [["1", "1", "true", "0"]] },
+                // data-over=0 是这一格的前提:那一档若被判「超屏」,点它不发预览是超屏分支
+                // 拦下的,(l6) 就测不到「同值只收起」(见 SCREEN_SCRIPT)
+                `${tag}(l6)${wrapGb}:点开 ⇒ 浮层展开,只有 100% 一项、标着当前档、不超屏`,
+            );
+            const closed = await evaluate(
+                IN(`const o = gb(${JSON.stringify(panelGb)}).querySelector("[data-scale]");
+                    if (!o) return null;
+                    o.click();
+                    return gb(${JSON.stringify(wrapGb)}).getAttribute("data-open");`),
+            );
+            eq(closed, "0", `${tag}(l6)${wrapGb}:点那一档 ⇒ 浮层收起`);
+        }
+        // 负向判据要有一个等的窗口:预览若发了,确认框在 mock 回执(一拍)之后弹出
+        check(
+            !(await waitFor(
+                IN(
+                    `const c = gb(${JSON.stringify(cfg.confirm)}); return !!c && !c.hidden;`,
+                ),
+                1500,
+            )),
+            `${tag}(l6)点锁定态唯一那一档(= 当前档)不弹 10 秒防呆框`,
+        );
         const want = T[s.lang]
             ? T[s.lang]["scale.lockedLegacy"]
             : T.zh["scale.lockedLegacy"];
