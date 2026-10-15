@@ -26,7 +26,8 @@
 //   • 触发钮上 ↑ / ↓ = 展开(不直接换档:换档会立刻改窗口尺寸并起 10 秒倒计时,
 //     不该由一次方向键顺手触发);Enter / Space 走按钮原生的 click,同样是展开。
 //   • 浮层里 ↑ / ↓ 逐项移焦点、Home / End 到两端(超屏档也能停留,读屏能读到它的注记),
-//     Enter / Space 选中、Esc 收起并把焦点还给触发钮、Tab 离开即收起。
+//     Enter / Space 选中、Esc 收起并把焦点还给触发钮(这一下 Esc 不再冒泡到页面级处理器)、
+//     Tab 离开即收起。
 //   • 带 Ctrl / Cmd(metaKey)/ Alt 的组合键**一律放行不吞**:那是宿主与系统的地盘
 //     (见 alt-menu.js 同一条规矩;Output app.js 的 [SL-208] 注释说明了为什么这里也
 //     不接 Ctrl +/-/0)。
@@ -346,7 +347,11 @@ export function createScaleSelect(o) {
             return;
         }
         if (e.key === "Escape") {
+            // 这一下 Esc 只归浮层:不让它冒泡到页面级的 Esc 处理器。Output 的 Tab3
+            // (tab-wave.js 的 document 级 keydown)收到 Esc 就清段选区,且不看
+            // defaultPrevented —— 不拦的话「收起浮层」会顺带把选区也清掉。
             e.preventDefault();
+            e.stopPropagation();
             setOpen(false, "trigger");
         }
         // Tab:不拦,焦点自然离开,下面的 focusout 收起浮层

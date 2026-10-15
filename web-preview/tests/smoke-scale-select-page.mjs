@@ -36,6 +36,8 @@
 //   (s8) 定位:把下拉挪到外壳顶上(合成场景)⇒ 向上放不下,翻成向下,浮层仍在外壳里;
 //        (仅 Input,10 档)挪到外壳正中 ⇒ 上下都放不下,压 max-height 改内部滚动,
 //        仍在外壳里;End 移到末项时末项滚进可见区;
+//   (s9)(仅 Output 右下角)Tab3 有段选区时在浮层里按 Esc ⇒ 只收起浮层,选区还在;
+//        对照臂:浮层收起后再按一次 Esc,Tab3 照常清选区;
 //   每页零 console.error、零未捕获异常。
 // 锁定态(旧 WebKit 只剩 100% 一档、点它不弹防呆框)在 smoke-zoom-legacy-page.mjs 的 (l2)(l6)。
 //
@@ -43,6 +45,7 @@
 //   K1 浮层 keydown 的 ↑/↓/Home/End 分支删掉 ⇒ 红在 (s4);
 //   K2 触发钮 ↓ 展开删掉 ⇒ 红在 (s4);
 //   K3 Esc 分支删掉 ⇒ 红在 (s4);
+//   K6 Esc 分支里的 stopPropagation 删掉 ⇒ 红在 (s9)(对照臂照绿);
 //   K4 focusout 收起删掉 ⇒ 红在 (s6) Tab;
 //   K5 组合键放行(isModified)删掉 ⇒ 红在 (s4) Ctrl/Cmd;
 //   O1 refreshOver 恒判「不超屏」⇒ 红在 (s2);
@@ -446,6 +449,7 @@ const ROLES = [
                 panel: "footer-scale-panel",
                 opt: (p) => `footer-scale-opt-${p}`,
                 placement: "up",
+                escOverTab3: true, // (s9):Tab3 有段选区时在浮层里按 Esc
             },
             {
                 name: "设置页",
@@ -1006,6 +1010,97 @@ async function runSite(cfg, site) {
     }
     await restore();
     await twoFrames();
+
+    // ---- (s9) 浮层里的 Esc 只归浮层(仅 Output 右下角:Tab3 在场时才有页面级 Esc 处理器)----
+    // tab-wave.js 的 document 级 keydown 收到 Esc 就清段选区,且不看 defaultPrevented。
+    // Esc 若冒泡上去,「收起浮层」会顺带把选区清掉(PR #402 第 1 轮 claude-review【建议】1)。
+    if (site.escOverTab3) {
+        const waveDiag = () => evaluate(IN(`return w.__SCVB_OUTPUT__.wave();`));
+        check(
+            await evaluate(
+                IN(
+                    `const b = q('[data-tab-btn="wave"]'); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            `${tag}(s9)切到 Tab3`,
+        );
+        check(
+            await waitStable(
+                IN(`return gb("wave-lanes").getClientRects().length > 0;`),
+            ),
+            `${tag}(s9)Tab3 泳道已显示`,
+        );
+        // 在泳道 2 上横扫落点,取第一个真的选中段的那一下(段之间有空隙;同 smoke-web-sync-page ③)
+        let selCh = 0;
+        for (const frac of [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) {
+            await evaluate(
+                IN(`const lanes = gb("wave-lanes");
+                    if (!lanes) return null;
+                    const r = lanes.getBoundingClientRect();
+                    const HEAD_W = 158, SCALE_COL_W = 44;
+                    const laneH = (lanes.querySelector('[data-gb="wave-lane-1"]') || {}).offsetHeight || 34;
+                    const stageW = Math.max(lanes.clientWidth - HEAD_W - SCALE_COL_W, 0);
+                    const cx = r.left + HEAD_W + stageW * ${frac};
+                    const cy = r.top + laneH * 1.5 - lanes.scrollTop;
+                    const mk = (type) => new w.PointerEvent(type, {
+                        bubbles: true, cancelable: true, composed: true,
+                        clientX: cx, clientY: cy, button: 0, buttons: 1, pointerId: 1,
+                        isPrimary: true, pointerType: "mouse",
+                    });
+                    lanes.setPointerCapture = () => {};
+                    lanes.releasePointerCapture = () => {};
+                    lanes.dispatchEvent(mk("pointerdown"));
+                    lanes.dispatchEvent(mk("pointerup"));
+                    return true;`),
+            );
+            const ok = await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.wave().selectedCh > 0;`),
+                1500,
+            );
+            if (ok) {
+                selCh = (await waveDiag()).selectedCh;
+                break;
+            }
+        }
+        if (
+            check(
+                selCh > 0,
+                `${tag}(s9)前提:Tab3 上选中了一个段(selectedCh = ${selCh})`,
+            )
+        ) {
+            await evaluate(
+                IN(`gb(${JSON.stringify(site.trigger)}).click(); return true;`),
+            );
+            eq(
+                (await evaluate(READ(cfg, site))).open,
+                "1",
+                `${tag}(s9)Tab3 上点开右下角缩放下拉`,
+            );
+            await key("Escape");
+            r = await evaluate(READ(cfg, site));
+            eq(
+                [r.open, r.triggerFocused, (await waveDiag()).selectedCh],
+                ["0", true, selCh],
+                `${tag}(s9)浮层里按 Esc ⇒ 只收起浮层(焦点回触发钮),Tab3 的段选区还在`,
+            );
+            // 对照臂:浮层收起之后再按一次 Esc,页面级处理器照常清选区(证明上一格的「还在」
+            // 不是因为 Tab3 的 Esc 处理器根本没接上)
+            await key("Escape");
+            check(
+                await waitFor(
+                    IN(`return w.__SCVB_OUTPUT__.wave().selectedCh === 0;`),
+                    3000,
+                ),
+                `${tag}(s9)对照:浮层收起后再按 Esc ⇒ Tab3 清掉段选区`,
+            );
+        }
+        await evaluate(
+            IN(
+                `const b = q('[data-tab-btn="master"]'); if (b) b.click(); return true;`,
+            ),
+        );
+        await twoFrames();
+    }
 }
 
 // ---------------------------------------------------------------- 跑
