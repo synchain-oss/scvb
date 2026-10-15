@@ -107,6 +107,11 @@ target_sources(scvb_tests PRIVATE core/test_platform_identity.cpp)
 # `scvb_seqlock_stress` 用同一个二进制按标签 `[stress]` 单跑,上界单独给(见紧随的 set_tests_properties)。
 target_sources(scvb_tests PRIVATE core/test_seqlock_stress.cpp)
 
+# [B 线 M04b] AudioRing::write 相邻两笔之间写侧顺序的双线程压测(arm64 内存序)。同样是独立的
+# target_sources 追加块,两平台都编;用例打隐藏标签 [.] 与 [stress],由上面 M04 的 ctest 条目
+# `scvb_seqlock_stress` 一起单跑(同一个二进制按 `[stress]` 选,上界见那一条的 set_tests_properties)。
+target_sources(scvb_tests PRIVATE core/test_audio_ring_stress.cpp)
+
 # [B 线 M07b] viz 实得速率的计数与窗口汇总(src/core/diag/VizRateMeter.*,[M07b][vizrate])。注入逻辑时刻、
 # 不看墙钟,进默认 `scvb_tests` 那一条(上界同那一条)。同样是独立的 target_sources 追加块;两平台都编都跑。
 target_sources(scvb_tests PRIVATE core/test_viz_rate_meter.cpp)
@@ -171,7 +176,9 @@ set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
 
 # [B 线 M04] seqlock 压测的独立条目(源见上面 M04 的 target_sources 块)。用例按墙钟定长:
 # 每种 shot × 三种缓存行摆放 = 6 轮,每轮读侧 100ms,设计时长约 0.6s,不随机器快慢伸缩。
-# 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 PR 描述)。
+# [B 线 M04b] 同一条目还跑 AudioRing 写侧压测(test_audio_ring_stress.cpp):4 格,每格读侧 150ms,
+# 设计时长约 0.6s;合计约 1.2s。
+# 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 #366 与 M04b 的 PR 描述)。
 add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
 set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
 
