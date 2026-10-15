@@ -60,11 +60,15 @@ constexpr u32 kLaps = 4; // 样本值编码「时间线位置 mod (kLaps × R)�
 constexpr u32 kSpan = kLaps * kRing;
 constexpr std::size_t kLine = 128; // Apple M 系列缓存行 128B(对 64B 行同样成立)
 
-// 每格读侧时长。四格合计约 0.6s(上界说明见 tests/CMakeLists.txt 的 scvb_seqlock_stress)。
+// 每格读侧时长:至少 kRoundDuration;到点时收下块数或 raced 还没到下限,就接着跑,直到够了或到 kRoundCap。
+// 四格设计时长约 0.6s,最坏约 8s(上界说明见 tests/CMakeLists.txt 的 scvb_seqlock_stress)。
+// 为什么要延:读方拷的正是写方下一笔要写的槽,连续写的几格里绝大多数块都被复核挡下,收下的块数随机器
+// 波动很大 —— Windows CI runner 上 300 轮里最少的一轮 150ms 只收下 81 块(本机 x86 最少约 700 块;见 PR 描述)。
+// 定长判下限会偶发假红,把下限压到几十又近乎空洞,所以改成「定长 + 不够就延」。
 constexpr auto kRoundDuration = std::chrono::milliseconds(150);
-// 非空洞下限:读方至少收下这么多块、写方至少写这么多笔,否则这一格等于没测。
-// 收下块数的下限低于 M04 那套:读方拷的正是写方下一笔要写的槽,连续写的几格里大多数块都会被复核挡下
-// (本机 x86 实测 ×5:每格 150ms 收下约 5000–220000 块、raced 约 1300–480000,见 PR 描述)。
+constexpr auto kRoundCap = std::chrono::milliseconds(2000);
+// 非空洞下限:读方至少收下这么多块、写方至少写这么多笔、至少这么多块真的和写方抢到了同一批槽,
+// 否则这一格等于没测。
 constexpr std::uint64_t kMinAccepted = 200;
 constexpr std::uint64_t kMinWrites = 1000;
 constexpr std::uint64_t kMinRaced = 100;
@@ -101,6 +105,7 @@ struct RoundResult
     std::uint64_t badNewer = 0; // 判据 ①
     std::uint64_t badOlder = 0; // 判据 ②
     std::uint64_t badOther = 0; // 判据 ③
+    long long ms = 0; // 读侧实际跑了多久(定长 + 不够就延)
 };
 
 // 时间线位置 p 的第 c 个声道写下的值:精确可表示的小整数(< 2^24)。
@@ -224,14 +229,20 @@ RoundResult runRound(const Config& cfg)
     });
 
     std::thread reader([&] {
-        const auto deadline = Clock::now() + kRoundDuration;
+        const auto start = Clock::now();
         std::vector<float> buf(static_cast<std::size_t>(n) * ch);
         std::uint64_t iter = 0;
         for (;;)
         {
-            if ((++iter & 255u) == 0 && Clock::now() >= deadline)
+            if ((++iter & 255u) == 0)
             {
-                break;
+                const auto now = Clock::now();
+                const bool enough = r.accepted >= kMinAccepted && r.raced >= kMinRaced;
+                if (now - start >= kRoundCap || (now - start >= kRoundDuration && enough))
+                {
+                    r.ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+                    break;
+                }
             }
             const std::int64_t w = static_cast<std::int64_t>(hdr->write_head_samples.load(std::memory_order_acquire));
             const std::int64_t lo = w + guard - static_cast<std::int64_t>(kRing);
@@ -280,9 +291,9 @@ TEST_CASE("AudioRing write: back-to-back writes never surface a newer lap inside
     for (const Config& cfg : kConfigs)
     {
         const RoundResult r = runRound(cfg);
-        INFO("config " << cfg.name << ": writes " << r.writes << ", accepted " << r.accepted << ", rejected "
-                       << r.rejected << ", raced " << r.raced << ", newer " << r.badNewer << ", older " << r.badOlder
-                       << ", other " << r.badOther);
+        INFO("config " << cfg.name << ": " << r.ms << " ms, writes " << r.writes << ", accepted " << r.accepted
+                       << ", rejected " << r.rejected << ", raced " << r.raced << ", newer " << r.badNewer << ", older "
+                       << r.badOlder << ", other " << r.badOther);
         // 先判「判据被违反」,再判非空洞:各条独立出结论(CHECK,不互相遮挡)。
         CHECK(r.badNewer == 0u);
         CHECK(r.badOlder == 0u);

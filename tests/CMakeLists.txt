@@ -176,8 +176,8 @@ set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
 
 # [B 线 M04] seqlock 压测的独立条目(源见上面 M04 的 target_sources 块)。用例按墙钟定长:
 # 每种 shot × 三种缓存行摆放 = 6 轮,每轮读侧 100ms,设计时长约 0.6s,不随机器快慢伸缩。
-# [B 线 M04b] 同一条目还跑 AudioRing 写侧压测(test_audio_ring_stress.cpp):4 格,每格读侧 150ms,
-# 设计时长约 0.6s;合计约 1.2s。
+# [B 线 M04b] 同一条目还跑 AudioRing 写侧压测(test_audio_ring_stress.cpp):4 格,每格读侧至少 150ms,
+# 设计时长约 0.6s;非空洞下限没到时每格最多延到 2s(最坏约 8s)。合计设计约 1.2s、最坏约 9s。
 # 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 #366 与 M04b 的 PR 描述)。
 add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
 set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
