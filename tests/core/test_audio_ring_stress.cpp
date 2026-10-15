@@ -237,6 +237,9 @@ RoundResult runRound(const Config& cfg)
             if ((++iter & 255u) == 0)
             {
                 const auto now = Clock::now();
+                // 写方笔数不进早停判定:写线程只在收尾时发布计数(热循环里不多一次原子写)。实测远高于下限
+                // (四格里最少的 burst4 那格,X1 在 Windows CI 上 300 轮平均每轮约 4.2 万笔,下限 1000);
+                // 真没到时是 join 之后那条 CHECK 红,不会被静默放过。
                 const bool enough = r.accepted >= kMinAccepted && r.raced >= kMinRaced;
                 if (now - start >= kRoundCap || (now - start >= kRoundDuration && enough))
                 {

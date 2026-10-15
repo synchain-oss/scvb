@@ -51,7 +51,9 @@ void AudioRing::write(const AudioRingBinding* b, int64_t t0, const float* interl
     // x86:release fence 只是编译器屏障,不生成指令(TSO 下写写本来不重排,x86 上原本就成立)。
     // arm64:每次 write() 一条 DMB ISH。这里只需要写写顺序(DMB ISHST 就够),但 C++ 没有对应的可移植写法;
     // write() 每块一到几次,开销可忽略。样本是普通 float(段布局冻结),与 PlayheadShot / MeterShot 的 seqlock
-    // 写侧同一写法。判据:tests/core/test_audio_ring_stress.cpp。
+    // 写侧同一写法。成立的层面也同一口径:靠的是 fence 的编译器 / 硬件语义(完整的编译器屏障,arm64 上再是
+    // DMB ISH),**不是** C++ 标准意义上的同步 —— [atomics.fences] 的配对要求 fence 之后的是原子访问,样本是
+    // 普通对象,标准下读写两侧仍是数据竞争(TSan 会报)。判据:tests/core/test_audio_ring_stress.cpp。
     std::atomic_thread_fence(std::memory_order_release);
     const u32 mask = b->geo.ringFrames - 1;
     const u32 ch = b->geo.channels;
