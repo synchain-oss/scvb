@@ -18,6 +18,8 @@
 //
 // write() 按时间线绝对样本位置寻址:frame index = timeline_pos & (ring_frames-1),
 //   stereo 为 interleaved LR(契约 v1.4 [J57])。数据先写、write_head 后发布(release,契约 §2)。
+//   [B 线 M04b] 写样本之前还有一道 release fence:本线程上一次发布的写头先于本笔样本可见(arm64 上
+//   「写头之后至多一笔在写」靠它成立;见 AudioRing.cpp)。
 
 #include <atomic>
 #include <cstdint>
