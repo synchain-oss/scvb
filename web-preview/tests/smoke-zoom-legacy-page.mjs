@@ -720,6 +720,17 @@ try {
     });
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
+    // [UI-1] 屏幕可用区钉大:无头 Chrome 的 screen 恒报 800×600,Output(1180×780)与
+    // Monitor(960×720)的 100% 档会被判「超出当前屏幕」—— (l6) 点它不发预览就成了超屏
+    // 分支拦下的,测不到「同值只收起」。每个文档(含 iframe)脚本运行之前生效。
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+            try {
+                Object.defineProperty(screen, "availWidth", { get: () => 7680 });
+                Object.defineProperty(screen, "availHeight", { get: () => 4320 });
+            } catch (e) {}
+        })();`,
+    });
 
     // =========================================================================
     log("=== 【新语义】真 Chromium:行为与改前逐字相同 ===");
@@ -855,13 +866,15 @@ try {
                     const opts = Array.from(gb(${JSON.stringify(panelGb)}).querySelectorAll("[data-scale]"));
                     return {
                         open: wr.getAttribute("data-open"),
-                        opts: opts.map((o) => [o.getAttribute("data-scale"), o.getAttribute("data-current"), o.getAttribute("aria-selected")]),
+                        opts: opts.map((o) => [o.getAttribute("data-scale"), o.getAttribute("data-current"), o.getAttribute("aria-selected"), o.getAttribute("data-over")]),
                     };`),
             );
             eq(
                 opened,
-                { open: "1", opts: [["1", "1", "true"]] },
-                `${tag}(l6)${wrapGb}:点开 ⇒ 浮层展开,只有 100% 一项且标着当前档`,
+                { open: "1", opts: [["1", "1", "true", "0"]] },
+                // data-over=0 是这一格的前提:那一档若被判「超屏」,点它不发预览是超屏分支
+                // 拦下的,(l6) 就测不到「同值只收起」(见 SCREEN_SCRIPT)
+                `${tag}(l6)${wrapGb}:点开 ⇒ 浮层展开,只有 100% 一项、标着当前档、不超屏`,
             );
             const closed = await evaluate(
                 IN(`const o = gb(${JSON.stringify(panelGb)}).querySelector("[data-scale]");

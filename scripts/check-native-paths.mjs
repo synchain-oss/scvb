@@ -363,6 +363,7 @@ const NON_NATIVE_TOP = [
     "screenshots-t43/",
     "screenshots-t46/",
     "screenshots-t48/",
+    "screenshots-ui1/",
     "screenshots/",
     "scripts/",
     "web-preview/",
