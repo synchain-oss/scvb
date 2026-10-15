@@ -77,7 +77,8 @@ jobs:
           flaky=0
           for f in "${files[@]}"; do
             echo "--- $f"
-            node "$f"; rc=$?
+            # 没写 shell: 时 run 是 `bash -e`:写成 `node "$f"; rc=$?` 会在非零时直接结束本步,下面的 2 / 3 降级走不到
+            rc=0; node "$f" || rc=$?
             if [ $rc -eq 2 ]; then
               skipped=$((skipped+1))
               echo "::warning file=$f::skipped — 缺可选外部依赖(无头浏览器),本套未跑"
