@@ -784,6 +784,20 @@ TEST_CASE("命令环双线程混跑(SPSC 丢最旧自洽)", "[ipc][lifecycle][cm
         }
         producerDone.store(true, std::memory_order_release);
     });
+    // [B 线 M06a] 下面消费循环里的 REQUIRE 一旦抛出,栈展开时 producer 还没 join,std::thread 析构即
+    // std::terminate —— 整个 scvb_tests 进程 SIGABRT,后面所有用例都不跑,结论被一条用例连坐遮掉
+    // (arm64 上实测)。展开时先 join(生产者是有界循环,自己会跑完),这条用例照常记红、其余照常跑。
+    struct JoinOnUnwind
+    {
+        std::thread& t;
+        ~JoinOnUnwind()
+        {
+            if (t.joinable())
+            {
+                t.join();
+            }
+        }
+    } joinOnUnwind{producer};
 
     // 消费者:持续 dequeue;校验 seq 单调、无 0、value==seq-1(无撕裂记录)。
     u32 lastSeq = 0;
@@ -945,13 +959,52 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     std::atomic<u64> leases{0};
     std::atomic<u64> nullBaseLeases{0}; // [SL-453] 拿到租约却基址为空的次数;join 后在主线程断言
 
+    // [B 线 M04] 虚拟时钟下的宽限期模型。
+    // SegmentHandle 的设计前提(ISegmentBackend.h 类头注)是「宽限期 500ms > 音频线程任何一次在途
+    // 访问」:lease() 先读裸指针、再对 p->leaseCount 做 fetch_add —— 这两步之间线程若被挂起,能保证
+    // p 指向的映射块还活着的只有宽限期,租约握手管不到这一段(那时 leaseCount 还没 +1)。
+    // 本用例用虚拟时钟(每拍 +100ms),宽限期 = 5 拍,真实时间只有几微秒:音频线程在那两步之间被挂起
+    // 几微秒,映射块就已解映射并释放,随后的 fetch_add / 查 releaseRequested / 取 base 落在已释放
+    // 的内存上 —— 那是本用例自己违反了被测对象的前提,不是被测对象的缺陷(B 线 M06a 在 arm64 上
+    // 观察到的 nullBaseLeases == 1,3/40,按代码推断即此形态)。所以消息线程每拍结束前做一次「静默点」:
+    //   · 音频线程进 lease() 前把 attemptPhase 置奇、返回后置偶;
+    //   · 消息线程在本拍摘指针 / 重发布之后读 attemptPhase,读到奇数就等它变,即等「本拍摘指针时
+    //     可能已读到旧裸指针的那一次 lease()」走完。两侧各一道 seq_cst fence(Dekker):要么消息线程
+    //     读到这次的奇数,要么音频线程的 lease() 读到的已是摘过的指针 —— 不会两边都落空。
+    // 这只把真实时间里由 500ms 保证的那一段补成显式等待;租约**发放之后**的保护仍全靠被测代码:
+    // 每 kHoldEvery 个租约里有一个被持有 kHoldTicks 拍(> 宽限期 5 拍),跨过宽限期届满那一拍,
+    // 期间它的映射不许被解映射 —— 那靠 unmapIfIdle() 的 leaseCount 复核与 lease() / release() 的握手。
+    constexpr u64 kHoldEvery = 8;
+    constexpr u64 kHoldTicks = 7; // 宽限期 500ms / 每拍 100ms = 5 拍;多持 2 拍,确保跨过届满那一拍
+    std::atomic<u64> attemptPhase{0}; // 奇 = 音频线程正在 lease() 里
+    std::atomic<u64> messageTicks{0}; // 消息线程已走完的拍数
+    std::atomic<u64> heldAcrossGrace{0}; // 实际持满 kHoldTicks 拍的租约数(非空洞断言用)
+
     // 音频线程:循环 lease()/归还(只读 implPtr_ 原子裸指针)。不放断言宏,理由见 publish() 上方。
     std::thread audio([&] {
+        u64 granted = 0;
         while (!stop.load(std::memory_order_acquire))
         {
+            attemptPhase.fetch_add(1, std::memory_order_seq_cst); // 奇:进入 lease()
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             auto lease = handle.lease();
+            attemptPhase.fetch_add(1, std::memory_order_seq_cst); // 偶:lease() 已返回
             if (lease)
             {
+                if (++granted % kHoldEvery == 0)
+                {
+                    // 持有租约跨过宽限期届满(期间 attemptPhase 为偶,消息线程照常推进)。
+                    const u64 start = messageTicks.load(std::memory_order_acquire);
+                    while (messageTicks.load(std::memory_order_acquire) < start + kHoldTicks &&
+                           !stop.load(std::memory_order_acquire))
+                    {
+                        std::this_thread::yield();
+                    }
+                    if (messageTicks.load(std::memory_order_acquire) >= start + kHoldTicks)
+                    {
+                        ++heldAcrossGrace;
+                    }
+                }
                 if (lease.base() == nullptr)
                 {
                     ++nullBaseLeases;
@@ -987,6 +1040,17 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
                     ++it;
                 }
             }
+            // [B 线 M04] 静默点(理由见 audio 线程上方):本拍的摘指针 / 重发布都在这道 fence 之前。
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            const u64 phase = attemptPhase.load(std::memory_order_seq_cst);
+            if ((phase & 1u) != 0u)
+            {
+                while (attemptPhase.load(std::memory_order_acquire) == phase)
+                {
+                    std::this_thread::yield();
+                }
+            }
+            messageTicks.fetch_add(1, std::memory_order_release);
         }
         stop.store(true, std::memory_order_release);
     });
@@ -998,6 +1062,7 @@ TEST_CASE("SegmentHandle 并发 lease/release(原子裸指针无 UAF)", "[ipc][l
     REQUIRE(initFailures.load() == 0); // 且头部初始化成功
     REQUIRE(nullBaseLeases.load() == 0); // 发出去的租约基址从不为空
     REQUIRE(leases.load() > 0); // 音频线程确实租约过
+    CHECK(heldAcrossGrace.load() > 0); // [B 线 M04] 确有租约被持有跨过宽限期届满(否则上一条没测到这一面)
     // 收尾:宽限期是 500ms,release 需两拍(首次记录宽限期起始,次拍届满解映射)。
     const u64 finalNowMs = 1000000000;
     for (auto& h : pending)
@@ -1487,4 +1552,326 @@ TEST_CASE("[SL-481] updateOwnedInputSlot:同 pid 兄弟调用也是空操作", "
     a.updateOwnedInputSlot(3, kHostPid, 96000, 256);
     CHECK(a.inputSlot(3)->sample_rate == 96000);
     CHECK(a.inputSlot(3)->max_block == 256);
+}
+
+// ---------------------------------------------------------------------------
+// [KI-6] 停摆看门狗 hold 掩码(修 H5)
+//
+// 上面「停摆看门狗四格」只钉了**动作**序列(kClearMask / kReacquireBit),没钉「清完之后谁也不许
+// 再置位」—— 而 H5 正是缺这一条:执行方每拍按在线判据重新置位,看门狗只清掉一拍。这里钉 hold:
+// 停摆期间(不止触发那一拍)全部 15 轨闩住;恢复后按停摆快照逐轨释放,每 ≥200ms 一轨、channel 升序。
+// 执行方的模拟:kClearMask → 清 mask;kReacquireBit → 置那一轨(OutputSession 里是下一拍
+// evaluateChannels 按在线判据置,这里直接置,只为让「在线轨的写头在推进」这个停摆判据有东西可看)。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr u32 kKi6AllChannels = (1u << kMaxChannels) - 1u;
+
+constexpr u32 ki6Bit(u32 ch)
+{
+    return 1u << (ch - 1);
+}
+} // namespace
+
+TEST_CASE("[KI-6] watchdog hold: latched for the whole stall, released lane by lane after recovery",
+          "[ipc][lifecycle][watchdog][KI6]")
+{
+    SECTION("停摆期间每一拍 hold 都是全部 15 轨;恢复后只闩停摆快照里还没轮到的轨")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(2);
+        out.setConnectedMaskBit(5);
+        out.setConnectedMaskBit(9); // 在线轨 2、5、9(不连续:钉「按快照升序」而不是「按 1..N」)
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 2 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone); // init
+        CHECK(cp.watchdogHoldMask() == 0u); // 未停摆:不闩
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask(); // 执行器清 mask
+        CHECK(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == kKi6AllChannels);
+
+        // 停调持续 6.4 s(Input 照写):hold 一直全置 —— 不是只闩触发那一拍(H5)。
+        int notLatched = 0;
+        int actions = 0;
+        for (u64 t = 640; t <= 7000; t += 40)
+        {
+            wh += 100;
+            if (cp.tickWatchdog(t).action != scvb::WatchdogAction::kNone)
+            {
+                ++actions;
+            }
+            if (cp.watchdogHoldMask() != kKi6AllChannels)
+            {
+                ++notLatched;
+            }
+        }
+        CHECK(notLatched == 0);
+        CHECK(actions == 0);
+
+        // 恢复:当拍释放快照里最小号那一轨(2);快照之外的轨(例:1、3)不再闩。
+        block = 1;
+        wh += 100;
+        const auto r1 = cp.tickWatchdog(7040);
+        REQUIRE(r1.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r1.channel == 2);
+        CHECK_FALSE(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == (ki6Bit(5) | ki6Bit(9)));
+        out.setConnectedMaskBit(2);
+
+        // 释放间隔内(< 200ms):hold 不变。
+        for (u64 t = 7080; t < 7240; t += 40)
+        {
+            ++block;
+            wh += 100;
+            CHECK(cp.tickWatchdog(t).action == scvb::WatchdogAction::kNone);
+            CHECK(cp.watchdogHoldMask() == (ki6Bit(5) | ki6Bit(9)));
+        }
+        ++block;
+        wh += 100;
+        const auto r2 = cp.tickWatchdog(7240);
+        REQUIRE(r2.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r2.channel == 5);
+        CHECK(cp.watchdogHoldMask() == ki6Bit(9));
+        out.setConnectedMaskBit(5);
+
+        for (u64 t = 7280; t < 7440; t += 40)
+        {
+            ++block;
+            wh += 100;
+            CHECK(cp.tickWatchdog(t).action == scvb::WatchdogAction::kNone);
+            CHECK(cp.watchdogHoldMask() == ki6Bit(9));
+        }
+        ++block;
+        wh += 100;
+        const auto r3 = cp.tickWatchdog(7440);
+        REQUIRE(r3.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r3.channel == 9);
+        CHECK(cp.watchdogHoldMask() == 0u);
+        out.setConnectedMaskBit(9);
+
+        ++block;
+        wh += 100;
+        CHECK(cp.tickWatchdog(7640).action == scvb::WatchdogAction::kNone); // 序列结束
+        CHECK(cp.watchdogHoldMask() == 0u);
+    }
+
+    SECTION("让位序列没走完又停摆:还没轮到的轨并进新快照,下次恢复照样逐轨接回")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        for (u32 ch = 1; ch <= 5; ++ch)
+        {
+            out.setConnectedMaskBit(ch); // 在线轨 1..5
+        }
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+
+        // 恢复一块就又停(Output 被叫回一下又被停掉):700 放 1,900 放 2,1100 放 3。
+        block = 1;
+        auto r = cp.tickWatchdog(700);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r.channel == 1);
+        out.setConnectedMaskBit(1);
+        wh += 100;
+        r = cp.tickWatchdog(900);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r.channel == 2);
+        out.setConnectedMaskBit(2);
+        wh += 100;
+        r = cp.tickWatchdog(1100);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r.channel == 3);
+        out.setConnectedMaskBit(3);
+        CHECK(cp.watchdogHoldMask() == (ki6Bit(4) | ki6Bit(5)));
+
+        // 1200:blockCounter 自 700 起没动(500ms)且在线轨 1 的写头在推进 → 再次停摆。
+        wh += 100;
+        r = cp.tickWatchdog(1200);
+        REQUIRE(r.action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+        CHECK(cp.watchdogHoldMask() == kKi6AllChannels);
+
+        // 再恢复:快照 = 当时在线的 1..3 ∪ 还没轮到的 4、5 —— 五轨逐轨接回,4、5 不能被当成「本来不在线」放掉。
+        block = 2;
+        r = cp.tickWatchdog(1400);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 1);
+        CHECK(cp.watchdogHoldMask() == (ki6Bit(2) | ki6Bit(3) | ki6Bit(4) | ki6Bit(5)));
+        u32 expect = 2;
+        for (u64 t = 1600; t <= 2200; t += 200)
+        {
+            ++block;
+            r = cp.tickWatchdog(t);
+            REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+            CHECK(r.channel == expect);
+            ++expect;
+        }
+        CHECK(cp.watchdogHoldMask() == 0u);
+    }
+
+    SECTION("让位途中 Output 又停住、写头也停(走带停):停住满 0.5s 起暂停放轨,Output 回来接着放")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        for (u32 ch = 1; ch <= 5; ++ch)
+        {
+            out.setConnectedMaskBit(ch);
+        }
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+
+        // 700 恢复一块(放 1),之后 Output 与写头都不动(走带停住、宿主也不再调 Output)。
+        block = 1;
+        auto r = cp.tickWatchdog(700);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r.channel == 1);
+        r = cp.tickWatchdog(900); // 停住 200ms(< 0.5s):照放
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 2);
+        r = cp.tickWatchdog(1100); // 停住 400ms:照放
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 3);
+
+        // 1300 起停住 ≥ 0.5s:该放 4 了,但不放;写头也没动 ⇒ 不是停摆,也不清 —— hold 原样闩着 4、5。
+        int released = 0;
+        for (u64 t = 1300; t <= 3000; t += 100)
+        {
+            if (cp.tickWatchdog(t).action != scvb::WatchdogAction::kNone)
+            {
+                ++released;
+            }
+        }
+        CHECK(released == 0);
+        CHECK_FALSE(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == (ki6Bit(4) | ki6Bit(5)));
+
+        // Output 回来:接着放 4,再 ≥200ms 放 5。
+        block = 2;
+        r = cp.tickWatchdog(3040);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 4);
+        CHECK(cp.watchdogHoldMask() == ki6Bit(5));
+        block = 3;
+        CHECK(cp.tickWatchdog(3140).action == scvb::WatchdogAction::kNone);
+        block = 4;
+        r = cp.tickWatchdog(3240);
+        REQUIRE(r.action == scvb::WatchdogAction::kReacquireBit);
+        CHECK(r.channel == 5);
+        CHECK(cp.watchdogHoldMask() == 0u);
+    }
+
+    SECTION("让位途中 Output 又停调,而在写的只剩还被闩着的轨:照样判停摆(被闩的轨也算停摆证据)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        for (u32 ch = 1; ch <= 5; ++ch)
+        {
+            out.setConnectedMaskBit(ch);
+        }
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 5 ? wh : 0; }); // 只有 5 在写
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask();
+
+        // 700 恢复一块后又停调;放出去的 1、2、3 都不健康(执行方没给它们置位 ⇒ mask 一直是空的)。
+        block = 1;
+        REQUIRE(cp.tickWatchdog(700).action == scvb::WatchdogAction::kReacquireBit);
+        wh += 100;
+        REQUIRE(cp.tickWatchdog(900).action == scvb::WatchdogAction::kReacquireBit);
+        wh += 100;
+        REQUIRE(cp.tickWatchdog(1100).action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(out.connectedMask() == 0u);
+        REQUIRE(cp.watchdogHoldMask() == (ki6Bit(4) | ki6Bit(5)));
+
+        // 1200:Output 停住 0.5s,mask 里一条都没有,但还被闩着的 5 在写 ⇒ 判停摆,4、5 并进新快照。
+        wh += 100;
+        const auto r = cp.tickWatchdog(1200);
+        CHECK(r.action == scvb::WatchdogAction::kClearMask);
+        CHECK(cp.watchdogTripped());
+        CHECK(cp.watchdogHoldMask() == kKi6AllChannels);
+    }
+
+    SECTION("工程整体停止播放(写头也停)不闩;未注入源时 hold 恒 0")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1);
+
+        scvb::CtrlPlane bare(backend, 1);
+        REQUIRE(bare.open() == scvb::InitResult::kOk);
+        CHECK(bare.tickWatchdog(5000).action == scvb::WatchdogAction::kNone);
+        CHECK(bare.watchdogHoldMask() == 0u);
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        const u64 block = 0;
+        const u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        for (u64 t = 40; t <= 3000; t += 40)
+        {
+            CHECK(cp.tickWatchdog(t).action == scvb::WatchdogAction::kNone);
+        }
+        CHECK(cp.watchdogHoldMask() == 0u);
+        CHECK_FALSE(cp.watchdogTripped());
+    }
 }

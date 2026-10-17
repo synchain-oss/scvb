@@ -32,6 +32,7 @@
 | harness | 目标 | 能做什么 | 够不着什么 |
 |---|---|---|---|
 | `tests/host/`(`scvb_host_tests`) | 免 DAW 宿主 harness | 单进程托管**真 Output + 真 Input**,经**真 Win32 段**通信,手推 `processBlock` + 真跑 25Hz 消息循环 | **桥面 handler**(不编 `*PluginEntry.cpp`,见 `tests/CMakeLists.txt:239-242`);跨进程 |
+| `tests/host/test_host_sched*.cpp` + `tests/host/sched/SchedRig.h`(同一个二进制 `scvb_host_tests`,ctest 条目 `scvb_host_sched_tests` 用过滤串 `"[sched]"` 单独选出,用例都打 `[.][sched]`) | 宿主调度模拟器(A 线) | 在上一行的真 Output + 真 Input 之上扮演一个**会调度**的宿主:每个实例独立渲染游标与提前量、预取 / live、Cycle / 定位 / 停起走带、起播怪癖、停调策略,总线输入按 lane 真实叠加;逐帧判定接 `tests/support/presence_meter.h` | 桥面 handler、跨进程;宿主真实行为(只是模拟,不替代真机) |
 | `tests/ipc/`(`scvb_ipc_tests`) | IPC 契约 | **真起子进程 peer**(`tests/tools/scvb_ipc_peer.cpp` 13 个角色),真强杀,跨进程一致性/生命周期 | 真 processor —— peer 手搓输入结构体 |
 | `tests/core/test_monitor_harness.cpp`(`scvb_monitor_tests`) | Monitor 全链 | **真 Monitor processor** + 跨进程 viz peer | 真 Output(写方是 peer) |
 | `web-preview/tests/*.mjs` | 页面冒烟 | 真页面 + mock 桥 | 真段、真 native |
@@ -185,6 +186,31 @@ A1/B13 没有一句叫他关)——于是链全绿、用户侧功能等于不存
 | F4b | 特征面恢复(FEAT/sidecar) | ✅ | `HOST SL-226`×7(波形瓦片逐列对拍 + 3 条反向) |
 | F4c | GUID / UI 档位 / 布防运行时态 | ✅ | `HOST SL-215`、`HOST SL-208`、`HOST J87 工程恢复复位布防运行时态`(十个字段先弄脏再回读) |
 | **整链** | **F1→F4** | **✅ e2e** | 上述多条;最完整的一条 = **`HOST SL-226:采集特征随工程往返,重开后泳道波形仍在`**(真 Rig 析构重建 + 瓦片逐列对拍 + 三条反向) |
+
+### 链 G —— 音频环 × 宿主调度链(A 线)
+
+`宿主调度(SchedRig:各实例独立游标 / 提前量 / Cycle / 定位 / 停调)→ Input[A] 写环(真共享内存段)→ Output[A] 读方 ShmRingMixSource(按代认数据)→ OutputSession[M](在线 / 挂起 / 失准 / 看门狗)→ 总线输出 → 在场判据仪器(presence meter)`
+
+链末端的可观测量是**总线输出的逐帧判定**(Present / Absent / Wrong / Partial,按 L/R 能量比还能区分「未平衡原声」与「SCVB 混音」),加桥面可读的 `misalignCount` / `suspended`;不看读方自己的内部计数。落点:
+
+| 零件 | 落点 | 说明 |
+|---|---|---|
+| SchedRig | `tests/host/sched/SchedRig.h`;自测 `tests/host/test_host_sched.cpp`(`SCHED rig 0`…`rig 7`) | 只给 `scvb_host_tests` 里打 `[.][sched]` 的用例用;`[.]` 让主条目 `scvb_host_tests` 默认不跑它们 |
+| presence meter | `tests/support/presence_meter.h`;自测 `tests/core/test_presence_meter.cpp`(`PRESENCE …`,标签 `[presence]`,在 `scvb_tests` 里) | 逐轨正弦 + Goertzel + 互相关;R / 2R 别名读到的陈旧帧判 Wrong |
+| A-3 oracle | `tests/core/test_mix_source_provenance.cpp`(`PROVENANCE …`,标签 `[mix][provenance]`,在 `scvb_tests` 里) | 给环里每个槽打出处标签,逐帧检查「读到的每一帧都是写方为这个位置写的」;写方是复刻 InputProcessor 协议的模型,不是真 Input,所以按 §0 只记 🟡;含与旧读方的差分基线(同步族新读方成功集合 ⊇ 旧读方) |
+| 场景 LS-1…15 | `tests/host/test_host_sched_scenarios.cpp`(`SCHED LS-n …`);ctest 条目 `scvb_host_sched_tests`(`add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")`,TIMEOUT 值与实测观测见 `tests/CMakeLists.txt` 里该条目上方的注释) | 真 Output + 真 Input + 真段,按脚本调度;跨 500 ms / 5.5 s 门限的格用 pace=1 实时跑 |
+
+| # | 跳 | 覆盖 | 用例 |
+|---|---|---|---|
+| G1 | 调度 → 读方认代(循环 / 回跳 / 起播怪癖 / 近一圈的定位 / mono⇄stereo 重建) | ✅ | `SCHED LS-1`…`LS-10`、`LS-13`(`scvb_host_sched_tests`);读环层 🟡 `PROVENANCE …`(`scvb_tests`) |
+| G2 | 读方 → 总线在场(无错帧、每圈最多丢一个写方块) | ✅ e2e | 同上,判据 = presence meter 的逐帧判定;写方领先时恢复处最多丢一个写方块,与 CHANGELOG #386 的口径一致 |
+| G3 | 持续读不到 → 「路由失准」亮起与撤下 | ✅ | `SCHED LS-14`×3、`SCHED A-6: no scenario that should stay readable raises misalign`(零误报扫描)、`HOST N2b`×2(`scvb_host_tests`);OutputSession 层 🟡 `[A-6] …`×4(`test_output_session.cpp`)、`ShmRingMixSource A-6 …`×5(`test_mix_source.cpp`) |
+| G4 | 挂起 ≠ 掉线(走带在跑时保持在线,恢复同块读到) | ✅ | `SCHED LS-12`×6、`SCHED LS-15`;`HOST A-8 U3(b)-ii …` 与 `… boundary`(`scvb_host_tests`);OutputSession 层 🟡 `[A-8] …`×4 |
+| G5 | 注入轨全部停滞且总线听得见 → 80 ms 交叉回原声 | ✅ e2e | `SCHED E2 (U3(b)-ii)`×2;`HOST A-8 U3(b)-ii …`(含总线上另有非 SCVB 声源的边界) |
+| G6 | Output 被停调 → 看门狗闩锁 → 约 5.5 s 转原声 → 逐轨接回(KI-6) | ✅ e2e | `SCHED LS-11a`、`LS-11b`(表征);🟡 `[KI-6] …`×4(`test_output_session.cpp`)、`[KI-6] watchdog hold …`(`test_ipc_lifecycle.cpp`) |
+| **整链** | **G1→G6** | **✅ e2e(模拟宿主)** | `scvb_host_sched_tests` 全套;每个修复卡的反向 / 删除式验证结果记在各自的 PR 描述里(#376、#379、#386、#387、#388) |
+
+边界:这条链只在**模拟**宿主上验证。真宿主(Cubase ASIO-Guard、REAPER anticipative 等)的行为只在 spike 层有记录,见 [DAW_COMPATIBILITY.md](../DAW_COMPATIBILITY.md)。用户可感知的残余见 [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) KI-11。`LS-n` 的数字口径(例如「约 21 ms」「亮起约 2 × 提前量」)以场景文件里的判据和 CHANGELOG 为准,本表不复制数字。
 
 ---
 

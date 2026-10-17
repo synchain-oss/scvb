@@ -433,6 +433,17 @@ bool InputSession::createSegments(u32 sampleRate, u32 channels)
             ah->channels = channels;
             ah->write_head_samples.store(0, std::memory_order_release);
             ah->epoch.fetch_add(1, std::memory_order_release); // 换代:读方丢弃旧代数据(01 §4.1)
+            // [B 线 M04] 换代后的 release fence(本文件三处换代同一写法;AudioRing::bumpEpoch 是第四处)。
+            // 方向:epoch+1 那条 release RMW 已经保证它**之前**的几何 / write_head=0 先于新 epoch 可见;
+            // 它挡不住的是**之后**本线程的写被提到 epoch+1 之前可见,fence 补的就是这一侧。
+            // 如实交代:今天这三处之后,新一代样本是音频线程在 acquire 到本线程随后 release 发布的
+            // 环绑定(audioRing_.bind)之后才写的 —— 那条 release/acquire 链加上 arm64 的多副本原子性,
+            // 已经让读方见到新样本时必然也见得到 epoch+1;本线程换代之后不再写环数据或写头,所以这三处
+            // 在 x86 和 arm64 上都构造不出撕裂。这道 fence 是把「换代 → fence → 新一代写」做成与
+            // bumpEpoch 同一个局部写法,不再依赖那条跨线程的链(以后有人在本线程换代后直接写环 / 写头,
+            // 顺序照样成立)。x86 上是编译器屏障、不生成指令;arm64 上一条 DMB ISH,只在 prepare /
+            // 重建几何时走到。
+            std::atomic_thread_fence(std::memory_order_release);
         },
         /*allowOverwrite=*/true);
     if (air != InitResult::kOk)
@@ -464,6 +475,7 @@ bool InputSession::createSegments(u32 sampleRate, u32 channels)
         ah->channels = channels;
         ah->write_head_samples.store(0, std::memory_order_release);
         ah->epoch.fetch_add(1, std::memory_order_release); // 换代:读方丢弃旧代数据(01 §4.1)
+        std::atomic_thread_fence(std::memory_order_release); // [B 线 M04] 同上面 initData 里那一处
     }
 
     audioRing_.bind(ah, adata);
@@ -518,6 +530,7 @@ void InputSession::rebuildAudioGeometry(u32 sampleRate, u32 channels)
     ah->channels = channels;
     ah->write_head_samples.store(0, std::memory_order_release);
     ah->epoch.fetch_add(1, std::memory_order_release);
+    std::atomic_thread_fence(std::memory_order_release); // [B 线 M04] 同 createSegments 里 initData 那一处
     audioRing_.bind(ah, adata);
 }
 

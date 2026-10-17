@@ -13,24 +13,35 @@ function Get-ScvbCMakeVersion([string]$CMakeText) {
 }
 
 # tag 与版本真源的对应关系。返回 hashtable:Ok / Version(去掉 v 的整串)/ Core(x.y.z)/
-# Kind(final | rc | test)/ Prerelease / Message。
+# Kind(final | rc | beta | test)/ Prerelease / Message。
 #   vX.Y.Z        正式版,X.Y.Z 必须等于 CMake 版本
 #   vX.Y.Z-rc.N   预发布,X.Y.Z 同样必须等于 CMake 版本(rc 不改 CMakeLists)
+#   vX.Y.Z-beta.N 预发布,规则与 rc 相同:X.Y.Z 必须等于 CMake 版本(beta 不改 CMakeLists),
+#                 草稿 Release 同样勾 pre-release。N 必填,只认小写 beta 加一段数字:
+#                 -beta / -beta.1.2 / -BETA.1 / -alpha.1 都拒。
 #   v0.0.0-test[.N] 流水线演练专用:只放行 0.0.0,不比对 CMake —— 为的是不改版本号就能走通
 #                 构建 → 打包 → 草稿 Release 全程;限死 0.0.0 是为了让它不可能冒充一个真版本。
+# 正则用 [regex]::Match(区分大小写),不要换成 PowerShell 的 -match(默认不区分,-BETA.1 会混进来)。
 function Test-ScvbReleaseTag([string]$Tag, [string]$CMakeVersion) {
   $r = @{ Ok = $false; Version = $null; Core = $null; Kind = $null; Prerelease = $false; Message = '' }
-  $m = [regex]::Match($Tag, '^v([0-9]+\.[0-9]+\.[0-9]+)(?:-(rc\.[0-9]+|test(?:\.[0-9]+)?))?\z')
+  $m = [regex]::Match($Tag, '^v([0-9]+\.[0-9]+\.[0-9]+)(?:-(rc\.[0-9]+|beta\.[0-9]+|test(?:\.[0-9]+)?))?\z')
   if (-not $m.Success) {
-    $r.Message = "tag '$Tag' 形态不对:只接受 vX.Y.Z、vX.Y.Z-rc.N、v0.0.0-test[.N]"
+    $r.Message = "tag '$Tag' 形态不对:只接受 vX.Y.Z、vX.Y.Z-rc.N、vX.Y.Z-beta.N、v0.0.0-test[.N]"
     return $r
   }
   $r.Core = $m.Groups[1].Value
   $r.Version = $Tag.Substring(1)
   $pre = $m.Groups[2].Value
+  # 每种预发布显式各占一支,没有兜底分支:以前最后一支是 else ⇒ test,正则里多放行一种形态
+  # 却忘了在这里分派时,它会被当成演练 tag(不比对 CMake 版本)。现在落空就拒。
   if (-not $pre) { $r.Kind = 'final' }
-  elseif ($pre.StartsWith('rc.')) { $r.Kind = 'rc'; $r.Prerelease = $true }
-  else { $r.Kind = 'test'; $r.Prerelease = $true }
+  elseif ($pre.StartsWith('rc.', [StringComparison]::Ordinal)) { $r.Kind = 'rc'; $r.Prerelease = $true }
+  elseif ($pre.StartsWith('beta.', [StringComparison]::Ordinal)) { $r.Kind = 'beta'; $r.Prerelease = $true }
+  elseif ($pre -ceq 'test' -or $pre.StartsWith('test.', [StringComparison]::Ordinal)) { $r.Kind = 'test'; $r.Prerelease = $true }
+  else {
+    $r.Message = "tag '$Tag' 的预发布段 '$pre' 过了正则却没有对应的 Kind(release-version.ps1 的正则与分派不同步)"
+    return $r
+  }
 
   if ($r.Kind -eq 'test') {
     if ($r.Core -ne '0.0.0') { $r.Message = "演练 tag 只允许 v0.0.0-test[.N],'$Tag' 不行"; return $r }

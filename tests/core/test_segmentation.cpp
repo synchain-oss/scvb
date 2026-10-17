@@ -24,7 +24,6 @@ using scvb::analysis::SegmentationParams;
 using scvb::analysis::Valley;
 
 constexpr int kSampleRate = 48000;
-constexpr double kHopMs = 10.0;
 
 int64_t sec(double s)
 {

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// windows.h 的 min/max 宏会污染 std::numeric_limits<T>::min() 与 std::max;先禁用再包含
-// SegmentBackendWin32.h(其内部 include windows.h 但未定义 NOMINMAX)。
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
@@ -19,7 +13,7 @@
 #include "input/InputSession.h"
 #include "input/OutputStage.h"
 #include "ipc/CtrlPlane.h"
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // 按平台选段后端(Windows 分支自带 NOMINMAX,见该头)
 #include "state/InputStateCodec.h"
 #include "state/StateCodec.h"
 
@@ -175,7 +169,7 @@ private:
     juce::CriticalSection lifecycleMutex_; // 串行化 prepareToPlay/release/setState/claim/心跳([M] 与宿主回调互斥)
 
     // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
-    scvb::SegmentBackendWin32 backend_;
+    scvb::PlatformSegmentBackend backend_; // 按平台选定的段后端(见 ipc/PlatformSegmentBackend.h)
     scvb::input::InputSession session_;
     // 本组 ctrl 段(T30 桥:remoteSetPriority 命令环上行 + OutputGlobalInfo 只读;per-组语义 J66,
     // setGroupId 经 CtrlPlane::changeGroup 随组走)。
