@@ -90,7 +90,7 @@
 - 单测:Catch2 测 scvb_core(VAD/分段/响度/分配/曲线插值全部离线可测);pluginval strictness 5(--skip-gui-tests)进 CI;macOS 同强度:pluginval strictness 5 对三插件 × VST3 / AU 两格式共 6 次(v2.4/J186;具体清单以 `build-macos.yml` 为准)
 - clang-format(仓库带 .clang-format,风格对齐 Bridge 现状);/W4(MSVC)+ -Wall -Wextra -Wpedantic;**macOS 同用 -Wall -Wextra -Wpedantic,Apple clang 一方源码零警告**(v2.4/J186)
 - IPC 结构体:static_assert 布局与 lock-free;所有跨线程原子 std::atomic
-- **macOS 质量门(v2.4/J186)**:mac CI job 跑 clang 一方零警告构建、ctest(12 条)、`auval -v aufx <Scvi|Scvo|Scvm> Snch` ×3(判负)、`auval -strict -v` ×3(**只记录、不判负**)、pluginval strictness 5 共 6 次(3 插件 × VST3 / AU)外加 Output GUI 一次、`scvb-auhost` 验证(进程内 / 进程外两种)、打包冒烟;门禁清单以 `build-macos.yml` 为准。**mac job 失败只提示、不阻塞 Windows 出包**(发布流程中 macOS 产物为 beta 附件,Windows 产物按原门禁出)。Windows 现有门禁(gate 1-8)口径不变。
+- **macOS 质量门(v2.4/J186)**:mac CI job 跑 clang 一方零警告构建、ctest(12 条)、`auval -v aufx <Scvi|Scvo|Scvm> Snch` ×3(判负)、`auval -strict -v` ×3(单列,**只记录、不判负**;注:pluginval strictness 5 对 `.component` 自带的 auval 子项跑的正是 `-strict`,所以 `-strict` 实际已随 pluginval 入门)、pluginval strictness 5 共 6 次(3 插件 × VST3 / AU,判负)、Output GUI pluginval 一次(**只记录、不判负**)、`scvb-auhost` 验证(进程内 / 进程外两种)、打包冒烟;门禁清单以 `build-macos.yml` 为准。**mac job 失败只提示、不阻塞 Windows 出包**(发布流程中 macOS 产物为 beta 附件,Windows 产物按原门禁出)。Windows 现有门禁(gate 1-8)口径不变。
 
 ## ADR-012 SCVB 仓库结构(骨架)
 ```
@@ -219,7 +219,7 @@ scvb/
   理由:与 J81 同类 —— 新增平台与新增插件格式,J22 的豁免只管辅助目标,管不到;按 J183 先例在 tag 前写进正文,免得代码、CI 与宪法互相矛盾。
   「beta」只描述首批 macOS 产物的发布属性,**不把 beta 固化为永久状态**。
 - **[J186→ADR-011 增补]** 工具链:macOS = Apple clang / arm64 / `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`,UI = 系统 WKWebView;质量门:macOS 同强度的 pluginval 与零警告口径,
-  并新增「macOS 质量门」一条(clang 一方零警告构建、ctest、auval ×3 判负、`auval -strict` ×3 只记录、pluginval ×6 + Output GUI 一次、`scvb-auhost` 进程内 / 进程外、打包冒烟;
+  并新增「macOS 质量门」一条(clang 一方零警告构建、ctest、auval ×3 判负、`auval -strict` ×3 单列只记录(其效力已随 pluginval 的 auval 子项入门)、pluginval ×6 判负、Output GUI pluginval 一次只记录、`scvb-auhost` 进程内 / 进程外、打包冒烟;
   **mac job 失败只提示、不挡 Windows 出包**)。数字取自 mac CI 实况(run 38708566079 日志),清单以 `build-macos.yml` 为准,免得每改一个 CI 步骤就再修一次宪。
 - **[J186 记录]** 同批升 `ipc-contract-v0.md` v1.6 → **v1.7**:§0 总则「macOS 后续用 POSIX shm 同布局」改成现行表述(macOS 线已实现 POSIX shm,同布局),
   **布局 / 段名 / abi 零变化**。仓内变更文档 `docs/contract-changes/20261016-j186-adr-macos-au-v2.4.md`。

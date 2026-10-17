@@ -12,7 +12,7 @@
 - 单测:Catch2 测 scvb_core(VAD/分段/响度/分配/曲线插值全部离线可测);pluginval strictness 5(--skip-gui-tests)进 CI;macOS 同强度:pluginval strictness 5 对三插件 × VST3 / AU 两格式共 6 次(v2.4/J186;具体清单以 `build-macos.yml` 为准)
 - clang-format(仓库带 .clang-format,风格对齐 Bridge 现状);/W4(MSVC)+ -Wall -Wextra -Wpedantic;**macOS 同用 -Wall -Wextra -Wpedantic,Apple clang 一方源码零警告**(v2.4/J186)
 - IPC 结构体:static_assert 布局与 lock-free;所有跨线程原子 std::atomic
-- **macOS 质量门(v2.4/J186)**:mac CI job 跑 clang 一方零警告构建、ctest(12 条)、`auval -v aufx <Scvi|Scvo|Scvm> Snch` ×3(判负)、`auval -strict -v` ×3(**只记录、不判负**)、pluginval strictness 5 共 6 次(3 插件 × VST3 / AU)外加 Output GUI 一次、`scvb-auhost` 验证(进程内 / 进程外两种)、打包冒烟;门禁清单以 `build-macos.yml` 为准。**mac job 失败只提示、不阻塞 Windows 出包**(发布流程中 macOS 产物为 beta 附件,Windows 产物按原门禁出)。Windows 现有门禁(gate 1-8)口径不变。
+- **macOS 质量门(v2.4/J186)**:mac CI job 跑 clang 一方零警告构建、ctest(12 条)、`auval -v aufx <Scvi|Scvo|Scvm> Snch` ×3(判负)、`auval -strict -v` ×3(单列,**只记录、不判负**;注:pluginval strictness 5 对 `.component` 自带的 auval 子项跑的正是 `-strict`,所以 `-strict` 实际已随 pluginval 入门)、pluginval strictness 5 共 6 次(3 插件 × VST3 / AU,判负)、Output GUI pluginval 一次(**只记录、不判负**)、`scvb-auhost` 验证(进程内 / 进程外两种)、打包冒烟;门禁清单以 `build-macos.yml` 为准。**mac job 失败只提示、不阻塞 Windows 出包**(发布流程中 macOS 产物为 beta 附件,Windows 产物按原门禁出)。Windows 现有门禁(gate 1-8)口径不变。
 
 ## 修订历史(摘自 constitution/ADR.md)
 
@@ -23,5 +23,5 @@
 - **[J38→ADR-011]** clang-format 版本钉 **18.1.8**,CI 与本地同版本。
 - **[J81 连带]** ADR-011 的质量门:pluginval strictness 5 与 CI 构建计数由 2 目标扩到 3 目标;`build.ps1 -Target` 增 `Monitor`。
 - **[J186→ADR-011 增补]** 工具链:macOS = Apple clang / arm64 / `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`,UI = 系统 WKWebView;质量门:macOS 同强度的 pluginval 与零警告口径,
-  并新增「macOS 质量门」一条(clang 一方零警告构建、ctest、auval ×3 判负、`auval -strict` ×3 只记录、pluginval ×6 + Output GUI 一次、`scvb-auhost` 进程内 / 进程外、打包冒烟;
+  并新增「macOS 质量门」一条(clang 一方零警告构建、ctest、auval ×3 判负、`auval -strict` ×3 单列只记录(其效力已随 pluginval 的 auval 子项入门)、pluginval ×6 判负、Output GUI pluginval 一次只记录、`scvb-auhost` 进程内 / 进程外、打包冒烟;
   **mac job 失败只提示、不挡 Windows 出包**)。数字取自 mac CI 实况(run 38708566079 日志),清单以 `build-macos.yml` 为准,免得每改一个 CI 步骤就再修一次宪。
