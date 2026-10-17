@@ -149,7 +149,7 @@
 
 - [ ] **J2 草稿 Release 里的 macOS 三件已撤下并留存**
   - 怎么查:草稿 Release 的资产列表里没有 `SCVB-v0.10.0-beta.1-macos-arm64.*`(zip、`.sha256`、`package-summary-macos.md`);三件已下载另存,SHA-256 记在 [luna-acceptance.md](luna-acceptance.md) 的验收记录里,待 LUNA 验收后补传到同一 Release。
-  - 标题与重跑:mac 那一路绿时,`release-macos` 会把草稿标题改成「(Windows x64 · macOS arm64 beta)」。撤下三件后**把标题手改回** `Synchain Vocal Balancer v0.10.0-beta.1 (Windows x64)`,再用 `gh release view v0.10.0-beta.1 --json name,assets` 回读,确认标题与 3 个资产名都对。手改回去的标题正好等于流水线原样标题,所以撤下之后**不要对这次 run 点 Re-run failed jobs**,否则 mac 三件会被重新传上来、标题也会再被改掉(`docs/RELEASE.md` 同一 tag 重跑一段)。
+  - 标题与重跑:mac 那一路绿时,`release-macos` 会把草稿标题改成「(Windows x64 · macOS arm64 beta)」。撤下三件后**把标题手改回** `Synchain Vocal Balancer v0.10.0-beta.1 (Windows x64)`,再用 `gh release view v0.10.0-beta.1 --json name,assets` 回读,确认标题与 3 个资产名都对。手改回去的标题正好等于流水线原样标题,所以撤下之后**不要再以任何方式重跑这次 run**(Re-run all jobs,或单独重跑 `build-mac` / `release-macos`),否则 mac 三件会被重新传上来、标题也会再被改掉,Re-run all 还会把正文重置(`docs/RELEASE.md` 同一 tag 重跑一段)。
   - 补传(LUNA 验收后,Release 已发布,流水线不碰,只能手工):`gh release upload` 三件 → 读回并 `shasum -a 256 -c` 核对 → 标题改成合并标题 → 正文补上 mac 的 SHA-256(取自 `package-summary-macos.md`)。
   - 证据:______
   - 状态:⏳ 统筹
