@@ -1,18 +1,19 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 架构决策记录(ADR)——P1 宪法,起草文档不得与之矛盾
 
-状态:**v2.3**(2026-09-30,J183 修宪:ADR-001a 表「0 自动化参数」一格的 bypass 一句订正 —— JUCE wrapper 合成的 bypass 宿主可以自动化,它不占的是 123 的预算、不是「自动化位」;三条铁律与断言一字未动,见文末 v2.3 修订节;v2.2 = 2026-08-31,J95 修宪:ADR-009 澄清「上报段响度」与「平衡归一化基准」是两件事,正文一字未动、只追加修订节;**本状态行当时漏升,2026-09-28 补升**,见文末 v2.2 修订节后的补记;v2.1 = 2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
+状态:**v2.4**(2026-10-16,J186 修宪:新增发布平台 macOS arm64(Apple Silicon,最低 macOS 11)与 Audio Unit(AU)格式,首批 macOS 产物为 beta;ADR-001 增「发布格式与平台」条、ADR-011 增 macOS 工具链与质量门,三插件目标 / PLUGIN_CODE / BUNDLE_ID / 123 参数面 / ADR-001a 三铁律一字未动,见文末 v2.4 修订节;v2.3 = 2026-09-30,J183 修宪:ADR-001a 表「0 自动化参数」一格的 bypass 一句订正 —— JUCE wrapper 合成的 bypass 宿主可以自动化,它不占的是 123 的预算、不是「自动化位」;三条铁律与断言一字未动,见文末 v2.3 修订节;v2.2 = 2026-08-31,J95 修宪:ADR-009 澄清「上报段响度」与「平衡归一化基准」是两件事,正文一字未动、只追加修订节;**本状态行当时漏升,2026-09-28 补升**,见文末 v2.2 修订节后的补记;v2.1 = 2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
 
 依据:masterPlan/decisions.md(D1-D8)+ research/01~10 报告。
 
 ---
 
-## ADR-001 插件形态:三个插件目标 + 共享核心库(CMake 四主目标)(v2.1/J81 改写)
+## ADR-001 插件形态:三个插件目标 + 共享核心库(CMake 四主目标)(v2.1/J81 改写;v2.4/J186 增补发布格式与平台)
 一个仓库,CMake **四个主目标**:`scvb_core`(静态库:DSP/分析/IPC/状态/版本引擎,可离线单测)、`SCVB Input`(VST3)、`SCVB Output`(VST3)、**`SCVB Monitor`(VST3,[J75]/J81 新增:纯只读监视器)**。JUCE 一个 target 一个插件,不做单插件双模式(用户会同时开十几个实例,双模式易误操作)。
 - PLUGIN_CODE:Input=`Scvi`,Output=`Scvo`,**Monitor=`Scvm`**(Snb1 已被 Bridge 占用;厂商码统一 `Snch`)
 - BUNDLE_ID:`com.synchain.scvb.{input,output,monitor}`
 - PRODUCT_NAME:"SCVB Input" / "SCVB Output" / **"SCVB Monitor"**(显示名带 Synchain 由厂商列免)…最终名在 05/UI 文档定,插件码/bundle id 冻结
 - 打包产物由 2 个 `.vst3` 变 **3 个**(`build.ps1 -Target` / `gates.ps1` gate 7/8 的 bundle 允许表与计数 / `build-vst3.yml` 计数同步 2 → 3)
+- **发布格式与平台(v2.4/J186)**:Windows x64 发布 **VST3**(三个插件,与上同)。**macOS arm64(Apple Silicon,最低 macOS 11)新增 VST3 + Audio Unit(AU),首批 macOS 产物为 beta**:同一 CMake 目标加 `AU` 格式(`FORMATS VST3 AU`),**不新增主目标**,三插件目标 / PLUGIN_CODE / BUNDLE_ID 不变,AU 沿用同一 PLUGIN_CODE 与厂商码。macOS 产物未签名、未公证(用户自行 xattr);不支持 Intel / Rosetta / GarageBand;**Logic 未实测、不作支持承诺**;**不做 AAX**。**AU 三元组冻结**:`aufx Scvi Snch`(Input)/ `aufx Scvo Snch`(Output)/ `aufx Scvm Snch`(Monitor),首个含 AU 的公开发布后不可改;**AU 参数 ID 与 VST3 同源**:由 ParamID 字符串散列派生(`JUCE_FORCE_USE_LEGACY_PARAM_IDS=0`、`JUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=1`,两宏由根 CMakeLists 一处给出),与 123 参数面同一冻结点;回归判据 `tests/core/test_au_param_ids.cpp`。
 
 ### ADR-001a Monitor 三铁律(v2.1/J81 入宪正文)
 
@@ -83,12 +84,13 @@
 - 段间过渡:在段边界(停顿/换气)切换,默认 ramp 80ms(可调),避免可闻跳变
 
 ## ADR-011 技术栈与质量门
-- JUCE 8.0.8 / CMake ≥3.22 / C++17 / MSVC 静态 CRT(对齐 Bridge)
-- UI:JUCE WebView(WebView2 静态 loader),纯 HTML/CSS/JS,复用 Bridge 的资源嵌入+resource provider+native function 桥模式与缩放机制(web 固定设计盒 + CSS zoom + setSize 同步 + 10 秒确认防呆)
+- JUCE 8.0.8 / CMake ≥3.22 / C++17 / **Windows:MSVC 静态 CRT(对齐 Bridge);macOS:Apple clang,arm64,`CMAKE_OSX_DEPLOYMENT_TARGET=11.0`(v2.4/J186)**
+- UI:JUCE WebView(**Windows:WebView2 静态 loader;macOS:系统 WKWebView**),纯 HTML/CSS/JS,复用 Bridge 的资源嵌入+resource provider+native function 桥模式与缩放机制(web 固定设计盒 + CSS zoom + setSize 同步 + 10 秒确认防呆)
 - 浏览器预览:复刻 web-contract 模式(mock 桥后端),axe-core 可跑无障碍检查
-- 单测:Catch2 测 scvb_core(VAD/分段/响度/分配/曲线插值全部离线可测);pluginval strictness 5(--skip-gui-tests)进 CI
-- clang-format(仓库带 .clang-format,风格对齐 Bridge 现状);/W4(MSVC)+ -Wall -Wextra -Wpedantic
+- 单测:Catch2 测 scvb_core(VAD/分段/响度/分配/曲线插值全部离线可测);pluginval strictness 5(--skip-gui-tests)进 CI;macOS 同强度:pluginval strictness 5 对三插件 × VST3 / AU 两格式共 6 次(v2.4/J186;具体清单以 `build-macos.yml` 为准)
+- clang-format(仓库带 .clang-format,风格对齐 Bridge 现状);/W4(MSVC)+ -Wall -Wextra -Wpedantic;**macOS 同用 -Wall -Wextra -Wpedantic,Apple clang 一方源码零警告**(v2.4/J186)
 - IPC 结构体:static_assert 布局与 lock-free;所有跨线程原子 std::atomic
+- **macOS 质量门(v2.4/J186)**:mac CI job 跑 clang 一方零警告构建、ctest(12 条)、`auval -v aufx <Scvi|Scvo|Scvm> Snch` ×3(判负)、`auval -strict -v` ×3(单列,**只记录、不判负**;注:pluginval strictness 5 对 `.component` 自带的 auval 子项跑的正是 `-strict`,所以 `-strict` 实际已随 pluginval 入门)、pluginval strictness 5 共 6 次(3 插件 × VST3 / AU,判负)、Output GUI pluginval 一次(**只记录、不判负**)、`scvb-auhost` 验证(进程内 / 进程外两种)、打包冒烟;门禁清单以 `build-macos.yml` 为准。**mac job 失败只提示、不阻塞 Windows 出包**(发布流程中 macOS 产物为 beta 附件,Windows 产物按原门禁出)。Windows 现有门禁(gate 1-8)口径不变。
 
 ## ADR-012 SCVB 仓库结构(骨架)
 ```
@@ -208,3 +210,22 @@ scvb/
 - **[J183 记录]** 同批升 `params-v0.md` v2.5 → **v2.6**(state 登记向实现对齐;其 §一 [J81] 块 Monitor 一条是同一句,同批订正)。
   仓内 `tests/core/test_monitor_processor.cpp`「Monitor:0 自动化参数」用例的注释是同一说法,rc tag 前 `tests/` 不动,留给 tag 之后的注释订正卡。
   仓内变更文档 `docs/contract-changes/20260930-j183-params-v0-v2.6-state-register.md`。
+
+# v2.4 修订(2026-10-16,J186 修宪)
+
+- **[J186→ADR-001 增补]** 新增「发布格式与平台」一条:Windows x64 VST3 不变;**macOS arm64(Apple Silicon,最低 macOS 11)新增 VST3 + AU,首批 macOS 产物为 beta**。
+  同一 CMake 目标加 `AU` 格式,不新增主目标;三插件目标 / PLUGIN_CODE / BUNDLE_ID 不变;macOS 产物不签名不公证,不支持 Intel / Rosetta / GarageBand,
+  Logic 未实测、不作支持承诺,不做 AAX。同条冻结 AU 三元组(`aufx Scvi|Scvo|Scvm Snch`)与 AU 参数 ID 的派生方式(与 VST3 同源,两宏由根 CMakeLists 一处给出)。
+  理由:与 J81 同类 —— 新增平台与新增插件格式,J22 的豁免只管辅助目标,管不到;按 J183 先例在 tag 前写进正文,免得代码、CI 与宪法互相矛盾。
+  「beta」只描述首批 macOS 产物的发布属性,**不把 beta 固化为永久状态**。
+- **[J186→ADR-011 增补]** 工具链:macOS = Apple clang / arm64 / `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`,UI = 系统 WKWebView;质量门:macOS 同强度的 pluginval 与零警告口径,
+  并新增「macOS 质量门」一条(clang 一方零警告构建、ctest、auval ×3 判负、`auval -strict` ×3 单列只记录(其效力已随 pluginval 的 auval 子项入门)、pluginval ×6 判负、Output GUI pluginval 一次只记录、`scvb-auhost` 进程内 / 进程外、打包冒烟;
+  **mac job 失败只提示、不挡 Windows 出包**)。数字取自 mac CI 实况(run 38708566079 日志),清单以 `build-macos.yml` 为准,免得每改一个 CI 步骤就再修一次宪。
+- **[J186 记录]** 同批升 `ipc-contract-v0.md` v1.6 → **v1.7**:§0 总则「macOS 后续用 POSIX shm 同布局」改成现行表述(macOS 线已实现 POSIX shm,同布局),
+  **布局 / 段名 / abi 零变化**。仓内变更文档 `docs/contract-changes/20261016-j186-adr-macos-au-v2.4.md`。
+- **[J186 记录]** 同批同步 scvb `docs/constitution/ADR.md` 副本(sha256),并订正陈旧的 `docs/adr/0001-plugin-form.md`、`0011-tech-stack-quality-gates.md`
+  (补齐 v2.1/J81 的 Monitor 与三插件、v2.3 的 bypass 订正,再加 v2.4 增补)与 `docs/adr/README.md` 表;用户 2026-10-12 批准文本与上述顺带订正。
+- **零变动面**:ADR-001a Monitor 三铁律及其「落实」「断言」两列、ADR-002 … ADR-010 全文、ADR-004 / params-v0 的 123 参数面(ParamID / index / skew 冻结,J21)、
+  PLUGIN_CODE(`Scvi` / `Scvo` / `Scvm`,厂商码 `Snch`)、BUNDLE_ID、ADR-012 … ADR-014、既有各历史修订节一字未动;ADR-011 的 Windows 门禁(gate 1-8)口径不变。
+  `params-v0.md` 不升版。AU 形态下 Monitor 的 bypass 行为(AU 的 bypass 是 `kAudioUnitProperty_BypassEffect`,不一定合成参数)**不在本次预判**:
+  ADR-001a 的断言原样保留,若 AU 形态的 Monitor 测试需放宽或拆断言,另起修宪。

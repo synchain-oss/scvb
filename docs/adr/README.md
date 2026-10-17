@@ -4,7 +4,7 @@
 
 | 文件 | 决策 |
 |---|---|
-| `0001-plugin-form.md` | ADR-001 插件形态:两个插件目标 + 共享核心库 |
+| `0001-plugin-form.md` | ADR-001 插件形态:三个插件目标 + 共享核心库(含 ADR-001a Monitor 三铁律、发布格式与平台) |
 | `0002-routing-architecture.md` | ADR-002 路由架构 |
 | `0003-channel-semantics.md` | ADR-003 声道语义 |
 | `0004-parameter-layout.md` | ADR-004 参数布局 |
