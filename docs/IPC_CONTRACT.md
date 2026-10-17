@@ -1,7 +1,7 @@
 # IPC_CONTRACT —— SCVB 共享内存契约(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-25(J81 修宪转正:ctrl 广播区正式布局 + viz 段;内容依据 `docs/constitution/ipc-contract-v0.md` v1.6)
+> 最后更新: 2026-10-16(J186 修宪:§0 总则一句措辞订正「macOS 后续用 POSIX shm」→ 现行表述,布局零变化,依据 `docs/constitution/ipc-contract-v0.md` v1.7;此前 2026-08-25 J81 修宪转正:ctrl 广播区正式布局 + viz 段,依据 v1.6)
 > 真源: 本文件(由 `docs/constitution/ipc-contract-v0.md` 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -12,7 +12,7 @@
 
 ## 0. 总则
 
-- Windows 命名共享内存(CreateFileMapping,`Local\` 命名空间,同会话可见);macOS 后续用 POSIX shm 同布局
+- Windows 命名共享内存(CreateFileMapping,`Local\` 命名空间,同会话可见);macOS 用 POSIX shm(`shm_open`,段名的 `Local\` 前缀映射为 `/`)同布局(v1.7/J186 订正原句「后续用」:macOS 线已实现,布局 / abi 未改)
 - 所有跨进程字段 `std::atomic`,static_assert lock-free + 布局(offsetof);缓存行 64B 对齐;ABI 版本字段先行
 - 心跳双阈值(J10):各写入方每 ~250ms 更新自己的 heartbeat(steady clock ms);读取方 **>2000ms 视为陈旧**(UI 显示陈旧,按未连接处理);slot 接管/覆盖需 **≥5000ms 且 pid 存活探测失败**(双条件,保护 SPSC 前提)
 - 无法枚举/删除残留段 → 固定段名 + 覆盖式重新初始化(带 generation 计数)
