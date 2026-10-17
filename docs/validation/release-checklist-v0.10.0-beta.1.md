@@ -120,10 +120,10 @@
   - 证据:______
   - 状态:⏳ 统筹
 
-- [ ] **G2 README / USER_GUIDE 写明 macOS 包的发布节奏**
+- [x] **G2 README / USER_GUIDE 写明 macOS 包的发布节奏**
   - 怎么查:四份文档(`README.md`、`README.zh-CN.md`、`docs/USER_GUIDE.md`、`docs/USER_GUIDE.zh-CN.md`)各有一句同义的话:「macOS beta 包在 LUNA 真机验收通过后才补传到 Release;在那之前 Releases 页上只有 Windows 包。」
-  - 证据:______
-  - 状态:⏳ 统筹
+  - 证据:M20 在 PR 分支上逐份 grep 过,四份各有一句(英文两份 `only the Windows package`,中文两份 `只有 Windows 包`)。
+  - 状态:✅ 已核
 
 - [ ] **G3 已知限制清单在 README 可见,`KNOWN_ISSUES.md` 与本版行为一致**
   - 证据:______
@@ -149,6 +149,8 @@
 
 - [ ] **J2 草稿 Release 里的 macOS 三件已撤下并留存**
   - 怎么查:草稿 Release 的资产列表里没有 `SCVB-v0.10.0-beta.1-macos-arm64.*`(zip、`.sha256`、`package-summary-macos.md`);三件已下载另存,SHA-256 记在 [luna-acceptance.md](luna-acceptance.md) 的验收记录里,待 LUNA 验收后补传到同一 Release。
+  - 标题与重跑:mac 那一路绿时,`release-macos` 会把草稿标题改成「(Windows x64 · macOS arm64 beta)」。撤下三件后**把标题手改回** `Synchain Vocal Balancer v0.10.0-beta.1 (Windows x64)`,再用 `gh release view v0.10.0-beta.1 --json name,assets` 回读,确认标题与 3 个资产名都对。手改回去的标题正好等于流水线原样标题,所以撤下之后**不要对这次 run 点 Re-run failed jobs**,否则 mac 三件会被重新传上来、标题也会再被改掉(`docs/RELEASE.md` 同一 tag 重跑一段)。
+  - 补传(LUNA 验收后,Release 已发布,流水线不碰,只能手工):`gh release upload` 三件 → 读回并 `shasum -a 256 -c` 核对 → 标题改成合并标题 → 正文补上 mac 的 SHA-256(取自 `package-summary-macos.md`)。
   - 证据:______
   - 状态:⏳ 统筹
 
@@ -193,14 +195,14 @@
 
 ## 3. 汇总
 
-截至发版准备卡 M20 收尾:共 31 项,已勾 F1(✅,W5 未测)与 F3、J6(N/A),其余待 CI 或统筹。「证据」留空的格子表示还没核,不是通过。
+截至发版准备卡 M20 收尾:共 31 项,已勾 F1(✅,W5 未测)、G2(✅)与 F3、J6(N/A),其余待 CI 或统筹。「证据」留空的格子表示还没核,不是通过。
 
 | 状态 | 项数 |
 | --- | --- |
-| ✅ 已核 | 1(F1) |
+| ✅ 已核 | 2(F1、G2) |
 | N/A | 2(F3、J6) |
 | ⏳ CI | 8(A1、B1、B2、B4、C1、D2、H1、J1) |
-| ⏳ 统筹 | 20 |
+| ⏳ 统筹 | 19 |
 | ⏳ 用户 | 0 |
 
-(合计 31:1 + 2 + 8 + 20 + 0。)
+(合计 31:2 + 2 + 8 + 19 + 0。)
