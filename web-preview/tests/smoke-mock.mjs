@@ -1250,5 +1250,56 @@ const KNOWN_UNMAPPED = new Set([
     //   `SCENARIO_MAP` 带上 role,不在本卡范围内。
 }
 
+log("\n=== [M09] ?scale= 开窗档位写进快照 ui.scale(与真宿主同源)===");
+{
+    const monitorMock = await import(u("web-preview/mock/monitor-mock.js"));
+    const outScale = (params) => {
+        const s = driver.createPreviewSession({ role: "output", params });
+        return {
+            scale: s.world.output.snapshot.ui.scale,
+            warnings: s.info.warnings,
+        };
+    };
+    const inScale = (params) => {
+        const s = driver.createPreviewSession({ role: "input", params });
+        return {
+            scale: s.world.input.snapshot.ui.scale,
+            warnings: s.info.warnings,
+        };
+    };
+    const monScale = (params) => {
+        const s = monitorMock.createPreviewSession({ params });
+        return { scale: s.ctl.state.scale, warnings: s.info.warnings };
+    };
+    for (const [name, get, inTable, outOfTable] of [
+        ["output", outScale, 1.5, 0.75], // 0.75 只在 Input 的档位表里
+        ["input", inScale, 0.75, 0.65], // 0.65 只在 Output / Monitor 的档位表里
+        ["monitor", monScale, 1.5, 0.75],
+    ]) {
+        const dflt = get("");
+        check(
+            dflt.scale === 1 && dflt.warnings.length === 0,
+            `${name}:不给 ?scale= ⇒ 快照 1 档、零警告(实得 ${JSON.stringify(dflt)})`,
+        );
+        const ok = get(`scale=${inTable}`);
+        check(
+            ok.scale === inTable && ok.warnings.length === 0,
+            `${name}:?scale=${inTable}(表内)⇒ 快照 ui.scale = ${inTable}、零警告(实得 ${JSON.stringify(ok)})`,
+        );
+        const off = get(`scale=${outOfTable}`);
+        check(
+            off.scale === 1 &&
+                off.warnings.some((w) => w.includes(`scale=${outOfTable}`)),
+            `${name}:?scale=${outOfTable}(表外)⇒ 回落 1 档且出警告(实得 ${JSON.stringify(off)})`,
+        );
+        const bad = get("scale=abc");
+        check(
+            bad.scale === 1 &&
+                bad.warnings.some((w) => w.includes("scale=abc")),
+            `${name}:?scale=abc ⇒ 回落 1 档且出警告(实得 ${JSON.stringify(bad)})`,
+        );
+    }
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

@@ -4,7 +4,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/synchain-oss/scvb/build-vst3.yml?branch=dev&style=flat-square&label=build)](https://github.com/synchain-oss/scvb/actions)
 [![pluginval](https://img.shields.io/badge/pluginval-strictness%205-brightgreen?style=flat-square)](https://github.com/Tracktion/pluginval)
 [![Release](https://img.shields.io/github/v/release/synchain-oss/scvb?include_prereleases&style=flat-square)](https://github.com/synchain-oss/scvb/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%C2%B7%20VST3-blue?style=flat-square)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%C2%B7%20macOS%20arm64%20beta-blue?style=flat-square)](#requirements)
 
 # SCVB — Synchain Vocal Balancer
 
@@ -45,9 +45,19 @@ Up to 15 vocal tracks per group, 8 independent groups (A–H), 2 version slots. 
 
 ## Requirements
 
+**Windows**
+
 - Windows 10 1809+ or Windows 11, x64
 - A VST3 host
 - WebView2 Evergreen Runtime, for the editor UI (usually already present on Windows)
+
+**macOS (beta)**
+
+- A Mac with Apple Silicon (M1 or later), macOS 11 Big Sur or later. Intel Macs are not supported
+- The host must run natively on Apple Silicon: the plugins contain arm64 code only, so a host running under Rosetta does not list them
+- A VST3 or Audio Unit host. GarageBand is not supported. Logic Pro loads Audio Units only
+- The editor UI uses the system WebKit (Safari 15.4 or later); with a system Safari older than 26.4 the plugin window's zoom stays at 100%
+- The macOS build is a **beta** and is **not code-signed or notarized**: after copying the plugins you have to clear the quarantine flag with `xattr` (see Install)
 
 ## Supported DAWs
 
@@ -62,18 +72,41 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 | REAPER | 7 | **Tier 2 (partly verified)** | Routing (realtime / offline) verified during the routing spike only; the finished plugins and automation write have not been tested in REAPER; may not write automation with the GUI closed (needs "process all notifications"; the plugin UI reminds you to keep the window open); one project per machine |
 | Ableton Live | 12 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: 128-parameter ceiling (124 used here, 4 spare); Re-Enable Automation has to be clicked (the plugin UI reminds you when writing ends); deactivating the Output device gives about 5.5 s of silence before the vocals fall back to passthrough |
 | Studio One | 6 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: automation mode must be set to Write/Latch inside the plugin window; Dropout Protection changes the block size |
+| LUNA (macOS, Apple Silicon) | — | **Tier 3 (beta, pending verification)** | Not yet tested on real hardware; a hands-on acceptance run is planned before the first macOS beta. Expected from the design (not tested): use Latch, LUNA has no Write; the Output cannot sit on a Folder track; the Input cannot go in a Record FX slot; with an Apollo, use Core Audio mode or switch ARM off; hard-disabling the Output with Power gives about 5.5 s of silence (KI-6) |
+| Logic Pro (macOS, Apple Silicon) | — | **Tier 3 (beta / not tested in Logic)** | Not tested in Logic. Audio Unit only (Logic does not load VST3). Expected from the design (not tested): print the whole song with Latch; a partial range may be overwritten with a flat line; create the Aux track first; bypassing the Output stops balancing; freeze with Source Only. GarageBand is not supported |
 
-> Untested hosts may well work — the plugins are standard VST3 — but nobody has confirmed it on a real machine yet. Tiers move up only after a real-hardware test. FL Studio is not in the v1 support matrix.
+> Untested hosts may well work — the plugins are standard VST3 / Audio Unit — but nobody has confirmed it on a real machine yet. Tiers move up only after a real-hardware test. FL Studio is not in the v1 support matrix. The macOS rows are beta: nothing on macOS has been verified in a DAW yet.
 
 ## Install
 
 Pre-release (rc) builds, and later the stable releases, are published on this repository's [Releases page](https://github.com/synchain-oss/scvb/releases); you can also build from source yourself (below).
+
+### Windows
 
 1. From the Releases page, download `SCVB-v<version>-win64.zip` and the matching `.sha256`;
 2. verify the zip against the `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
 3. **SCVB is not code-signed.** Your browser or Windows may warn that the file comes from an unknown publisher; before unzipping, right-click the zip → **Properties** → tick **Unblock** → **OK**. The [User Guide](docs/USER_GUIDE.md#install) has the step-by-step version;
 4. unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and (optionally) `SCVB Monitor.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
 5. rescan plugins in your DAW.
+
+### macOS (Apple Silicon, beta)
+
+> The macOS beta zip is uploaded to the Release only after it has passed hands-on acceptance on a real Mac (LUNA); until then the Releases page has only the Windows package.
+
+The macOS zip is `SCVB-v<version>-macos-arm64.zip` (plus a `.sha256`). It holds VST3 and Audio Unit (`.component`) bundles of all three plugins, and an `INSTALL.txt` that is the authoritative version of the steps below. The build is **not code-signed or notarized**, so the steps include clearing the quarantine flag. In Terminal:
+
+```
+cd ~/Downloads
+shasum -a 256 -c SCVB-v<version>-macos-arm64.zip.sha256
+ditto -x -k SCVB-v<version>-macos-arm64.zip SCVB-v<version>-macos-arm64 && cd SCVB-v<version>-macos-arm64
+for b in SCVB\ *.vst3; do ditto "$b" ~/Library/Audio/Plug-Ins/VST3/"$b"; done
+for b in SCVB\ *.component; do ditto "$b" ~/Library/Audio/Plug-Ins/Components/"$b"; done
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/SCVB\ *.vst3
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SCVB\ *.component
+killall -9 AudioComponentRegistrar
+```
+
+`shasum` must print `OK`. Updating? Delete the old `SCVB *.vst3` and `SCVB *.component` bundles first (`INSTALL.txt` has the exact `rm` lines). `killall` printing "No matching processes" is harmless. Then rescan plugins in your host. In LUNA, Audio Units are on by default: open the Plug-In Manager and run Scan New (or Rescan All); the three SCVB Audio Units must show as "scanned", not "rejected". VST3 is off by default in LUNA on macOS and has to be enabled in the Plug-In Manager first. Use `ditto`, not `cp -r`, to copy the bundles.
 
 **Install both Input and Output.** Those two are a pair and share one version number. **When you upgrade, upgrade every SCVB plugin together**: if the two sides speak different versions of the shared-memory protocol they refuse to connect, on purpose; and even when they do connect, mixing versions is not supported (with a new Output and an old Input, an offline render can sum the vocals twice).
 
@@ -103,7 +136,7 @@ Before you start, read these. Breaking any one of them does not make the result 
 
 ## Privacy
 
-SCVB does not use the network: no update check, no usage statistics, no account. The only web pages it opens are the documentation and WebView2 download links, in your default browser, when you click them. It stores a few cross-project preferences under `%APPDATA%\Synchain\SCVB` and the interface's browser cache under `%LOCALAPPDATA%\Synchain\SCVB`; everything else is saved in your project, apart from files you export yourself. The full list is in the [User Guide, "Privacy and files on disk"](docs/USER_GUIDE.md).
+SCVB does not use the network: no update check, no usage statistics, no account. The only web pages it opens are the documentation and WebView2 download links, in your default browser, when you click them. On Windows it stores a few cross-project preferences under `%APPDATA%\Synchain\SCVB` and the interface's browser cache under `%LOCALAPPDATA%\Synchain\SCVB`; everything else is saved in your project, apart from files you export yourself. On macOS (beta) the cross-project preferences are under `~/Library/Application Support/Synchain/SCVB`, the plugins keep a small lock folder for their shared memory in `~/Library/Application Support/Synchain/SCVB/ipc`, and each plugin writes a diagnostic log (rotated at about 1 MB) to `~/Library/Logs/Synchain/SCVB/` (`input.log`, `output.log`, `monitor.log`); nothing is sent anywhere, and the log lines can contain your user name, so look them over before you share one. The full list is in the [User Guide, "Privacy and files on disk"](docs/USER_GUIDE.md).
 
 ## Build from source
 
@@ -115,6 +148,8 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 
 See [CLAUDE.md](CLAUDE.md) §6 for the full toolchain list, and run `pwsh scripts/gates.ps1` for the local quality gates.
 
+macOS (Apple Silicon): see [docs/build-macos.md](docs/build-macos.md) for building, testing and packaging locally (in Chinese); the steps CI uses are in [.github/workflows/build-macos.yml](.github/workflows/build-macos.yml), and `scripts/package-macos.sh` builds the zip from the result.
+
 ## Known limitations
 
 These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md) describe what you will see, why, and how to work around it.
@@ -122,7 +157,7 @@ These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/K
 - **Do not render a vocal track with SCVB Input on it by itself**: rendering one vocal track in place (Render in Place), freezing it (Freeze) or exporting it alone gives you a silent file, and choosing "replace the original audio" swaps your source recording for that silence. Export the vocal bus as a whole (KI-4).
 - **The DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
 - **One project using SCVB open at a time on the same computer**; if you really need two open, give them different groups (KI-5).
-- **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then come back with their raw, unbalanced image (KI-6).
+- **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then play as the raw, unbalanced image until the host calls the Output again; the tracks then rejoin one at a time, so a track not yet reached stays silent for a moment (KI-6).
 - **Balance estimates are off in unison / doubled passages**: when several tracks sing the same line with very similar sound, they usually add up louder than the analysis expects (KI-9).
 - **SCVB Output reports no latency to the DAW**; alignment is done by timeline addressing, so do not try to "fix" it with latency compensation (PDC) (hard rule 8).
 - **Input only adjusts its own track's level, never its pan**; panning is handled entirely by the Output.

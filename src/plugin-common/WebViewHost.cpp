@@ -2,6 +2,7 @@
 #include "WebViewHost.h"
 
 #include "BridgeBase.h"
+#include "PlatformLog.h"
 #include "PlatformWebView.h"
 
 #include <cmath> // std::isfinite —— [SL-416 R16] 那条守卫要用
@@ -33,18 +34,11 @@ juce::String fallbackTitle(const juce::String& role)
     return "SCVB Output";
 }
 
-juce::String missingRuntimeMessage()
-{
-    return "Microsoft Edge WebView2 Runtime was not found, so the full UI cannot load.\n"
-           "Install the runtime once, then reopen this plugin window.";
-}
-
-juce::String tooOldRuntimeMessage()
-{
-    return "The installed Microsoft Edge WebView2 Runtime is too old for this plugin.\n"
-           "Update to the Evergreen runtime, then reopen this plugin window.";
-}
-
+// [B 线 M07] 提到运行时名字的三条文案(运行时缺失 / 太旧 / 环境没起来)按平台写,搬到了
+// PlatformWebView(missingRuntimeMessage / tooOldRuntimeMessage / envNotStartedMessage):
+// 本文件不进任何测试目标,搬过去才钉得住「Windows 逐字不变、mac 不出现 WebView2」。
+// 这里只留与平台无关的三条。
+//
 // 超时兜底按「最后一次导航走到哪一步」分三态给文案。这是本面板最重要的信息:
 // 同一句「加载太慢」在三种完全不同的故障上都会出现,而这三种的下一步动作互不相同。
 //   notStarted —— 导航事件一次都没来 ⇒ WebView2 **环境/控制器根本没建起来**。
@@ -53,15 +47,9 @@ juce::String tooOldRuntimeMessage()
 //                 信号 —— 也正因如此它很可靠:环境起来了就必然有 NavigationStarting。
 //                 常见成因:user-data 目录不可写 / 被别的进程占着(宿主的插件扫描 sandbox
 //                 进程与音频进程同时活着)/ 宿主策略挡掉 msedgewebview2.exe 子进程。
+//                 (文案 = PlatformWebView::envNotStartedMessage();系统 WebKit 上的成因见那里。)
 //   started    —— 导航开始但没走完 ⇒ 资源供给或渲染进程卡住。
 //   finished   —— 页面加载完了桥仍没起来 ⇒ 前端脚本没跑到 requestInitialState。
-juce::String envNotStartedMessage()
-{
-    return "The WebView2 environment did not start (no navigation ever began).\n"
-           "This is usually the user-data folder being unwritable or already in use by another\n"
-           "process, or the host blocking the msedgewebview2.exe child process.";
-}
-
 juce::String navStalledMessage()
 {
     return "The page started loading but never finished.\n"
@@ -443,6 +431,8 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
 
     // UDF 必须在装 Options 之前定好,并当场探一次可写性:WebView2 自己碰这个目录时的失败被
     // JUCE 吞掉(环境创建回调的 HRESULT 形参无名),等到那时候就只剩「超时」两个字了。
+    // [B 线 M07] 系统 WebKit(mac)不用 UDF:makeUserDataFolder 返回空 File,探针对空 File 直接返回
+    // 空串 —— 不建目录、不写探针(判据 = test_plugin_common.cpp 的 [mac] 格)。
     userDataFolder_ = PlatformWebView::makeUserDataFolder(config_.userDataFolderName);
     userDataFolderIssue_ = PlatformWebView::probeUserDataFolder(userDataFolder_);
     if (userDataFolderIssue_.isNotEmpty())
@@ -491,9 +481,11 @@ void WebViewHost::beginLoadAttempt()
     // 热的判据 = 此刻另有一个桥活着(⇒ 共享的浏览器进程组必然在跑),不是「曾经起来过」。
     const bool warm = readyBridgeCount().load() > 0;
     deadlineMs_ = startMs_ + static_cast<juce::uint32>(warm ? kWarmLoadBudgetMs : kColdLoadBudgetMs);
+    // [B 线 M07] udf 那一段走 userDataFolderDisplay:WebView2 上原样是完整路径(逐字不变),
+    // 系统 WebKit 上没有这个目录,打 `(not used)` 而不是一个空串。
     logDiag(juce::String(warm ? "warm" : "cold") + " start, budget " +
             juce::String(warm ? kWarmLoadBudgetMs : kColdLoadBudgetMs) + " ms, udf " +
-            userDataFolder_.getFullPathName());
+            PlatformWebView::userDataFolderDisplay(userDataFolder_));
 
     logBackgroundColourSupport();
 
@@ -566,6 +558,7 @@ void WebViewHost::resized()
     // [SL-370] WebView 的落点由遮挡闸决定:遮挡期间整块挪到可视区之外(尺寸不变),
     // 那块地方由上面的 paint 铺占位渐变([SL-402] 起;SL-370 当时是单色)当占位。
     // 几何与理由见 WebViewRevealGate.h。
+    // [B 线 M07] 系统 WebKit(mac)上闸门从不武装(见 onNavigationStarted),恒走原位分支。
     if (webView_ != nullptr)
         webView_->setBounds(revealGate_.parked() ? parkedBounds(getLocalBounds()) : getLocalBounds());
     if (fallback_ != nullptr)
@@ -584,43 +577,15 @@ void WebViewHost::applyRevealGate()
 
 // [SL-376 / SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行。
 //
-// 判定与它证到哪一步(以及为什么插件侧做不到直接观测)只写在
-// PlatformWebView.h 的 backgroundColourSupport() 头注一处,这里不复述。
-// 四条形态,措辞互不相同,便于在 DebugView / 宿主日志里直接 grep:
-//   available   —— 正常;这一层**按版本推断**在,控制器建好到首帧之间铺的是我方 argb。
-//   UNAVAILABLE —— SL-364 命中;那一段露的是 WebView2 默认白。**本卡不修**(遮挡闸已经让
-//                  那一段不上屏),但要如实说出来,别再让下一个人从零查一遍。
-//   unknown ×2  —— 版本串没解析出来 / 压根没探到运行时;两种原因分开写,不猜。
-// ⚠ 措辞用 `inferred present|absent (from runtime ..., not directly observed)` 而不是
-//   `present|absent`(#247 复审【建议】3,统筹裁定按「inferred from runtime >= 87」落地):
-//   这一行是**按运行时主版本推断**出来的,不是对 JUCE 那次 QueryInterface 的直接观测。
-//   用户会把 DebugView 片段整段贴回来,而贴回来的人多半不会同时读 PlatformWebView.h 的
-//   头注 —— 所以「这是推断」必须写在**行里**,不能只写在注释里。
-// 文案一律 ASCII:运行期字面量走 printf 族拼接时,含非 ASCII 的相邻窄字面量会触发 MSVC C4819。
+// [B 线 M07] 行的拼装(四条形态与措辞理由)搬到了 PlatformWebView::backgroundColourDiagnostics(字符不变,
+// 由 test_plugin_common.cpp 的 [M07] 钉字格逐字对拍);判定与它证到哪一步仍只写在
+// PlatformWebView.h 的 backgroundColourSupport() 头注一处。
+// 这一层是 WebView2 专有的:系统 WebKit 上那个函数返回空串,这里就不打 —— 背景色诊断只在 Windows 出。
 void WebViewHost::logBackgroundColourSupport() const
 {
-    using Support = PlatformWebView::BackgroundColourSupport;
-    const auto support = PlatformWebView::backgroundColourSupport(runtime_);
-    const juce::String version = runtime_.version.isNotEmpty() ? runtime_.version : juce::String("unknown");
-    const juce::String argb = juce::String::toHexString(static_cast<int>(scvb::webview::shellBackdropMid().getARGB()))
-                                  .paddedLeft('0', 8); // [SL-402] DefaultBackgroundColor 仍收纯色:占位渐变的轴中点色
-
-    const juce::String floor = juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor);
-    if (support == Support::available)
-        logDiag("webview2 default background: available -- ICoreWebView2Controller2 inferred present "
-                "(from runtime " +
-                version + " >= major " + floor + ", not directly observed), JUCE puts argb " + argb);
-    else if (support == Support::unavailable)
-        logDiag("webview2 default background: UNAVAILABLE -- ICoreWebView2Controller2 inferred absent "
-                "(from runtime " +
-                version + " < major " + floor + ", not directly observed), JUCE drops argb " + argb + " silently");
-    else if (runtime_.status == PlatformWebView::RuntimeStatus::missing)
-        // 当前调用点(beginLoadAttempt)在 missing 时已提前 return,走不到这里 —— 但把它写对
-        // 是为了将来挪调用点的人(#247 复审【建议】⑤):否则这条会打成
-        // "runtime version unknown not parsable",把原因指错。
-        logDiag("webview2 default background: unknown (no WebView2 runtime detected)");
-    else
-        logDiag("webview2 default background: unknown (runtime version " + version + " not parsable)");
+    const auto line = PlatformWebView::backgroundColourDiagnostics(runtime_);
+    if (line.isNotEmpty())
+        logDiag(line);
 }
 
 // 放行诊断行。**读表的人要知道的三件事**,都写在这里一处:
@@ -723,12 +688,15 @@ juce::String WebViewHost::buildDiagnostics() const
       << "  |  nav " << nav;
     if (navDetail_.isNotEmpty())
         d << " (" << navDetail_ << ")";
-    d << "  |  WebView2 " << (runtime_.version.isNotEmpty() ? runtime_.version : juce::String("not found"));
+    // [B 线 M07] 运行时那一段按平台写:WebView2 = `WebView2 <版本>|not found`(逐字不变);
+    // 系统 WebKit = `WebKit (system)` —— 那里 version 恒空,原写法会把正常的 mac 误报成「not found」。
+    d << "  |  " << PlatformWebView::runtimeDiagnosticsField(runtime_);
     d << "  |  host " << juce::File::getSpecialLocation(juce::File::hostApplicationPath).getFileName() << " pid "
       << juce::String(PlatformWebView::processId());
     // UDF 是「环境没起来」这一路的头号嫌疑,必须原样显示:用户把这一行发回来,就能直接看出
     // 目录在哪、写不写得进、以及(名字里的 PID)是不是被另一个宿主进程占着。
-    d << "\n" << "udf " << userDataFolder_.getFullPathName();
+    // [B 线 M07] 系统 WebKit 不用 UDF,显示 `(not used)`(见 PlatformWebView::userDataFolderDisplay)。
+    d << "\n" << "udf " << PlatformWebView::userDataFolderDisplay(userDataFolder_);
     if (userDataFolderIssue_.isNotEmpty())
         d << "  [" << userDataFolderIssue_ << "]";
     if (bootError_.isNotEmpty())
@@ -741,7 +709,13 @@ void WebViewHost::logDiag(const juce::String& line) const
     // 既有日志通道:juce::Logger。DBG(= outputDebugString)在 Release 里被编掉,而兜底面板
     // 恰恰只在用户的 Release 包上出现 —— writeToLog 在无 logger 时也会落 outputDebugString
     // (DebugView 可见),宿主设了 logger 则进宿主日志。诊断不能只活在 Debug 构建里。
-    juce::Logger::writeToLog("SCVB " + config_.role + ": " + line);
+    const juce::String message = "SCVB " + config_.role + ": " + line;
+    juce::Logger::writeToLog(message);
+    // [B 线 M07] mac 上 outputDebugString 落的是 stderr,宿主(尤其 AUHostingService)下用户基本看不到,
+    // 所以同一行再交给平台文件日志(~/Library/Logs/Synchain/SCVB/<role>.log,见 PlatformLog.h)。
+    // 只有 install() 过才落盘,而 install() 在 Windows 上是空操作 ⇒ Windows 上这一句什么都不做,
+    // 上面那条 OutputDebugString 路不变、不新增文件日志。本函数只在消息线程调用(与 PlatformLog 的约定一致)。
+    platformlog::write(message);
 }
 
 void WebViewHost::showFallback(FallbackReason reason)
@@ -771,16 +745,17 @@ void WebViewHost::showFallback(FallbackReason reason)
     const bool missing = (reason == FallbackReason::MissingRuntime);
     const bool tooOld = (reason == FallbackReason::RuntimeTooOld);
 
+    // [B 线 M07] 提到运行时名字的三条文案按平台取自 PlatformWebView(理由见文件头匿名命名空间处)。
     juce::String message;
     const char* tag = "loadTimeout";
     if (missing)
     {
-        message = missingRuntimeMessage();
+        message = PlatformWebView::missingRuntimeMessage();
         tag = "missingRuntime";
     }
     else if (tooOld)
     {
-        message = tooOldRuntimeMessage();
+        message = PlatformWebView::tooOldRuntimeMessage();
         tag = "runtimeTooOld";
     }
     else if (reason == FallbackReason::BootError)
@@ -791,7 +766,7 @@ void WebViewHost::showFallback(FallbackReason reason)
     else if (navState_ == NavState::notStarted)
     {
         // 导航一次都没开始 = WebView2 环境/控制器没建起来(见文件头三态注释)。
-        message = envNotStartedMessage();
+        message = PlatformWebView::envNotStartedMessage();
         tag = "envNotStarted";
     }
     else if (navState_ == NavState::finished)
@@ -812,7 +787,10 @@ void WebViewHost::showFallback(FallbackReason reason)
     options.title = fallbackTitle(config_.role);
     options.message = message;
     options.details = details;
-    options.showInstall = missing || tooOld; // 两条的用户动作都是装/升级 Evergreen Runtime
+    // 两条的用户动作都是装/升级 Evergreen Runtime。[B 线 M07] 按钮文案与链接都是 WebView2 的
+    // (FallbackPanel 的 "Download WebView2 Runtime" + runtimeDownloadUrl()),系统 WebKit 没有可单独下载的
+    // 运行时 ⇒ 只在 offersRuntimeDownload() 的平台上给(Windows 上恒 true,行为不变)。
+    options.showInstall = (missing || tooOld) && PlatformWebView::offersRuntimeDownload();
     options.onInstall = [] { juce::URL(PlatformWebView::runtimeDownloadUrl()).launchInDefaultBrowser(); };
     // 延后到消息线程执行:FallbackPanel 的 retry onClick 内同步 reset 会销毁正执行回调的按钮
     // (use-after-free)。SafePointer 兜底 WebViewHost 先于回调被销毁的情况。
@@ -863,8 +841,16 @@ void WebViewHost::onNavigationStarted(const juce::String& url)
 
     // [SL-370] 导航开始 = WebView2 控制器已建好 ⇒ SL-271 那个挂在 paint 上的重试泵已是空调用,
     // 此刻才可以把 WebView 挪出可视区(挪走之后 JUCE 就不再画它,泵也就不再被驱动)。
-    revealGate_.onNavigationStarted(juce::Time::getMillisecondCounter());
-    applyRevealGate();
+    // [B 线 M07] 挪窗只在 WebView2 上启用(PlatformWebView::revealGateEnabled(),与 Bridge 的
+    // WebViewRevealGate.h【SL-386 与 SCVB 的口径差】同口径):系统 WebKit 上不武装闸门 ⇒ parked() 恒 false,
+    // resized() 恒走原位、timerCallback 的放行段与 noteRevealed() 都是空调用。不这样做的话,WKWebView 上
+    // 首帧信号一旦没到(挪出可视区后 rAF 是否照跑没验证过),每次开窗都要白等 kRevealFallbackMs(3s)。
+    // 闸门的其余记账调用(onNavigationFinished / onFirstFrame / beginLoadAttempt)照常,不改状态。
+    if (PlatformWebView::revealGateEnabled())
+    {
+        revealGate_.onNavigationStarted(juce::Time::getMillisecondCounter());
+        applyRevealGate();
+    }
 
     logDiag("navigation started: " + url);
 }
@@ -976,9 +962,14 @@ void WebViewHost::handleFirstFrame(const juce::var& payload)
     // 「信号来晚了」误读成「信号没来」,而后者正是本卡唯一那条静默降级
     // (挪出可视区 ⇒ 合成器停 BeginFrame ⇒ rAF 停 ⇒ 信号永不到达,见 WebViewRevealGate.h)。
     // 真机验收数的就是这一行与下面那行放行行的**条数比**。
+    // [B 线 M07] 闸门没启用的平台(系统 WebKit)上 parked() 恒 false,写「already revealed」会让人以为
+    // 闸门放过一次行;那里写 `(reveal gate off)`。Windows 上两种措辞逐字不变。
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
-            (revealGate_.parked() ? " (still parked)" : " (already revealed)") + paintNote);
+            (revealGate_.parked()                   ? " (still parked)"
+             : PlatformWebView::revealGateEnabled() ? " (already revealed)"
+                                                    : " (reveal gate off)") +
+            paintNote);
     // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在后面的 25Hz tick 上
     // (kRevealSettleTicks ∧ kRevealSettleMs,理由见 WebViewRevealGate.h 头注)。所以下面两句
     // 在**正常那条路**上是空调用,留着是为了「闸门状态一变就落地」这条不变式只有

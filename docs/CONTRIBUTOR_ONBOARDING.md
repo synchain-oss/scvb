@@ -3,7 +3,7 @@
 > **目标**:一个从没碰过 JUCE 的 C++ 开发者,照本文从零操作,**30 分钟内**(不含下载时间)构建出三个 `.vst3` 并跑通单测。
 > 读完本文再看 [CONTRIBUTING.md](../CONTRIBUTING.md)(协作规则)与 [CLAUDE.md](../CLAUDE.md)(常驻法条,§6 是工具链清单的单一真源)。
 
-SCVB 目前只支持 **Windows 10/11 x64**。macOS / Linux 不在 v1 范围内 —— UI 依赖 WebView2,IPC 依赖 Windows 命名共享内存段。
+本文讲 **Windows 10/11 x64** 的构建(WebView2 + VST3)。macOS(Apple Silicon,VST3 + AU)是 beta,有单独的本地编译、测试与打包说明:[build-macos.md](build-macos.md);Linux 不在范围内。
 
 ---
 

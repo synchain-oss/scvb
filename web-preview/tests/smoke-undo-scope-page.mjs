@@ -648,6 +648,8 @@ try {
                 // \`tagName === "INPUT" || "TEXTAREA" || isContentEditable\`,而 <select>
                 // 的 tagName 是 SELECT ⇒ **它本来就不在豁免面内、本来就被拦截**。
                 // 本卡对它**零行为改动**,这一格钉的是「改成白名单之后它仍被拦」。
+                // [UI-1] 起这个锚点是共享缩放下拉的根节点(div,web/shared/scale-select.js),
+                // 不再是 <select>;它同样不是可编辑文本 ⇒ 仍被拦,这一格的判据不变。
                 scaleSelect: pick('[data-gb="settings-scale-select"]'),
                 // ---- 该保留(6:豁免的立意本身)----
                 verRename: pick('.ver-rename__input'),

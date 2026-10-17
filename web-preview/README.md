@@ -67,6 +67,7 @@ node web-preview/tests/smoke-ready-race.mjs
 | `scenario` | 05 §2.5(Output 16 个)/ §3(Input 7 个)的场景名 | 兼容口径;已实现的映射到 fixture,**未实现的回落 `fifteen-tracks` + console.warn「场景 {x} 待 T31–T36 接线」,不假装支持** |
 | `loop` | `none` | 宿主**不提供**循环区:`setRange("daw_loop")` 回 `{ok:false, reason:"noLoop"}`。只对 Output 有意义 |
 | `tempo` | `none` \| `var` \| `<bpm>/<分子>/<分母>`(如 `90/3/4`) | [J147] 宿主报的速度与拍号(`scvb.playhead` 的 `bpm`/`timeSigNum`/`timeSigDen`/`ppq`)。缺省 = 120 BPM、4/4 恒速;`none` = 宿主不报(Tab1 手动范围按秒显示);`var` = 变速工程(30 s 之前 120 BPM、之后 100 BPM)。运行中改用预览专用的 `ctl.setHostTempo({bpm,num,den,pre?} \| null)`(停着时换表 = 用户在宿主里改了速度表)。只对 Output 有意义 |
+| `scale` | 该侧档位表内的数(如 `1.5`;表外与壳页同样回落 1 档) | 开窗档位 =「用户存过这一档、宿主按它开窗」:壳页把 iframe 定成设计盒 × 档位,**mock 快照的 `ui.scale` 同为该档**。真宿主上窗口尺寸与快照 `ui.scale` 出自同一个 `uiScale_`;[M09] 之前快照恒为 1,于是这条路径在预览里走不到。三侧都有意义 |
 
 工具条上的 `fixture`/`scenario`/`loop` 三格走白名单显示,表外取值一律显示 `unknown` ——
 既挡掉 query 注入面,也把「参数拼错了」变成肉眼可见的信号。

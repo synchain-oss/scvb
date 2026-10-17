@@ -1,10 +1,10 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB IPC 契约 v0(共享内存)——P1 宪法
 
-状态:**v1.6**(2026-08-25,J81 修宪:ctrl 广播区正式布局 + 新增 viz 段;正文已就地改写;历史见修订节;裁决依据 plan/adjudications.md)。01-architecture.md 负责细化(错误处理/生命周期时序图),04 负责特征面语义;段名/布局字段/对齐规则不得改,如需改在「对宪法的异议」提出。
+状态:**v1.7**(2026-10-16,J186 修宪:§0 总则「macOS 后续用 POSIX shm」改成现行表述,布局零变化;v1.6 = 2026-08-25,J81 修宪:ctrl 广播区正式布局 + 新增 viz 段;正文已就地改写;历史见修订节;裁决依据 plan/adjudications.md)。01-architecture.md 负责细化(错误处理/生命周期时序图),04 负责特征面语义;段名/布局字段/对齐规则不得改,如需改在「对宪法的异议」提出。
 
 ## 0. 总则
-- Windows 命名共享内存(CreateFileMapping,`Local\` 命名空间,同会话可见);macOS 后续用 POSIX shm 同布局
+- Windows 命名共享内存(CreateFileMapping,`Local\` 命名空间,同会话可见);macOS 用 POSIX shm(`shm_open`,段名的 `Local\` 前缀映射为 `/`)同布局(v1.7/J186 订正原句「后续用」:macOS 线已实现,布局 / abi 未改)
 - 所有跨进程字段 `std::atomic`,static_assert lock-free + 布局(offsetof);缓存行 64B 对齐;ABI 版本字段先行
 - 心跳:各写入方每 ~250ms 更新自己的 heartbeat(steady clock ms);读取方 >2000ms 视为陈旧(实例已死/卸载),按未连接处理。无法枚举/删除残留段 → 固定段名 + 覆盖式重新初始化(带 generation 计数)
 
@@ -277,3 +277,7 @@ struct VizTrackLabels {            // size 512 align 64
 - registry / audio / feat 三类段的段名、结构体、字段偏移**逐字节未变**;ctrl 段既有结构体(`CtrlHeader` / `CtrlRecord` / `CtrlRing` / `OutputGlobalInfo`)与 `kCtrlGlobalInfoOffset=9408` / `kCtrlRingsOffset=9664` / 段总长 16384 未变
 - §5 的「布局改动 → abi+1 且段名 v2」对 viz 段**同等适用**(§6.5)
 - 本次修宪**不涉及 state chunk 的 abi**(那是 params-v0 §四 的独立计数;#81 已将其由 1 升 2,与本文件的 ipc abi 无关)
+
+## v1.7 修订(2026-10-16,J186 修宪)
+
+- **[J186→§0 措辞订正]** 总则第一条原写「macOS 后续用 POSIX shm 同布局」,macOS 线已按同一布局实现(`shm_open`;段名 `Local\` 前缀映射为 `/`;flock 生命周期锁、权限 0600、最后离开者 unlink),改为现行表述。**布局 / 段名 / 字段偏移 / abi 零变化**;§1..§6 一字未动。随 ADR v2.4 同批。

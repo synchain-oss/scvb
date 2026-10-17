@@ -1,4 +1,4 @@
-# SCVBOutput:Output 插件(VST3)。ADR-001:PLUGIN_CODE=Scvo,厂商码 Snch。
+# SCVBOutput:Output 插件(VST3;macOS 上另出 AU,aufx/Scvo/Snch)。ADR-001:PLUGIN_CODE=Scvo,厂商码 Snch。
 # T01 空壳:processBlock 直通的最小插件,无 Editor、无 WebView2(后续任务填充)。
 juce_add_plugin(SCVBOutput
   COMPANY_NAME             "Synchain"
@@ -9,13 +9,23 @@ juce_add_plugin(SCVBOutput
   COMPANY_EMAIL            "contact@synchain.ca"
   PLUGIN_MANUFACTURER_CODE Snch
   PLUGIN_CODE              Scvo
-  FORMATS                  VST3
+  FORMATS                  ${SCVB_PLUGIN_FORMATS}  # 根 CMakeLists.txt:VST3,Apple 上 + AU
   PRODUCT_NAME             "SCVB Output"
 
   # "Fx" 由 JUCE 的 VST3 wrapper 自动添加(05 文档定最终分类,ADR-001 冻结插件码/bundle id)
   VST3_CATEGORIES          "Fx"
 
   BUNDLE_ID                "com.synchain.scvb.output"
+
+  # --- AU(只在 Apple 上随 SCVB_PLUGIN_FORMATS 生效)。两项都等于 JUCE 按本插件形态推导的默认值:
+  #     Windows 上编译宏 JucePlugin_AUMainType 仍是 'aufx';AU_SANDBOX_SAFE 只进 AU 的 Info.plist ---
+  # 类型写死 aufx:现在的默认推导也是 Effect,写死是防将来加 NEEDS_MIDI_INPUT 之类时 componentType
+  # 从 aufx 漂成 aumf —— 那等于换了插件身份,用户工程里的 AU 实例全部丢失。AU 三元组
+  # aufx/<PLUGIN_CODE>/Snch 发布后与四字码同样冻结。
+  AU_MAIN_TYPE             kAudioUnitType_Effect
+  # 显式 FALSE(= JUCE 默认),不要改成 TRUE:插件要建/附着跨进程共享内存段、起 WKWebView,
+  # 沙箱里这两样都会被拒。M01 的 AUHostingService 进程外结论也是在 FALSE 下测得的。
+  AU_SANDBOX_SAFE          FALSE
 
   # Windows:链接 WebView2 静态 loader(顶层 CMakeLists 已预置 NuGet 包)。
   NEEDS_WEBVIEW2           TRUE
@@ -59,6 +69,9 @@ endif()
 
 target_compile_definitions(SCVBOutput PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
+  # 参数 ID 两个宏(值与理由见根 CMakeLists.txt 的 SCVB_PLUGIN_PARAM_ID_DEFINITIONS);PUBLIC 才能
+  # 传到 VST3 / AU 两个 wrapper 目标 —— 真正用它们算参数 ID 的是 wrapper 那几个编译单元。
+  ${SCVB_PLUGIN_PARAM_ID_DEFINITIONS}
 )
 
 # Windows:WebView2 宏(JUCE_WEB_BROWSER 已由 scvb_plugin_common 提供;这三个与 Bridge 先例一致)。
