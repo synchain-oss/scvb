@@ -8,7 +8,7 @@ namespace scvb
 
 namespace
 {
-// v1 仅 Windows,OS 前缀固定 "Local\"(与 Registry.cpp 的 registryFullName 同构;POSIX 前缀归 v2)。
+// 调用方统一传 Windows 形态的全名,OS 前缀固定 "Local\"(与 Registry.cpp 的 registryFullName 同构;POSIX 后端内部再映射)。
 std::wstring ctrlFullName(u32 group)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kCtrl);
@@ -96,6 +96,7 @@ std::size_t utf8PrefixBytes(const std::string& s, std::size_t maxBytes)
 // 停摆看门狗阈值(01 §4.2 / §4.3-b)。
 inline constexpr u64 kWatchdogStallMs = 500; // 自身 blockCounter 停滞 ≥0.5s
 inline constexpr u64 kReacquireIntervalMs = 200; // §4.3-b 让位协议:置位后延迟 ≥200ms(或 muted 回执先到者)
+inline constexpr u32 kWatchdogAllChannels = (1u << kMaxChannels) - 1u; // hold 掩码的「全部 15 轨」
 
 CtrlPlane::CtrlPlane(ISegmentBackend& backend, u32 group) : backend_(backend), group_(group) {}
 
@@ -238,7 +239,8 @@ void CtrlPlane::writeBroadcast(const CtrlBroadcastSnapshot& s)
     // seqlock 写侧:奇数进临界区 → 写载荷 → 偶数发布完成。读方看到奇数或前后不等即重读。
     // 奇数增量取 relaxed + 紧跟一道 release fence:release **store** 只挡「之前的写下沉」,
     // 挡不住「其后的载荷写上浮到奇数 seq 之前」—— 那正是这里要防的方向。载荷 2KB、跨进程、
-    // 读写双方分别编译,窗口比进程内的 PlayheadShot 宽两个量级,不能照抄它的写法。
+    // 读写双方分别编译,窗口比进程内的 PlayheadShot 宽得多,更省不得这道 fence;写法与
+    // PlayheadShot::publish 一致(M04 起两处同款,理由见那里)。
     b->seq.fetch_add(1, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
 
@@ -412,13 +414,17 @@ bool CtrlPlane::enqueue(u32 channel, CtrlOp op, u64 value)
     }
     const u32 idx = w & (kCtrlRingCapacity - 1);
     CtrlRecord& rec = ring->records[idx];
-    // seq 协议(防撕裂读):seq=0(release)标记「在写」→ channel/op/value(relaxed)→ seq=真值(release),
-    // 最后 write_pos.store(w+1, release) 发布。消费者见 write_pos 推进即知记录已提交。
+    // seq 协议(防撕裂读):seq=0 标记「在写」+ release fence → channel/op/value(relaxed)→
+    // seq=真值(release),最后 write_pos.store(w+1, release) 发布。消费者见 write_pos 推进即知记录已提交;
+    // 读侧对称:s1(acquire)→ 三条 relaxed 读 → acquire fence → s2,s1==s2 才算一致(见 dequeue)。
     // seq 由共享 write_pos 派生(seq = w+1):记录 w 的 seq=w+1,消费者 s1==r+1 判据天然成立,
     // 且生产者重启后新实例续用共享 write_pos,seq 不中断(环不卡死)。
     // 理论边界:w+1 在 u32 回绕点为 0,与「在写」标记(seq=0)撞车;≈5.4 年 @25Hz 才回绕一次,
     // v1 不接受此理论边界(abi+1 增补清单),故不做跳过处理。
-    rec.seq.store(0, std::memory_order_release);
+    // [B 线 M06a] seqlock 写侧 fence:release **store** 只约束它之前的访问,挡不住后面三条 relaxed
+    // 写被提到 seq=0 之前可见(x86 的 TSO 天然不重排,arm64 会)。必须是 store 之后的 release fence。
+    rec.seq.store(0, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
     rec.channel.store(channel, std::memory_order_relaxed);
     rec.op.store(static_cast<u32>(op), std::memory_order_relaxed);
     rec.value.store(value, std::memory_order_relaxed);
@@ -460,7 +466,10 @@ bool CtrlPlane::dequeue(u32 channel, CtrlRecord& out)
         const u32 ch = rec.channel.load(std::memory_order_relaxed);
         const u32 opv = rec.op.load(std::memory_order_relaxed);
         const u64 val = rec.value.load(std::memory_order_relaxed);
-        const u32 s2 = rec.seq.load(std::memory_order_acquire);
+        // [B 线 M06a] seqlock 读侧 fence:acquire **load** 只约束它之后的访问,挡不住上面三条 relaxed
+        // 读被推迟到 s2 之后;arm64 上实测会读到同槽下一圈的 value 而 s1==s2(命令环双线程用例 4/30 红)。
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const u32 s2 = rec.seq.load(std::memory_order_relaxed);
         if (s1 != s2)
         {
             continue; // 撕裂读(生产者正覆写同槽)→ 重试
@@ -495,7 +504,10 @@ bool CtrlPlane::anyOnlineWriteHeadAdvanced() const
     {
         return false;
     }
-    const u32 mask = connectedMaskSource_ ? connectedMaskSource_() : 0;
+    // 在线轨 = connected_mask ∪ 让位序列里还被闩着的轨(KI-6):后者停摆前在线、此刻只是还没轮到,
+    // 不算进来的话,恢复后放出去的轨恰好都不健康时,Output 再次停调就判不出来(mask 里一条都没有)。
+    // tripped 期间不走到这里(tickWatchdog 第 1 步就返回),那时 holdMask_ 是全 15 轨,不能拿来当证据。
+    const u32 mask = (connectedMaskSource_ ? connectedMaskSource_() : 0) | holdMask_;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         if ((mask & (1u << (ch - 1))) == 0)
@@ -572,28 +584,38 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     }
 
     // 1) 恢复:tripped 状态下 blockCounter 恢复推进 → 按 §4.3-b 让位协议逐轨重置信位(不得硬切)。
+    //    停摆期间 hold 一直是全部 15 轨(每拍都 return 在这里,hold 不会被谁放开 —— H5 的修法就是这一条:
+    //    清 mask 不再是一次性动作)。恢复这一拍 hold 收窄为停摆快照,并当拍释放最小号那一轨;快照之外的
+    //    轨(停摆时本来就不在线)不再闩,按常规上线路径走。
     if (tripped_)
     {
         if (blockAdvanced)
         {
             tripped_ = false;
+            holdMask_ = onlineMaskAtTrip_;
             reacquireNext_ = lowestOnlineChannel(onlineMaskAtTrip_);
             lastReacquireMs_ = nowMs;
             if (reacquireNext_ != 0)
             {
                 r.action = WatchdogAction::kReacquireBit;
                 r.channel = reacquireNext_;
+                holdMask_ &= ~(1u << (reacquireNext_ - 1));
                 reacquireNext_ = nextOnlineChannel(onlineMaskAtTrip_, reacquireNext_);
             }
         }
         return r; // 仍停摆(或已开始重置信位);本 tick 不再检测其它
     }
 
-    // 2) 让位协议重置信位序列推进(每 ≥200ms 一个在线轨,channel 升序)。
-    if (reacquireNext_ != 0 && nowMs - lastReacquireMs_ >= kReacquireIntervalMs)
+    // 2) 让位协议重置信位序列推进(每 ≥200ms 一个在线轨,channel 升序):每步放开一轨的 hold。
+    //    只在 Output 还在被调用时放:恢复一下又被停掉(H2 那种振荡)时,把轨放进一个已经不再被调用的
+    //    Output 只会让那条 Input 转回静音、5s 滞回重新计。停住 ≥0.5s 就暂停放轨 —— 写头还在推进的话
+    //    下面第 3 步当拍就判停摆(还没放的轨并进新快照);写头也停了(走带停)就原样闩着,等 Output 回来接着放。
+    if (reacquireNext_ != 0 && nowMs - lastReacquireMs_ >= kReacquireIntervalMs &&
+        nowMs - lastBlockAdvanceMs_ < kWatchdogStallMs)
     {
         r.action = WatchdogAction::kReacquireBit;
         r.channel = reacquireNext_;
+        holdMask_ &= ~(1u << (reacquireNext_ - 1));
         reacquireNext_ = nextOnlineChannel(onlineMaskAtTrip_, reacquireNext_);
         lastReacquireMs_ = nowMs;
         return r;
@@ -605,7 +627,12 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     if (blockStalledMs >= kWatchdogStallMs && anyOnlineWriteHeadAdvanced())
     {
         tripped_ = true;
-        onlineMaskAtTrip_ = connectedMaskSource_ ? connectedMaskSource_() : 0;
+        // 让位序列没走完又停摆(Output 刚被叫回又被停掉,H2 那种振荡):还没轮到的轨此刻不在 mask 里,
+        // 但它们停摆前是在线的 —— 并进新快照,下次恢复照样逐轨接回,而不是被当成「本来就不在线」放掉。
+        const u32 mask = connectedMaskSource_ ? connectedMaskSource_() : 0;
+        onlineMaskAtTrip_ = (mask | holdMask_) & kWatchdogAllChannels;
+        holdMask_ = kWatchdogAllChannels;
+        reacquireNext_ = 0;
         r.action = WatchdogAction::kClearMask;
         return r;
     }
@@ -613,6 +640,18 @@ WatchdogResult CtrlPlane::tickWatchdog(u64 nowMs)
     // 4) 更新 write_head 基线(供下一 tick 的「仍推进」判定)。
     updateWriteHeadBaseline();
     return r;
+}
+
+void CtrlPlane::resetWatchdogUnlessTripped() noexcept
+{
+    if (tripped_)
+    {
+        return; // 停摆仍然成立(见头注):hold 与快照原样留着,等 blockCounter 真正恢复推进
+    }
+    watchdogInit_ = false; // 下一拍重取基线(lastBlockValue_ / lastBlockAdvanceMs_ / lastWriteHead_)
+    onlineMaskAtTrip_ = 0;
+    reacquireNext_ = 0;
+    holdMask_ = 0;
 }
 
 } // namespace scvb

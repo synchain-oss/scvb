@@ -37,7 +37,8 @@ std::vector<float> makeDc(double fs, double amp, int seconds)
     return std::vector<float>(static_cast<std::size_t>(fs * seconds), static_cast<float>(amp));
 }
 
-int hopSize(double fs)
+// 只有 SCVB_TESTS_WITH_EBUR128 那条参考对拍用它;默认构建里不引用,clang 会报 -Wunused-function。
+[[maybe_unused]] int hopSize(double fs)
 {
     return static_cast<int>(std::llround(fs / 100.0));
 }
@@ -61,8 +62,8 @@ double measureLufs(scvb::dsp::KWeighting& kw, const std::vector<float>& samples,
     return -0.691 + 10.0 * std::log10(clamped);
 }
 
-// 确定性粉噪(白噪 → Paul Kellet refined pink filter)。
-std::vector<float> makePinkNoise(double fs, int seconds)
+// 确定性粉噪(白噪 → Paul Kellet refined pink filter)。与 hopSize 同:只有 EBUR128 参考对拍用它。
+[[maybe_unused]] std::vector<float> makePinkNoise(double fs, int seconds)
 {
     const std::size_t n = static_cast<std::size_t>(fs * seconds);
     std::vector<float> out(n);

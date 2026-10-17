@@ -1,33 +1,36 @@
 # Third-Party Notices
 
-本文件列出 SCVB 分发产物中随附的第三方依赖的许可证信息(依赖 / 版本 / 许可证 / URL 四列)。
+本文件列出 SCVB 分发产物中随附的第三方依赖的许可证信息(依赖 / 版本 / 许可证 / 平台 / URL 五列;
+「平台」写这一项进了哪个平台的发布包 —— Windows 包是三个 `.vst3`,macOS 包是三个 `.vst3` 加三个 AU `.component`)。
 版本号一律来自仓内的版本真源文件或 vendored 源码本身,不手写字面量:JUCE 见 `.juce-version`,
 pluginval 见 `.pluginval-version`,WebView2 SDK 见 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`,
 Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT_TAG ...)`;
-随 JUCE 编进来的库(VST3 SDK、zlib、libpng、libjpeg、HarfBuzz、SheenBidi)见 JUCE 源码里各自的版本宏,
+随 JUCE 编进来的库(VST3 SDK、zlib、libpng、libjpeg、HarfBuzz、SheenBidi)见 JUCE 源码里各自的版本宏
+(AudioUnitSDK 没有版本宏,见它那一行),
 Unicode 数据派生表见生成表自己的文件头,表中「当前」值是在 JUCE 8.0.8 源码里读出来的。
 
-## 随二进制分发(进 `.vst3`)
+## 随二进制分发(进 `.vst3` / `.component`)
 
-| 依赖 | 版本 | 许可证(SPDX) | URL |
-| --- | --- | --- | --- |
-| JUCE Framework(静态链接) | 见 `.juce-version`(当前 8.0.8) | AGPL-3.0-or-later(双授权:AGPLv3 / 商业;本项目取 AGPLv3) | https://github.com/juce-framework/JUCE |
-| VST3 SDK(随 JUCE 分发,`juce_audio_processors/format_types/VST3_SDK/`) | 随 JUCE(当前 3.7.12,`pluginterfaces/vst/vsttypes.h` 的 `kVstVersionString`) | GPL-3.0-only(双授权:Steinberg VST3 License / GPLv3;本项目取 GPLv3) | https://github.com/steinbergmedia/vst3sdk |
-| JUCE JS helper(`web/js/juce/*.js`) | 随 JUCE,原样副本 | AGPL-3.0-or-later(双授权) | https://github.com/juce-framework/JUCE |
-| Microsoft WebView2 SDK(静态 loader) | 见 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`(当前 1.0.2957.106) | BSD-3-Clause(Microsoft) | https://www.nuget.org/packages/Microsoft.Web.WebView2 |
-| miniz(vendored,`third_party/miniz/`) | 2.2.0 | MIT | https://github.com/richgel999/miniz |
-| zlib(随 JUCE `juce_core` 静态编入) | 随 JUCE(当前 1.3.1,`zlib.h` 的 `ZLIB_VERSION`) | Zlib | https://zlib.net |
-| libpng(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 1.6.37,`png.h` 的 `PNG_LIBPNG_VER_STRING`) | libpng-2.0 | http://www.libpng.org/pub/png/libpng.html |
-| libjpeg(IJG,随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 6b,`jversion.h` 的 `JVERSION`) | IJG | https://ijg.org |
-| HarfBuzz(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 10.1.0,`hb-version.h` 的 `HB_VERSION_STRING`) | MIT-Modern-Variant(HarfBuzz 自称 "Old MIT") | https://github.com/harfbuzz/harfbuzz |
-| SheenBidi(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(JUCE 8.0.8 内置副本,上游未随附版本号) | Apache-2.0 | https://github.com/Tehreer/SheenBidi |
-| Unicode 数据派生表(HarfBuzz、SheenBidi 与 JUCE 自己由 Unicode 数据生成的查找表,随 JUCE `juce_graphics` 静态编入;文件清单见下「说明」) | 随 JUCE(HarfBuzz 那 7 个表的文件头所记为 Unicode 16.0.0,emoji 表为 Emoji 16.0;SheenBidi 与 JUCE 那 5 个表未随附版本号) | Unicode-3.0 | https://www.unicode.org/ucd/ |
-| Space Grotesk(子集 `web/fonts/SpaceGrotesk.woff2`) | 2.000(`text=` 子集) | OFL-1.1 | https://github.com/floriankarsten/space-grotesk |
-| IBM Plex Sans(子集并按 OFL-1.1 §3 改名,分发为 `web/fonts/ScvbSans.woff2` / `'SCVB Sans'`) | 3.201(`text=` 子集) | OFL-1.1 | https://github.com/IBM/plex |
-| IBM Plex Mono(子集并按 OFL-1.1 §3 改名,分发为 `web/fonts/ScvbMono.woff2` / `'SCVB Mono'`) | 2.3(`text=` 子集) | OFL-1.1 | https://github.com/IBM/plex |
-| Noto Sans SC(子集 `web/fonts/NotoSansSC.woff2`) | 2.004-H2(上游全量可变字体本地子集) | OFL-1.1 | https://github.com/google/fonts/tree/main/ofl/notosanssc |
+| 依赖 | 版本 | 许可证(SPDX) | 平台 | URL |
+| --- | --- | --- | --- | --- |
+| JUCE Framework(静态链接) | 见 `.juce-version`(当前 8.0.8) | AGPL-3.0-or-later(双授权:AGPLv3 / 商业;本项目取 AGPLv3) | Windows · macOS | https://github.com/juce-framework/JUCE |
+| VST3 SDK(随 JUCE 分发,`juce_audio_processors/format_types/VST3_SDK/`) | 随 JUCE(当前 3.7.12,`pluginterfaces/vst/vsttypes.h` 的 `kVstVersionString`) | GPL-3.0-only(双授权:Steinberg VST3 License / GPLv3;本项目取 GPLv3) | Windows · macOS | https://github.com/steinbergmedia/vst3sdk |
+| AudioUnitSDK(Apple,随 JUCE 分发,`juce_audio_plugin_client/AU/AudioUnitSDK/`;只编进 AU 封装,声明原文 `third_party/notices/audiounitsdk.LICENSE.txt`) | 随 JUCE(JUCE 8.0.8 内置副本,上游未随附版本号;文件头版权年份 2000-2021) | Apache-2.0 | macOS(只在 `.component`) | https://github.com/apple/AudioUnitSDK |
+| JUCE JS helper(`web/js/juce/*.js`) | 随 JUCE,原样副本 | AGPL-3.0-or-later(双授权) | Windows · macOS | https://github.com/juce-framework/JUCE |
+| Microsoft WebView2 SDK(静态 loader) | 见 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`(当前 1.0.2957.106) | BSD-3-Clause(Microsoft) | Windows(macOS 用系统自带的 WKWebView,不随包分发) | https://www.nuget.org/packages/Microsoft.Web.WebView2 |
+| miniz(vendored,`third_party/miniz/`) | 2.2.0 | MIT | Windows · macOS | https://github.com/richgel999/miniz |
+| zlib(随 JUCE `juce_core` 静态编入) | 随 JUCE(当前 1.3.1,`zlib.h` 的 `ZLIB_VERSION`) | Zlib | Windows · macOS | https://zlib.net |
+| libpng(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 1.6.37,`png.h` 的 `PNG_LIBPNG_VER_STRING`) | libpng-2.0 | Windows · macOS | http://www.libpng.org/pub/png/libpng.html |
+| libjpeg(IJG,随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 6b,`jversion.h` 的 `JVERSION`) | IJG | Windows · macOS | https://ijg.org |
+| HarfBuzz(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(当前 10.1.0,`hb-version.h` 的 `HB_VERSION_STRING`) | MIT-Modern-Variant(HarfBuzz 自称 "Old MIT") | Windows · macOS | https://github.com/harfbuzz/harfbuzz |
+| SheenBidi(随 JUCE `juce_graphics` 静态编入) | 随 JUCE(JUCE 8.0.8 内置副本,上游未随附版本号) | Apache-2.0 | Windows · macOS | https://github.com/Tehreer/SheenBidi |
+| Unicode 数据派生表(HarfBuzz、SheenBidi 与 JUCE 自己由 Unicode 数据生成的查找表,随 JUCE `juce_graphics` 静态编入;文件清单见下「说明」) | 随 JUCE(HarfBuzz 那 7 个表的文件头所记为 Unicode 16.0.0,emoji 表为 Emoji 16.0;SheenBidi 与 JUCE 那 5 个表未随附版本号) | Unicode-3.0 | Windows · macOS | https://www.unicode.org/ucd/ |
+| Space Grotesk(子集 `web/fonts/SpaceGrotesk.woff2`) | 2.000(`text=` 子集) | OFL-1.1 | Windows · macOS | https://github.com/floriankarsten/space-grotesk |
+| IBM Plex Sans(子集并按 OFL-1.1 §3 改名,分发为 `web/fonts/ScvbSans.woff2` / `'SCVB Sans'`) | 3.201(`text=` 子集) | OFL-1.1 | Windows · macOS | https://github.com/IBM/plex |
+| IBM Plex Mono(子集并按 OFL-1.1 §3 改名,分发为 `web/fonts/ScvbMono.woff2` / `'SCVB Mono'`) | 2.3(`text=` 子集) | OFL-1.1 | Windows · macOS | https://github.com/IBM/plex |
+| Noto Sans SC(子集 `web/fonts/NotoSansSC.woff2`) | 2.004-H2(上游全量可变字体本地子集) | OFL-1.1 | Windows · macOS | https://github.com/google/fonts/tree/main/ofl/notosanssc |
 
-## 仅构建 / 测试 / CI 使用(不链接进 `.vst3`,不随产物分发)
+## 仅构建 / 测试 / CI 使用(不链接进 `.vst3` / `.component`,不随产物分发)
 
 | 依赖 | 版本 | 许可证(SPDX) | URL |
 | --- | --- | --- | --- |
@@ -43,6 +46,7 @@ Unicode 数据派生表见生成表自己的文件头,表中「当前」值是�
 | --- | --- |
 | JUCE Framework / JUCE JS helper | `Copyright (c) Raw Material Software Limited` |
 | VST3 SDK | `(c) 2024, Steinberg Media Technologies GmbH, All Rights Reserved` |
+| AudioUnitSDK | `© 2000-2021 Apple Inc. All rights reserved.`(取自源文件头的 `@copyright` 行,27 个文件一致;`LICENSE.txt` 本身是不带版权行的 Apache-2.0 正文) |
 | Microsoft WebView2 SDK(静态 loader) | `Copyright (C) Microsoft Corporation. All rights reserved.` |
 | miniz | `Copyright 2013-2014 RAD Game Tools and Valve Software`;`Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC` |
 | zlib | `(C) 1995-2022 Jean-loup Gailly and Mark Adler` |
@@ -77,16 +81,19 @@ Unicode 数据派生表见生成表自己的文件头,表中「当前」值是�
   **由此带来的分发口径**:本仓自己写的源码仍是 GPL-3.0-or-later;但发布的 `.vst3` 里同时编进了按 GPLv3
   (only)使用的 VST3 SDK 与按 AGPLv3 使用的 JUCE,所以**二进制整体按 GPLv3 分发**(连同 JUCE 那部分的
   AGPLv3 条款,见上一条),不能按「GPLv3 或更高版本」再授权。
-- **JUCE 实际编进 `.vst3` 的第三方库**:三个插件用到的 JUCE 模块只有 `juce_audio_basics` / `juce_audio_processors` /
+- **JUCE 实际编进 `.vst3` / `.component` 的第三方库**:三个插件用到的 JUCE 模块只有 `juce_audio_basics` / `juce_audio_processors` /
   `juce_core` / `juce_data_structures` / `juce_events` / `juce_graphics` / `juce_gui_basics` / `juce_gui_extra`,
   外加 `juce_add_plugin` 自动带上的插件封装 `juce_audio_plugin_client`(直接链接的只有
   `src/plugin-common/CMakeLists.txt` 里的 `juce_audio_processors` 与 `juce_gui_extra`,其余是它们依赖的模块;
-  生成的 `.vcxproj` 里的 JUCE 编译单元也只有这些),模块开关都取 JUCE 默认。由此编进来的是:`juce_core` 里的 zlib
+  生成的 `.vcxproj` 里的 JUCE 编译单元也只有这些,macOS 构建日志里的同样只有这些),模块开关都取 JUCE 默认。由此编进来的是:`juce_core` 里的 zlib
   (`JUCE_INCLUDE_ZLIB_CODE` 默认 1)、`juce_graphics` 里的 libpng / libjpeg(`JUCE_INCLUDE_PNGLIB_CODE` /
   `JUCE_INCLUDE_JPEGLIB_CODE` 默认 1)、HarfBuzz(`juce_graphics_Harfbuzz.cpp`)与 SheenBidi
-  (`juce_graphics_Sheenbidi.c`),以及 `juce_audio_processors` 里的 VST3 SDK。JUCE `LICENSE.md` 列出的
+  (`juce_graphics_Sheenbidi.c`),以及 `juce_audio_processors` 里的 VST3 SDK。macOS 上三个插件另出 AU
+  (`.component`):AU 封装 `juce_audio_plugin_client_AU_1.mm` / `_AU_2.mm` 只在 AU 目标里编进 Apple 的
+  AudioUnitSDK(JUCE 8.0.8 内置副本 `juce_audio_plugin_client/AU/AudioUnitSDK/`;JUCE 改过其中两个文件,
+  见同目录 `JUCE CHANGES.txt`),`.vst3` 与 Windows 包里都没有它。JUCE `LICENSE.md` 列出的
   其余依赖**没有**进本项目的二进制:FLAC / Ogg Vorbis 在 `juce_audio_formats`,GLEW 在 `juce_opengl`,
-  CHOC / QuickJS 在 `juce_javascript`,Box2D 在 `juce_box2d`(这四个模块都没链);AudioUnitSDK / AAX /
+  CHOC / QuickJS 在 `juce_javascript`,Box2D 在 `juce_box2d`(这四个模块都没链);AAX /
   Oboe 属于没构建的格式或平台;LV2 / ARA 宿主代码只在开启插件宿主功能时编译,本项目没开。
   `pslextensions` 头文件随 VST3 封装一起被包含,属公有领域(public domain),无随附义务。
   HarfBuzz 的 `COPYING` 说子目录里另有 `COPYING` 的部分按各自许可证;已核对 JUCE 8.0.8 内置副本
@@ -114,7 +121,8 @@ Unicode 数据派生表见生成表自己的文件头,表中「当前」值是�
   这一行登记的是其中来自 Unicode 的数据,不替代那三行。
 - **WebView2 Runtime(Evergreen)不随本仓库分发。** 插件通过上表的静态 loader 加载宿主机器上已安装的
   WebView2 Runtime(Windows 平台组件,由微软 Evergreen 引导器安装),故 Runtime 本身不进第三方声明闭包。
-  这与 U2「不附 `LICENSE-EXCEPTION.md`,依赖 GPLv3 系统库例外的默认解释」一致。
+  这与 U2「不附 `LICENSE-EXCEPTION.md`,依赖 GPLv3 系统库例外的默认解释」一致。macOS 版的插件界面用
+  系统自带的 WKWebView(WebKit.framework,随系统更新),同样不随包分发、不进声明闭包,上表 WebView2 SDK 一行只属于 Windows 包。
 - **`web/js/juce/*.js` 不加 Synchain 版权头**:它是 JUCE 官方 helper 的原样副本(仅行尾按本仓
   `.gitattributes` 取 LF),版权归 Raw Material Software Limited,由 `REUSE.toml` 的 `web/js/juce/**`
   特例块声明 AGPL-3.0-or-later;`.gitattributes` 另标 `linguist-vendored`。
@@ -145,12 +153,12 @@ Unicode 数据派生表见生成表自己的文件头,表中「当前」值是�
   正文与 `GPL-3.0-or-later.txt` 同为 GPLv3 全文,「only / or-later」的区别在授权声明,不在正文)、
   `OFL-1.1.txt`(字体)、`MIT.txt`(miniz)、`BSD-3-Clause.txt`(WebView2 loader,**逐字取自**
   `Microsoft.Web.WebView2` 1.0.2957.106 nupkg 的 `LICENSE.txt`,含微软版权行)、`libpng-2.0.txt`
-  (逐字取自 JUCE 8.0.8 的 `pnglib/LICENSE`,含 libpng 作者版权行)、`Apache-2.0.txt`(SheenBidi,
-  逐字取自 JUCE 8.0.8 的 `sheenbidi/LICENSE`)、`Zlib.txt` / `IJG.txt` / `MIT-Modern-Variant.txt` /
+  (逐字取自 JUCE 8.0.8 的 `pnglib/LICENSE`,含 libpng 作者版权行)、`Apache-2.0.txt`(SheenBidi 与 AudioUnitSDK,
+  逐字取自 JUCE 8.0.8 的 `sheenbidi/LICENSE`;`AU/AudioUnitSDK/LICENSE.txt` 与它只差 CRLF 行尾)、`Zlib.txt` / `IJG.txt` / `MIT-Modern-Variant.txt` /
   `Unicode-3.0.txt`(SPDX 标准文本;各自的版权行见上「版权行」一节)。用了标识就必须有全文,有全文就必须有文件引用它,
   否则 `reuse lint` 恒非零。
 - **`third_party/notices/`** 存上表各 JUCE 内置库与 WebView2 loader 的**上游版权/许可声明原文**
-  (逐字副本,文件名 = `<组件>.<上游文件名>`,来源同上;唯一例外是 `unicode.license.txt`,JUCE 里没有这份文件,
+  (逐字副本,文件名 = `<组件>.<上游文件名>`,来源同上,行尾按本仓 `.gitattributes` 存成 LF;唯一例外是 `unicode.license.txt`,JUCE 里没有这份文件,
   取自 unicode.org,见上「Unicode 数据派生表」一条)。这些库的源码不在本仓(JUCE 与 nupkg 都在构建期取),
   这一目录让每份声明都能在仓内查到原文,也是 `REUSE.toml` 给这些许可证挂引用的落点。
   发布 zip 按同一相对路径携带整个目录,解压后本文件里写的这些路径原样可查。

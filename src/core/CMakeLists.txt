@@ -51,11 +51,11 @@ add_library(scvb_core STATIC
   ipc/SegmentLayout.h
   ipc/ISegmentBackend.h
   ipc/SegmentBackendWin32.h
+  ipc/PlatformSegmentBackend.h
   ipc/GroupProbe.h
   ipc/GroupProbe.cpp
   ipc/Registry.cpp
   ipc/Registry.h
-  ipc/RegistryProbe.h
   ipc/CtrlPlane.cpp
   ipc/CtrlPlane.h
   ipc/FeatRing.cpp
@@ -99,11 +99,31 @@ add_library(scvb_core STATIC
   state/SegmentEdit.h
   export/SuggestionExport.cpp
   export/SuggestionExport.h
+  # [B 线 M07b] viz 实得速率的进程内计数与 10 s 汇总(Output / Monitor 定时器回调里用;不进共享内存)。
+  diag/VizRateMeter.cpp
+  diag/VizRateMeter.h
+  diag/VizRateSink.h
 )
 
-# SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
+# SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现见下面的 if(APPLE) 块。
+# 插件侧按平台选哪个后端,见 ipc/PlatformSegmentBackend.h。跨组只读探测统一走 ipc/GroupProbe.cpp
+# (经后端抽象,全平台编译);原先只在这里编的 Win32 专用 RegistryProbe 已于 B 线 M03 退役。
 if(WIN32)
-  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp ipc/RegistryProbe.cpp)
+  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp)
+endif()
+
+# [B 线 M05] macOS:POSIX 共享内存后端(shm_open + flock 生命周期锁)与它的诊断出口(IpcDiag,默认空操作)。
+# SCVB_HAS_POSIX_SHM 必须 PUBLIC:ipc/PlatformSegmentBackend.h 在**链接方**(三个插件的 Processor 头、
+# 测试)的编译单元里按它选后端,只给 scvb_core 自己定义的话,插件仍会落到进程内后端。
+# Windows 不进这个块:源集合与宏都不变。其余非 Apple 平台照旧落到 SegmentBackendInProcess。
+if(APPLE)
+  target_sources(scvb_core PRIVATE
+    ipc/IpcDiag.cpp
+    ipc/IpcDiag.h
+    ipc/SegmentBackendPosix.cpp
+    ipc/SegmentBackendPosix.h
+  )
+  target_compile_definitions(scvb_core PUBLIC SCVB_HAS_POSIX_SHM=1)
 endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -130,4 +150,16 @@ if(MSVC)
   target_compile_options(scvb_core PRIVATE /W4 /utf-8)
 else()
   target_compile_options(scvb_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# [B 线 M06a] 非 MSVC 编译器关掉浮点乘加融合(-ffp-contract=off)。clang 默认 `on`:同一条语句里的
+# a*b+c 会被融成一条 fmadd(arm64 上必然发生),中间积不再舍入。于是「同一个表达式算两遍、相减得 0」
+# 这类恒等式不再成立 —— 实测 BAL-3(tests/core/test_balance.cpp)在 arm64 上因此红:
+# AutoAssign.cpp 的 `delta = lTarget - 10*log10(z)`,在该用例里 lTarget 与 10*log10(z) 是同一个量,
+# 融合成 fma 之后差却成了一个打印为 -0.0 的极小负数,`u == 0.0` 断言落空。
+# MSVC 默认不融合(/fp:precise 下要显式 /fp:contract 才融),这一条让两个平台的求值语义对齐。
+# PUBLIC:scvb_core 头文件里的内联数学(PanMath / MixMath 等)会在链接方自己的编译单元里展开,
+# 链接方(测试、插件)必须同口径,否则同一个内联函数在两个编译单元里能算出不同的末位。
+if(NOT MSVC)
+  target_compile_options(scvb_core PUBLIC -ffp-contract=off)
 endif()

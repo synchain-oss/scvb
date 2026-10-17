@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "analysis/LoudnessMode.h"
 #include "input/InputSession.h"
+#include "input/OutputStage.h"
 #include "ipc/SegmentBackendInProcess.h"
 #include "ipc/Registry.h"
 #include "output/OutputSession.h"
@@ -1731,11 +1733,15 @@ std::uint32_t relayFpReports(scvb::FeatRing& ring, scvb::CtrlPlane& ctrl, scvb::
 
 // 每拍推进一次音频写头再 tick。evaluateChannels 的在线判据含「最近 500ms 内确有新帧写入」,
 // 只在开头写一次的话该轨几拍之后就掉出 connected_mask,pullTick 会整轨跳过。
+// Output 自己也要「在被宿主调用」(bumpBlockCounter = processBlock 首行,[J52]):只推 Input 写头、
+// Output 的块计数一动不动,正是 KI-6 的停调形状 —— 看门狗 0.5 s 后会闩住全部轨。修 H5 之前这里
+// 不推也照样绿,只是因为那时看门狗清 mask 只清一拍。
 void fpTickOnline(OutputSession& out, InputSession& in, scvb::u64 nowMs, std::int64_t& audioPos)
 {
     float chunk[64] = {};
     scvb::AudioRing::write(in.audioRing().acquire(), audioPos, chunk, 64);
     audioPos += 64;
+    out.bumpBlockCounter();
     in.heartbeat(nowMs);
     out.tick(nowMs);
 }
@@ -2044,4 +2050,1528 @@ TEST_CASE("[SL-482] 反向:attach 到几何相同的存活段不换代", "[outpu
     CHECK(h->epoch.load() == e0); // 几何没变 → 不换代
     CHECK(h->channels == 2);
     CHECK(h->sample_rate == 48000);
+}
+
+// ===========================================================================
+// [A-6] E1b 正向在场与告警(修 H3)端到端:InProcess 后端 + 一条 InputSession + OutputSession,虚拟时钟逐 10 ms
+// 推进。每一块:Input 写一块、Output 按自己发布的 injectMask 读这一轨(OutputProcessor::renderSpan 只读注入集里的
+// 轨;读方时间线照样往前走,不在注入集里的那几块就是读方的「漏读」)。outputFirst 时同一块里 Output 先读、Input
+// 后写 —— Output 要的那一块写方还没写(N2 / LS-14 的形状:宿主先算总线、人声轨没送进装 Output 的总线)。
+// 拍点相位同下面 [KI-6] 那一组:Output [M] 在 t%40==0、Input [M] 在 t%40==20;Input 侧 [M] 照
+// InputProcessor::timerCallback:isHealthy → 5 s 滞回状态机 → muted 确认位 = 目标档是静音。
+// 判据看的是桥面口径 misalignCountRecent(> 0 = 「路由失准」横幅亮)与 injectMask,不看 A-6 的内部量。
+// ===========================================================================
+namespace
+{
+constexpr scvb::u64 kA6StepMs = 10;
+constexpr int kA6Frames = 480; // 一块 = 10 ms @ 48 kHz
+
+struct A6Sample
+{
+    scvb::u64 t = 0;
+    bool tick = false; // 本步 Output [M] 跑了一拍(下面三项取本步末的值,只在 tick 时有意义)
+    bool injected = false; // injectMask 本位
+    u32 misalign = 0; // misalignCountRecent
+    u32 gaps = 0; // gapCount(累计)
+    int reads = 0; // 本步 Output 读这一轨的块数
+    int readsOk = 0; // ……其中读成功的
+    bool inputHealthy = false; // 本步末 Input 侧看到的「Output 健康 ∧ connected_mask 本位在」(InputSession::isHealthy)
+};
+
+struct A6Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    InputSession in{backend, 1001};
+    scvb::input::StageSwitchStateMachine sm;
+    OutputSession out{backend, 2001};
+    std::vector<A6Sample> log;
+    scvb::u64 now = 1000;
+    std::int64_t writePos = 0;
+    std::int64_t readPos = 0;
+    scvb::u64 podEpoch = 1; // Output 自己的时间线代号(OutputProcessor 的 podEpoch_)
+    int blocksPerStep = 1; // > 1:离线导出,音频跑在墙钟前面 N 倍
+    bool outputFirst = false;
+    bool inputWrites = true; // false = 写方没在写(还没开始 / 宿主没调它)
+    bool outputReadsLane = true; // false = 面板上关了这一轨:注入集里有它,但启用位挡掉、Output 不读
+    std::vector<float> wbuf = std::vector<float>(static_cast<std::size_t>(kA6Frames), 0.0f);
+    std::vector<float> rbuf = std::vector<float>(static_cast<std::size_t>(kA6Frames), 0.0f);
+
+    A6Rig()
+    {
+        in.setChannelId(1);
+        REQUIRE(in.prepare(48000, 512, 1, now) == InputClaimState::kActive); // mono
+        in.heartbeat(now);
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        out.setTransportPlaying(true);
+    }
+
+    void writeBlock()
+    {
+        if (inputWrites)
+        {
+            scvb::AudioRing::write(in.audioRing().acquire(), writePos, wbuf.data(), kA6Frames);
+            writePos += kA6Frames;
+        }
+    }
+
+    void readBlock(A6Sample& s)
+    {
+        if (outputReadsLane && (out.injectMask() & 1u) != 0)
+        {
+            ++s.reads;
+            s.readsOk += out.mixSource(1).read(readPos, rbuf.data(), kA6Frames, podEpoch) ? 1 : 0;
+        }
+        readPos += kA6Frames;
+    }
+
+    // 宿主定位:两边同一块跳过去(写方换代 —— InputProcessor 遇时间线跳变即 bumpEpoch;读方自己的时间线代号 +1)。
+    void seek(std::int64_t to)
+    {
+        scvb::AudioRing::bumpEpoch(in.audioRing().acquire());
+        writePos = to;
+        readPos = to;
+        ++podEpoch;
+    }
+
+    void step()
+    {
+        A6Sample s;
+        s.t = now;
+        for (int b = 0; b < blocksPerStep; ++b)
+        {
+            if (outputFirst)
+            {
+                readBlock(s);
+                writeBlock();
+            }
+            else
+            {
+                writeBlock();
+                readBlock(s);
+            }
+            out.bumpBlockCounter(); // processBlock 首行([J52]):Output 一直在被调用
+        }
+        if (now % 250 == 0)
+        {
+            out.heartbeat(now);
+            in.heartbeat(now);
+        }
+        if (now % 40 == 0)
+        {
+            out.tick(now);
+            s.tick = true;
+        }
+        if (now % 40 == 20)
+        {
+            const auto target = sm.evaluate(in.isHealthy(now), now);
+            in.setMuted(target == scvb::input::OutputStageMode::kSilence);
+        }
+        s.inputHealthy = in.isHealthy(now);
+        s.injected = (out.injectMask() & 1u) != 0;
+        s.misalign = out.misalignCountRecent(1);
+        s.gaps = out.gapCount(1);
+        log.push_back(s);
+        now += kA6StepMs;
+    }
+
+    void runUntil(scvb::u64 untilMs)
+    {
+        while (now < untilMs)
+        {
+            step();
+        }
+    }
+
+    // 一直跑到「告警亮起之后、本轨第一次被失准踢出注入集」那一拍(H3 条件须已设好)。返回那一拍;0 = 没等到。
+    scvb::u64 runUntilKickedOut(scvb::u64 maxMs)
+    {
+        const scvb::u64 end = now + maxMs;
+        bool lit = false;
+        while (now < end)
+        {
+            step();
+            const A6Sample& s = log.back();
+            if (!s.tick)
+            {
+                continue;
+            }
+            lit = lit || s.misalign > 0;
+            if (lit && !s.injected)
+            {
+                return s.t;
+            }
+        }
+        return 0;
+    }
+};
+
+// 告警时序。条件在 [on, off) 内成立。
+struct A6Alarm
+{
+    scvb::u64 onset = 0; // 条件开始之后第一次亮(misalign > 0)的拍;0 = 没亮
+    int flicker = 0; // 亮起之后、条件撤掉之前熄掉(misalign == 0)的拍数
+    int reinjections = 0; // 亮起之后、条件撤掉之前本轨重新回到注入集的次数
+    int reads = 0; // 条件期间 Output 读这一轨的块数
+    int readsOk = 0; // ……其中读成功的
+    scvb::u64 maxUnhealthyMs = 0; // 条件期间 Input 侧连续「不健康」(connected_mask 本位不在)的最长一段
+    scvb::u64 clear = 0; // 条件撤掉之后第一次熄的拍;0 = 没熄
+};
+
+A6Alarm a6AlarmOf(const std::vector<A6Sample>& log, scvb::u64 on, scvb::u64 off)
+{
+    A6Alarm a;
+    bool prevInjected = true;
+    scvb::u64 unhealthyRun = 0;
+    for (const A6Sample& s : log)
+    {
+        if (s.t >= on && s.t < off)
+        {
+            a.reads += s.reads;
+            a.readsOk += s.readsOk;
+            unhealthyRun = s.inputHealthy ? 0 : unhealthyRun + kA6StepMs;
+            a.maxUnhealthyMs = std::max(a.maxUnhealthyMs, unhealthyRun);
+            if (!s.tick)
+            {
+                continue;
+            }
+            if (a.onset == 0 && s.misalign > 0)
+            {
+                a.onset = s.t;
+            }
+            else if (a.onset != 0 && s.misalign == 0)
+            {
+                ++a.flicker;
+            }
+            if (a.onset != 0 && s.injected && !prevInjected)
+            {
+                ++a.reinjections;
+            }
+            prevInjected = s.injected;
+        }
+        else if (s.t >= off && s.tick && a.clear == 0 && s.misalign == 0)
+        {
+            a.clear = s.t;
+        }
+    }
+    return a;
+}
+
+// 从 from 起(不含)到末尾:每一拍都不亮、每一块都读到。
+bool a6CleanAfter(const std::vector<A6Sample>& log, scvb::u64 from)
+{
+    for (const A6Sample& s : log)
+    {
+        if (s.t > from && ((s.tick && s.misalign != 0) || s.readsOk != s.reads))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 整段 log 里亮过的拍数。
+int a6LitTicks(const std::vector<A6Sample>& log)
+{
+    int n = 0;
+    for (const A6Sample& s : log)
+    {
+        n += (s.tick && s.misalign != 0) ? 1 : 0;
+    }
+    return n;
+}
+} // namespace
+
+TEST_CASE("[A-6] an injected lane the Output keeps failing to read raises misalign within 0.5 s and the alarm does not "
+          "falsely recover while the lane jitters in and out of the injection set",
+          "[output][session][misalign][A6]")
+{
+    // 四格:{从一代开始(同一周期里先定位)、播放中途(读方这一代已经读到过)} × {实时、离线 10x}。
+    for (const bool fromGenerationStart : {true, false})
+    {
+        for (const int blocksPerStep : {1, 10})
+        {
+            scvb::SegmentBackendInProcess::resetAll();
+            A6Rig rig;
+            if (blocksPerStep > 1)
+            {
+                rig.out.setNonRealtime(true);
+                rig.blocksPerStep = blocksPerStep;
+            }
+            INFO("generation start " << fromGenerationStart << ", blocks/step " << blocksPerStep);
+            rig.runUntil(3000);
+            // 前提:交接走完 —— 已注入、读得到、不亮。
+            REQUIRE(rig.log.back().injected);
+            REQUIRE(rig.log.back().readsOk > 0);
+            REQUIRE(rig.out.misalignCountRecent(1) == 0);
+
+            if (fromGenerationStart)
+            {
+                rig.seek(rig.readPos + 30 * 48000);
+            }
+            const scvb::u64 on = rig.now;
+            rig.outputFirst = true;
+            rig.runUntil(on + 5000);
+            const scvb::u64 off = rig.now;
+            rig.outputFirst = false;
+            rig.runUntil(off + 3000);
+
+            const A6Alarm a = a6AlarmOf(rig.log, on, off);
+            INFO("onset +" << (a.onset != 0 ? a.onset - on : 0) << " ms, flicker " << a.flicker << ", reinjections "
+                           << a.reinjections << ", reads " << a.readsOk << "/" << a.reads << ", clear +"
+                           << (a.clear != 0 ? a.clear - off : 0) << " ms");
+            // 前提:条件期间这一轨确实一块都没读到(真实状态:无声),而且失准把它踢出注入集、1 s 后又放回来过不止
+            // 一次 ——「无新缺口 ∧ 数据在推进」的旧恢复判据会在放回来的那几拍假恢复。
+            REQUIRE(a.reads > 0);
+            REQUIRE(a.readsOk == 0);
+            // 告警期间本轨被失准踢出注入集、connected_mask 本位跟着断开(online 只经由 misaligned 受影响),
+            // 1 s 失准窗一满放回、宽限走完再踢出。每段断开都要远短于 Input 的 5 s 滞回,否则 Input 会切直通、
+            // 把原声放进总线。量最长的一段(按现机制约 1 s;失准窗或放回的条件被意外拉长时这里先红)。
+            // 放在下面的前提断言之前,删除式红在这一条上。
+            CHECK(a.maxUnhealthyMs >= 500);
+            CHECK(a.maxUnhealthyMs < 2000);
+            REQUIRE(a.reinjections >= 2);
+            CHECK(a.onset != 0);
+            CHECK(a.onset - on <= 500);
+            if (blocksPerStep > 1)
+            {
+                CHECK(a.onset - on <= 100); // 离线 10x:200 ms 时间线只是 20 ms 墙钟 —— 宽限按样本计
+            }
+            CHECK(a.flicker == 0);
+            // 条件撤掉之后:读到数据,告警在 1.5 s 内撤下,此后不再亮、每块都读到。
+            CHECK(a.clear != 0);
+            CHECK(a.clear - off <= 1500);
+            CHECK(a6CleanAfter(rig.log, a.clear));
+            WARN("A-6 e2e H3 genStart=" << fromGenerationStart << " blocks/step=" << blocksPerStep << ": onset +"
+                                        << (a.onset != 0 ? a.onset - on : 0) << " ms, flicker " << a.flicker
+                                        << ", reinjections " << a.reinjections << ", longest disconnect "
+                                        << a.maxUnhealthyMs << " ms, clear +" << (a.clear != 0 ? a.clear - off : 0)
+                                        << " ms");
+        }
+    }
+}
+
+TEST_CASE("[A-6] misalign recovery needs a successful read since the last gap; a lane the Output never reads does not "
+          "pin the alarm",
+          "[output][session][misalign][A6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+    rig.runUntil(3000);
+    REQUIRE(rig.log.back().injected);
+    rig.seek(rig.readPos + 30 * 48000);
+    rig.outputFirst = true;
+    const scvb::u64 kicked = rig.runUntilKickedOut(3000);
+    REQUIRE(kicked != 0); // 前提:告警亮了,本轨被失准踢出了注入集
+
+    SECTION("the host orders the Input first again while the lane is out: the alarm clears only after the lane is read")
+    {
+        rig.outputFirst = false;
+        rig.runUntil(kicked + 3000);
+        scvb::u64 back = 0; // 本轨回到注入集的那一拍
+        bool litAtBack = false;
+        scvb::u64 firstOk = 0; // 踢出之后第一次读到
+        scvb::u64 clear = 0;
+        for (const A6Sample& s : rig.log)
+        {
+            if (s.t <= kicked)
+            {
+                continue;
+            }
+            if (firstOk == 0 && s.readsOk > 0)
+            {
+                firstOk = s.t;
+            }
+            if (s.tick && back == 0 && s.injected)
+            {
+                back = s.t;
+                litAtBack = s.misalign > 0;
+            }
+            if (s.tick && clear == 0 && s.misalign == 0)
+            {
+                clear = s.t;
+            }
+        }
+        INFO("kicked " << kicked << ", back +" << (back - kicked) << ", first read +" << (firstOk - kicked)
+                       << ", clear +" << (clear - kicked));
+        REQUIRE(back != 0);
+        REQUIRE(firstOk != 0);
+        // 放回注入集的那一拍:「无新缺口 ∧ 数据在推进」都成立,但这一轨自上一笔缺口以来一块都还没被读到 —— 不撤。
+        CHECK(litAtBack);
+        CHECK(clear != 0);
+        CHECK(clear >= firstOk); // 撤下只发生在读到之后(读在拍之前,同一步里读到、同一步撤下也算)
+        CHECK(clear - kicked <= 1500);
+        CHECK(a6CleanAfter(rig.log, clear));
+        WARN("A-6 e2e recovery: back +" << (back - kicked) << " ms (lit " << litAtBack << "), first read +"
+                                        << (firstOk - kicked) << " ms, clear +" << (clear - kicked) << " ms");
+    }
+
+    SECTION("the lane is switched off in the Output panel: never read, the alarm still clears (old rule as fallback)")
+    {
+        rig.outputReadsLane = false;
+        rig.outputFirst = false;
+        rig.runUntil(kicked + 4000);
+        int readsAfter = 0;
+        scvb::u64 clear = 0;
+        for (const A6Sample& s : rig.log)
+        {
+            if (s.t <= kicked)
+            {
+                continue;
+            }
+            readsAfter += s.reads;
+            if (s.tick && clear == 0 && s.misalign == 0)
+            {
+                clear = s.t;
+            }
+        }
+        INFO("clear +" << (clear - kicked) << " ms");
+        REQUIRE(readsAfter == 0); // 前提:这一轨此后真的一块都没被读
+        CHECK(clear != 0);
+        // 1 s 失准窗走完才回注入集,再在注入集里待满兜底时长、一次都没被读,才退回旧判据。
+        CHECK(clear - kicked <= scvb::output::kMisalignRecoverMs + scvb::output::kUnreadInjectedFallbackMs + 200);
+        CHECK(clear - kicked >= scvb::output::kMisalignRecoverMs + scvb::output::kUnreadInjectedFallbackMs - 100);
+        WARN("A-6 e2e lane never read: clear +" << (clear - kicked) << " ms");
+    }
+}
+
+TEST_CASE("[A-6] an ordinary transient misalign (one gap, then the lane reads again) still clears 1 s after the gap",
+          "[output][session][misalign][A6]")
+{
+    // 正向在场按块算,不按 [M] 拍算:缺口之后同一拍里紧接着读到的那一块也算。所以一次普通的瞬时失准(这一代已经读到过
+    // 数据,偶然缺了一块又接着读到)撤下的时机与修前完全相同 —— 1 s 失准窗一满就撤,不必等本轨回到注入集再读一块。
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+    rig.runUntil(3010);
+    REQUIRE(rig.log.back().injected);
+    REQUIRE(rig.out.misalignCountRecent(1) == 0);
+    REQUIRE(rig.now % 40 == 10); // 下面两步落在同一拍里(拍在 t%40==0)
+    // 两块先算 Output:第一块写头还没动(只记饿读),第二块写方在推进 ⇒ 已读到过数据的这一代照旧计一笔缺口(旧口径);
+    // 第三块起恢复先算 Input,同一拍里就又读到了。
+    rig.outputFirst = true;
+    rig.step();
+    rig.step();
+    rig.outputFirst = false;
+    rig.runUntil(rig.now + 3000);
+    scvb::u64 lit = 0;
+    scvb::u64 clear = 0;
+    bool readAfterGapBeforeLit = false;
+    for (const A6Sample& s : rig.log)
+    {
+        if (s.t < 3010)
+        {
+            continue;
+        }
+        if (lit == 0 && s.readsOk > 0 && s.gaps > 0)
+        {
+            readAfterGapBeforeLit = true;
+        }
+        if (s.tick && lit == 0 && s.misalign > 0)
+        {
+            lit = s.t;
+        }
+        else if (s.tick && lit != 0 && clear == 0 && s.misalign == 0)
+        {
+            clear = s.t;
+        }
+    }
+    INFO("lit " << lit << ", clear +" << (clear - lit) << " ms");
+    REQUIRE(lit != 0); // 前提:这一笔缺口确实在 [M] 拍上被看到、亮了
+    REQUIRE(lit - 3010 <= 40);
+    REQUIRE(readAfterGapBeforeLit); // 前提:缺口之后、被看到之前这一轨又读到了
+    CHECK(clear != 0);
+    CHECK(clear - lit == scvb::output::kMisalignRecoverMs);
+    CHECK(a6CleanAfter(rig.log, clear));
+    WARN("A-6 e2e transient gap: lit at " << lit << ", clear +" << (clear - lit) << " ms");
+}
+
+TEST_CASE("[A-6] cold start does not raise misalign", "[output][session][misalign][A6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    A6Rig rig;
+
+    SECTION("the Input is attached but has not written anything yet, then starts at the transport position")
+    {
+        rig.inputWrites = false;
+        rig.runUntil(3000);
+        rig.inputWrites = true;
+        rig.writePos = rig.readPos; // Input 从宿主当前位置开写(先算 Input、后算 Output)
+        rig.runUntil(6000);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(rig.log.back().injected);
+        CHECK(a6CleanAfter(rig.log, 5000));
+    }
+
+    SECTION("Output-first only around the hand-over (< 200 ms unreadable), then the host orders the Input first")
+    {
+        rig.outputFirst = true;
+        while (rig.now < 4000 && (rig.log.empty() || !rig.log.back().injected))
+        {
+            rig.step();
+        }
+        REQUIRE(rig.log.back().injected);
+        const scvb::u64 handedOver = rig.now;
+        rig.runUntil(handedOver + 150);
+        rig.outputFirst = false;
+        rig.runUntil(handedOver + 3000);
+        const A6Alarm a = a6AlarmOf(rig.log, handedOver, handedOver + 150);
+        INFO("reads during Output-first " << a.readsOk << "/" << a.reads);
+        REQUIRE(a.reads >= 10); // 前提:注入之后确有一段「已注入却读不到」
+        REQUIRE(a.readsOk == 0);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(a6CleanAfter(rig.log, handedOver + 1000));
+    }
+
+    SECTION("offline export at 10x: Output-first for 100 ms of timeline around the hand-over")
+    {
+        rig.out.setNonRealtime(true);
+        rig.blocksPerStep = 10;
+        rig.outputFirst = true;
+        while (rig.now < 4000 && (rig.log.empty() || !rig.log.back().injected))
+        {
+            rig.step();
+        }
+        REQUIRE(rig.log.back().injected);
+        rig.step(); // 10 块 = 100 ms 时间线,全读不到
+        rig.outputFirst = false;
+        const scvb::u64 switched = rig.now;
+        rig.runUntil(switched + 3000);
+        const A6Alarm a = a6AlarmOf(rig.log, switched - kA6StepMs, switched);
+        REQUIRE(a.reads == 10);
+        REQUIRE(a.readsOk == 0);
+        CHECK(a6LitTicks(rig.log) == 0);
+        CHECK(a6CleanAfter(rig.log, switched + 1000));
+    }
+}
+
+// ===========================================================================
+// [KI-6] 停摆看门狗闩锁(修 H5)端到端:InProcess 后端 + 3 个 InputSession + OutputSession,
+// 虚拟时钟逐 10 ms 推进。宿主停调 Output 7 s(Input 照写、两边心跳都由 [M] 写着)→ Input 不健康满 5 s
+// 转直通(从停调起算 5.5 ± 0.5 s);恢复调用后逐轨接回,接回时重走 [J32] 握手,双路叠加不超出 J32 窗。
+//
+// Input 那一侧的 [M] 逐行照 InputProcessor::timerCallback:isHealthy → StageSwitchStateMachine(5 s 滞回)
+// → muted 确认位 = 「目标档是静音」。[A] 的 80 ms 等功率 ramp 记成「目标档转静音后 kStageRampMs 内仍有原声」。
+// 拍点相位:Output [M] 在 t%40==0、Input [M] 在 t%40==20(两个 25Hz 定时器互不对齐);每一步先「音频」
+// (各 Input 写一块、Output 没被停调就 bumpBlockCounter)再「[M]」,与宿主「先人声轨后总线」同序。
+// ===========================================================================
+namespace
+{
+using scvb::u64;
+using scvb::input::OutputStageMode;
+using scvb::input::StageSwitchStateMachine;
+
+constexpr u64 kKi6StepMs = 10; // 一步 = 一块 = 10 ms(480 帧 @48k)
+constexpr int kKi6BlockFrames = 480;
+constexpr int kKi6Lanes = 3;
+constexpr u64 kKi6ReacquireMs = 200; // CtrlPlane.cpp kReacquireIntervalMs(§4.3-b 让位间隔)
+
+struct Ki6Lane
+{
+    Ki6Lane(scvb::SegmentBackendInProcess& backend, u32 pid, u32 ch) : session(backend, pid), channel(ch) {}
+
+    InputSession session;
+    StageSwitchStateMachine sm;
+    u32 channel;
+    OutputStageMode target = OutputStageMode::kPassthrough;
+    u64 silenceSinceMs = 0; // 目标档最近一次转静音的时刻(ramp 起点)
+    std::int64_t pos = 0;
+
+    void writeBlock()
+    {
+        float buf[kKi6BlockFrames] = {};
+        scvb::AudioRing::write(session.audioRing().acquire(), pos, buf, kKi6BlockFrames);
+        pos += kKi6BlockFrames;
+    }
+
+    void tickM(u64 now)
+    {
+        const bool healthy = session.isHealthy(now);
+        const OutputStageMode t = sm.evaluate(healthy, now);
+        if (t == OutputStageMode::kSilence && target != OutputStageMode::kSilence)
+        {
+            silenceSinceMs = now;
+        }
+        target = t;
+        session.setMuted(t == OutputStageMode::kSilence);
+    }
+
+    // 本轨此刻在总线上是否还有 Input 直通出来的原声(直通档,或转静音的 80 ms ramp 还没走完)。
+    bool rawAudible(u64 now) const
+    {
+        if (target == OutputStageMode::kPassthrough)
+        {
+            return true;
+        }
+        return static_cast<double>(now - silenceSinceMs) < scvb::input::kStageRampMs;
+    }
+};
+
+struct Ki6Sample
+{
+    u64 t = 0;
+    bool outputCalled = false;
+    bool outputTick = false; // 本步 Output [M] 跑了一拍
+    u32 mask = 0;
+    u32 inject = 0;
+    bool raw[kKi6Lanes] = {};
+    bool muted[kKi6Lanes] = {};
+    bool healthy[kKi6Lanes] = {};
+};
+
+struct Ki6Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    std::vector<std::unique_ptr<Ki6Lane>> lanes;
+    OutputSession out{backend, 2001};
+    scvb::Registry probe{backend, 1};
+    std::vector<Ki6Sample> log;
+    u64 now = 1000;
+
+    Ki6Rig()
+    {
+        for (u32 i = 0; i < static_cast<u32>(kKi6Lanes); ++i)
+        {
+            lanes.push_back(std::make_unique<Ki6Lane>(backend, 1001 + i, i + 1)); // channel 1..3
+            lanes.back()->session.setChannelId(i + 1);
+            REQUIRE(lanes.back()->session.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+            lanes.back()->session.heartbeat(now);
+        }
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        out.setTransportPlaying(true);
+    }
+
+    // 推进到 untilMs(不含);outputCalled = 宿主这段时间里调不调 Output 的 processBlock。
+    void runUntil(u64 untilMs, bool outputCalled)
+    {
+        for (; now < untilMs; now += kKi6StepMs)
+        {
+            for (auto& l : lanes)
+            {
+                l->writeBlock();
+            }
+            if (outputCalled)
+            {
+                out.bumpBlockCounter(); // processBlock 首行([J52])
+            }
+            Ki6Sample s;
+            s.t = now;
+            s.outputCalled = outputCalled;
+            if (now % 250 == 0)
+            {
+                out.heartbeat(now); // 心跳在 [M]:宿主停调 Output 不停它
+                for (auto& l : lanes)
+                {
+                    l->session.heartbeat(now);
+                }
+            }
+            if (now % 40 == 0)
+            {
+                out.tick(now);
+                s.outputTick = true;
+            }
+            if (now % 40 == 20)
+            {
+                for (auto& l : lanes)
+                {
+                    l->tickM(now);
+                }
+            }
+            s.mask = probe.connectedMask();
+            s.inject = out.injectMask();
+            for (int i = 0; i < kKi6Lanes; ++i)
+            {
+                const Ki6Lane& l = *lanes[static_cast<std::size_t>(i)];
+                s.raw[i] = l.rawAudible(now);
+                s.muted[i] = l.target == OutputStageMode::kSilence;
+                s.healthy[i] = l.session.isHealthy(now);
+            }
+            log.push_back(s);
+        }
+    }
+};
+
+constexpr u32 ki6Bit(int lane)
+{
+    return 1u << static_cast<u32>(lane);
+}
+} // namespace
+
+TEST_CASE("[KI-6] Output not called: lanes fall back to raw after 5.5 +/- 0.5 s and rejoin lane by lane",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000; // 宿主从这一刻起不调 Output(Live 停用设备 / FL smart disable 一类)
+    constexpr u64 kResume = 10000; // 停调 7 s 后恢复
+    constexpr u64 kEnd = 13000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+
+    // 前提:停调前三轨都已接管(在 mask、在注入、Input 在静音档)。
+    {
+        const Ki6Sample& s = rig.log.back();
+        REQUIRE(s.mask == 0x7u);
+        REQUIRE(s.inject == 0x7u);
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            REQUIRE(s.muted[i]);
+        }
+    }
+
+    rig.runUntil(kResume, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // ---- 停调段 ------------------------------------------------------------
+    // 看门狗触发:停调 0.5 s(+ 至多一拍)后 mask 清空。
+    u64 tripMs = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.t < kResume && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0);
+    CHECK(tripMs >= kStall + 500);
+    CHECK(tripMs <= kStall + 540);
+
+    // H5 的修法:触发之后整个停调段,Output 的每一拍都**不得**再把位置回去、也不得注入(修前下一拍就置回)。
+    int relatchedTicks = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= tripMs && s.t < kResume && s.outputTick && (s.mask != 0 || s.inject != 0))
+        {
+            ++relatchedTicks;
+        }
+    }
+    CHECK(relatchedTicks == 0);
+
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        u64 unhealthySince = 0;
+        u64 passthroughAt = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t < kStall || s.t >= kResume)
+            {
+                continue;
+            }
+            if (unhealthySince == 0 && !s.healthy[i])
+            {
+                unhealthySince = s.t;
+            }
+            if (passthroughAt == 0 && !s.muted[i])
+            {
+                passthroughAt = s.t;
+            }
+        }
+        REQUIRE(unhealthySince != 0);
+        REQUIRE(passthroughAt != 0);
+        // Input 不健康满 5 s 才转直通(J12 滞回),从停调起算落在 5.5 ± 0.5 s(LS-11a 同一判据)。
+        CHECK(passthroughAt - unhealthySince >= 5000);
+        CHECK(passthroughAt >= kStall + 5000);
+        CHECK(passthroughAt <= kStall + 6000);
+        // 转直通之后一直直通到恢复(没有被下一拍置回的 mask 又拉回静音)。
+        int backToSilence = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= passthroughAt && s.t < kResume && s.muted[i])
+            {
+                ++backToSilence;
+            }
+        }
+        CHECK(backToSilence == 0);
+    }
+
+    // ---- 恢复段:逐轨接回 ---------------------------------------------------
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        CHECK(rejoinAt[i] <= kResume + 2000); // LS-11a:恢复后 2 s 内接回
+        CHECK(injectAt[i] >= rejoinAt[i]); // 不在 mask 里的轨不注入
+    }
+    // 接回顺序:channel 升序,相邻两轨间隔 ≥ 200 ms(§4.3-b 让位,不得硬切)。
+    CHECK(rejoinAt[0] < rejoinAt[1]);
+    CHECK(rejoinAt[1] < rejoinAt[2]);
+    CHECK(rejoinAt[1] - rejoinAt[0] >= kKi6ReacquireMs);
+    CHECK(rejoinAt[2] - rejoinAt[1] >= kKi6ReacquireMs);
+
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        // [J32] 握手:置位之后要等这一轨 Input 的 muted 确认位、或满 200 ms,才开始注入。
+        bool mutedBeforeInject = false;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= rejoinAt[i] && s.t < injectAt[i] && s.muted[i])
+            {
+                mutedBeforeInject = true;
+            }
+        }
+        CHECK((mutedBeforeInject || injectAt[i] - rejoinAt[i] >= scvb::output::kInjectDelayMs));
+
+        // 双路叠加(Output 在出混音 ∧ 这一轨 Input 还在直通原声)不超出 J32 窗。
+        u64 overlapMs = 0;
+        for (const Ki6Sample& s : rig.log)
+        {
+            if (s.t >= kResume && s.outputCalled && (s.inject & ki6Bit(i)) != 0 && s.raw[i])
+            {
+                overlapMs += kKi6StepMs;
+            }
+        }
+        CHECK(overlapMs <= scvb::output::kInjectDelayMs);
+        WARN("KI-6 e2e lane " << i << ": trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[i] - kResume)
+                              << " ms, inject +" << (injectAt[i] - kResume) << " ms, overlap " << overlapMs << " ms");
+    }
+
+    // 收尾:三轨都回到「在 mask、在注入、Input 静音」。
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        CHECK(last.muted[i]);
+    }
+}
+
+// 短停调(看门狗已触发、Input 还没等满 5 s 滞回):恢复时各 Input 仍报 muted、没有原声可叠,让位不必排队 ——
+// 三轨在恢复后的同一拍接回。修 H5 之前这种短停调本来就是立即接回的(mask 根本没真断过);hold 若对它们也
+// 逐轨排队,排第 k 的轨会白白多静音 (k−1)×200 ms(PR #379 第 1 轮评审)。
+TEST_CASE("[KI-6] short Output stall: lanes whose Input is still muted rejoin together, without queueing",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000;
+    constexpr u64 kResume = 5000; // 停调 2 s:> 0.5 s(看门狗触发),< 5.5 s(Input 还没切直通)
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.runUntil(kResume, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // 前提:停调期间看门狗确实触发、闩住了(mask 空过,且之后再没回来),Input 一直没切直通。
+    u64 tripMs = 0;
+    int relatched = 0;
+    int passthroughSamples = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kStall || s.t >= kResume)
+        {
+            continue;
+        }
+        if (tripMs == 0 && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+        }
+        if (tripMs != 0 && s.outputTick && s.mask != 0)
+        {
+            ++relatched;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            passthroughSamples += s.muted[i] ? 0 : 1;
+        }
+    }
+    REQUIRE(tripMs != 0);
+    REQUIRE(relatched == 0);
+    REQUIRE(passthroughSamples == 0);
+
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        // 恢复后一到两拍内接回(恢复那一拍 evaluateChannels 先跑、看门狗后跑,所以是下一拍),muted 已在 ⇒ 当拍注入。
+        CHECK(rejoinAt[i] <= kResume + 80);
+        CHECK(injectAt[i] == rejoinAt[i]);
+    }
+    CHECK(rejoinAt[1] == rejoinAt[0]);
+    CHECK(rejoinAt[2] == rejoinAt[0]);
+    WARN("KI-6 short stall: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[0] - kResume) << "/+"
+                                    << (rejoinAt[1] - kResume) << "/+" << (rejoinAt[2] - kResume) << " ms");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}
+
+// 宿主停用再启用 Output(releaseResources → prepareToPlay),其间别的轨照常在播、Input 照写:停用那一段**不算**
+// 停调。release 到重新 prepare 之间 tick 不跑看门狗、基线冻在停用前;不清的话重新 prepare 后首拍(宿主首块还没来,
+// 这里晚 [M] 一拍多)会把 7 s 停用整段算成「blockCounter 停滞」→ 误触发、闩住全部轨,已转直通的三轨恢复时再逐轨
+// 排队(第 2、3 轨各多等 200 / 400 ms 无声)。修 H5 之前误触发只清一拍、无害;有了 hold 才可感知。
+TEST_CASE("[KI-6] Output released and re-prepared while Inputs keep writing: the released span is not a stall",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kRelease = 3010; // 紧跟 3000 那一拍之后停用:那一拍 Output 刚 bump 过、看门狗刚取过基线
+    constexpr u64 kPrepare = 10000; // 停用 ~7 s:三条 Input 早已转直通
+    constexpr u64 kFirstBlock = 10050; // 重新 prepare 后 10000、10040 两拍都在宿主首块之前
+    constexpr u64 kEnd = 12000;
+    rig.runUntil(kRelease, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.out.release(rig.now);
+    rig.runUntil(kPrepare, /*outputCalled=*/false);
+    // 前提:三条 Input 都已转直通。还在静音档的话恢复时走 muted 例外、当拍接回,本格分不出排没排队。
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i);
+        REQUIRE_FALSE(rig.log.back().muted[i]);
+    }
+    REQUIRE(rig.out.prepare(48000, 512, rig.now) == OutputClaimState::kActive);
+    rig.runUntil(kFirstBlock, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    u64 rejoinAt[kKi6Lanes] = {};
+    u64 injectAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kPrepare)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+            if (injectAt[i] == 0 && (s.inject & ki6Bit(i)) != 0)
+            {
+                injectAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i] << " inject " << injectAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        REQUIRE(injectAt[i] != 0);
+        // 常规上线:重新 prepare 后的首拍三轨同时置位(误触发的话首拍就被清掉,恢复后再逐轨放)。
+        CHECK(rejoinAt[i] <= kPrepare + 40);
+        // [J32] 握手照走:Input 看到位、转静音、报 muted 之后才注入,且不晚于 200 ms 窗。
+        CHECK(injectAt[i] > rejoinAt[i]);
+        CHECK(injectAt[i] - rejoinAt[i] <= scvb::output::kInjectDelayMs);
+    }
+    CHECK(rejoinAt[1] == rejoinAt[0]);
+    CHECK(rejoinAt[2] == rejoinAt[0]);
+
+    // 置位之后 Output 的每一拍 mask 都在(没有任何一拍被看门狗清掉)。
+    int clearedTicks = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t > rejoinAt[0] && s.outputTick && s.mask != 0x7u)
+        {
+            ++clearedTicks;
+        }
+    }
+    CHECK(clearedTicks == 0);
+    WARN("KI-6 release/re-prepare: rejoin +" << (rejoinAt[0] - kPrepare) << "/+" << (rejoinAt[1] - kPrepare) << "/+"
+                                             << (rejoinAt[2] - kPrepare) << " ms, inject +" << (injectAt[0] - kPrepare)
+                                             << " ms");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}
+
+// 反过来:停摆**之中**被 release 的,重新 prepare 后停摆照样成立 —— Output 从停摆起一块都没跑过。闩锁不跟着
+// release 清掉:重新 prepare 后宿主还是不调 Output 的话,各 Input 一直不健康、5 s 滞回接着数,不会因为
+// 「Output 重新 prepare 了」被叫回静音、白白重计一轮(清掉的话 0.5 s 后看门狗会再触发,Input 已被拉回静音)。
+TEST_CASE("[KI-6] Output released while stalled: the latch survives re-prepare until the Output runs again",
+          "[output][session][watchdog][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    Ki6Rig rig;
+
+    constexpr u64 kStall = 3000;
+    constexpr u64 kRelease = 4000; // 停调 1 s 后停用:看门狗已触发并闩住
+    constexpr u64 kPrepare = 4500;
+    constexpr u64 kFirstBlock = 5500; // 重新 prepare 之后又 1 s 没被调用
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kStall, /*outputCalled=*/true);
+    REQUIRE(rig.log.back().inject == 0x7u);
+    rig.runUntil(kRelease, /*outputCalled=*/false);
+
+    u64 tripMs = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0); // 前提:停用前确实已停摆
+
+    rig.out.release(rig.now);
+    rig.runUntil(kPrepare, /*outputCalled=*/false);
+    REQUIRE(rig.out.prepare(48000, 512, rig.now) == OutputClaimState::kActive);
+    rig.runUntil(kFirstBlock, /*outputCalled=*/false);
+    rig.runUntil(kEnd, /*outputCalled=*/true);
+
+    // 重新 prepare 后、宿主首块之前:Output 每一拍都不置位、不注入;Input 一直不健康(滞回没被打断)。
+    int ticksBeforeBlock = 0;
+    int leakedTicks = 0;
+    int healthySamples = 0;
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kPrepare || s.t >= kFirstBlock)
+        {
+            continue;
+        }
+        if (s.outputTick)
+        {
+            ++ticksBeforeBlock;
+            leakedTicks += (s.mask != 0 || s.inject != 0) ? 1 : 0;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            healthySamples += s.healthy[i] ? 1 : 0;
+        }
+    }
+    REQUIRE(ticksBeforeBlock >= 20); // 前提:这一段 Output 的 [M] 真在跑
+    CHECK(leakedTicks == 0);
+    CHECK(healthySamples == 0);
+
+    // Output 真正恢复推进后照常接回:停调 2.5 s < 5.5 s,Input 仍报 muted ⇒ 三轨同拍接回、当拍注入。
+    u64 rejoinAt[kKi6Lanes] = {};
+    for (const Ki6Sample& s : rig.log)
+    {
+        if (s.t < kFirstBlock)
+        {
+            continue;
+        }
+        for (int i = 0; i < kKi6Lanes; ++i)
+        {
+            if (rejoinAt[i] == 0 && (s.mask & ki6Bit(i)) != 0)
+            {
+                rejoinAt[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kKi6Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoinAt[i]);
+        REQUIRE(rejoinAt[i] != 0);
+        CHECK(rejoinAt[i] <= kFirstBlock + 80);
+    }
+    WARN("KI-6 stalled release: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoinAt[0] - kFirstBlock)
+                                        << " ms after the first block");
+
+    const Ki6Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+}
+
+// ===========================================================================
+// [A-8] E2「挂起 ≠ 掉线」端到端:InProcess 后端 + 3 个 InputSession + OutputSession,虚拟时钟逐 10 ms 推进
+// (拍点相位与上面 [KI-6] 那组相同:Output [M] 在 t%40==0、Input [M] 在 t%40==20,心跳 4 Hz)。
+// 每一步先「音频」:各 Input 在写就写一块(宿主暂停调用某条 Input = 它不写,写头冻结),Output 被调用就
+// bumpBlockCounter 并按同一时间线位置读注入集里的每一条(读不到的那几块就是 stallFail 的来源),再「[M]」。
+// 判据(设计稿 §3.6 / 用户裁定 U3):
+//   · 走带在跑 ∧ 心跳新鲜 ∧ 其余在线条件成立时,写头冻结的轨保留 connected_mask 位与 inject 位,报进 stalledMask,
+//     「挂起」照常上桥;Input 侧一直健康、一直静音(U3(c):Input 面板仍显示已连接);写方一恢复,同一块就读到;
+//   · 走带停住时沿用 500 ms 规则(掉线);心跳陈旧照旧掉线;
+//   · 看门狗 hold 闩住期间不因挂起被置位(A-7 的闩锁优先)。
+// ===========================================================================
+namespace
+{
+constexpr int kE2Lanes = 3;
+constexpr int kE2BlockFrames = 480; // 10 ms @48k
+
+struct E2Lane
+{
+    E2Lane(scvb::SegmentBackendInProcess& backend, u32 pid, u32 ch) : session(backend, pid), channel(ch) {}
+
+    InputSession session;
+    StageSwitchStateMachine sm;
+    u32 channel;
+    OutputStageMode target = OutputStageMode::kPassthrough;
+    bool writing = true; // 宿主调不调这条 Input(false = 静音段挂起 / 无 region / 旁路:写头冻结)
+    bool alive = true; // 这条 Input 的 [M] 还在不在跑(false = 心跳不再更新)
+    std::int64_t nextPos = -1; // 上一块写到哪(InputProcessor 的 expectedNext_)
+    std::int64_t lastPos = -1; // 上一块从哪写起(InputProcessor 的 lastT0_)
+
+    // 照 InputProcessor::processBlock 步骤 3/4:位置不连续 ∧(在播放 ∨ 位置变了)⇒ 换代;停走带原地重写不换代。
+    void write(std::int64_t pos, bool playing)
+    {
+        const scvb::AudioRingBinding* b = session.audioRing().acquire();
+        if (nextPos >= 0 && pos != nextPos && (playing || pos != lastPos))
+        {
+            scvb::AudioRing::bumpEpoch(b);
+        }
+        float buf[kE2BlockFrames];
+        for (int i = 0; i < kE2BlockFrames; ++i)
+        {
+            buf[i] = 0.25f;
+        }
+        scvb::AudioRing::write(b, pos, buf, kE2BlockFrames);
+        lastPos = pos;
+        nextPos = pos + kE2BlockFrames;
+    }
+
+    void tickM(u64 now)
+    {
+        target = sm.evaluate(session.isHealthy(now), now);
+        session.setMuted(target == OutputStageMode::kSilence);
+    }
+};
+
+struct E2Sample
+{
+    u64 t = 0;
+    bool outputTick = false;
+    u32 mask = 0;
+    u32 inject = 0;
+    u32 stalled = 0;
+    bool read[kE2Lanes] = {}; // 本块 Output 读这一轨读到了(只在它在注入集里时才读)
+    bool suspended[kE2Lanes] = {}; // 桥面 channelConn(..).suspended
+    bool muted[kE2Lanes] = {};
+    bool healthy[kE2Lanes] = {};
+};
+
+struct E2Rig
+{
+    scvb::SegmentBackendInProcess backend;
+    std::vector<std::unique_ptr<E2Lane>> lanes;
+    OutputSession out{backend, 2001};
+    scvb::Registry probe{backend, 1};
+    std::vector<E2Sample> log;
+    u64 now = 1000;
+    std::int64_t pos = 0; // 时间线位置(走带在跑时每步推进一块)
+    bool playing = true;
+    bool outputCalled = true;
+
+    E2Rig()
+    {
+        for (u32 i = 0; i < static_cast<u32>(kE2Lanes); ++i)
+        {
+            lanes.push_back(std::make_unique<E2Lane>(backend, 1001 + i, i + 1)); // channel 1..3
+            lanes.back()->session.setChannelId(i + 1);
+            REQUIRE(lanes.back()->session.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+            lanes.back()->session.heartbeat(now);
+        }
+        REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        out.setTransportPlaying(playing);
+    }
+
+    E2Lane& lane(int i) { return *lanes[static_cast<std::size_t>(i)]; }
+
+    void runUntil(u64 untilMs)
+    {
+        for (; now < untilMs; now += 10)
+        {
+            E2Sample s;
+            s.t = now;
+            // 停走带时宿主照样给块、时间线不动:写方原地重写同一段(不换代),写头只在停下那一块动一次,之后冻结
+            // —— 对 Output 来说与「写头冻结」同形,这正是 500 ms 规则要按走带分开的那一类。
+            for (auto& l : lanes)
+            {
+                if (l->writing)
+                {
+                    l->write(pos, playing);
+                }
+            }
+            if (outputCalled)
+            {
+                out.bumpBlockCounter();
+                const u32 inject = out.injectMask();
+                float dst[kE2BlockFrames];
+                for (int i = 0; i < kE2Lanes; ++i)
+                {
+                    if ((inject & (1u << static_cast<u32>(i))) != 0)
+                    {
+                        s.read[i] = out.mixSource(static_cast<u32>(i + 1)).read(pos, dst, kE2BlockFrames);
+                    }
+                }
+            }
+            if (playing)
+            {
+                pos += kE2BlockFrames;
+            }
+            if (now % 250 == 0)
+            {
+                out.heartbeat(now);
+                for (auto& l : lanes)
+                {
+                    if (l->alive)
+                    {
+                        l->session.heartbeat(now);
+                    }
+                }
+            }
+            if (now % 40 == 0)
+            {
+                out.setTransportPlaying(playing);
+                out.tick(now);
+                s.outputTick = true;
+            }
+            if (now % 40 == 20)
+            {
+                for (auto& l : lanes)
+                {
+                    if (l->alive)
+                    {
+                        l->tickM(now);
+                    }
+                }
+            }
+            s.mask = probe.connectedMask();
+            s.inject = out.injectMask();
+            s.stalled = out.stalledMask();
+            for (int i = 0; i < kE2Lanes; ++i)
+            {
+                s.suspended[i] = out.channelConn(static_cast<u32>(i + 1), now).suspended;
+                s.muted[i] = lane(i).target == OutputStageMode::kSilence;
+                s.healthy[i] = lane(i).session.isHealthy(now);
+            }
+            log.push_back(s);
+        }
+    }
+
+    // 前提:三轨都已接管(在 mask、在注入、Input 静音),且没有一条在报停滞。
+    void requireAllInjected() const
+    {
+        const E2Sample& s = log.back();
+        REQUIRE(s.mask == 0x7u);
+        REQUIRE(s.inject == 0x7u);
+        REQUIRE(s.stalled == 0u);
+        for (int i = 0; i < kE2Lanes; ++i)
+        {
+            REQUIRE(s.muted[i]);
+        }
+    }
+};
+
+constexpr u32 e2Bit(int lane)
+{
+    return 1u << static_cast<u32>(lane);
+}
+} // namespace
+
+TEST_CASE("[A-8] transport running: a lane whose writer freezes keeps its connected_mask and inject bits",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kFreeze = 3000; // 宿主从这一刻起不调 lane 1 的 Input(静音段挂起 / 无 region)
+    constexpr u64 kResume = 10000; // 停 7 s 后恢复(> 5.5 s:修前 Input 此时早已切直通)
+    constexpr u64 kEnd = 11000;
+    rig.runUntil(kFreeze);
+    rig.requireAllInjected();
+    rig.lane(1).writing = false;
+    rig.runUntil(kResume);
+    rig.lane(1).writing = true;
+    rig.runUntil(kEnd);
+
+    // 挂起段:Output 的每一拍 lane 1 都在 mask、在注入;写头冻结 500 ms(+ 至多一拍)后报进 stalledMask 与桥面 suspended。
+    int droppedTicks = 0;
+    int ticks = 0;
+    u64 stalledAt = 0;
+    u64 suspendedAt = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kFreeze || s.t >= kResume || !s.outputTick)
+        {
+            continue;
+        }
+        ++ticks;
+        droppedTicks += ((s.mask & e2Bit(1)) == 0 || (s.inject & e2Bit(1)) == 0) ? 1 : 0;
+        if (stalledAt == 0 && (s.stalled & e2Bit(1)) != 0)
+        {
+            stalledAt = s.t;
+        }
+        if (suspendedAt == 0 && s.suspended[1])
+        {
+            suspendedAt = s.t;
+        }
+    }
+    REQUIRE(ticks >= 150);
+    CHECK(droppedTicks == 0); // ← 修前:写头冻结 500 ms 即掉线、退出注入集
+    REQUIRE(stalledAt != 0);
+    CHECK(stalledAt >= kFreeze + scvb::output::kSuspendStallMs);
+    CHECK(stalledAt <= kFreeze + scvb::output::kSuspendStallMs + 50);
+    REQUIRE(suspendedAt != 0); // 「挂起」照常上桥(中性提示)
+    CHECK(suspendedAt <= kFreeze + scvb::output::kSuspendStallMs + 50);
+    int stalledGone = 0;
+    int suspendedGone = 0;
+    int notHealthyMuted = 0;
+    int otherLanesOff = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= stalledAt && s.t < kResume)
+        {
+            stalledGone += (s.stalled & e2Bit(1)) == 0 ? 1 : 0;
+            suspendedGone += s.suspended[1] ? 0 : 1;
+        }
+        if (s.t >= kFreeze)
+        {
+            // U3(c):挂起期间 Input 一直认为 Output 健康、一直在静音档 —— 不会 5 s 后切直通出原声。
+            notHealthyMuted += (s.healthy[1] && s.muted[1]) ? 0 : 1;
+            // 对照轨不受影响:一直在注入,从不报停滞。
+            otherLanesOff += ((s.inject & (e2Bit(0) | e2Bit(2))) != (e2Bit(0) | e2Bit(2)) ||
+                              (s.stalled & (e2Bit(0) | e2Bit(2))) != 0u)
+                                 ? 1
+                                 : 0;
+        }
+    }
+    CHECK(stalledGone == 0);
+    CHECK(suspendedGone == 0);
+    CHECK(notHealthyMuted == 0);
+    CHECK(otherLanesOff == 0);
+    CHECK(rig.out.misalignCountRecent(2) == 0); // 写方停着不是失准
+
+    // 恢复:写方第一块(时间线跳到当前位置、换代)Output 同一块就读到;stalledMask 与 suspended 在下一拍撤下。
+    const E2Sample* first = nullptr;
+    u64 clearedAt = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kResume)
+        {
+            continue;
+        }
+        if (first == nullptr)
+        {
+            first = &s;
+        }
+        if (clearedAt == 0 && s.outputTick && (s.stalled & e2Bit(1)) == 0 && !s.suspended[1])
+        {
+            clearedAt = s.t;
+        }
+    }
+    REQUIRE(first != nullptr);
+    CHECK(first->read[1]); // ← 修前:先要等 [M] 发现写头动了、重新置位,再走 80 ms 淡入
+    REQUIRE(clearedAt != 0);
+    CHECK(clearedAt <= kResume + 40);
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    CHECK(last.stalled == 0u);
+    WARN("A-8 e2e keep: stalled +" << (stalledAt - kFreeze) << " ms, suspended +" << (suspendedAt - kFreeze)
+                                   << " ms, cleared +" << (clearedAt - kResume) << " ms after resume");
+}
+
+TEST_CASE("[A-8] transport stopped: frozen writers still drop out after 500 ms (unchanged rule)",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kStop = 3000; // 停走带:宿主照样调用,时间线不动,写头全部冻结
+    constexpr u64 kStart = 5000;
+    constexpr u64 kEnd = 6500;
+    rig.runUntil(kStop);
+    rig.requireAllInjected();
+    rig.playing = false;
+    rig.runUntil(kStart);
+    rig.playing = true;
+    rig.runUntil(kEnd);
+
+    // 停走带 ≥ 500 ms(+ 至多一拍):三轨都掉线、退出注入集(LS-15 钉住的现行行为),stalledMask 一直是 0,桥面不报挂起。
+    u64 droppedAt = 0;
+    int stalledOrSuspended = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kStop || s.t >= kStart)
+        {
+            continue;
+        }
+        if (droppedAt == 0 && s.outputTick && s.mask == 0 && s.inject == 0)
+        {
+            droppedAt = s.t;
+        }
+        stalledOrSuspended += (s.stalled != 0 || s.suspended[0] || s.suspended[1] || s.suspended[2]) ? 1 : 0;
+    }
+    REQUIRE(droppedAt != 0); // ← 删掉 transportPlaying 守卫(停走带也保持在线)时红在这里
+    CHECK(droppedAt >= kStop + scvb::output::kSuspendStallMs);
+    CHECK(droppedAt <= kStop + scvb::output::kSuspendStallMs + 50);
+    int backOnline = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= droppedAt && s.t < kStart && s.outputTick)
+        {
+            backOnline += s.mask != 0 ? 1 : 0;
+        }
+    }
+    CHECK(backOnline == 0);
+    CHECK(stalledOrSuspended == 0);
+
+    // 起播后写头推进,三轨按现行规则接回。
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK(last.inject == 0x7u);
+    WARN("A-8 e2e stop: dropped +" << (droppedAt - kStop) << " ms after the transport stopped");
+}
+
+TEST_CASE("[A-8] stale heartbeat: a stalled lane whose Input stopped heart-beating disconnects",
+          "[output][session][e2][a8]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kFreeze = 3000; // lane 1 的写头冻结,且它的 [M] 也不再跑(心跳停在这一刻之前)
+    constexpr u64 kEnd = 7000;
+    rig.runUntil(kFreeze);
+    rig.requireAllInjected();
+    rig.lane(1).writing = false;
+    rig.lane(1).alive = false;
+    rig.runUntil(kEnd);
+
+    // 心跳还新鲜(≤ 2000 ms)时它是「挂起」,按 E2 保持在线;心跳一陈旧就掉线、退出注入集,stalledMask 随之撤下。
+    const u64 lastBeatMs = ((kFreeze - 1) / 250) * 250; // 心跳 4 Hz、在 t%250==0 的那一步
+    const u64 staleAt = lastBeatMs + scvb::kStaleDisplayMs;
+    u64 droppedAt = 0;
+    int keptWhileFresh = 0;
+    int freshTicks = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < kFreeze || !s.outputTick)
+        {
+            continue;
+        }
+        if (s.t >= kFreeze + scvb::output::kSuspendStallMs + 50 && s.t <= staleAt)
+        {
+            ++freshTicks;
+            keptWhileFresh += ((s.mask & e2Bit(1)) != 0 && (s.stalled & e2Bit(1)) != 0) ? 1 : 0;
+        }
+        if (droppedAt == 0 && (s.mask & e2Bit(1)) == 0)
+        {
+            droppedAt = s.t;
+        }
+    }
+    REQUIRE(freshTicks >= 10);
+    CHECK(keptWhileFresh == freshTicks);
+    REQUIRE(droppedAt != 0);
+    CHECK(droppedAt > staleAt);
+    CHECK(droppedAt <= staleAt + 50);
+    int leaked = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= droppedAt)
+        {
+            leaked += ((s.mask | s.inject | s.stalled) & e2Bit(1)) != 0 ? 1 : 0;
+        }
+    }
+    CHECK(leaked == 0);
+    const E2Sample& last = rig.log.back();
+    CHECK((last.inject & (e2Bit(0) | e2Bit(2))) == (e2Bit(0) | e2Bit(2))); // 对照轨照常
+    WARN("A-8 e2e stale heartbeat: dropped +" << (droppedAt - staleAt) << " ms after the heartbeat went stale");
+}
+
+TEST_CASE("[A-8] watchdog hold wins: a lane frozen while the Output is not called is not kept online by E2",
+          "[output][session][e2][a8][KI6]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    E2Rig rig;
+    constexpr u64 kStall = 3000; // 宿主停调 Output(lane 0/2 照写)
+    constexpr u64 kFreeze = 4500; // 停调之中 lane 1 的写头也冻结(它的心跳照常、走带在跑)
+    constexpr u64 kResume = 7000;
+    constexpr u64 kEnd = 9500;
+    rig.runUntil(kStall);
+    rig.requireAllInjected();
+    rig.outputCalled = false;
+    rig.runUntil(kFreeze);
+    rig.lane(1).writing = false;
+    rig.runUntil(kResume);
+    rig.outputCalled = true;
+    rig.runUntil(kEnd);
+
+    u64 tripMs = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t >= kStall && s.outputTick && s.mask == 0)
+        {
+            tripMs = s.t;
+            break;
+        }
+    }
+    REQUIRE(tripMs != 0); // 前提:看门狗确实触发(lane 0/2 在写,Output 不动)
+    REQUIRE(tripMs < kFreeze);
+
+    // 停摆期间(含 lane 1 写头冻结 ≥ 500 ms、按 E2 本该「保持在线」的那一段):每一拍都不置位、不注入、不报停滞。
+    int leakedTicks = 0;
+    int frozenTicks = 0;
+    for (const E2Sample& s : rig.log)
+    {
+        if (s.t < tripMs || s.t >= kResume || !s.outputTick)
+        {
+            continue;
+        }
+        leakedTicks += (s.mask != 0 || s.inject != 0 || s.stalled != 0) ? 1 : 0;
+        frozenTicks += s.t >= kFreeze + scvb::output::kSuspendStallMs + 50 ? 1 : 0;
+    }
+    REQUIRE(frozenTicks >= 20); // 前提:lane 1 写头冻结过了 500 ms 门限,E2 的条件在 hold 之外都成立
+    CHECK(leakedTicks == 0); // ← E2 不服从 hold 时,lane 1 在这一段被置回
+
+    // 恢复后照常接回;lane 1 接回之后按 E2 规则保持在线(写头仍冻结 ⇒ 报进 stalledMask)。
+    u64 rejoin[kE2Lanes] = {};
+    for (const E2Sample& s : rig.log)
+    {
+        for (int i = 0; i < kE2Lanes; ++i)
+        {
+            if (s.t >= kResume && rejoin[i] == 0 && (s.mask & e2Bit(i)) != 0)
+            {
+                rejoin[i] = s.t;
+            }
+        }
+    }
+    for (int i = 0; i < kE2Lanes; ++i)
+    {
+        INFO("lane " << i << " rejoin " << rejoin[i]);
+        REQUIRE(rejoin[i] != 0);
+        CHECK(rejoin[i] <= kResume + 2000);
+    }
+    const E2Sample& last = rig.log.back();
+    CHECK(last.mask == 0x7u);
+    CHECK((last.stalled & e2Bit(1)) != 0u);
+    CHECK((last.stalled & (e2Bit(0) | e2Bit(2))) == 0u);
+    WARN("A-8 e2e hold: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoin[0] - kResume) << " / +"
+                                << (rejoin[1] - kResume) << " / +" << (rejoin[2] - kResume) << " ms");
 }

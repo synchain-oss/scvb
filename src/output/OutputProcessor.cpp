@@ -15,7 +15,7 @@
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
 #include "analysis/WaveValleys.h" // [J145] §1.27 valleys[]:吸附谷点
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
-#include "ipc/RegistryProbe.h"
+#include "ipc/GroupProbe.h" // [B 线 M03] 跨组只读探测(经后端抽象;取代只限 Win32 的 RegistryProbe)
 #include "output/MixMath.h"
 #include "state/FeaturesSnapshot.h" // [SL-226] FrameStore ↔ FEAT 搬运
 #include "state/SidecarStore.h" // [SL-226] >8MB 转外部文件(ADR-007 阈值 + 04 §5.3 回滞)
@@ -79,7 +79,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      session_(backend_, scvb::currentProcessId()),
       vizPublisher_(backend_, 1u), // [T44] 组号随 setGroupId/prepareToPlay 校正
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
@@ -203,6 +203,7 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     // channelFade_.reset() 只换档、不改当前值 —— 两者凑齐,一条 release 期间被关掉的轨会被当成
     // 释放中读环、响 80ms。连调两次 prepareToPlay(中间不 release)时 inject 不被清,同样靠这一行挡。
     releasableMask_ = 0;
+    stalledRawLatched_ = false; // [A-8] 音频流重起:上一轮「全部停滞、已回原声」的闩不延续
 
     // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启打印 Timer,见 startPrinting)。
     rebindVersion();
@@ -227,8 +228,12 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
             const auto now = scvb::steadyNowMs();
             const juce::ScopedLock lock(lifecycleMutex_);
             publishVizFrame(now);
+            // [B 线 M07b] 实得速率:本拍记一次 tick;发布器的累计计数这一拍涨了才记 publish(闸门挡掉的拍子、
+            // 本实例不是 viz 写方的拍子都不算)。`now` 是取锁前采的 = 定时器真正打进来的时刻。
+            vizRate_.onBeat(now, vizPublisher_.publishCount(), vizPublisher_.isOpen(), groupId_);
         });
     }
+    vizRate_.restart(); // [B 线 M07b] 音频流(重)起:上一段的残窗作废,停表期间不算进拍距(持着 lifecycleMutex_)
     vizTimer_->startTimerHz(scvb::output::VizPublisher::kPublishTimerHz);
 }
 
@@ -829,6 +834,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         // 每块都会被误判成时间线跳变(epoch 连跳 ⇒ 打印器每块 endAllGestures)。
         expectedNextOut_ = t0 + total;
     }
+    readerBlockEnd_ = t0 + total; // [A-5] 超长块按段读时,读环要知道这一宿主块写方写到哪(IMixSource::read)
     publishPlayhead(pos, haveT0, playing);
 
     // [SL-216 / J136] 记下这一块的 lead_select —— 分析据此知道「这段时间谁是主唱」。
@@ -854,6 +860,32 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         renderSpan(buffer, offset, n, haveT0, t0 + offset);
     }
 }
+
+namespace
+{
+// [A-8] U3(b)-ii「注入轨全部停滞 → 总线回到原声」的总线输入静音门限(约 −100 dBFS)。宿主给无 region / 被挂起的
+// 轨送的是数字静音,装了 Input 的轨把总线交给 Output 后自己也是静音 —— 它前面那些插件的噪声底一并被它静音掉
+// (Input 装在人声轨插件链最后一格),dither 一般加在母线输出而不在人声总线的输入里。所以总线输入里高于这个门限的,
+// 只会是旁路出来的原声或没装 Input 的声源。门限取得低,是为了不把很轻的旁路原声(乐句尾音、气声)当成静音吞掉;
+// 低于它的「原声」听不出来,不回原声也听不出差别。
+constexpr float kStalledBusAudibleFloor = 1.0e-5f;
+
+// 本段总线输入(stereo,isBusesLayoutSupported 钉死两声道)里有没有高于静音门限的样本。只读、定长循环,不分配。
+bool busInputAudible(const float* const* in, int n) noexcept
+{
+    for (int c = 0; c < 2; ++c)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (std::abs(in[c][i]) > kStalledBusAudibleFloor)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // namespace
 
 void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0)
 {
@@ -887,6 +919,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         publishSilentMeters();
+        stalledRawLatched_ = false; // [A-8] 总线已在回直通,「全部停滞」那一段不再延续
         return;
     }
 
@@ -924,6 +957,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         const float* silentMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, silentMix, n, /*targetMix=*/false);
         publishSilentMeters();
+        stalledRawLatched_ = false; // [A-8] 同上
         return;
     }
 
@@ -959,7 +993,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         {
             continue;
         }
-        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_, readerBlockEnd_))
         {
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
@@ -1017,10 +1051,40 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         accumR_[static_cast<std::size_t>(i)] = r;
     }
 
+    // [A-8] U3(b)-ii:注入轨**全部**停滞时总线回到原声。E2 起走带在跑时写头冻结的轨不掉线、照旧在 inject 里
+    // (OutputSession::evaluateChannels),于是「单独旁路唯一一条 Input」时 inject 不再清空 —— 不处理的话 Output
+    // 会一直用一份空混音替换总线,旁路出来的原声被吃掉(修前是 500ms 后掉线、总线回直通)。判据:
+    //   · inject 里每一条都在 [M] 报的 stalledMask 里(写头冻结 ≥ 500ms 但按 E2 保持在线),且本段没有一条注入轨读到
+    //     数据 —— 写方一恢复,读到数据的那一段就回到混音,不等 [M] 下一拍;
+    //   · 多轨时只要有一条注入轨不在停滞,照常替换:停滞轨只是读不到、退出混音(与修前多轨旁路一轨同形)。
+    // 回原声只在总线输入**听得见**时才做,且一旦做了就闩到本段停滞结束:总线输入是数字静音时(宿主在静音段挂起
+    // Input / 无 region —— E2 本来要修的那一类),原声就是静音,Output 输出的空混音与它逐样本相同;此时若照样把
+    // 交叉拨回直通,写方恢复时得再走一遍 80ms 交叉回混音,句首又被淡入吃掉一截(LS-12 单轨格)。闩住是为了让
+    // 旁路期间乐句之间的静音不把交叉来回拨。进出都经 busXfade(80ms 等功率,ADR-010),没有硬切路径。
+    // 释放中的轨(releasing:已离开 inject、只剩 80ms 淡出)有意不计入 injectHasData:它不再是注入轨;此时交叉回直通
+    // 与它的逐轨淡出叠乘,与 [SL-521]「最后一条轨关掉」同形,仍在 80ms 内落到 0。
+    // 边界(「总线听得见」只是「旁路」的近似):总线上还接着没装 Input 的声源时,所有注入轨一起被挂起也会回原声,
+    // 写方恢复时照样要走 80ms 交叉回混音 —— 与修前相同,见 docs/contract-changes/20261011-a8-suspend-not-offline.md。
+    bool injectHasData = false;
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        injectHasData = injectHasData || ((inject & (1u << ch)) != 0 && hasData[static_cast<std::size_t>(ch)]);
+    }
+    const bool allStalled = inject != 0 && (inject & ~session_.stalledMask()) == 0 && !injectHasData;
+    if (!allStalled)
+    {
+        stalledRawLatched_ = false;
+    }
+    else if (!stalledRawLatched_ && busInputAudible(in, n))
+    {
+        stalledRawLatched_ = true;
+    }
+
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
     // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
+    // [A-8] 注入轨全部停滞且总线输入听得见时同样交叉回直通(见上)。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0);
+    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
@@ -1056,7 +1120,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         {
             continue;
         }
-        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n))
+        if (!src.read(t0, trackBuf_[static_cast<std::size_t>(ch - 1)].data(), n, podEpoch_, readerBlockEnd_))
         {
             continue; // 缺口 → 该轨该块静音(失准计数已在 read 内)
         }
@@ -1140,6 +1204,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
         publishSilentMeters(); // 与 processBlock 三条早退同口径:不发就冻在最后一次有声的高度
         return; // 无时间线:直通(不替换)
     }
+    readerBlockEnd_ = t0 + total; // [A-5] 同 processBlock
     // 宿主 bypass 期间同样要更新电平表 —— 否则液柱冻在 bypass 前那一刻。
     // renderBypassedUnity 是 unity 求和(不 gain/pan/width),故每轨增益按 1.0 报。
     std::array<float, 15> unityGain{};
@@ -1871,11 +1936,16 @@ std::filesystem::path ScvbOutputAudioProcessor::sidecarBaseDir()
     {
         return testDir; // 仅测试注入;生产恒空
     }
-    // 与 UiDefaultsStore 同根(%APPDATA%\Synchain\SCVB,STATE_SCHEMA §4.3)。
+    // 与 UiDefaultsStore 同根(STATE_SCHEMA §4.3):Windows = %APPDATA%\Synchain\SCVB(逐字不变);
+    // macOS = ~/Library/Application Support/Synchain/SCVB。JUCE 的 userApplicationDataDirectory 在 mac 上
+    // 是 ~/Library,要多拼一层 Application Support 才落到冻结文档写的位置,也才与 UiDefaultsStore 的
+    // osxLibrarySubFolder 同根(B 线 M03)。
     // 注意这里**只接现行 appdata 机制** —— 存储位置的 UI 与策略归 T47([J84] 已裁),不在本卡。
-    const juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                                   .getChildFile("Synchain")
-                                   .getChildFile("SCVB");
+    juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
+#if JUCE_MAC
+    appData = appData.getChildFile("Application Support");
+#endif
+    appData = appData.getChildFile("Synchain").getChildFile("SCVB");
     return std::filesystem::path(appData.getFullPathName().toStdString());
 }
 
@@ -2721,7 +2791,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         DBG("SCVB Output: [SL-217] 本次 state 未恢复段真身("
             << (crvsChunkPresent ? "CRVS chunk 解码失败" : "无 CRVS chunk") << "),**保留**既有段表不清空");
         // 版本名兜底:全新实例(从未加载过、名字为空)才补默认名,已有名字一律不动。
-        for (int v = 0; v < scvb::state::kNumVersions; ++v)
+        for (int v = 0; v < static_cast<int>(scvb::state::kNumVersions); ++v)
         {
             auto& meta = crvsData_.versions[static_cast<std::size_t>(v)].meta;
             if (meta.name.empty())
@@ -3526,14 +3596,14 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
     // (VizPublisher 的 needLanes,不刷新的话 Monitor 的车道停在编辑前的样子)。
     curvesRevision_.fetch_add(1, std::memory_order_release);
 
-    for (int v = 1; v <= scvb::state::kNumVersions; ++v)
+    for (int v = 1; v <= static_cast<int>(scvb::state::kNumVersions); ++v)
     {
         // pan 角度域曲线 G 也从这里下发(02 §8.1 步骤 5):挂在同一个「覆盖全部改曲线路径」的
         // 钩子上,setPanCurve 的撤销/重做、复制版本、加载工程就都不必各记一笔。
         // 点没变时 OutputAuthority::setPanCurve 整个 no-op,段编辑不会白烘一张 32769 点的表。
         authority_.setPanCurve(v, crvsData_.versions[static_cast<std::size_t>(v - 1)].panCurve);
 
-        for (int t = 0; t < scvb::state::kNumTracks; ++t)
+        for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks); ++t)
         {
             const auto& src =
                 crvsData_.versions[static_cast<std::size_t>(v - 1)].tracks[static_cast<std::size_t>(t)].segments;
@@ -3575,15 +3645,10 @@ std::uint8_t ScvbOutputAudioProcessor::probeGroupsOnline()
     if (ownState == scvb::output::OutputClaimState::kActive || ownState == scvb::output::OutputClaimState::kObserver)
         bitmap |= static_cast<std::uint8_t>(1u << (groupId_ - 1));
 
-    // 异组:只读探测(契约 §2.4;失败=0 位,不重试不报错)。尺寸校验用 VirtualQuery(PR#55 缺陷1)。
-    const scvb::u64 now = scvb::steadyNowMs();
-    for (int g = 1; g <= scvb::kMaxGroups; ++g)
-    {
-        if (g == groupId_)
-            continue; // 本组已判定
-        if (scvb::probeRegistryGroupOnline(static_cast<scvb::u32>(g), now))
-            bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
-    }
+    // 异组:只读探测(契约 §2.4;失败=0 位,不重试不报错)。与 Input / Monitor 同走 GroupProbe
+    // (经 backend_ 的 openExistingReadOnly,尺寸 / magic / abi 校验都在那一处);本组位由上面判定,
+    // 不交给探测(includeOwnGroup 取缺省 false)。
+    bitmap |= scvb::probeGroupsOnline(backend_, static_cast<scvb::u32>(groupId_), scvb::steadyNowMs());
     return bitmap;
 }
 
@@ -3810,7 +3875,7 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
 void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    if (version < 1 || version > scvb::state::kNumVersions)
+    if (version < 1 || version > static_cast<int>(scvb::state::kNumVersions))
         return; // 越界拒绝(public API 防 UB,PR#55 建议②)
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Set pan curve",
@@ -5293,7 +5358,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 旧判据 `producedAny`(15 轨全无产出)是本判据的真子集:无产出 ⇒
             // applyAnalysisSegments 恒等 ⇒ tableChanged 为假,行为不变。
             bool tableChanged = false;
-            for (int t = 0; t < scvb::state::kNumTracks && !tableChanged; ++t)
+            for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks) && !tableChanged; ++t)
             {
                 tableChanged = !scvb::output::segmentsIdentical(beforeTracks[static_cast<std::size_t>(t)].segments,
                                                                 liveTracks[static_cast<std::size_t>(t)].segments);
@@ -5358,7 +5423,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // diffTrackInto 里按半开区间筛 —— 两条都与 previewAnalysis 的 manualKept
             // 同源,A-07 预览行与 A-02 摘要行的 {k} 才在同一把尺子上([SL-255] 复审③)。
             lastSegmentDiff_ = scvb::output::SegmentDiff{};
-            for (int t = 0; t < scvb::state::kNumTracks; ++t)
+            for (int t = 0; t < static_cast<int>(scvb::state::kNumTracks); ++t)
             {
                 if ((analyzedTracks & (1u << t)) == 0)
                 {
