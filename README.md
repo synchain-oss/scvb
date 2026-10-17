@@ -91,6 +91,8 @@ Pre-release (rc) builds, and later the stable releases, are published on this re
 
 ### macOS (Apple Silicon, beta)
 
+> The macOS beta zip is uploaded to the Release only after it has passed hands-on acceptance on a real Mac (LUNA); until then the Releases page has only the Windows package.
+
 The macOS zip is `SCVB-v<version>-macos-arm64.zip` (plus a `.sha256`). It holds VST3 and Audio Unit (`.component`) bundles of all three plugins, and an `INSTALL.txt` that is the authoritative version of the steps below. The build is **not code-signed or notarized**, so the steps include clearing the quarantine flag. In Terminal:
 
 ```

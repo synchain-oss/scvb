@@ -18,7 +18,7 @@ if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(SCVB VERSION 0.9.0)
+project(SCVB VERSION 0.10.0)
 
 # ------------------------------------------------------------------
 # JUCE 8 本地检出(版本单一真源 = 仓库根 .juce-version)

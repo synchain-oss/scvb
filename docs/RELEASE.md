@@ -127,7 +127,7 @@ mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、�
 
 ## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
 
-v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`,tag 打在 `dev` 上(J170)。做法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
+v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`(J170);tag 不打在 `dev` 上,而是打在 `prod` 的合并提交上(J184,见下「`staging` 与 `prod` 两个分支」)。做法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
 
 为什么不把 `feature/v1` 直接开 PR 合进 `dev`:主支线累积了几百个提交,`branch-gate` 的 DCO 步读 PR 提交列表的接口最多返回 250 条,所以到 250 条就直接判红(见 `branch-gate.yml` 里的注释);历史里也有少数提交缺 `Signed-off-by`,不改写历史补不上。压成一个提交之后,DCO 只看这一个提交。
 
@@ -252,7 +252,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
    push→`staging` 不触发任何 workflow,这一次 dispatch 就是 `staging` 上的全量 CI(`--ref` 与 `-f ref=` 同值,理由见 `CLAUDE.md` §4)。不绿就停:修复是新的提交,经 `feature/v1` → `dev` → `staging` 再走一遍,不在 `staging` 上直接改。
 
-   第 1 步与这一步的「completed / success」都按 `CLAUDE.md` §4「全绿管到哪几个 job」的口径读:`build-vst3` 的 run 里还有两路 mac job(`macos-build` / `macos-oop`,dispatch 时 `scvb-auhost` 另加 macos-26),mac 一红,run 级的 `conclusion` 就是 `failure`。这时改看 job 级:`gh run view <databaseId> --repo synchain-oss/scvb --json jobs --jq '.jobs[] | select(.name == "detect-native" or .name == "build-and-validate") | "\(.name) \(.conclusion)"'`(第 1 步的 `--json` 里加上 `databaseId` 就能取到 run 号),Windows 的这两个 job 都是 `success` 就算绿。按名字**完全相等**筛:mac 那一路在 `--json jobs` 里显示为 `macos-build / build-and-validate-macos`,名字里也带 `build-and-validate`,用子串匹配会把它一起筛进来。mac 红不挡 Windows 发版,但要记进发版验证清单(见上「macOS 包」一节的「发布前的 mac 额外检查」)。
+   第 1 步与这一步的「completed / success」都按 `CLAUDE.md` §4「全绿管到哪几个 job」的口径读:`build-vst3` 的 run 里还有两路 mac job(`macos-build` / `macos-oop`,dispatch 时 `scvb-auhost` 另加 macos-26),mac 一红,run 级的 `conclusion` 就是 `failure`。这时改看 job 级:`gh run view <databaseId> --repo synchain-oss/scvb --json jobs --jq '.jobs[] | select(.name == "detect-native" or .name == "build-and-validate") | "\(.name) \(.conclusion)"'`(第 1 步的 `--json` 里加上 `databaseId` 就能取到 run 号),Windows 的这两个 job 都是 `success` 就算绿。按名字**完全相等**筛:mac 那一路在 `--json jobs` 里显示为 `macos-build / build-and-validate-macos`,名字里也带 `build-and-validate`,用子串匹配会把它一起筛进来。要看 mac 的结论,用不带 `select` 的同一条命令(否则「mac 红要记进清单」照命令看不到)。mac 红不挡 Windows 发版,但要记进发版验证清单(见上「macOS 包」一节的「发布前的 mac 额外检查」)。
 
 4. **`staging` → `prod`**:同样开 PR、等 `branch-gate` 绿、讨论全部解决,用 merge commit 合并:
 
