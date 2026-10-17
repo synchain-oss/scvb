@@ -27,6 +27,13 @@
   撤下。字段、类型与界面都没有变,沿用「路由失准」横幅与轨道行的 ⚠;数据布局、abi 与 Input 侧行为不变。冻结文档
   桥面契约 §2.3、IPC 契约 §2「读」各补一段说明(变更文档
   `docs/contract-changes/20261011-a6-misalign-positive-presence.md`)(#388)
+- **宪法升 v2.4:写明 macOS arm64 的 VST3 + AU(beta)**(文档,零行为;裁定 [J186],文本经用户 2026-10-12 批准;
+  宪法副本 `docs/constitution/ADR.md` 升 v2.4、`docs/constitution/ipc-contract-v0.md` 升 v1.7,`docs/adr/0001`、`0011`
+  按现行宪法重新拆出,`docs/IPC_CONTRACT.md` 只改 §0 里「macOS 后续用 POSIX shm」这一句):宪法新增「发布格式与平台」一条 ——
+  Windows x64 仍是 VST3;macOS 仅 Apple Silicon、最低 macOS 11,VST3 加 Audio Unit,首批 macOS 产物为 beta,不签名不公证,
+  不支持 Intel / Rosetta / GarageBand,Logic 未实测、不作支持承诺,不做 AAX;三个 Audio Unit 的标识(`aufx Scvi|Scvo|Scvm Snch`)
+  与参数 ID 的派生方式从此冻结。三个插件、PLUGIN_CODE、bundle id、123 个参数、Monitor 三条铁律、共享内存布局与 abi 都没有变;
+  macOS 的构建与校验失败只提示、不挡 Windows 出包(变更文档 `docs/contract-changes/20261016-j186-adr-macos-au-v2.4.md`)(#404)
 
 ### 新增
 
