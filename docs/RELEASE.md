@@ -23,7 +23,7 @@ README 的配图(`docs/images/readme/`)同样不带版本号:它们是用官网�
 ## Tag 规则
 
 - 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`(流水线建的草稿都自动勾 pre-release)。**预发布不改 `CMakeLists.txt`**:`v1.2.3-beta.1`、`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc / beta 构建在插件设置页里显示的版本号不带 `-rc.N` / `-beta.N`(它来自 CMake 版本),区分是第几个预发布要看 zip 文件名或 Release 页。
-- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字(按 semver 不带前导零,写 `beta.1` 不写 `beta.01`;判据与 rc 一样不拦前导零,打 tag 时自己注意);`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。beta 与 rc 同属预发布,发版走同一条链:下面发版清单第 6 步、第 9 步与「`staging` 与 `prod` 两个分支」写的「每次发布(含 rc)」也包括 beta,tag 同样打在 `prod` 上那个 `staging` → `prod` 的合并提交上(J184)。
+- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字(按 semver 不带前导零,写 `beta.1` 不写 `beta.01`;判据与 rc 一样不拦前导零,打 tag 时自己注意);`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。beta 与 rc 同属预发布,发版走同一条链(J184):下面发版清单第 6 步、第 9 步与「`staging` 与 `prod` 两个分支」里对 rc 的规定同样适用于 beta,tag 同样打在 `prod` 上那个 `staging` → `prod` 的合并提交上。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
 - 其他形态(`v1.2.3-alpha.1`、`v1.2.3-beta`、`v1.2` 等)一律被拒。
 - tag 只由维护者打在 **`prod`** 上,**不在 `dev` / `staging` / feature 分支上打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。每次发布(含 rc)都走同一条链:主支线 `feature/v1` →(里程碑 squash)`dev` →(PR)`staging` →(PR)`prod`,tag 打在 `prod` 上那个 `staging` → `prod` 的合并提交上(J184;取代 J170 的「tag 打在 `dev` 上」,里程碑合并那一半不变)。步骤见下方发版清单第 6 步与「`staging` 与 `prod` 两个分支」。
@@ -251,6 +251,8 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
    ```
 
    push→`staging` 不触发任何 workflow,这一次 dispatch 就是 `staging` 上的全量 CI(`--ref` 与 `-f ref=` 同值,理由见 `CLAUDE.md` §4)。不绿就停:修复是新的提交,经 `feature/v1` → `dev` → `staging` 再走一遍,不在 `staging` 上直接改。
+
+   第 1 步与这一步的「completed / success」都按 `CLAUDE.md` §4「全绿管到哪几个 job」的口径读:`build-vst3` 的 run 里还有两路 mac job(`macos-build` / `macos-oop`,dispatch 时 `scvb-auhost` 另加 macos-26),mac 一红,run 级的 `conclusion` 就是 `failure`。这时改看 job 级:`gh run view <databaseId> --repo synchain-oss/scvb --json jobs --jq '.jobs[] | "\(.name) \(.conclusion)"'`(第 1 步的 `--json` 里加上 `databaseId` 就能取到 run 号),Windows 的 `detect-native` 与 `build-and-validate` 都是 `success` 就算绿;mac 红不挡 Windows 发版,但要记进发版验证清单(见上「macOS 包」一节的「发布前的 mac 额外检查」)。
 
 4. **`staging` → `prod`**:同样开 PR、等 `branch-gate` 绿、讨论全部解决,用 merge commit 合并:
 
