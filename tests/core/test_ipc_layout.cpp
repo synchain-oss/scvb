@@ -72,7 +72,7 @@ std::vector<std::string> readLines(const std::string& path)
     std::string line;
     while (std::getline(f, line))
     {
-        if (!line.empty() && line.back() == '')
+        if (!line.empty() && line.back() == '\r')
         {
             line.pop_back(); // CRLF 容错
         }

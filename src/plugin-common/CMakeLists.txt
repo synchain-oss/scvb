@@ -24,6 +24,11 @@ target_sources(scvb_plugin_common INTERFACE
   # plugin-common —— §9 的分层是 core ← plugin-common ← 插件,不能倒。
   UiDefaultsStore.h
   UiDefaultsStore.cpp
+  # [B 线 M07] 平台文件日志:mac 上写 ~/Library/Logs/Synchain/SCVB/<role>.log(1 MB 轮转),并在有 POSIX
+  # 段后端时(SCVB_HAS_POSIX_SHM,由链接方的 scvb_core PUBLIC 带进来)接上 IpcDiag 的 sink。Windows 上
+  # 编进来但恒为空操作(不落文件)。
+  PlatformLog.h
+  PlatformLog.cpp
 )
 
 target_include_directories(scvb_plugin_common INTERFACE

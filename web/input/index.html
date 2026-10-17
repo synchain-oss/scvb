@@ -696,6 +696,16 @@
                 align-items: center;
                 gap: var(--sp-8);
             }
+            /* [M09] 旧 WebKit 下「缩放锁 100%」的一行提示,夹在 hint 与缩放下拉之间
+               (新语义下恒 hidden)。可缩 + 省略号:窄到放不下时它自己让,不把右侧挤出卡片。 */
+            .ipt-footer__lock {
+                flex: 0 1 auto;
+                margin-left: auto; /* 贴着右侧缩放下拉,不浮在 footer 正中 */
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
 
             /* ---- 一次性 toast(占用冲突反馈 ch.occupied) */
             .ipt-toast-slot {
@@ -1119,12 +1129,50 @@
                     data-gb="input.footer.hint"
                     data-t="in.footer.hint"
                 ></span>
+                <!-- [M09] 旧 WebKit(getBoundingClientRect 不含 CSS zoom)下缩放锁在 100% 的一行提示。
+                     判据见 web/shared/hit.js 的 zoomRectMode;app.js 只在锁定时摘掉 hidden。 -->
+                <span
+                    class="ipt-footer__lock sc-hint"
+                    data-gb="input.footer.scaleLock"
+                    data-t="scale.lockedLegacy"
+                    hidden
+                    >WebKit 低于 26.4,缩放固定为 100%</span
+                >
                 <div class="ipt-footer__right">
-                    <select
-                        class="sc-select"
+                    <!-- [UI-1] 缩放下拉 = 与 Output 右下角同一件(web/shared/scale-select.js +
+                         base.css .sc-scale*):原生 <select> 的展开列表是浏览器自绘的白底系统列表,
+                         换不了深色样式。档位项由 app.js 按 DESIGN.input.presets 装配(10 档),向上展开;
+                         超屏档 data-over="1" 灰掉不隐藏,当前档 data-current="1"。 -->
+                    <div
+                        class="sc-scale"
                         data-gb="input.footer.scale"
-                        data-t-aria="scale"
-                    ></select>
+                        data-open="0"
+                    >
+                        <button
+                            type="button"
+                            class="sc-scale__trigger"
+                            data-t-aria="scale"
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            data-gb="input.footer.scale.trigger"
+                        >
+                            <span data-gb="input.footer.scale.label">100%</span>
+                            <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 12 12"
+                                aria-hidden="true"
+                            >
+                                <path d="M3 4.8 6 7.8l3-3"></path>
+                            </svg>
+                        </button>
+                        <div
+                            class="sc-scale__panel"
+                            role="listbox"
+                            data-t-aria="scale"
+                            data-gb="input.footer.scale.panel"
+                        ></div>
+                    </div>
                     <span
                         class="ipt-footer__version sc-mono"
                         data-gb="input.footer.version"

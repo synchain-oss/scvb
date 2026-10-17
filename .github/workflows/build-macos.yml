@@ -1,0 +1,1361 @@
+name: Build macOS (reusable)
+
+# ── B 线 macOS 构建 ────────────────────────────────────────────────────────────────────────
+# 只有 `on: workflow_call`,不新增任何事件触发。两个调用方:
+#   - build-vst3.yml 的 caller job `macos-build`(PR / push→dev / dispatch),跑不跑完全继承 build-vst3.yml
+#     的触发规则;release.yml 的 `build` 经 build-vst3.yml 调起时,那个 caller 的 tag 守卫让它跳过;
+#   - [M16] release.yml 的 `build-mac`(推 v* tag),带 release-tag / release-version / release-kind 三个输入,
+#     即「release 档」:构建与全部验证门照跑,最后按 tag 的版本号正式打一次包,传成 artifact
+#     SCVB-macos-arm64-release-<tag>,由 release.yml 的 `release-macos` 取走传到 Windows 建好的草稿 Release 上。
+#   所以一次 tag push 里本文件恰好跑一次(build-mac 那一路)。
+# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16 → M12b(只动 ctest 那一步:want 清单加 scvb_host_tests / scvb_host_sched_tests + 用例数下限)。
+# 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
+# org 白名单之外的 action 会让整个 run startup_failure。
+# job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
+#
+# [M06a] scvb_core + scvb_tests 在 macOS arm64(Apple clang + libc++)上编过、first-party 零警告、
+# ctest 绿,其中 tests/golden/ipc-layout.txt 在 arm64 上逐行对拍。
+# [M06b] 全量构建:三个插件各出 VST3 + AU(格式表在根 CMakeLists.txt 的 SCVB_PLUGIN_FORMATS),
+# 连同 JUCE 系测试与工具。门:first-party 零警告;恰好 3 个 .vst3 + 3 个 .component,逐个核 arm64 单架构、
+# minos = 部署目标、AU 三元组;两个参数 ID 宏真的进了每个插件的 AU / VST3 wrapper 编译单元;
+# ctest 加跑 params / plugin_common / input_bridge;ditto 打 artifact(解压后可执行位完好)。
+# [M08] 验证门(步骤 11a–11g):M06b 的 auval 冒烟升级为门 —— ADR-001 冻结的三个 AU 三元组各跑
+# `auval -v`(输出含 AU VALIDATION SUCCEEDED 且退出码 0;-strict 只记录);`auval -a` 唯一性;
+# pluginval(版本读 .pluginval-version,参数与 Windows gate 7 对齐)验 3 个 .vst3 + 3 个 .component;
+# 验证前后各跑一次 `scvb_tests "[shm-leftover]"`,验证后不许有共享内存残段;带 GUI 的 pluginval 只记录。
+# [M10] 发行打包冒烟(步骤 12):用本 run 的 6 个 bundle 实跑 scripts/package-macos.sh —— dry run、负对照、连跑 3 次
+# 逐字节相同、.sha256 形态、zip 内容清单、INSTALL.txt 命令在假 HOME 下实跑(全新安装 + 升级);产物另传一个 package artifact。
+# [M16] release 档(步骤 13):只在 release.yml 的 build-mac 调用时跑 —— 前面每一步都绿之后,用 tag 的版本号
+# (verify-tag 的输出)再跑一次 package-macos.sh,演练 tag 才加 --allow-missing-license-texts;核对三件产物后
+# 上传 artifact,并经 workflow_call 的 outputs 把 artifact 名 / zip 名 / sha256 交给 release.yml。
+# gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "要 checkout 的 ref;空 = actions/checkout 的默认(PR 用合并提交,push 用推送的 sha)"
+        type: string
+        required: false
+        default: ""
+      # [M16] release 档的三个输入。只有 release.yml 的 build-mac 传,而且三个一起传;build-vst3.yml 的
+      # caller 一个都不传(= 非 release 档,行为与 M16 之前逐字相同)。只传一半在第一步就判红。
+      # 取值都来自 verify-tag(tag 的形态在那里已按 scripts/lib/release-version.ps1 核过),这里不再解析 tag,
+      # 只核三者互相对得上、与本次 run 的 ref 对得上。
+      release-tag:
+        description: "[M16] release 档:tag 名(= github.ref_name);空 = 非 release 档"
+        type: string
+        required: false
+        default: ""
+      release-version:
+        description: "[M16] release 档:verify-tag 输出的 version(tag 去掉前导 v),打包用它定 zip 名"
+        type: string
+        required: false
+        default: ""
+      release-kind:
+        description: "[M16] release 档:verify-tag 输出的 kind(final / rc / beta / test);只有 test 放行缺许可证全文"
+        type: string
+        required: false
+        default: ""
+    # [M16] 交给 release.yml 的 release-macos。非 release 档三个都是空串。
+    outputs:
+      release-artifact:
+        description: "release 档产物的 artifact 名(SCVB-macos-arm64-release-<tag>)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-artifact }}
+      release-zip:
+        description: "release 档的 zip 文件名(SCVB-v<version>-macos-arm64.zip)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-zip }}
+      release-sha256:
+        description: "release 档 zip 的 sha256(package-macos.sh 写进 GITHUB_OUTPUT 的那个值)"
+        value: ${{ jobs.build-and-validate-macos.outputs.release-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-validate-macos:
+    name: build-and-validate-macos
+    runs-on: macos-15
+    # [M06b] 实测(macos-15 arm64,JUCE 源码缓存命中、无编译缓存):configure 35 s,全量构建 541 步
+    # 384 s,整个 job 约 8 分钟。45 分钟留约 5 倍余量,只拦挂死,不是性能预算。
+    # [M12b] ctest 步加了 host 四片 + sched(这台 runner 上合计约 26 分钟,见步骤 8),整个 job 实测 39 分钟
+    # (run 38171726439:构建 10 分钟、ctest 27 分钟),45 只剩约 15% 余量,构建稍慢就会把正常的跑判成超时。
+    # 改 75:约 1.9 倍余量,仍只拦挂死。
+    timeout-minutes: 75
+    outputs:
+      release-artifact: ${{ steps.release_package.outputs.artifact }}
+      release-zip: ${{ steps.release_package.outputs.zip-name }}
+      release-sha256: ${{ steps.release_package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # 0) 版本单一真源:JUCE tag 只从仓库根 .juce-version 读(CLAUDE.md §6),不写版本字面量。
+      #    [M06b] 同时定 artifact 名,与 Windows(build-vst3.yml 的三档 Upload VST3)逐档平行:
+      #      PR       SCVB-macos-arm64-pr<N>-<head sha>
+      #      push dev SCVB-macos-arm64-dev-<sha>
+      #      dispatch SCVB-macos-arm64-preview-<ref slug>-<实际 checkout 的 sha>
+      #    reusable workflow 里的 `github` 上下文属于调用方,所以事件名 / PR 号 / head sha 与 Windows
+      #    那边看到的是同一组值。全部经 env 传入、不直接插值进脚本(分支名可含 `$` `;`,插值即注入面)。
+      #    其余事件(今天的 caller 不会出现)不上传,只在日志里说明。
+      #    [M16] release 档(push v* tag,由 release.yml 的 build-mac 调起)不在上面三档里:bundle 不单独上传,
+      #    上传的是步骤 13 按 tag 版本号打的正式包(artifact 名 SCVB-macos-arm64-release-<tag>,与 Windows 的
+      #    SCVB-VST3-win64-release-<tag> 平行)。三个 release 输入在这里先核一遍,对不上就在 8 分钟构建之前红。
+      - name: Resolve pinned versions & artifact name
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_REF: ${{ inputs.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_FULL: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          RELEASE_KIND: ${{ inputs.release-kind }}
+        run: |
+          set -euo pipefail
+          juce=$(tr -d '[:space:]' < .juce-version)
+          if [ -z "$juce" ]; then echo "::error::empty .juce-version"; exit 1; fi
+          # [M08] pluginval 版本同样只从 .pluginval-version 读(与 Windows 的 build-and-validate 同一真源),
+          # 给 11e 的下载与身份断言用。
+          pv=$(tr -d '[:space:]' < .pluginval-version)
+          if [ -z "$pv" ]; then echo "::error::empty .pluginval-version"; exit 1; fi
+          built=$(git rev-parse HEAD)
+          echo "JUCE_TAG=$juce" >> "$GITHUB_ENV"
+          echo "PLUGINVAL_TAG=$pv" >> "$GITHUB_ENV"
+          echo "BUILT_SHA=$built" >> "$GITHUB_ENV"
+          echo "built sha=$built juce=$juce pluginval=$pv"
+          # [M16] release 档的输入核对。判据只核「互相对得上」,不重新解析 tag(那是 verify-tag 的事):
+          #   三个输入要么全空、要么全有;事件是 push 且 ref 正是 refs/tags/<release-tag>(构建的就是这个 tag);
+          #   ref 输入为空(checkout 取 tag 指向的提交,不许被改指别处);release-tag == "v" + release-version
+          #   (package.ps1 由 version 推出 tag,两边不等时 INSTALL.txt 的源码链接会指错);kind 是四种之一;
+          #   tag 只含 artifact 名里合法的字符(verify-tag 已经更严,这里是纵深防御)。
+          if [ -n "$RELEASE_TAG$RELEASE_VERSION$RELEASE_KIND" ]; then
+            if [ -z "$RELEASE_TAG" ] || [ -z "$RELEASE_VERSION" ] || [ -z "$RELEASE_KIND" ]; then
+              echo "::error::release-tag / release-version / release-kind must be given together (got tag='$RELEASE_TAG' version='$RELEASE_VERSION' kind='$RELEASE_KIND')"; exit 1
+            fi
+            if [ "$EVENT_NAME" != "push" ] || [ "$REF_FULL" != "refs/tags/$RELEASE_TAG" ]; then
+              echo "::error::release mode must run on the push of tag '$RELEASE_TAG' (got event '$EVENT_NAME', ref '$REF_FULL')"; exit 1
+            fi
+            if [ -n "$INPUT_REF" ]; then
+              echo "::error::release mode builds the tag itself; the ref input must be empty (got '$INPUT_REF')"; exit 1
+            fi
+            if [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]; then
+              echo "::error::release-tag '$RELEASE_TAG' is not 'v' + release-version '$RELEASE_VERSION'"; exit 1
+            fi
+            case "$RELEASE_KIND" in
+              final | rc | beta | test) ;;
+              *) echo "::error::release-kind '$RELEASE_KIND' is not one of final / rc / beta / test"; exit 1 ;;
+            esac
+            if ! printf '%s' "$RELEASE_TAG" | LC_ALL=C grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'; then
+              echo "::error::release-tag '$RELEASE_TAG' has characters an artifact name cannot carry"; exit 1
+            fi
+            echo "RELEASE_ARTIFACT_NAME=SCVB-macos-arm64-release-$RELEASE_TAG" >> "$GITHUB_ENV"
+            echo "release mode: tag $RELEASE_TAG, version $RELEASE_VERSION, kind $RELEASE_KIND; release package artifact SCVB-macos-arm64-release-$RELEASE_TAG (step 13)"
+          fi
+          artifact=""; retention=""
+          case "$EVENT_NAME" in
+            pull_request)
+              artifact="SCVB-macos-arm64-pr${PR_NUMBER}-${PR_HEAD_SHA}"; retention=14 ;;
+            push)
+              if [ "$REF_NAME" = "dev" ]; then artifact="SCVB-macos-arm64-dev-${built}"; retention=30; fi ;;
+            workflow_dispatch)
+              eff_ref="${INPUT_REF:-$REF_NAME}"
+              slug=$(printf '%s' "$eff_ref" | tr '/\\' '--')
+              artifact="SCVB-macos-arm64-preview-${slug}-${built}"; retention=30 ;;
+          esac
+          if [ -n "$artifact" ]; then
+            echo "ARTIFACT_NAME=$artifact" >> "$GITHUB_ENV"
+            echo "ARTIFACT_RETENTION_DAYS=$retention" >> "$GITHUB_ENV"
+            echo "MAC_ZIP=$artifact.zip" >> "$GITHUB_ENV"
+            echo "artifact: $artifact (retention ${retention}d)"
+          else
+            # 照样打包并核可执行位(那一步的判据不该因事件而缺席),只是不上传。
+            echo "MAC_ZIP=SCVB-macos-arm64-unpublished-${built}.zip" >> "$GITHUB_ENV"
+            if [ -n "$RELEASE_TAG" ]; then
+              echo "release mode: the bundles zip is packed and checked but not uploaded; step 13 uploads the release package instead"
+            else
+              echo "event '$EVENT_NAME' on '$REF_NAME' has no artifact channel; bundles are packed and checked but not uploaded"
+            fi
+          fi
+
+      # 1) 工具链留痕。runner 镜像会轮换,哪天 clang 升了一版多出一条警告,第一件要对的就是这几行。
+      #    pwsh 在这里只探测、不判红;真正用到它的那一步缺了它会自己红(不是跳过)。
+      - name: Record toolchain
+        shell: bash
+        run: |
+          set -uo pipefail
+          arch=$(uname -m)
+          if [ "$arch" != "arm64" ]; then echo "::error::expected an arm64 runner, got $arch"; exit 1; fi
+          sw_vers
+          xcodebuild -version
+          clang --version
+          cmake --version | head -n 1
+          if command -v pwsh >/dev/null 2>&1; then pwsh_ver=$(pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'); else pwsh_ver="(absent)"; fi
+          echo "pwsh $pwsh_ver"
+          {
+            echo "## build-macos: SCVB Input / Output / Monitor (VST3 + AU) + tests"
+            echo ""
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| built sha | \`$BUILT_SHA\` |"
+            echo "| runner | macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion)) $arch |"
+            echo "| Xcode | $(xcodebuild -version | tr '\n' ' ') |"
+            echo "| clang | $(clang --version | head -n 1) |"
+            echo "| cmake | $(cmake --version | head -n 1) |"
+            echo "| pwsh | $pwsh_ver |"
+            echo "| JUCE | $JUCE_TAG |"
+            echo "| pluginval | $PLUGINVAL_TAG |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(与 macos-oop.yml 同一段,
+      #    逻辑逐条照抄 bridge 仓 ci.yml 的 bash 版)。三个插件与 params / plugin_common / input_bridge
+      #    三套测试都链接 JUCE 模块。
+      - name: Restore JUCE cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/JUCE
+          key: juce-${{ runner.os }}-${{ env.JUCE_TAG }}
+
+      - name: Clone JUCE (shallow, pinned; skipped on cache hit) & assert tag identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          juce="$GITHUB_WORKSPACE/JUCE"
+          want="${JUCE_TAG#v}"
+          for attempt in 1 2; do
+            cloned=0
+            if [ -f "$juce/CMakeLists.txt" ]; then
+              echo "JUCE $JUCE_TAG restored from cache (attempt $attempt)"
+            else
+              rm -rf "$juce"
+              git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git "$juce"
+              cloned=1
+            fi
+            tags="$(git -C "$juce" tag --points-at HEAD 2>/dev/null || true)"
+            got=""
+            while IFS= read -r t; do
+              if [ -n "$t" ] && [ "${t#v}" = "$want" ]; then got="$t"; break; fi
+            done <<< "$tags"
+            if [ -n "$got" ]; then
+              echo "JUCE identity OK: HEAD is tag '$got' == .juce-version $JUCE_TAG"; exit 0
+            fi
+            if [ "$cloned" = "1" ]; then
+              echo "::error::freshly cloned JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG"; exit 1
+            fi
+            echo "::warning::cached JUCE HEAD carries tags [$(printf '%s' "$tags" | tr '\n' ' ')], expected $JUCE_TAG; re-cloning"
+            rm -rf "$juce"
+          done
+          echo "::error::JUCE identity check failed: expected $JUCE_TAG"; exit 1
+
+      - name: Ensure Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+          ninja --version
+
+      # 3) Configure。OSX 架构与部署目标**不在命令行传**:它们的唯一真源是根 CMakeLists.txt 里
+      #    project() 之前那两段默认值,这里传了就证明不了那两段在起作用。下一步从 CMakeCache 读回来核。
+      #    CMAKE_COLOR_DIAGNOSTICS=OFF:诊断行里一旦夹进 ANSI 颜色码,零警告门的
+      #    `file:line:col: warning:` 匹配就会静默失效 —— 门禁绿是因为没认出来,不是因为没有。
+      - name: Configure CMake (Ninja, Release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DJUCE_PATH="$GITHUB_WORKSPACE/JUCE" \
+            -DSCVB_BUILD_TESTS=ON \
+            -DCMAKE_COLOR_DIAGNOSTICS=OFF \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Assert OSX target settings came from CMakeLists.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          archs=$(sed -n 's/^CMAKE_OSX_ARCHITECTURES:[A-Z]*=//p' build/CMakeCache.txt)
+          target=$(sed -n 's/^CMAKE_OSX_DEPLOYMENT_TARGET:[A-Z]*=//p' build/CMakeCache.txt)
+          echo "CMakeCache: CMAKE_OSX_ARCHITECTURES='$archs' CMAKE_OSX_DEPLOYMENT_TARGET='$target'"
+          if [ "$archs" != "arm64" ]; then echo "::error::CMAKE_OSX_ARCHITECTURES is '$archs', expected arm64 (root CMakeLists.txt default)"; exit 1; fi
+          if [ -z "$target" ]; then echo "::error::CMAKE_OSX_DEPLOYMENT_TARGET is empty; the root CMakeLists.txt default did not apply"; exit 1; fi
+          echo "OSX_DEPLOYMENT_TARGET=$target" >> "$GITHUB_ENV"
+
+      # 4) [M06b] 全量构建(默认 all 目标):三个插件各自的 VST3 + AU wrapper、mac 上登记的全部测试与
+      #    tests/tools 下的工具。不按目标挑着编:「插件编过」与「零警告」要覆盖 Windows 那边 /W4 门
+      #    管着的同一个面。`-k 0`:一个编译单元红了也继续编别的,一轮 CI 往返就能看到全部编译错误。
+      #    日志全量落盘给下一步的零警告门读。
+      - name: Build all targets (3 plugins x VST3 + AU, tests, tools)
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --parallel -- -k 0 2>&1 | tee build.log
+
+      # 5) clang 零警告门 —— 与 Windows 的 /W4 门(build-vst3.yml 的 Build 步)同构的**黑名单**:
+      #    只排除第三方(Catch2 在 build/_deps/、JUCE 在 JUCE/),其余一律算;白名单式的 `grep '/src/'`
+      #    会让 tests/ 与将来新增的源码目录静默逃过门禁。起点是 bridge 仓 ci.yml 的 mac job,
+      #    排除式收紧成只看行首路径(理由见步骤内注释)。
+      #    - 只认编译器诊断行 `file:line:col: warning:`,与 Windows 侧只认 `warning Cxxxx` 同口径,
+      #      `ld: warning:` 这类链接器噪音不进门禁;
+      #    单列一步而不是并进 Build:编译红了也照样把警告清单列出来(这时汇总行带上 Build 的结论,
+      #    「0 条」只覆盖编过的那些编译单元);反向注入(加一个未使用变量)时红的是**这一步**,不是 Build。
+      #    「零命中」要先证明日志里真的编过 first-party 源:日志空或只编了第三方时,
+      #    这道门会因为没东西可数而恒绿,那不是零警告。
+      - name: Zero-warning gate (first-party clang warnings)
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          set -euo pipefail
+          # 判据:只认编译器诊断行 `file:line:col: warning:`,只按**行首那段文件路径**排除第三方。
+          # 不能拿整行去匹配 `/JUCE/`:first-party 警告的正文里也可能带一条 JUCE 路径(比如遮蔽了某个
+          # JUCE 头里的声明),整行匹配会把它一起排掉 —— 门禁绿是因为没数到,不是因为没有。
+          # `([^:]*/)?` 不跨冒号,所以只看到路径段;Ninja 把 FetchContent 依赖写成相对构建目录的
+          # `_deps/<name>-src/...`(无前导斜杠),可选前缀让这种写法同样排得掉。
+          first_party_warnings() {
+            grep -E ':[0-9]+:[0-9]+: warning:' | grep -vE '^([^:]*/)?(_deps|JUCE|vcpkg)/' || true
+          }
+          # 判据先自测(合成行,不读日志):第三方三类必须排掉;正文里提到 JUCE 路径的 first-party
+          # 警告必须留下;tests/ 下的警告必须留下(选黑名单而不选 `grep '/src/'` 白名单,就是为了它);
+          # 链接器噪音不算。自测与实扫走同一个函数。
+          want_src='/w/scvb/src/core/x.cpp:1:2: warning: shadows a decl in /w/scvb/JUCE/modules/y.h [-Wshadow]'
+          want_tests='/w/scvb/tests/core/x.cpp:3:4: warning: unused variable [-Wunused-variable]'
+          want=$(printf '%s\n%s' "$want_src" "$want_tests")
+          probe=$(printf '%s\n' \
+            '_deps/catch2-src/src/x.cpp:1:2: warning: third-party [-Wx]' \
+            '/w/scvb/JUCE/modules/x.h:1:2: warning: third-party [-Wx]' \
+            '/w/scvb/vcpkg/x.h:1:2: warning: third-party [-Wx]' \
+            "$want_src" \
+            "$want_tests" \
+            'ld: warning: linker noise' | first_party_warnings)
+          if [ "$probe" != "$want" ]; then
+            echo "::error::zero-warning filter self-test failed; kept: [$probe]"; exit 1
+          fi
+          if [ ! -s build.log ]; then echo "::error::build.log is missing or empty; nothing to judge"; exit 1; fi
+          compiled=$(grep -cE 'Building (CXX|OBJCXX) object (src|tests)/' build.log || true)
+          if [ "${compiled:-0}" -lt 1 ]; then
+            echo "::error::build.log shows no first-party translation unit compiled (src or tests); an empty set would make this gate vacuously green"; exit 1
+          fi
+          # [M06b] 非空集还要落到每个插件目标上:三个插件的源(连同编进各自目标的 plugin-common)
+          # 都得出现在日志里,否则「插件侧零警告」对没编到的那个插件是恒真。
+          for spec in input:SCVBInput output:SCVBOutput monitor:SCVBMonitor; do
+            dir="${spec%%:*}"; tgt="${spec##*:}"
+            k=$(grep -cE "Building (CXX|OBJCXX) object src/$dir/CMakeFiles/$tgt\\.dir/" build.log || true)
+            if [ "${k:-0}" -lt 1 ]; then
+              echo "::error::build.log shows no translation unit of plugin target $tgt (src/$dir); the zero-warning gate would be vacuous for it"; exit 1
+            fi
+          done
+          warns=$(first_party_warnings < build.log)
+          n=0
+          if [ -n "$warns" ]; then n=$(printf '%s\n' "$warns" | wc -l | tr -d ' '); fi
+          echo "first-party TUs compiled in this run: $compiled; first-party clang warnings: $n (build step: $BUILD_OUTCOME)"
+          echo "- first-party TUs compiled: $compiled; first-party clang warnings: **$n** (build step: $BUILD_OUTCOME)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" != "0" ]; then
+            printf '%s\n' "$warns" | while IFS= read -r line; do echo "::error::$line"; done
+            echo "::error::first-party clang warnings: $n; zero-warning gate"
+            exit 1
+          fi
+
+      # 以下各步只要求「编出来了」(steps.build 成功),**不**要求上一道门绿:零警告门红的那一轮,
+      # ctest 与 golden 对拍照样跑完,一次往返看到全部结论(job 结论仍是红)。
+      # 6) ctest 上界属性门禁:先自测再实扫(与 build-vst3.yml / 本机 gate 5b 同一条命令)。
+      #    两步分开写:合进一个块,自测红、实扫绿会让整步变绿。
+      #    pwsh 不在镜像里时这两步直接红:「工具缺失」不得计为通过。
+      - name: ctest timeout properties - self-test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v pwsh >/dev/null 2>&1 || { echo "::error::pwsh not found on this runner image; scripts/check-ctest-timeouts.ps1 cannot run"; exit 1; }
+          pwsh -NoProfile -File scripts/check-ctest-timeouts.ps1 -SelfTest
+
+      - name: ctest timeout properties (reads generated CTestTestfile.cmake)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v pwsh >/dev/null 2>&1 || { echo "::error::pwsh not found on this runner image; scripts/check-ctest-timeouts.ps1 cannot run"; exit 1; }
+          pwsh -NoProfile -File scripts/check-ctest-timeouts.ps1 -BuildDir build
+
+      # 7) 产物身份:scvb_tests 必须是 arm64 单架构,且 Mach-O 的 minos 等于 CMakeCache 里的
+      #    部署目标(证明根 CMakeLists.txt 那两段真的进了编译参数,而不只是进了缓存)。
+      - name: Assert scvb_tests is arm64-only with the configured minos
+        id: locate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          n=$(find build -type f -name scvb_tests -perm -u+x -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+          if [ "$n" != "1" ]; then echo "::error::expected exactly 1 scvb_tests executable under build, found $n"; exit 1; fi
+          exe=$(find build -type f -name scvb_tests -perm -u+x -not -path '*/_deps/*' -print -quit)
+          echo "SCVB_TESTS_EXE=$GITHUB_WORKSPACE/$exe" >> "$GITHUB_ENV"
+          archs=$(lipo -archs "$exe")
+          echo "lipo -archs: $archs"
+          if [ "$archs" != "arm64" ]; then echo "::error::scvb_tests archs are '$archs', expected arm64 only"; exit 1; fi
+          minos=$(otool -l "$exe" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          echo "LC_BUILD_VERSION minos: $minos (CMakeCache: $OSX_DEPLOYMENT_TARGET)"
+          if [ "$minos" != "$OSX_DEPLOYMENT_TARGET" ]; then
+            echo "::error::scvb_tests minos is '$minos', expected '$OSX_DEPLOYMENT_TARGET' from CMAKE_OSX_DEPLOYMENT_TARGET"; exit 1
+          fi
+          echo "- scvb_tests: \`$archs\`, minos $minos" >> "$GITHUB_STEP_SUMMARY"
+
+      # 8) ctest。[M06b] 全量构建之后,mac 上登记的条目都有二进制;这里**按名字列出**要跑的十二条,
+      #    而不是不带 -R 跑全部:列名让「mac 上跑哪几套」是写下来的事实,不由 CMake 守卫隐式决定。
+      #    每一条先核「恰好登记一次」:被删、改名、或被守卫挡掉,这里当场红 —— `--no-tests=error`
+      #    只管「一条都没选中」,选中十二条里的十一条它照样绿。
+      #    [B 线 M04] `scvb_seqlock_stress` 与 `scvb_tests` 是同一个二进制,按标签 `[stress]` 单跑 seqlock
+      #    压测(tests/core/test_seqlock_stress.cpp)。它是 arm64 内存序的门禁,在 x86 上恒绿,所以必须在这里跑。
+      #    [B 线 M12a] 加 `scvb_ipc_tests`(L1 双进程 IPC 契约 IPC-1..20、VIZ、registry 探测,外加只在 mac 编的
+      #    IPC-P1..P3)与 `scvb_monitor_tests`(ADR-001a 三铁律 + 全数据链 harness)。两套都用真实段名建段、
+      #    拉 scvb_ipc_peer 对端进程;两个二进制之间以及与 scvb_tests 之间靠 tests/support/exclusive_guard.h 的
+      #    flock 互斥(这里 ctest 不带 -j,本来就串行)。它们跑完之后不许留段 —— 11a 的残段基线查的就是这件事。
+      #    「整套绿」推不出「那几格在场」(同 8b 的理由:某个 TEST_CASE 被平台条件挡掉、某个源文件掉出目标,
+      #    套件照样绿),所以跑之前先数这几个二进制**列出**的用例数(`--list-tests` 只列不跑:不建段、不取锁),
+      #    低于下限当场红。下限 = Windows 上同一份源的用例数 + mac 专属格:
+      #      scvb_ipc_tests     37(IPC-1..20 落成的 29 个 TEST_CASE + VIZ-1..4 + REGISTRY-PROBE-1..4)+ 3(IPC-P1..P3)= 40
+      #      scvb_monitor_tests 11(两平台同一份)
+      #    [B 线 M12b] 加 scvb_host_tests 这个二进制的五条:免 DAW 宿主 harness(真 Input / Output Processor 同进程
+      #    托管、经真实段名通信、手跑消息循环)在 mac 上分四片 `scvb_host_tests_shard1of4` … `shard4of4`(Catch2
+      #    `--shard-count 4`;不分片的一条在这台 runner 上要约 1260 s,超出 900 s 上界,理由与实测见 tests/CMakeLists.txt
+      #    host 块),外加 `scvb_host_sched_tests`(按 `[sched]` 选出的宿主调度模拟器,含 `[!shouldfail]` 格)。
+      #    Windows 上仍是一条 `scvb_host_tests`。同一个二进制也持 exclusive_guard.h 的 flock,与上面几套串行。
+      #    下限按二进制数、不按分片数,同样 = Windows 上同一份源的用例数(host 源里没有平台条件格):
+      #      scvb_host_tests          246(`--list-tests` 列出的非隐藏格 = 四片之和)
+      #      scvb_host_sched_tests     49(`--list-tests "[sched]"`:`[.][sched]` 是隐藏格,只在显式过滤时列出)
+      #    `--timeout 300` 与 build-vst3.yml / gates.ps1 gate 6 同值,只给没有 TIMEOUT 属性的测试兜底。
+      - name: Unit tests (ctest - scvb_tests, seqlock_stress, params, plugin_common, input_bridge, ipc, monitor, host, host_sched)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          want=(scvb_tests scvb_seqlock_stress scvb_params_tests scvb_plugin_common_tests scvb_input_bridge_tests scvb_ipc_tests scvb_monitor_tests
+                scvb_host_tests_shard1of4 scvb_host_tests_shard2of4 scvb_host_tests_shard3of4 scvb_host_tests_shard4of4 scvb_host_sched_tests)
+          for t in "${want[@]}"; do
+            n=$(ctest --test-dir build -N -R "^${t}\$" | grep -cE "Test +#[0-9]+: ${t}\$" || true)
+            if [ "$n" != "1" ]; then echo "::error::ctest entry $t is not registered exactly once (found $n); see tests/CMakeLists.txt"; exit 1; fi
+          done
+          min_cases() { # $1 = executable name, $2 = minimum number of listed test cases, $3 = optional Catch2 filter
+            local n exe out rc cases what
+            n=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+            if [ "$n" != "1" ]; then echo "::error::expected exactly 1 $1 executable under build, found $n"; return 1; fi
+            exe=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' -print -quit)
+            what="$1${3:+ $3}"
+            rc=0
+            if [ -n "${3:-}" ]; then
+              out=$("$exe" --list-tests "$3" </dev/null 2>&1) || rc=$?
+            else
+              out=$("$exe" --list-tests </dev/null 2>&1) || rc=$?
+            fi
+            if [ "$rc" != "0" ]; then printf '%s\n' "$out" | tail -n 5; echo "::error::$what --list-tests failed (exit $rc)"; return 1; fi
+            # LC_ALL=C:host 的用例名是 UTF-8 中文,BSD sed 在 runner 的默认 locale 下会以
+            # 「RE error: illegal byte sequence」退出(M12b 首跑实测);按字节匹配,汇总行本身只有 ASCII。
+            cases=$(printf '%s\n' "$out" | LC_ALL=C sed -nE 's/^([0-9]+) (matching )?test cases?$/\1/p' | tail -n 1)
+            if [ -z "$cases" ] || [ "$cases" -lt "$2" ]; then
+              echo "::error::$what lists ${cases:-0} test cases, expected at least $2"; return 1
+            fi
+            echo "$what: $cases test cases compiled in on $(uname -m) (minimum $2)"
+            echo "- \`$what\`: $cases test cases compiled in on $(uname -m) (minimum $2)" >> "$GITHUB_STEP_SUMMARY"
+          }
+          min_cases scvb_ipc_tests 40
+          min_cases scvb_monitor_tests 11
+          min_cases scvb_host_tests 246
+          min_cases scvb_host_tests 49 '[sched]'
+          re="^($(IFS='|'; echo "${want[*]}"))\$"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 300 -R "$re"
+
+      # 8b) [M06b] 两组新判据「真的在 arm64 上跑了」的显式证据。上一步各条全绿已经包含它们,但「整套绿」
+      #     推不出「那几格在场」:test_au_param_ids.cpp 从目标里掉出去、或 [assets] 两格被改了标签,
+      #     scvb_params_tests / scvb_plugin_common_tests 照样绿。这里按标签单跑,数 Catch2 汇总行里的用例数。
+      #       [au]     AU 参数 ID 冻结表(tests/core/test_au_param_ids.cpp,3 格)
+      #       [assets] web 资源嵌入闭包(tests/webview/test_web_assets_embedded.cpp,2 格)
+      - name: AU parameter-ID cases and embedded web assets ran on arm64
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_tagged() { # $1 = executable name, $2 = Catch2 tag, $3 = minimum test-case count
+            local n exe out rc cases
+            n=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+            if [ "$n" != "1" ]; then echo "::error::expected exactly 1 $1 executable under build, found $n"; return 1; fi
+            exe=$(find build -type f -name "$1" -perm -u+x -not -path '*/_deps/*' -print -quit)
+            rc=0
+            out=$("$exe" "$2" 2>&1) || rc=$?
+            printf '%s\n' "$out" | tail -n 3
+            if [ "$rc" != "0" ]; then echo "::error::$1 $2 failed (exit $rc)"; return 1; fi
+            cases=$(printf '%s\n' "$out" | sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' | tail -n 1)
+            if [ -z "$cases" ] || [ "$cases" -lt "$3" ]; then
+              echo "::error::$1 $2 ran ${cases:-0} test cases, expected at least $3"; return 1
+            fi
+            echo "- \`$1 $2\`: $cases test cases passed on $(uname -m)" >> "$GITHUB_STEP_SUMMARY"
+          }
+          run_tagged scvb_params_tests '[au]' 3
+          run_tagged scvb_plugin_common_tests '[assets]' 2
+          run_tagged scvb_plugin_common_tests '[mac]' 6 # [M07] 只在 macOS 上编的 6 格(系统 WebKit 文案 / 无 UDF / 日志路径 / 1 MB 轮转 / 多写者不互相覆盖 / IpcDiag sink 去重)
+
+      # 8c) [M06b] 插件产物形态。三个插件 × 两种格式 = 恰好 3 个 .vst3 + 3 个 .component,名字逐个对上;
+      #     每个 bundle 的 Mach-O 都是 arm64 单架构、minos = CMakeCache 里的部署目标;每个 .component 的
+      #     Info.plist 恰好声明一个 AudioComponent,三元组 = <AU_MAIN_TYPE 映射>/<PLUGIN_CODE>/<厂商码>。
+      #     四字码不写死在这里:从 src/<role>/CMakeLists.txt 现读(与 bridge ci.yml 同纪律),改码时这里报
+      #     「解析不到」而不是语义无关的「对不上」。定位一律 `-print -quit` / 先落变量再匹配,不用
+      #     `find | head`(pipefail 下 SIGPIPE 会随机杀步骤)。bundle 路径落进 plugin-bundles.txt 给打包步用;
+      #     与 Info.plist 核对过的 AU 三元组(`type subtype manufacturer`,一行一个)落进 au-triples.txt,
+      #     auval 步只读这个文件 —— AU_MAIN_TYPE → 四字码的映射只在这里写一次,两步同一个真源。
+      - name: Assert plugin bundles (3 VST3 + 3 AU, arm64-only, minos, AU triples)
+        id: bundles
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ext in vst3 component; do
+            n=$(find build -type d -name "*.$ext" -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+            if [ "$n" != "3" ]; then
+              find build -type d -name "*.$ext" -not -path '*/_deps/*' | sed 's/^/  found: /'
+              echo "::error::expected exactly 3 .$ext bundles under build (SCVB Input / Output / Monitor), found $n"; exit 1
+            fi
+          done
+          : > plugin-bundles.txt
+          : > au-triples.txt
+          for role in input output monitor; do
+            cm="src/$role/CMakeLists.txt"
+            name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' "$cm")
+            code=$(awk '$1 == "PLUGIN_CODE" { print $2; exit }' "$cm")
+            mfr=$(awk '$1 == "PLUGIN_MANUFACTURER_CODE" { print $2; exit }' "$cm")
+            au_main=$(awk '$1 == "AU_MAIN_TYPE" { print $2; exit }' "$cm")
+            if [ -z "$name" ] || [ -z "$code" ] || [ -z "$mfr" ] || [ -z "$au_main" ]; then
+              echo "::error::cannot parse PRODUCT_NAME / PLUGIN_CODE / PLUGIN_MANUFACTURER_CODE / AU_MAIN_TYPE from $cm"; exit 1
+            fi
+            case "$au_main" in
+              kAudioUnitType_Effect)        au_type=aufx ;;
+              kAudioUnitType_MusicEffect)   au_type=aumf ;;
+              kAudioUnitType_MusicDevice)   au_type=aumu ;;
+              kAudioUnitType_MIDIProcessor) au_type=aumi ;;
+              *) echo "::error::cannot map AU_MAIN_TYPE '$au_main' from $cm to a four-char type"; exit 1 ;;
+            esac
+            for ext in vst3 component; do
+              k=$(find build -type d -name "$name.$ext" -not -path '*/_deps/*' | wc -l | tr -d '[:space:]')
+              if [ "$k" != "1" ]; then echo "::error::expected exactly 1 '$name.$ext' under build, found $k"; exit 1; fi
+              b=$(find build -type d -name "$name.$ext" -not -path '*/_deps/*' -print -quit)
+              bin="$b/Contents/MacOS/$name"
+              if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then echo "::error::'$bin' is missing or not executable"; exit 1; fi
+              archs=$(lipo -archs "$bin")
+              if [ "$archs" != "arm64" ]; then echo "::error::'$name.$ext' archs are '$archs', expected arm64 only"; exit 1; fi
+              minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+              if [ "$minos" != "$OSX_DEPLOYMENT_TARGET" ]; then
+                echo "::error::'$name.$ext' minos is '$minos', expected '$OSX_DEPLOYMENT_TARGET' from CMAKE_OSX_DEPLOYMENT_TARGET"; exit 1
+              fi
+              triple="-"
+              if [ "$ext" = "component" ]; then
+                plist="$b/Contents/Info.plist"
+                pb() { /usr/libexec/PlistBuddy -c "Print :AudioComponents:$1" "$plist" 2>/dev/null || true; }
+                got="$(pb 0:type)/$(pb 0:subtype)/$(pb 0:manufacturer)"
+                if [ "$got" != "$au_type/$code/$mfr" ]; then
+                  echo "::error::'$name.component' AudioComponents[0] is '$got', expected '$au_type/$code/$mfr'"; exit 1
+                fi
+                if [ -n "$(pb 1:type)" ]; then echo "::error::'$name.component' declares more than one AudioComponent"; exit 1; fi
+                triple="$got"
+                printf '%s %s %s\n' "$au_type" "$code" "$mfr" >> au-triples.txt
+              fi
+              printf '%s\n' "$b" >> plugin-bundles.txt
+              echo "$name.$ext: $archs, minos $minos, AU $triple"
+              echo "- \`$name.$ext\`: \`$archs\`, minos $minos, AU triple \`$triple\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+      # 8d) [M06b] 两个参数 ID 宏(根 CMakeLists.txt 的 SCVB_PLUGIN_PARAM_ID_DEFINITIONS)真的进了**每个
+      #     插件的 AU 与 VST3 wrapper 编译单元**。test_au_param_ids.cpp 的 static_assert 只能证明测试目标
+      #     拿到了这两个值;真正用它们算参数 ID 的是 juce_audio_plugin_client_{AU,VST3}* 这几个 TU。
+      #     值与 JUCE 默认相同,所以某个插件漏掉它们今天不改行为,却让「钉住」名存实亡 —— 只有这一步看得见。
+      #     读 configure 生成的 compile_commands.json(本 job 的 configure 带 CMAKE_EXPORT_COMPILE_COMMANDS)。
+      - name: Assert pinned parameter-ID macros reach every plugin wrapper TU
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          entries = json.load(open("build/compile_commands.json"))
+          need = ("-DJUCE_FORCE_USE_LEGACY_PARAM_IDS=0", "-DJUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS=1")
+          bad = 0
+          for plugin in ("SCVBInput", "SCVBOutput", "SCVBMonitor"):
+              for kind in ("AU", "VST3"):
+                  marker = "/%s_%s.dir/" % (plugin, kind)
+                  stem = "juce_audio_plugin_client_%s" % kind
+                  cmds = []
+                  for e in entries:
+                      cmd = e.get("command") or " ".join(e.get("arguments", []))
+                      if (marker in e.get("output", "") or marker in cmd) and os.path.basename(e["file"]).startswith(stem):
+                          cmds.append(cmd.split())
+                  if not cmds:
+                      print("::error::no %s* translation unit of %s_%s in compile_commands.json" % (stem, plugin, kind))
+                      bad += 1
+                      continue
+                  lacking = 0
+                  for argv in cmds:
+                      missing = [d for d in need if d not in argv]
+                      if missing:
+                          print("::error::%s_%s wrapper TU lacks %s" % (plugin, kind, " ".join(missing)))
+                          lacking += 1
+                  bad += lacking
+                  print("%s_%s: %d wrapper TU(s), %d lacking the macros" % (plugin, kind, len(cmds), lacking))
+          sys.exit(1 if bad else 0)
+          PY
+          echo "- param-ID macros (\`LEGACY_PARAM_IDS=0\`, \`STUDIO_ONE_COMPATIBLE=1\`) present in every AU / VST3 wrapper TU of the 3 plugins" >> "$GITHUB_STEP_SUMMARY"
+
+      # 9) tests/golden/ipc-layout.txt 在 arm64 上**逐行**对拍的显式证据。上一步 scvb_tests 绿已经
+      #    包含这一条;这里单跑 IpcLayoutFreeze 并让每条通过的断言都打印出来(`--success`),再核对:
+      #    golden 里每一条数据行(非空、非 # 注释,与测试里 readLines 同一口径)都至少在一条**通过**的
+      #    断言上出现过。这样「逐行通过」是数出来的,而不是从「整套绿」推出来的。
+      - name: IPC layout golden - line-by-line on arm64
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "IpcLayoutFreeze" --reporter compact --success > ipc-layout-compact.log 2>&1 || rc=$?
+          tail -n 3 ipc-layout-compact.log
+          if [ "$rc" != "0" ]; then
+            echo "::group::IpcLayoutFreeze output"; cat ipc-layout-compact.log; echo "::endgroup::"
+            echo "::error::IpcLayoutFreeze failed on arm64 (exit $rc)"; exit 1
+          fi
+          # 去 CR 用 tr 而不是 sed:正则里的 `\r` 是 GNU sed 的扩展,macOS 自带的 BSD sed 不保证认
+          # (不认时 `s/\r$//` 删的是行尾字母 r);tr 的 `\r` 两边都认。
+          tr -d '\r' < tests/golden/ipc-layout.txt | grep -v '^#' | grep -v '^$' | LC_ALL=C sort -u > golden-lines.txt
+          # 下面的提取靠 compact reporter 把 INFO 包在单引号里打印('golden line: …');golden 数据行里
+          # 一旦出现单引号,提取会在那里截断,所以先拦住,改这一步的解析再放行。
+          if grep -q "'" golden-lines.txt; then
+            echo "::error::a golden data line contains a single quote; the compact-reporter parsing below cannot handle it"; exit 1
+          fi
+          grep -o "'golden line: [^']*'" ipc-layout-compact.log | sed "s/^'golden line: //; s/'\$//" | LC_ALL=C sort -u > seen-lines.txt
+          expected=$(wc -l < golden-lines.txt | tr -d ' ')
+          seen=$(wc -l < seen-lines.txt | tr -d ' ')
+          missing=$(LC_ALL=C comm -23 golden-lines.txt seen-lines.txt)
+          echo "golden data lines: $expected; lines covered by passing assertions: $seen"
+          if [ "$expected" -lt 1 ]; then echo "::error::no data lines read from tests/golden/ipc-layout.txt"; exit 1; fi
+          if [ -n "$missing" ]; then
+            printf '%s\n' "$missing" | while IFS= read -r line; do echo "::error::golden line not covered by a passing assertion: $line"; done
+            exit 1
+          fi
+          echo "- ipc-layout golden on arm64: **$seen / $expected** data lines covered by passing assertions" >> "$GITHUB_STEP_SUMMARY"
+
+      # 10) [M06b] artifact 传输封装(**不是发行打包**,那是 M10 的 package-macos.sh):upload-artifact
+      #     不保留 POSIX 权限位,直接传 bundle 目录 = 下载方拿到不可执行的死壳。所以先用 ditto 打一层
+      #     内层 zip(VST3/ 与 Components/ 两个目录,对应 ~/Library/Audio/Plug-Ins 下的两个安装位置)。
+      #     `--norsrc --noextattr`:bundle 不需要资源叉,而扩展属性会被写进 __MACOSX/ 条目(权限恒为
+      #     -rw-r--r--),让下面的可执行位断言误报。核两遍:① zip 元数据里 Contents/MacOS/ 下每个文件条目
+      #     带 x 位;② 真解压一遍(ditto -x -k,与用户双击解压同一条路),逐个 test -x + 再核一次 arm64。
+      - name: Pack plugin bundles (ditto zip keeps exec bits)
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf stage unpack-check "$MAC_ZIP"
+          mkdir -p stage/VST3 stage/Components
+          while IFS= read -r b; do
+            case "$b" in
+              *.vst3)      ditto "$b" "stage/VST3/$(basename "$b")" ;;
+              *.component) ditto "$b" "stage/Components/$(basename "$b")" ;;
+              *) echo "::error::unexpected bundle path '$b'"; exit 1 ;;
+            esac
+          done < plugin-bundles.txt
+          ditto -c -k --norsrc --noextattr stage "$MAC_ZIP"
+          unzip -Z1 "$MAC_ZIP" | grep -E '\.(vst3|component)/$' || true
+          # ① zip 元数据。只挑 Contents/MacOS/ 下的**文件**条目(目录条目是 d 开头,拿它比 x 位会误报);
+          #    首字符放行 `-`(文件)与 `l`(符号链接,unzip -Z 打 lrwxrwxrwx)。
+          macho=$(unzip -Z "$MAC_ZIP" | grep -v '__MACOSX/' | grep -E '/Contents/MacOS/[^[:space:]]' || true)
+          nmacho=$(printf '%s\n' "$macho" | grep -c . || true)
+          if [ "$nmacho" != "6" ]; then
+            printf '%s\n' "$macho"
+            echo "::error::zip should hold exactly 6 Contents/MacOS/ binaries (3 VST3 + 3 AU), found $nmacho"; exit 1
+          fi
+          if printf '%s\n' "$macho" | grep -vE '^[-l]rwx'; then
+            echo "::error::zip lost the executable bit on Contents/MacOS/*"; exit 1
+          fi
+          # ② 真解压。
+          mkdir unpack-check
+          ditto -x -k "$MAC_ZIP" unpack-check
+          n=0
+          while IFS= read -r -d '' bin; do
+            if [ ! -x "$bin" ]; then echo "::error::unpacked '$bin' is not executable"; exit 1; fi
+            a=$(lipo -archs "$bin")
+            if [ "$a" != "arm64" ]; then echo "::error::unpacked '$bin' archs are '$a'"; exit 1; fi
+            n=$((n + 1))
+          done < <(find unpack-check -type f -path '*/Contents/MacOS/*' -print0)
+          if [ "$n" != "6" ]; then echo "::error::unpacked zip holds $n Contents/MacOS/ binaries, expected 6"; exit 1; fi
+          ls -l "$MAC_ZIP"
+          echo "- artifact zip \`$MAC_ZIP\`: 6 bundles, exec bits intact after ditto -x -k" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS bundles (pr / dev / preview, named like the Windows artifact)
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' && env.ARTIFACT_NAME != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.MAC_ZIP }}
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # 11) [M08] mac 验证门。M06b 的 auval 冒烟(信息项)在这里升级为门,并补上 `auval -a` 唯一性、
+      #     pluginval ×6(3 个 .vst3 + 3 个 .component,非 GUI)与共享内存残段检查。顺序:
+      #       11a 残段基线 → 11b 装 AU → 11c auval 门 → 11d auval -a 唯一性 → 11e pluginval 门
+      #       → 11f 残段门 → 11g 带 GUI 的 pluginval(记录项)
+      #     各步只要求「编出来了 / 装上了」,不要求前一道门绿:auval 红的那一轮,唯一性、pluginval 与残段
+      #     照样跑完,一次往返看到全部结论(job 结论仍是红)。
+      #     共同纪律(照 bridge ci.yml):工具输出先落文件或变量再匹配 —— 不写 `auval -a | grep -q`
+      #     (grep 命中即退出,auval 收 SIGPIPE,pipefail 下整条管道判非零)、不写 `| head`;
+      #     逐行读清单用 fd 3,被调工具一律 </dev/null,免得它吃掉循环的输入。
+      #     `shell: bash` 实际是 `bash -e -o pipefail`:可能非零的命令一律 `|| rc=$?` 接住,
+      #     每格跑完再统一判,一格红不会让后面的格和 summary 行消失。
+
+      # 11a) 残段基线。`scvb_tests "[shm-leftover]"`(M05 的隐藏格)逐个只读探测 8 组全部真实段名
+      #      (macOS 没有枚举 POSIX shm 的接口,只能按名字探)。验证之前先探一次:基线干净,11f 的红
+      #      才能归到 auval / pluginval 头上;基线就脏,说明更早的步骤(ctest)用了真实段名又没清,
+      #      这里当场红并点名。判据:退出码 0,且汇总行恰好 1 个用例 —— 隐藏格被改名或改标签、
+      #      一个用例都没跑时,Catch2 的「没有匹配」不能被读成「没有残段」。
+      - name: Shared-memory leftover probe - baseline before auval / pluginval
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' && steps.bundles.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-baseline.log 2>&1 || rc=$?
+          cat shm-leftover-baseline.log
+          if grep -q 'No test cases matched' shm-leftover-baseline.log; then
+            echo "::error::scvb_tests has no test case tagged [shm-leftover] (M05 hidden case renamed or retagged?)"; exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::SCVB shared-memory segments exist BEFORE auval / pluginval ran (scvb_tests [shm-leftover] exit $rc; list above): an earlier step used the real segment names and left them, so 11f could not attribute leftovers to validation"
+            exit 1
+          fi
+          cases=$(sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' shm-leftover-baseline.log | tail -n 1)
+          if [ "${cases:-0}" != "1" ]; then echo "::error::scvb_tests [shm-leftover] ran ${cases:-0} test cases, expected exactly 1"; exit 1; fi
+          echo "- shm leftover probe, baseline before auval / pluginval: clean (1 test case)" >> "$GITHUB_STEP_SUMMARY"
+
+      # 11b) 装 AU:ditto 进用户 Components(cp -r 会丢符号链接与扩展属性,bundle 散架);装前先删旧的
+      #      (ditto 往已有目录里是合并,不删多余文件)。装完 killall -9 AudioComponentRegistrar,让它按需
+      #      重启并重扫;注册轮询放在 11c 每个三元组跟前。装好的路径落 au-installed.txt 给 11e:pluginval
+      #      按路径验 AU 时,JUCE 读 bundle 的 Info.plist 拿三元组、再去注册表里找组件
+      #      (AudioComponentFindNext),所以要验的是已装、已注册的那一份。
+      - name: Install AU components into ~/Library/Audio/Plug-Ins/Components
+        id: au_install
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$dest"
+          : > au-installed.txt
+          while IFS= read -r b; do
+            case "$b" in
+              *.component)
+                inst="$dest/$(basename "$b")"
+                rm -rf "$inst"
+                ditto "$b" "$inst"
+                printf '%s\n' "$inst" >> au-installed.txt ;;
+            esac
+          done < plugin-bundles.txt
+          n=$(grep -c . au-installed.txt || true)
+          if [ "${n:-0}" != "3" ]; then echo "::error::installed ${n:-0} .component bundle(s), expected 3"; exit 1; fi
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sed 's/^/installed: /' au-installed.txt
+
+      # 11c) auval 门(M06b 冒烟的升级,summary 行沿用)。对 ADR-001 冻结的三个三元组逐个跑 `auval -v`,
+      #      **以输出含 `AU VALIDATION SUCCEEDED` 且退出码 0** 判定(bridge 只看输出,理由是 auval 退出码
+      #      历史上不可靠;这里两样都要,哪样不对都红)。
+      #      - 期望三元组写死在这里,因为它是冻结值:ADR-001 冻结 PLUGIN_CODE(Scvi / Scvo / Scvm)与
+      #        厂商码 Snch —— 出处是宪法副本 docs/constitution/ADR.md 的 ADR-001(J81h 改写后含 Monitor)与
+      #        docs/contract-changes/20260825-monitor-target.md;docs/adr/0001-plugin-form.md 本体还只写了
+      #        Scvi / Scvo,别拿它核 Scvm。aufx 是三个插件 AU_MAIN_TYPE kAudioUnitType_Effect 的四字码;
+      #        AU 三元组发布后整体冻结(改了它,用户工程里的 AU 全部失联)。8c 的三元组从 CMakeLists 现读、与 Info.plist
+      #        对拍,改码时一路自洽、没有任何一步会红 —— 只有对着冻结值核,「subtype 写错」才红。
+      #        所以先核 8c 落下的 au-triples.txt 与冻结集逐行相等,再按冻结集逐个 auval。冻结集要变
+      #        是契约变更:先改 ADR,再改这里。
+      #      - 注册轮询照 bridge:killall 之后轮询 `auval -a` 至多 30 s,看三元组是否出现;**超时只出
+      #        warning、不判红**(正则依赖 auval -a 未文档化的排版,猜错时应退化为「直接验」),
+      #        判定交给 auval -v。
+      #      - `auval -strict -v` 是**记录项**:结果进 summary,不判红。注意 pluginval 在 strictness 5
+      #        自带一项 "auval" 测试,跑的正是 `auval -strict -v` 并看退出码,所以 11e 里 .component 那三格
+      #        实际上已把 -strict 带进了门;这里单列,是为了在 summary 里看得见 -strict 本身的结论。
+      #      - 判据先自测(合成输出,不调 auval):成功标记与退出码 0 缺一不可。
+      - name: auval gate (3 frozen AU triples; -strict recorded, not gated)
+        id: auval
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p auval-logs
+          au_verdict() { # $1 = auval 退出码, $2 = auval 输出文件
+            if [ "$1" = "0" ] && grep -q 'AU VALIDATION SUCCEEDED' "$2"; then echo SUCCEEDED; else echo FAILED; fi
+          }
+          st="$RUNNER_TEMP/auval-verdict-selftest.log"
+          printf 'AU VALIDATION SUCCEEDED.\n' > "$st"
+          [ "$(au_verdict 0 "$st")" = SUCCEEDED ] || { echo "::error::auval verdict self-test: success marker + exit 0 must pass"; exit 1; }
+          [ "$(au_verdict 1 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: success marker with a non-zero exit must fail"; exit 1; }
+          printf 'AU VALIDATION FAILED.\n' > "$st"
+          [ "$(au_verdict 0 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: exit 0 without the success marker must fail"; exit 1; }
+          : > "$st"
+          [ "$(au_verdict 0 "$st")" = FAILED ] || { echo "::error::auval verdict self-test: empty output must fail"; exit 1; }
+
+          frozen=$'aufx Scvi Snch\naufx Scvo Snch\naufx Scvm Snch'
+          echo "### auval gate" >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          declared=$(LC_ALL=C sort au-triples.txt)
+          want=$(printf '%s\n' "$frozen" | LC_ALL=C sort)
+          if [ "$declared" != "$want" ]; then
+            echo "::error::AU triples declared by the bundles (8c, au-triples.txt) [$(printf '%s' "$declared" | tr '\n' ',')] differ from the ADR-001 frozen set [$(printf '%s' "$want" | tr '\n' ',')]"
+            echo "- declared AU triples differ from the frozen set: [$(printf '%s' "$declared" | tr '\n' ',')]" >> "$GITHUB_STEP_SUMMARY"
+            fail=1
+          fi
+          while read -r type code mfr <&3; do
+            [ -n "$type" ] || continue
+            seen=0
+            for _ in $(seq 1 30); do
+              list="$(auval -a </dev/null 2>/dev/null || true)"
+              if grep -qE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list"; then seen=1; break; fi
+              sleep 1
+            done
+            if [ "$seen" != "1" ]; then
+              echo "::warning::$type $code $mfr not seen in auval -a within 30 s; running auval -v anyway (auval -v is the judge)"
+            fi
+            rc=0
+            auval -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-$code.log" 2>&1 || rc=$?
+            verdict=$(au_verdict "$rc" "auval-logs/auval-$code.log")
+            src=0
+            auval -strict -v "$type" "$code" "$mfr" </dev/null > "auval-logs/auval-strict-$code.log" 2>&1 || src=$?
+            sverdict=$(au_verdict "$src" "auval-logs/auval-strict-$code.log")
+            echo "::group::auval -v $type $code $mfr (registered in auval -a: $seen, exit $rc, $verdict)"
+            cat "auval-logs/auval-$code.log"
+            echo "::endgroup::"
+            echo "::group::auval -strict -v $type $code $mfr (record only: exit $src, $sverdict)"
+            cat "auval-logs/auval-strict-$code.log"
+            echo "::endgroup::"
+            echo "- \`$type $code $mfr\`: registered=$seen, auval -v exit $rc, $verdict; -strict (record only): exit $src, $sverdict" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$verdict" != "SUCCEEDED" ]; then
+              marker=absent
+              if grep -q 'AU VALIDATION SUCCEEDED' "auval-logs/auval-$code.log"; then marker=present; fi
+              echo "::error::auval -v $type $code $mfr: exit $rc, 'AU VALIDATION SUCCEEDED' $marker"
+              fail=1
+            fi
+          done 3<<< "$frozen"
+          exit "$fail"
+
+      # 11d) `auval -a` 唯一性:每个三元组恰好对应一个组件。两层:① 8c 落下的三元组(三个 bundle 各自
+      #      声明的)两两不同 —— 两个插件抄成同一个 subtype 时注册器只留一个,`auval -a` 里看着仍是
+      #      「一行」,只有这一层看得见;② 每个声明的三元组在 `auval -a` 里恰好一行(0 = 没注册上,
+      #      ≥2 = 一个三元组挂了不止一个组件)。厂商码相同的全部行另列进日志留痕。
+      - name: auval -a uniqueness gate (one component per AU triple)
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          n=$(grep -c . au-triples.txt || true)
+          if [ "${n:-0}" != "3" ]; then echo "::error::au-triples.txt has ${n:-0} line(s), expected 3"; fail=1; fi
+          dups=$(LC_ALL=C sort au-triples.txt | uniq -d)
+          if [ -n "$dups" ]; then
+            while IFS= read -r d; do echo "::error::AU triple '$d' is declared by more than one plugin bundle"; done <<< "$dups"
+            fail=1
+          fi
+          list="$(auval -a </dev/null 2>/dev/null || true)"
+          if [ -z "$list" ]; then echo "::error::auval -a printed nothing"; exit 1; fi
+          echo "### auval -a uniqueness" >> "$GITHUB_STEP_SUMMARY"
+          while read -r type code mfr <&3; do
+            [ -n "$type" ] || continue
+            k=$(grep -cE "^[[:space:]]*$type[[:space:]]+$code[[:space:]]+$mfr([[:space:]]|$)" <<< "$list" || true)
+            echo "$type $code $mfr: ${k:-0} component(s) in auval -a"
+            echo "- \`$type $code $mfr\`: ${k:-0} component(s) in \`auval -a\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${k:-0}" != "1" ]; then
+              echo "::error::AU triple $type $code $mfr maps to ${k:-0} component(s) in auval -a, expected exactly 1"; fail=1
+            fi
+          done 3< au-triples.txt
+          if [ -n "$dups" ]; then echo "- duplicated declared triple(s): $(printf '%s' "$dups" | tr '\n' ',')" >> "$GITHUB_STEP_SUMMARY"; fi
+          mfrs=$(awk '{ print $3 }' au-triples.txt | LC_ALL=C sort -u | tr '\n' ' ')
+          echo "::group::auval -a lines with manufacturer code(s): $mfrs"
+          awk -v m="$mfrs" 'BEGIN { k = split(m, a, " "); for (i = 1; i <= k; i++) want[a[i]] = 1 } ($3 in want)' <<< "$list"
+          echo "::endgroup::"
+          exit "$fail"
+
+      # 11e) pluginval 门:3 个 .vst3 + 3 个 .component 共 6 格,非 GUI。版本只从 .pluginval-version 读
+      #      (步骤 0 读进 PLUGINVAL_TAG,与 Windows 同一真源)。下载方式照 build-vst3.yml 的 Windows 侧与
+      #      bridge ci.yml:按版本取上游发行页的 pluginval_macOS.zip,解包后 chmod +x(上游 zip 不保证
+      #      可执行位)。Windows 侧同样只钉版本、不钉 sha,两边口径一致;要钉 sha 是另一件事(两个平台一起
+      #      加、进 CLAUDE.md §6 钉版清单与 build-vst3.yml 的副本),不在本步。下载后核一次
+      #      `pluginval --version` 报出的版本号与钉的逐字相等(身份断言,同 JUCE tag 那一步)。
+      #      参数与 Windows(build-vst3.yml 的 Validate all VST3 bundles、本机 gate 7)逐字对齐:
+      #      --strictness-level 5 --timeout-ms 60000 --skip-gui-tests。.vst3 验构建树里那份;.component
+      #      验 11b 装好的那份(理由见 11b)。每格判据三样都要:退出码 0;输出里有单独一行 SUCCESS;
+      #      恰好测到 1 个对应格式的插件(`Testing plugin: VST3-…` / `Testing plugin: AudioUnit-…`)——
+      #      最后一样防「扫到 0 个插件」或「.component 被当成别的格式」这类空转。6 格全跑完再统一判。
+      - name: pluginval gate (3 VST3 + 3 AU, strictness 5, no GUI)
+        id: pluginval
+        if: ${{ !cancelled() && steps.au_install.outcome == 'success' }}
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/pluginval_macOS.zip"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$zip" "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_TAG/pluginval_macOS.zip"
+          rm -rf "$RUNNER_TEMP/pluginval"
+          mkdir -p "$RUNNER_TEMP/pluginval"
+          unzip -q "$zip" -d "$RUNNER_TEMP/pluginval"
+          exe="$RUNNER_TEMP/pluginval/pluginval.app/Contents/MacOS/pluginval"
+          if [ ! -f "$exe" ]; then echo "::error::pluginval_macOS.zip ($PLUGINVAL_TAG) has no pluginval.app/Contents/MacOS/pluginval"; exit 1; fi
+          chmod +x "$exe"
+          ver=$("$exe" --version </dev/null 2>&1 || true)
+          echo "pluginval --version: $ver; archs: $(lipo -archs "$exe")"
+          # 逐字相等,不做子串匹配(子串会让 1.0.40 / 1.0.4-rc1 冒充 1.0.4)。上游 --version 的输出形如
+          # `pluginval - 1.0.4`(Source/CommandLine.cpp 的 getVersionText);取 " - " 之后那一段整体比较,
+          # 形态变了就取不到、当场红,而不是猜。
+          want="${PLUGINVAL_TAG#v}"
+          got=$(sed -nE 's/^pluginval - ([^[:space:]]+)[[:space:]]*$/\1/p' <<< "$ver" | tail -n 1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::downloaded pluginval reports version '${got:-?}' (raw: '$ver'), expected exactly $want from .pluginval-version ($PLUGINVAL_TAG)"; exit 1
+          fi
+          echo "PLUGINVAL_EXE=$exe" >> "$GITHUB_ENV"
+
+          mkdir -p pluginval-logs
+          : > pluginval-targets.txt
+          while IFS= read -r b; do
+            case "$b" in *.vst3) printf 'VST3\t%s\n' "$b" >> pluginval-targets.txt ;; esac
+          done < plugin-bundles.txt
+          while IFS= read -r b; do printf 'AudioUnit\t%s\n' "$b" >> pluginval-targets.txt; done < au-installed.txt
+          n=$(grep -c . pluginval-targets.txt || true)
+          if [ "${n:-0}" != "6" ]; then echo "::error::pluginval targets: ${n:-0}, expected 6 (3 .vst3 + 3 installed .component)"; exit 1; fi
+          {
+            echo "### pluginval $PLUGINVAL_TAG (strictness 5, --skip-gui-tests)"
+            echo ""
+            echo "| bundle | format | exit | SUCCESS line | plugins tested | verdict |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          while IFS=$'\t' read -r fmt path <&3; do
+            name=$(basename "$path")
+            log="pluginval-logs/stdout-$name.log"
+            rc=0
+            "$exe" --strictness-level 5 --timeout-ms 60000 --skip-gui-tests \
+              --output-dir "$GITHUB_WORKSPACE/pluginval-logs" --validate "$path" </dev/null > "$log" 2>&1 || rc=$?
+            ok=no
+            if grep -qx 'SUCCESS' "$log"; then ok=yes; fi
+            tested=$(grep -c "^Testing plugin: $fmt-" "$log" || true)
+            verdict=PASS
+            if [ "$rc" != "0" ] || [ "$ok" != "yes" ] || [ "${tested:-0}" != "1" ]; then verdict=FAIL; fail=1; fi
+            echo "::group::pluginval $name ($fmt): exit $rc, SUCCESS line $ok, plugins tested ${tested:-0} -> $verdict"
+            cat "$log"
+            echo "::endgroup::"
+            echo "| \`$name\` | $fmt | $rc | $ok | ${tested:-0} | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$verdict" = "FAIL" ]; then
+              echo "::error::pluginval $name ($fmt): exit $rc, SUCCESS line $ok, plugins tested ${tested:-0} (want exit 0, a SUCCESS line, exactly 1)"
+            fi
+          done 3< pluginval-targets.txt
+          exit "$fail"
+
+      # 11f) 残段门:auval / pluginval 跑完,8 组的真实段名一个都不许还在。Output 在 auval 与 pluginval 里
+      #      会认领组并建段,进程正常退出时由最后一个离开者 shm_unlink(M05);这一格查的就是它。
+      #      auval / pluginval 本身红了也照跑(崩溃退出留下的段同样要报)。判据与 11a 相同。
+      - name: Shared-memory leftover gate - after auval / pluginval
+        if: ${{ !cancelled() && steps.locate.outcome == 'success' && steps.au_install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-after.log 2>&1 || rc=$?
+          cat shm-leftover-after.log
+          if grep -q 'No test cases matched' shm-leftover-after.log; then
+            echo "::error::scvb_tests has no test case tagged [shm-leftover] (M05 hidden case renamed or retagged?)"; exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::SCVB shared-memory segments left behind after auval / pluginval (scvb_tests [shm-leftover] exit $rc; list above)"
+            echo "- shm leftover gate, after auval / pluginval: **leftovers found** (see job log)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cases=$(sed -nE 's/.* in ([0-9]+) test cases?\).*/\1/p' shm-leftover-after.log | tail -n 1)
+          if [ "${cases:-0}" != "1" ]; then echo "::error::scvb_tests [shm-leftover] ran ${cases:-0} test cases, expected exactly 1"; exit 1; fi
+          echo "- shm leftover gate, after auval / pluginval: clean (1 test case)" >> "$GITHUB_STEP_SUMMARY"
+
+      # 11g) 带 GUI 的 pluginval —— **记录项,不作门**(continue-on-error,结论只进 summary)。Windows 的
+      #      GUI pluginval 是本机 gate 8;mac 没有本机,先在 runner 上看编辑器(WKWebView)能不能开、关、
+      #      边处理边开。只跑一个:SCVB Output.vst3(三个里 UI 最重的),参数同 11e 去掉 --skip-gui-tests。
+      #      headless runner 上编辑器测试可能挂住,所以 8 分钟封顶。跑完再只读探一次残段,同样只记录
+      #      (残段的门 11f 已在它之前判过)。
+      - name: pluginval with GUI - SCVB Output.vst3 (record only, not a gate)
+        if: ${{ !cancelled() && steps.pluginval.outcome != 'skipped' && env.PLUGINVAL_EXE != '' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' src/output/CMakeLists.txt)
+          b=""
+          while IFS= read -r p; do
+            if [ "$(basename "$p")" = "$name.vst3" ]; then b="$p"; fi
+          done < plugin-bundles.txt
+          echo "### pluginval with GUI (record only)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$b" ]; then
+            echo "::warning::no '$name.vst3' in plugin-bundles.txt; GUI pluginval record skipped"
+            echo "- no '$name.vst3' found; skipped" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p pluginval-logs
+          log="pluginval-logs/stdout-gui-$name.vst3.log"
+          "$PLUGINVAL_EXE" --strictness-level 5 --timeout-ms 60000 \
+            --output-dir "$GITHUB_WORKSPACE/pluginval-logs" --validate "$b" </dev/null > "$log" 2>&1
+          rc=$?
+          ok=no
+          if grep -qx 'SUCCESS' "$log"; then ok=yes; fi
+          echo "::group::pluginval (GUI) $name.vst3: exit $rc, SUCCESS line $ok"
+          cat "$log"
+          echo "::endgroup::"
+          left="not probed (scvb_tests not located)"
+          if [ -n "${SCVB_TESTS_EXE:-}" ]; then
+            "$SCVB_TESTS_EXE" "[shm-leftover]" </dev/null > shm-leftover-after-gui.log 2>&1
+            if [ "$?" = "0" ]; then left=clean; else left="leftovers found (see job log)"; cat shm-leftover-after-gui.log; fi
+          fi
+          echo "- \`$name.vst3\` with GUI tests: exit $rc, SUCCESS line $ok; shm leftover probe afterwards: $left" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # 11h) [M07b] 平台文件日志 —— **记录项,不作门**(只读,永远 exit 0)。auval / pluginval 都在 runner 上真加载过
+      #      插件,生产的 install 路径(createPluginFilter → platformlog::install)写的是 ~/Library/Logs/Synchain/SCVB/
+      #      <role>.log。这里把那几份文件原样打进 job 日志,summary 里记行数、开场行数、viz-rate 行数与 viz-rate 行本身。
+      #      viz-rate 行要一个实例连续 prepare 满一个窗口(10 s)才会写;pluginval 每格只活几秒(6 格合计约 10 s),
+      #      所以这里**通常一行 viz-rate 都没有** —— 那不是故障,真实宿主里的数字归 LUNA 会话带回的日志。
+      - name: Platform log files after auval / pluginval (record only, not a gate)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          dir="$HOME/Library/Logs/Synchain/SCVB"
+          vrl="$RUNNER_TEMP/viz-rate-lines.txt" # 中间文件放 runner 临时目录,不留在仓库树里(后面还有打包冒烟)
+          echo "### Platform log files (record only)" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -d "$dir" ]; then
+            echo "no ~/Library/Logs/Synchain/SCVB directory on this runner"
+            echo "- no ~/Library/Logs/Synchain/SCVB directory" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          found=0
+          for f in "$dir"/*.log; do
+            [ -f "$f" ] || continue
+            found=1
+            base=$(basename "$f")
+            lines=$(wc -l < "$f" | tr -d '[:space:]')
+            opened=$(grep -c ' log opened ' "$f")
+            grep ' viz-rate ' "$f" > "$vrl"
+            vr=$(grep -c . "$vrl")
+            echo "::group::~/Library/Logs/Synchain/SCVB/$base ($lines lines, $opened log-opened, $vr viz-rate; first 400 lines)"
+            sed -n '1,400p' "$f"
+            echo "::endgroup::"
+            echo "- \`$base\`: $lines lines, $opened log-opened lines, $vr viz-rate lines" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$vr" != "0" ]; then
+              echo '  ```' >> "$GITHUB_STEP_SUMMARY"
+              sed -n '1,20p' "$vrl" >> "$GITHUB_STEP_SUMMARY"
+              echo '  ```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          if [ "$found" = "0" ]; then echo "- directory exists, no *.log files" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit 0
+
+      # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release 档的正式出包,步骤 13,
+      #     调的是同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,
+      #     负对照删文件、注入都碰不到 build/。判据:
+      #       ① --dry-run 不带 --version:走 CMakeLists.txt 的 BSD sed 回落(脚本自己与 package.ps1 读到的版本对拍),
+      #          什么都不写;
+      #       ② 负对照:输入里少一个 .component,脚本必须 exit 1,而且红在「恰好 3 个 .component」那条断言上,不留 zip;
+      #       ③ 正式跑 3 次(各自的输出目录),三份 zip 与 .sha256 逐字节相同(确定性);
+      #       ④ .sha256 形态:恰好一行 `<64 位小写 hex><两个空格><zip 名>` + LF(按字节数核,CR / BOM 都会让它变长),
+      #          hash 等于 zip 实算值,`shasum -a 256 -c` 通过;
+      #       ⑤ zip 内容清单:根目录恰好 6 个 bundle + INSTALL.txt / LICENSE.txt / THIRD-PARTY-NOTICES.md / LICENSES/ /
+      #          third_party/(其下只有 notices/);Contents/MacOS/ 恰好 6 个文件且带 x 位;INSTALL.txt 中英两段的命令行
+      #          (缩进 7 格的行)逐字相同,且逐行等于下面写死的跨仓契约清单(网站安装弹窗照它生成命令,改这里要通知网站同步);
+      #       ⑥ INSTALL.txt 实跑:命令行去掉 killall / auval(它们动的是 runner 的 AU 注册,11b–11e 已验),在假 HOME 下跑两遍。
+      #          zip 先打上 com.apple.quarantine 模拟浏览器下载。第一遍用 zsh(macOS 默认 shell)全新安装;第二遍用 /bin/bash
+      #          (系统自带 3.2)模拟升级 —— 先往已装的两个 bundle 里各放一个「旧版本留下的文件」,跑完必须没了(「先 rm -rf」
+      #          那步真起作用)。每遍:xattr 之前已装文件上必须带着 quarantine(模拟真的成立,否则下一条恒真),跑完
+      #          6 个 bundle 装到位、与输入逐文件相同、可执行、arm64,已装文件上没有 quarantine。
+      #     产物(第 1 次的 zip / .sha256 / package-summary-macos.md)上传为 artifact,名字与上面的 bundle artifact 平行,
+      #     多一段 `package-`。
+      - name: Packaging smoke - scripts/package-macos.sh (dry run, negative control, 3 identical runs, INSTALL.txt replay)
+        id: package_smoke
+        if: ${{ !cancelled() && steps.bundles.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/package-smoke"
+          rm -rf "$root"
+          mkdir -p "$root/input" "$root/neg"
+          while IFS= read -r b; do
+            ditto "$b" "$root/input/$(basename "$b")"
+            if [ "$(basename "$b")" != "SCVB Monitor.component" ]; then ditto "$b" "$root/neg/$(basename "$b")"; fi
+          done < plugin-bundles.txt
+          n=$(find "$root/input" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')
+          if [ "$n" != "6" ]; then echo "::error::package-smoke input holds $n bundles, expected 6 (from plugin-bundles.txt)"; exit 1; fi
+          echo "### packaging smoke (scripts/package-macos.sh)" >> "$GITHUB_STEP_SUMMARY"
+
+          # ① dry run
+          rc=0
+          bash scripts/package-macos.sh --dry-run --out-dir "$root/out-dry" > "$root/dry-run.log" 2>&1 || rc=$?
+          cat "$root/dry-run.log"
+          if [ "$rc" != "0" ]; then echo "::error::package-macos.sh --dry-run exited $rc"; exit 1; fi
+          if [ -e "$root/out-dry" ]; then echo "::error::package-macos.sh --dry-run created its output directory"; exit 1; fi
+          ver=$(sed -nE 's/^\[DryRun\] Version  : ([^ ]+) \(from CMakeLists\.txt;.*$/\1/p' "$root/dry-run.log")
+          if [ -z "$ver" ]; then echo "::error::--dry-run did not report a version read from CMakeLists.txt"; exit 1; fi
+          zip="SCVB-v$ver-macos-arm64.zip"
+          echo "- ① dry run without --version (BSD sed fallback, cross-checked with package.ps1): \`$ver\`, nothing written" >> "$GITHUB_STEP_SUMMARY"
+
+          # ② negative control
+          rc=0
+          bash scripts/package-macos.sh --version "$ver" --build-dir "$root/neg" --out-dir "$root/out-neg" > "$root/neg.log" 2>&1 || rc=$?
+          cat "$root/neg.log"
+          if [ "$rc" != "1" ]; then echo "::error::negative control: with one .component missing package-macos.sh exited $rc, expected 1"; exit 1; fi
+          if ! grep -q 'expected exactly 3 .component bundles' "$root/neg.log"; then
+            echo "::error::negative control: exit 1, but not from the bundle-count assertion"; exit 1
+          fi
+          if [ -e "$root/out-neg/$zip" ]; then echo "::error::negative control left a zip behind"; exit 1; fi
+          echo "- ② negative control (one .component removed): exit 1 from the bundle-count assertion, no zip" >> "$GITHUB_STEP_SUMMARY"
+
+          # ③ three runs, byte-identical
+          for i in 1 2 3; do
+            rc=0
+            bash scripts/package-macos.sh --version "$ver" --build-dir "$root/input" --out-dir "$root/out$i" > "$root/run$i.log" 2>&1 || rc=$?
+            if [ "$rc" != "0" ]; then cat "$root/run$i.log"; echo "::error::package-macos.sh run $i exited $rc"; exit 1; fi
+          done
+          cat "$root/run1.log"
+          for i in 2 3; do
+            for f in "$zip" "$zip.sha256"; do
+              if ! cmp -s "$root/out1/$f" "$root/out$i/$f"; then echo "::error::run $i produced a different $f than run 1 (packaging is not deterministic)"; exit 1; fi
+            done
+          done
+          echo "- ③ 3 runs: \`$zip\` and its .sha256 byte-identical across runs" >> "$GITHUB_STEP_SUMMARY"
+
+          # ④ .sha256 shape
+          shaf="$root/out1/$zip.sha256"
+          fail=0
+          want_bytes=$((64 + 2 + ${#zip} + 1))
+          got_bytes=$(wc -c < "$shaf" | tr -d '[:space:]')
+          if [ "$got_bytes" != "$want_bytes" ]; then
+            echo "::error::$zip.sha256 is $got_bytes bytes, expected $want_bytes (one line: 64 hex + 2 spaces + file name + LF; no CR, no BOM)"; fail=1
+          fi
+          if [ "$(tail -c 1 "$shaf" | od -An -c | tr -d ' ')" != '\n' ]; then echo "::error::$zip.sha256 does not end with LF"; fail=1; fi
+          line=$(cat "$shaf")
+          hash="${line%%  *}"
+          name="${line#*  }"
+          if ! printf '%s' "$hash" | LC_ALL=C grep -Eqx '[0-9a-f]{64}'; then echo "::error::hash field '$hash' is not 64 lowercase hex digits"; fail=1; fi
+          if [ "$name" != "$zip" ]; then echo "::error::file name field '$name' is not '$zip'"; fail=1; fi
+          actual=$(shasum -a 256 "$root/out1/$zip" | awk '{ print $1 }')
+          if [ "$hash" != "$actual" ]; then echo "::error::hash field '$hash' differs from the zip's sha256 '$actual'"; fail=1; fi
+          if ! (cd "$root/out1" && shasum -a 256 -c "$zip.sha256"); then echo "::error::shasum -a 256 -c $zip.sha256 failed"; fail=1; fi
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "- ④ \`$zip.sha256\`: one line, lowercase hex, two spaces, LF; \`shasum -a 256 -c\` OK" >> "$GITHUB_STEP_SUMMARY"
+
+          # ⑤ zip contents
+          unzip -Z1 "$root/out1/$zip" > "$root/entries.txt"
+          tops=$(awk -F/ '{ print $1 }' "$root/entries.txt" | LC_ALL=C sort -u)
+          want=$(printf '%s\n' 'SCVB Input.vst3' 'SCVB Output.vst3' 'SCVB Monitor.vst3' \
+            'SCVB Input.component' 'SCVB Output.component' 'SCVB Monitor.component' \
+            INSTALL.txt LICENSE.txt THIRD-PARTY-NOTICES.md LICENSES third_party | LC_ALL=C sort)
+          if [ "$tops" != "$want" ]; then
+            printf '%s\n' "$tops" | sed 's/^/  zip root: /'
+            echo "::error::zip root is not exactly the 6 bundles + INSTALL.txt, LICENSE.txt, THIRD-PARTY-NOTICES.md, LICENSES/, third_party/"; exit 1
+          fi
+          stray=$(grep '^third_party/' "$root/entries.txt" | grep -v '^third_party/$' | grep -v '^third_party/notices/' || true)
+          if [ -n "$stray" ]; then echo "::error::zip has entries under third_party/ outside notices/: $stray"; exit 1; fi
+          macho=$(unzip -Z "$root/out1/$zip" | grep -E '/Contents/MacOS/[^/]+$' || true)
+          nmacho=$(printf '%s\n' "$macho" | grep -c . || true)
+          if [ "$nmacho" != "6" ]; then printf '%s\n' "$macho"; echo "::error::zip holds $nmacho Contents/MacOS/ files, expected 6"; exit 1; fi
+          if printf '%s\n' "$macho" | grep -vE '^[-l]rwx'; then echo "::error::zip lost the executable bit on Contents/MacOS/*"; exit 1; fi
+          unzip -p "$root/out1/$zip" INSTALL.txt > "$root/INSTALL.txt"
+          awk '/^== English ==$/ { f = 1; next } /^== / { f = 0 } f && /^       [^ ]/ { sub(/^       /, ""); print }' "$root/INSTALL.txt" > "$root/cmds-en.txt"
+          awk '/^== 中文 ==$/ { f = 1; next } /^== / { f = 0 } f && /^       [^ ]/ { sub(/^       /, ""); print }' "$root/INSTALL.txt" > "$root/cmds-zh.txt"
+          if ! cmp -s "$root/cmds-en.txt" "$root/cmds-zh.txt"; then
+            diff "$root/cmds-en.txt" "$root/cmds-zh.txt" || true
+            echo "::error::the English and Chinese sections of INSTALL.txt give different commands"; exit 1
+          fi
+          d="${zip%.zip}"
+          printf '%s\n' \
+            'cd ~/Downloads' \
+            "shasum -a 256 -c $zip.sha256" \
+            "shasum -a 256 $zip" \
+            "ditto -x -k $zip $d && cd $d" \
+            'rm -rf ~/Library/Audio/Plug-Ins/VST3/SCVB\ {Input,Output,Monitor}.vst3' \
+            'rm -rf ~/Library/Audio/Plug-Ins/Components/SCVB\ {Input,Output,Monitor}.component' \
+            'for b in SCVB\ *.vst3; do ditto "$b" ~/Library/Audio/Plug-Ins/VST3/"$b"; done' \
+            'for b in SCVB\ *.component; do ditto "$b" ~/Library/Audio/Plug-Ins/Components/"$b"; done' \
+            'xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/SCVB\ *.vst3' \
+            'xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SCVB\ *.component' \
+            'killall -9 AudioComponentRegistrar' \
+            'auval -v aufx Scvi Snch' \
+            'auval -v aufx Scvo Snch' \
+            'auval -v aufx Scvm Snch' > "$root/cmds-contract.txt"
+          if ! cmp -s "$root/cmds-en.txt" "$root/cmds-contract.txt"; then
+            diff "$root/cmds-contract.txt" "$root/cmds-en.txt" || true
+            echo "::error::INSTALL.txt commands differ from the cross-repo contract list in this step (the website install dialog mirrors it)"; exit 1
+          fi
+          echo "- ⑤ zip root = 6 bundles + INSTALL.txt / LICENSE.txt / THIRD-PARTY-NOTICES.md / LICENSES/ / third_party/notices/; 6 executables keep x; INSTALL.txt commands (en = zh) match the contract list" >> "$GITHUB_STEP_SUMMARY"
+
+          # ⑥ INSTALL.txt replay under a fake HOME
+          home="$root/home"
+          mkdir -p "$home/Downloads"
+          cp "$root/out1/$zip" "$root/out1/$zip.sha256" "$home/Downloads/"
+          xattr -w com.apple.quarantine '0081;00000000;Safari;' "$home/Downloads/$zip"
+          grep -vE '^(killall|auval) ' "$root/cmds-en.txt" | grep -v '^xattr ' > "$root/replay-install.sh"
+          grep '^xattr ' "$root/cmds-en.txt" > "$root/replay-xattr.sh"
+          vst3_dir="$home/Library/Audio/Plug-Ins/VST3"
+          au_dir="$home/Library/Audio/Plug-Ins/Components"
+          replay() { # $1 = label, $2 = shell
+            local rc q b inst exe opts
+            # 不读任何 rc 文件(zsh -f;bash 非交互本来不读),出错即停,未定义变量即红。
+            case "$2" in *zsh) opts="-f -e -u" ;; *) opts="-e -u" ;; esac
+            rc=0
+            HOME="$home" "$2" $opts "$root/replay-install.sh" > "$root/replay-$1-install.log" 2>&1 </dev/null || rc=$?
+            cat "$root/replay-$1-install.log"
+            if [ "$rc" != "0" ]; then echo "::error::INSTALL.txt replay ($1, $2): install commands exited $rc"; return 1; fi
+            q=$(xattr -lr "$vst3_dir" "$au_dir" 2>/dev/null | grep -c 'com.apple.quarantine' || true)
+            echo "quarantine attributes on installed files before the xattr step ($1): $q"
+            # 模拟必须真的成立:已装文件上一个隔离属性都没有,下面「xattr 之后为 0」就是恒真。
+            if [ "${q:-0}" -lt 1 ]; then
+              echo "::error::INSTALL.txt replay ($1): no com.apple.quarantine on the installed files before the xattr step; the browser-download simulation did not take effect, so the after-xattr check would be vacuous"; return 1
+            fi
+            rc=0
+            HOME="$home" "$2" $opts "$root/replay-xattr.sh" > "$root/replay-$1-xattr.log" 2>&1 </dev/null || rc=$?
+            cat "$root/replay-$1-xattr.log"
+            if [ "$rc" != "0" ]; then echo "::error::INSTALL.txt replay ($1, $2): xattr commands exited $rc"; return 1; fi
+            if xattr -lr "$vst3_dir" "$au_dir" 2>/dev/null | grep -q 'com.apple.quarantine'; then
+              echo "::error::INSTALL.txt replay ($1): com.apple.quarantine is still set on installed files"; return 1
+            fi
+            for b in "SCVB Input" "SCVB Output" "SCVB Monitor"; do
+              for inst in "$vst3_dir/$b.vst3" "$au_dir/$b.component"; do
+                if ! diff -rq "$root/input/$(basename "$inst")" "$inst"; then
+                  echo "::error::INSTALL.txt replay ($1): installed '$inst' differs from the bundle that was packed"; return 1
+                fi
+                exe="$inst/Contents/MacOS/$b"
+                if [ ! -x "$exe" ] || [ "$(lipo -archs "$exe")" != "arm64" ]; then
+                  echo "::error::INSTALL.txt replay ($1): '$exe' is not an executable arm64 binary"; return 1
+                fi
+              done
+            done
+            echo "- ⑥ INSTALL.txt replay ($1, \`$2\`): 6 bundles installed under a fake HOME, identical to the packed ones, executable, arm64; quarantine before xattr: $q file(s), after: 0" >> "$GITHUB_STEP_SUMMARY"
+          }
+          replay fresh-install zsh
+          stale_v="$vst3_dir/SCVB Input.vst3/Contents/Resources/left-over-from-an-older-version"
+          stale_a="$au_dir/SCVB Output.component/Contents/Resources/left-over-from-an-older-version"
+          mkdir -p "$(dirname "$stale_v")" "$(dirname "$stale_a")"
+          echo old > "$stale_v"
+          echo old > "$stale_a"
+          replay upgrade /bin/bash
+          if [ -e "$stale_v" ] || [ -e "$stale_a" ]; then
+            echo "::error::INSTALL.txt replay (upgrade): files from the previous install survived; the rm -rf step did not take effect"; exit 1
+          fi
+
+          sed '/^## zip contents/,$d' "$root/out1/package-summary-macos.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${ARTIFACT_NAME:-}" ]; then
+            echo "PACKAGE_ARTIFACT_NAME=SCVB-macos-arm64-package-${ARTIFACT_NAME#SCVB-macos-arm64-}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload macOS package (pr / dev / preview, named like the bundles artifact)
+        if: ${{ !cancelled() && steps.package_smoke.outcome == 'success' && env.PACKAGE_ARTIFACT_NAME != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.PACKAGE_ARTIFACT_NAME }}
+          path: package-smoke/out1/
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # 13) [M16] release 档正式出包(只在 release.yml 的 build-mac 调用时跑)。
+      #     `success()`:**前面每一步都绿**才打 —— 构建、零警告、ctest、bundle 断言、auval、pluginval、残段门、
+      #     打包冒烟任何一道红,就不产出 release 包,build-mac 整体红,release-macos 因 needs 不满足而跳过;
+      #     Windows 的 release job 不 needs 本 job,草稿照常生成(裁定「mac 失败不挡 Windows 发版」)。
+      #     与冒烟的区别只有版本号:冒烟用 CMakeLists.txt 的版本,这里用 tag 的版本(rc / beta / test 的 zip 名
+      #     与 INSTALL.txt 的源码链接都要带预发布段)。输入照冒烟的做法从 plugin-bundles.txt ditto 到独立目录。
+      #     打完核四件事,任一不符即红:输出目录恰好 zip / .sha256 / package-summary-macos.md 三件且 zip 名由
+      #     version 算出;`shasum -a 256 -c` 通过;summary 的 tag 行 = release-tag、sourceCommit 行 = 本次 checkout
+      #     的提交、sha256 行 = .sha256 里的值;package-macos.sh 写进 GITHUB_OUTPUT 的 sha256 与 .sha256 相同。
+      #     sha256 只取 package-macos.sh 自己报的那个(不在这里另写一份同名输出);artifact / zip-name 由本步写。
+      - name: Release package (release.yml build-mac only) - scripts/package-macos.sh --version <tag version>
+        id: release_package
+        if: ${{ success() && inputs.release-tag != '' }}
+        timeout-minutes: 10
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          RELEASE_KIND: ${{ inputs.release-kind }}
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/release-package"
+          rm -rf "$root"
+          mkdir -p "$root/input"
+          while IFS= read -r b; do ditto "$b" "$root/input/$(basename "$b")"; done < plugin-bundles.txt
+          # 不展开可能为空的数组(macOS 自带 bash 3.2 在 set -u 下会报 unbound variable):参数用 set -- 拼。
+          set -- --version "$RELEASE_VERSION" --build-dir "$root/input" --out-dir "$root/dist"
+          if [ "$RELEASE_KIND" = "test" ]; then set -- "$@" --allow-missing-license-texts; fi
+          echo "bash scripts/package-macos.sh $*"
+          bash scripts/package-macos.sh "$@"
+          zip="SCVB-v$RELEASE_VERSION-macos-arm64.zip"
+          summary="$root/dist/package-summary-macos.md"
+          got=$(cd "$root/dist" && ls -1A | LC_ALL=C sort)
+          want=$(printf '%s\n' "$zip" "$zip.sha256" package-summary-macos.md | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            printf '%s\n' "$got" | sed 's/^/  out: /'
+            echo "::error::release package output is not exactly $zip, $zip.sha256 and package-summary-macos.md"; exit 1
+          fi
+          (cd "$root/dist" && shasum -a 256 -c "$zip.sha256")
+          hash=$(awk '{ print $1 }' "$root/dist/$zip.sha256")
+          fail=0
+          for row in "| tag | $RELEASE_TAG |" "| sourceCommit | $BUILT_SHA |" "| sha256 | $hash |"; do
+            if ! grep -Fqx -- "$row" "$summary"; then echo "::error::package-summary-macos.md lacks the row '$row'"; fail=1; fi
+          done
+          # 每一步拿到的 GITHUB_OUTPUT 都是一个新的空文件,所以这里读到的只有 package-macos.sh 刚写的那几行。
+          reported=$(sed -n 's/^sha256=//p' "$GITHUB_OUTPUT")
+          if [ "$reported" != "$hash" ]; then
+            echo "::error::package-macos.sh reported sha256 '$reported' in GITHUB_OUTPUT, the .sha256 file says '$hash'"; fail=1
+          fi
+          if [ "$fail" != "0" ]; then exit 1; fi
+          {
+            echo "artifact=$RELEASE_ARTIFACT_NAME"
+            echo "zip-name=$zip"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### release package (scripts/package-macos.sh --version $RELEASE_VERSION, kind $RELEASE_KIND)"
+            echo ""
+            echo "- artifact \`$RELEASE_ARTIFACT_NAME\`: \`$zip\`, \`$zip.sha256\`, \`package-summary-macos.md\`"
+            echo ""
+            sed '/^## zip contents/,$d' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS release package (release.yml build-mac only)
+        if: ${{ success() && inputs.release-tag != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.RELEASE_ARTIFACT_NAME }}
+          path: release-package/dist/
+          if-no-files-found: error
+          # 与 Windows 的 SCVB-VST3-win64-release-<tag> 同为 7 天:Release 资产才是长期保存的那份。
+          retention-days: 7
+
+      # [M08] 验证门的现场一并带上:auval / -strict 的完整输出、pluginval 每格的 stdout 与它自己的日志、
+      # 三次残段探测的输出、两份三元组清单。全部写在工作区里,upload-artifact 按最近公共祖先展开时
+      # 不会出现 _temp/... 这类别扭层级(bridge ci.yml 踩过)。
+      - name: Upload build log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SCVB-macos-build-log-${{ env.BUILT_SHA }}
+          path: |
+            build.log
+            ipc-layout-compact.log
+            plugin-bundles.txt
+            au-triples.txt
+            au-installed.txt
+            auval-logs/
+            pluginval-logs/
+            shm-leftover-*.log
+            package-smoke/*.log
+            package-smoke/*.txt
+            package-smoke/*.sh
+          retention-days: 7
+          if-no-files-found: ignore

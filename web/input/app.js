@@ -18,7 +18,13 @@ import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
 import { sourceKind } from "../shared/source-kind.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
-import { installShellFit } from "../shared/shell-fit.js";
+import {
+    enforceZoomLock,
+    installShellFit,
+    scalePresets,
+    zoomLocked,
+} from "../shared/shell-fit.js";
+import { createScaleSelect } from "../shared/scale-select.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -544,7 +550,8 @@ function priorityBlockReason() {
 // ------------------------------------------------------------- 缩放(05 §1.2 / 契约 §3.5/§3.6)
 // Input 档位 = DESIGN.input.presets(10 档);setUiScale 立即预览 → 10 秒防呆确认。
 const scaleUi = {
-    select: $("input.footer.scale"),
+    // [UI-1] 共享缩放下拉(web/shared/scale-select.js)的句柄,buildScaleOptions 里装
+    select: null,
     confirm: $("input.scale.confirm"),
     countdown: $("input.scale.confirm.countdown"),
     bodyPre: $("input.scale.confirm.bodyPre"),
@@ -608,20 +615,30 @@ async function previewScale(f) {
 }
 
 function buildScaleOptions() {
-    if (!scaleUi.select) return;
-    scaleUi.select.replaceChildren();
-    for (const f of DESIGN.input.presets) {
-        const opt = document.createElement("option");
-        opt.value = String(f);
-        opt.textContent = Math.round(f * 100) + "%";
-        opt.disabled = scaleOverflows(f);
-        if (opt.disabled) opt.title = dictNow["scale.overflow"] || "";
-        if (f === 1) opt.selected = true;
-        scaleUi.select.appendChild(opt);
+    // [UI-1] 与 Output 右下角同一件下拉:开合、键盘、超屏档灰掉不隐藏(注记「超出当前屏幕」
+    // 三语随切语言刷新;原生 <select> 时代只有一个不随语言变的 title)、当前档标记都在共享
+    // 组件里;本页只给档位表、超屏判据与「选中 → previewScale」。
+    // [M09] scalePresets:旧 rect 语义下只留 1 档;新语义下原样返回同一张档位表。
+    scaleUi.select = createScaleSelect({
+        wrap: $("input.footer.scale"),
+        trigger: $("input.footer.scale.trigger"),
+        label: $("input.footer.scale.label"),
+        panel: $("input.footer.scale.panel"),
+        presets: scalePresets(DESIGN.input.presets),
+        overflows: scaleOverflows,
+        optGb: (pct) => `input.footer.scale.opt.${pct}`,
+        getT: () => dictNow,
+        onPick: (f) => previewScale(f),
+        placement: "up",
+        align: "end",
+        value: currentScale(),
+    });
+    // [M09] 旧 rect 语义 ⇒ 缩放锁 100%:footer 里那一行提示摘掉 hidden。
+    // 只在锁定时动它 —— 新语义下这个节点一个属性都不碰(HTML 里默认 hidden)。
+    if (zoomLocked()) {
+        const lockHint = $("input.footer.scaleLock");
+        if (lockHint) lockHint.hidden = false;
     }
-    scaleUi.select.addEventListener("change", () =>
-        previewScale(Number(scaleUi.select.value)),
-    );
 }
 
 if (scaleUi.keep) {
@@ -1132,8 +1149,10 @@ function syncUiFromState() {
     }
     if (ui.scale && Number.isFinite(ui.scale)) {
         // [SL-380] 这里**不再**写 shell.style.zoom:画面倍率由 installShellFit 按实际
-        // 视口算(宿主 setSize 之后视口就是 460F×560F)。回推只负责把下拉选中项对齐。
-        if (scaleUi.select) scaleUi.select.value = String(ui.scale);
+        // 视口算(宿主 setSize 之后视口就是 460F×560F)。回推只负责把下拉的当前档对齐。
+        if (scaleUi.select) scaleUi.select.setValue(ui.scale);
+        // [M09] 锁定时宿主若按别的档位开了窗,经 setUiScale 请回 1;没锁时什么都不做。
+        enforceZoomLock(ui.scale, (one) => call("setUiScale", one));
     }
 }
 

@@ -45,15 +45,29 @@ struct PlayheadPod
 // seq 版本号包裹的双缓冲快照(进程内,非 IPC)。
 struct PlayheadShot
 {
-    std::atomic<uint32_t> seq{0}; // 写方:写前 +1(奇)→ 写 pod → 写后 +1(偶)
+    std::atomic<uint32_t> seq{0}; // 写方:写前 +1(奇)+ release fence → 写 pod → 写后 +1(偶)
     PlayheadPod pod{}; // 读方:seq 前后双读,奇或不等 → 沿用上帧(不自旋)
 
     // 音频线程每块整体发布一次(零分配零锁)。绝不在音频线程调 setValueNotifyingHost(R6)。
+    // [B 线 M04] 写侧是标准 Boehm 写法(同 CtrlPlane::writeBroadcast):奇数增量 relaxed + 紧跟一道
+    // release fence。原先奇数增量是 release RMW,release 只约束它**之前**的访问,挡不住后面的 pod 写
+    // 被提到奇数 seq 之前可见 —— arm64 上读方可能读到前后两次 seq 都是同一个偶数、pod 却已经半新半旧
+    // (消费方是 AutomationPrinter / Monitor / UI,撕裂一帧就是一个错误的时间位置或 epoch)。
+    // 成立的层面要说准:按 fence 的编译器 / 硬件语义(GCC / Clang / MSVC 把它当完整的编译器屏障,
+    // arm64 上再是一条 DMB ISH),奇数 seq 先于其后的 pod 写可见;读方 read() 读到这些 pod 写时,它在
+    // 第二次读 seq 之前的 acquire fence 保证那次读看得到奇数(或更新的)seq ⇒ before != after,撕裂被
+    // 识别。**不是** C++ 标准意义上的同步:[atomics.fences] 的 fence 配对要求 fence 之后 / 之前的是
+    // 原子访问,而 pod 是普通对象,标准下这里仍是数据竞争(见文件头「取舍」,TSan 会报)。要做到标准
+    // 意义上成立,得把 pod 拆成 relaxed 原子字段,不在本卡范围。
+    // x86:fetch_add 不论 relaxed / release 都是 lock xadd(本身即全屏障),release fence 只是编译器
+    // 屏障、不生成指令,所以 x86 上本来就不会撕裂,这里也不多一条指令。arm64:LDADDL 换成
+    // LDADD + DMB ISH,每块一次。
     void publish(const PlayheadPod& p) noexcept
     {
-        seq.fetch_add(1, std::memory_order_release); // 奇数:进入临界区
+        seq.fetch_add(1, std::memory_order_relaxed); // 奇数:进入临界区
+        std::atomic_thread_fence(std::memory_order_release); // 挡住后面的 pod 写上浮到奇数 seq 之前
         pod = p;
-        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成
+        seq.fetch_add(1, std::memory_order_release); // 偶数:发布完成(release:pod 写不下沉到它之后)
     }
 
     // 读方:返回 false = 本次读撕裂(写者正在写或读期间更新),调用方沿用上帧。

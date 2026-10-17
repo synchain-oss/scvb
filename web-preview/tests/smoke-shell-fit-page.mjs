@@ -452,30 +452,47 @@ const ROLES = [
         page: "web-preview/output.html?fixture=fifteen-tracks",
         sel: "#card",
         box: DESIGN.output,
-        // 档位入口取**设置页的 select**,不取页脚下拉的选项按钮:后者带
-        // 「超出当前屏幕」灰化(05 §1.2,`W*F > screen.availWidth`),而无头 Chrome 的
-        // `screen` 恒报 **800×600**(与 --window-size 无关,本机实测),于是 Output 的
-        // 1180×780 连 100% 档都算「超屏」,点它按设计就是不生效 —— 那与本卡无关。
-        pick: () => "settings-scale-select",
-        pickKind: "select",
+        // 档位入口取**设置页的下拉**(走真 UI:点开触发钮 → 点档位项)。
+        // [UI-1] 四处缩放入口都换成共享下拉(web/shared/scale-select.js)之后,设置页那一处
+        // 也带「超出当前屏幕」灰化了(05 §1.2,`W*F > screen.availWidth`;原生 <select> 时代
+        // 它没灰过)。无头 Chrome 的 `screen` 恒报 **800×600**(与 --window-size 无关,本机实测),
+        // Output 的 1180×780 连 100% 档都算「超屏」、点了按设计就不生效 —— 所以本套在每个
+        // 文档起跑前把屏幕可用区钉成 SCREEN_AVAIL(见 SCREEN_SCRIPT),超屏灰化与本套无关。
+        pick: (pct) => `settings-scale-opt-${pct}`,
+        trigger: "settings-scale-trigger",
+        pickKind: "dropdown",
     },
     {
         role: "input",
         page: "web-preview/input.html",
         sel: "#ipt-shell",
         box: DESIGN.input,
-        pick: () => "input.footer.scale",
-        pickKind: "select",
+        pick: (pct) => `input.footer.scale.opt.${pct}`,
+        trigger: "input.footer.scale.trigger",
+        pickKind: "dropdown",
     },
     {
         role: "monitor",
         page: "web-preview/monitor.html",
         sel: "#card",
         box: DESIGN.monitor,
-        pick: () => "monitor-scale",
-        pickKind: "select",
+        pick: (pct) => `monitor-scale-opt-${pct}`,
+        trigger: "monitor-scale-trigger",
+        pickKind: "dropdown",
     },
 ];
+
+/**
+ * [UI-1] 屏幕可用区(CSS px)。取得够大,三侧任一档位 × 设计盒都不「超出当前屏幕」——
+ * 本套测的是外壳自适配,不是超屏灰化(那一格在 smoke-scale-select-page.mjs)。
+ */
+const SCREEN_AVAIL = { w: 7680, h: 4320 };
+const SCREEN_SCRIPT = `(() => {
+    try {
+        Object.defineProperty(screen, "availWidth", { get: () => ${SCREEN_AVAIL.w} });
+        Object.defineProperty(screen, "availHeight", { get: () => ${SCREEN_AVAIL.h} });
+    } catch (e) {}
+})();`;
 
 /** 档位那一格用的档(都取自各侧 design-box.js 的档位表)。 */
 const STEP = { output: 0.5, input: 0.75, monitor: 0.8 };
@@ -524,6 +541,11 @@ try {
     });
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
+    // [UI-1] 屏幕可用区钉死(理由见 ROLES 里 output 那一条的注释):每个文档(含 iframe)
+    // 的脚本运行之前生效,真源页面读到的 screen.availWidth/Height 从第一行起就是这个值。
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: SCREEN_SCRIPT,
+    });
 
     for (const cfg of ROLES) {
         const { role, sel, box } = cfg;
@@ -718,9 +740,12 @@ try {
             const el = gb(${JSON.stringify(gbName)});
             if (!el) return false;
             ${
-                cfg.pickKind === "select"
-                    ? `el.value = ${JSON.stringify(String(f0))};
-                       el.dispatchEvent(new w.Event("change"));`
+                cfg.pickKind === "dropdown"
+                    ? `const t = gb(${JSON.stringify(cfg.trigger)});
+                       if (!t) return false;
+                       t.click();
+                       if (el.getAttribute("data-over") === "1") return false;
+                       el.click();`
                     : `el.click();`
             }
             return true;
@@ -762,13 +787,28 @@ try {
         }
 
         // 回到 100%(走同一条 UI 路径,顺便验回退方向也不溢出)
+        // [UI-1] 先等下拉的「当前档」跟到刚选的那一档(state 回推是异步的):共享下拉里
+        // 「点的就是当前档 = 只收起」,回推没到之前它还认 100% 是当前档,这一下就成了空操作。
+        check(
+            await waitFor(
+                IN(
+                    `const o = gb(${JSON.stringify(cfg.pick(pct))}); return !!o && o.getAttribute("data-current") === "1";`,
+                ),
+                4000,
+            ),
+            `${role}:下拉的当前档跟到 ${pct}%(state 回推已渲染)`,
+        );
         await evaluate(
             IN(`
             const el = gb(${JSON.stringify(cfg.pick(100))});
             if (!el) return false;
             ${
-                cfg.pickKind === "select"
-                    ? `el.value = "1"; el.dispatchEvent(new w.Event("change"));`
+                cfg.pickKind === "dropdown"
+                    ? `const t = gb(${JSON.stringify(cfg.trigger)});
+                       if (!t) return false;
+                       t.click();
+                       if (el.getAttribute("data-over") === "1") return false;
+                       el.click();`
                     : `el.click();`
             }
             return true;

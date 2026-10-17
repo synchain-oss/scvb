@@ -94,7 +94,13 @@ import {
     isEditableTextTarget,
 } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
-import { installShellFit } from "../shared/shell-fit.js";
+import {
+    enforceZoomLock,
+    installShellFit,
+    scalePresets,
+    zoomLocked,
+} from "../shared/shell-fit.js";
+import { createScaleSelect } from "../shared/scale-select.js";
 // [J147] 宿主速度模型:本文件只负责喂(scvb.playhead 订阅),消费者是 Tab1 手动范围。
 import { emptyTempo, observeTempo } from "./host-tempo.js";
 
@@ -831,32 +837,45 @@ function scaleOverflows(f) {
     );
 }
 
-const scalePanel = $("footer-scale-panel");
-if (scalePanel) {
-    scalePanel.innerHTML = DESIGN.output.presets
-        .map((f) => {
-            const over = scaleOverflows(f) ? 1 : 0;
-            return `
-      <button class="footer-scale__opt" role="option" aria-selected="false"
-              data-scale="${f}" data-current="0" data-over="${over}"
-              data-gb="footer-scale-opt-${Math.round(f * 100)}">
-        <span>${Math.round(f * 100)}%</span>
-        <span class="footer-scale__note"></span>
-      </button>`;
-        })
-        .join("");
-}
-
-for (const sel of document.querySelectorAll(
-    '[data-gb="settings-scale-select"]',
-)) {
-    for (const f of DESIGN.output.presets) {
-        const opt = document.createElement("option");
-        opt.value = String(f);
-        opt.textContent = Math.round(f * 100) + "%";
-        if (f === 1) opt.selected = true;
-        sel.appendChild(opt);
-    }
+// [UI-1] 两处入口(右下角 + 设置页「界面缩放」)是**同一件**共享下拉(web/shared/scale-select.js):
+// 同一张档位表、同一个超屏判据、同一个 previewScale(10 秒防呆)、同一个当前档(renderScale 里
+// 两个一起 setValue)—— 所以改一处另一处必然跟着变。设置页那一处原是原生 <select>,展开列表是
+// 浏览器自绘的白底系统列表(用户 2026-10-15 报),而且它从来没把超屏档灰掉。
+// [M09] scalePresets:旧 rect 语义下只留 1 档;新语义下原样返回同一张档位表。
+const outputScalePresets = scalePresets(DESIGN.output.presets);
+const scaleSelects = [
+    createScaleSelect({
+        wrap: $("footer-scale-select"),
+        trigger: $("footer-scale-trigger"),
+        label: $("footer-scale-label"),
+        panel: $("footer-scale-panel"),
+        presets: outputScalePresets,
+        overflows: scaleOverflows,
+        optGb: (pct) => `footer-scale-opt-${pct}`,
+        getT: () => dictNow,
+        onPick: (f) => previewScale(f),
+        placement: "up",
+        align: "end",
+    }),
+    createScaleSelect({
+        wrap: $("settings-scale-select"),
+        trigger: $("settings-scale-trigger"),
+        label: $("settings-scale-label"),
+        panel: $("settings-scale-panel"),
+        presets: outputScalePresets,
+        overflows: scaleOverflows,
+        optGb: (pct) => `settings-scale-opt-${pct}`,
+        getT: () => dictNow,
+        onPick: (f) => previewScale(f),
+        placement: "down",
+        align: "start",
+    }),
+].filter(Boolean);
+// [M09] 旧 rect 语义 ⇒ 缩放锁 100%:footer 缩放下拉旁那一行提示摘掉 hidden。
+// 只在锁定时动它 —— 新语义下这个节点一个属性都不碰(HTML 里默认 hidden)。
+if (zoomLocked()) {
+    const lockHint = $("footer-scale-lock");
+    if (lockHint) lockHint.hidden = false;
 }
 
 // ============================================================================
@@ -865,9 +884,6 @@ for (const sel of document.querySelectorAll(
 // 「保持」才 commitUiScale() 落盘系统级全局默认。取消 / 超时 / 关窗一律回退。
 // ============================================================================
 const scaleUi = {
-    trigger: $("footer-scale-trigger"),
-    wrap: $("footer-scale-select"),
-    label: $("footer-scale-label"),
     confirm: $("scale-confirm"),
     countdown: $("scale-confirm-countdown"),
     bodyPre: $("scale-confirm-body-pre"),
@@ -894,14 +910,6 @@ let scaleLeft = 0;
 function currentScale() {
     const ui = viewStore().state.ui;
     return ui && Number.isFinite(ui.scale) ? ui.scale : 1;
-}
-
-function openScalePanel(open) {
-    if (!scaleUi.wrap) return;
-    scaleUi.wrap.setAttribute("data-open", open ? "1" : "0");
-    if (scaleUi.trigger) {
-        scaleUi.trigger.setAttribute("aria-expanded", String(open));
-    }
 }
 
 function stopScaleCountdown() {
@@ -957,30 +965,7 @@ function revertScale() {
     call("setUiScale", scalePrev);
 }
 
-if (scaleUi.trigger) {
-    scaleUi.trigger.addEventListener("click", () => {
-        const open = scaleUi.wrap.getAttribute("data-open") === "1";
-        openScalePanel(!open);
-    });
-}
-if (scalePanel) {
-    scalePanel.addEventListener("click", (e) => {
-        const opt =
-            e.target instanceof Element
-                ? e.target.closest("[data-scale]")
-                : null;
-        if (!opt) return;
-        openScalePanel(false);
-        // 超屏档位灰掉但不隐藏(05 §1.2)—— 点它不生效
-        if (opt.getAttribute("data-over") === "1") return;
-        previewScale(Number(opt.getAttribute("data-scale")));
-    });
-}
-for (const sel of document.querySelectorAll(
-    '[data-gb="settings-scale-select"]',
-)) {
-    sel.addEventListener("change", () => previewScale(Number(sel.value)));
-}
+// 两处下拉的开合、键盘、超屏灰显、选中 → onPick(= previewScale)都在 scale-select.js 里。
 if (scaleUi.keep) {
     scaleUi.keep.addEventListener("click", () => {
         stopScaleCountdown();
@@ -998,7 +983,7 @@ addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新�
 // 正确修法是在 WebView2 控制器上关掉 IsZoomControlEnabled / AreBrowserAcceleratorKeysEnabled,
 // 而 JUCE 的 WinWebView2 选项(withUserDataFolder / withDLLLocation / withStatusBarDisabled /
 // withBuiltInErrorPageDisabled / withBackgroundColour)没有暴露这两个开关 —— 需要动 JUCE 侧
-// 或拿原生控制器,已另开卡跟进。在那之前档位入口只有页脚下拉与设置页 select:两者都走
+// 或拿原生控制器,已另开卡跟进。在那之前档位入口只有页脚下拉与设置页下拉:两者都走
 // previewScale → 10 秒防呆 →「保持」落盘,记忆链路本身是通的(host 用例 SL-208 已钉住)。
 
 // ============================================================================
@@ -2049,25 +2034,12 @@ function renderFooter() {
 
 function renderScale() {
     const f = currentScale();
+    // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1;
+    // 没锁时这一句什么都不做。
+    enforceZoomLock(f, (one) => call("setUiScale", one));
     renderScaleConfirm(); // 切语言后确认框正文跟着换(倒计时进行中也照刷)
-    if (scaleUi.label) scaleUi.label.textContent = Math.round(f * 100) + "%";
-    if (!scalePanel) return;
-    for (const opt of scalePanel.querySelectorAll("[data-scale]")) {
-        const v = Number(opt.getAttribute("data-scale"));
-        const cur = v === f ? 1 : 0;
-        const over = opt.getAttribute("data-over") === "1";
-        opt.setAttribute("data-current", String(cur));
-        opt.setAttribute("aria-selected", String(cur === 1));
-        const note = opt.querySelector(".footer-scale__note");
-        if (note) {
-            const key = over ? "scale.overflow" : cur ? "scale.current" : "";
-            if (key) fillKeyed(note, key, {});
-            else {
-                note.removeAttribute("data-t");
-                note.textContent = "";
-            }
-        }
-    }
+    // 右下角与设置页两处下拉同一个当前档(触发钮读数 + 当前档标记 + 三语注记)
+    for (const sel of scaleSelects) sel.setValue(f);
 }
 
 function renderGuide() {

@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-10-09
+> 最后更新:2026-10-16
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -22,9 +22,10 @@ README 的配图(`docs/images/readme/`)同样不带版本号:它们是用官网�
 
 ## Tag 规则
 
-- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(流水线建的草稿自动勾 pre-release)。**rc 不改 `CMakeLists.txt`**:`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc 构建在插件设置页里显示的版本号不带 `-rc.N`(它来自 CMake 版本),区分 rc 几要看 zip 文件名或 Release 页。
+- 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`(流水线建的草稿都自动勾 pre-release)。**预发布不改 `CMakeLists.txt`**:`v1.2.3-beta.1`、`v1.2.3-rc.1` 与 `v1.2.3` 对应的都是 `project(SCVB VERSION 1.2.3)`。首个公开版本按 J123 走的是另一种形态:`v0.9.0-rc.N`(CMake `0.9.0`)测过之后发的是 `v1.0.0` 而不是 `v0.9.0`,所以发 `v1.0.0` 之前还要再改一次 CMake 版本(`0.9.0` → `1.0.0`)。另外 rc / beta 构建在插件设置页里显示的版本号不带 `-rc.N` / `-beta.N`(它来自 CMake 版本),区分是第几个预发布要看 zip 文件名或 Release 页。
+- **`-beta.N` 与 `-rc.N` 走同一条判据**(B 线 M15 起):X.Y.Z 必须等于 CMake 版本,`N` 是一段数字(按 semver 不带前导零,写 `beta.1` 不写 `beta.01`;判据与 rc 一样不拦前导零,打 tag 时自己注意);`-beta`(不带序号)、`-beta.1.2`、大写的 `-BETA.1` 都拒,`v0.0.0-beta.N` 也不享受演练 tag 的「不比对版本」。按 semver,同一个 X.Y.Z 的先后是 `-beta.N` < `-rc.N` < 正式版。beta 与 rc 同属预发布,发版走同一条链(J184):下面发版清单第 6 步、第 9 步与「`staging` 与 `prod` 两个分支」里对 rc 的规定同样适用于 beta,tag 同样打在 `prod` 上那个 `staging` → `prod` 的合并提交上。
 - 演练专用 **`v0.0.0-test`**(可加 `.N`):只用来走通「构建 → 打包 → 草稿 Release」全程,不比对 CMake 版本;限死 `0.0.0` 是为了让它不可能冒充真版本。用完删掉 tag 与草稿(见下方发版清单第 0 步)。
-- 其他形态(`v1.2.3-beta.1`、`v1.2` 等)一律被拒。
+- 其他形态(`v1.2.3-alpha.1`、`v1.2.3-beta`、`v1.2` 等)一律被拒。
 - tag 只由维护者打在 **`prod`** 上,**不在 `dev` / `staging` / feature 分支上打 tag**(唯一例外是演练 tag,见发版清单第 0 步)。每次发布(含 rc)都走同一条链:主支线 `feature/v1` →(里程碑 squash)`dev` →(PR)`staging` →(PR)`prod`,tag 打在 `prod` 上那个 `staging` → `prod` 的合并提交上(J184;取代 J170 的「tag 打在 `dev` 上」,里程碑合并那一半不变)。步骤见下方发版清单第 6 步与「`staging` 与 `prod` 两个分支」。
 - tag push 时,`.github/workflows/release.yml` 的 `verify-tag` job 先比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(判据 `scripts/check-release-tag.ps1`,带自测),不一致即 fail,不会进入 20 分钟的构建。
 
@@ -52,37 +53,81 @@ semver 语义(音频插件特化):
 
 ## 发版流水线现状
 
-推一个 `v*` tag,`.github/workflows/release.yml` 依次跑三个 job:
+推一个 `v*` tag,`.github/workflows/release.yml` 跑五个 job:Windows 三个依次跑,mac 两个(B 线 M16)与之并行。mac 部分的核对与演练见下方「macOS 包」一节,本地编译与打包见 [build-macos.md](build-macos.md)。
 
 | job | 做什么 | 失败时 |
 |---|---|---|
-| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建 |
-| `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact | 红,不打包 |
-| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc 与演练 tag 自动勾 pre-release);summary 同时写进 job summary | 红,不建 Release |
+| `verify-tag` | 先跑判据自测,再比对 tag 与 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`(`scripts/check-release-tag.ps1`,规则见上方「Tag 规则」);再跑 `package.ps1 -Preflight`(许可证全文覆盖、`THIRD-PARTY-NOTICES.md` 点名的声明文件都在、INSTALL.txt 的规则提取) | 立刻红,不进构建(Windows 与 mac 都不跑) |
+| `build` | **调用 `build-vst3.yml`**(同一份配方):构建(/W4 零 warning)→ ctest → 三个 bundle 的 pluginval(CI 无桌面,`--skip-gui-tests`)→ 按 tag 名上传 `.vst3` artifact。那份配方里的两个 mac caller(`macos-build` / `macos-oop`)在 tag 上一律 skipped | 红,不打包 |
+| `release` | 取回 artifact → `scripts/package.ps1` 打 zip / `.sha256` / `package-summary.md` 并解包断言 → `gh release create --draft` 建**草稿** Release(rc、beta 与演练 tag 自动勾 pre-release),标题「… (Windows x64)」;summary 同时写进 job summary | 红,不建 Release |
+| `build-mac` | needs `verify-tag`;**调用 `build-macos.yml` 的 release 档**(与 PR / dispatch 同一份 mac 配方:构建、零警告、ctest、auval、pluginval、打包冒烟),全部绿之后用 `scripts/package-macos.sh` 按 tag 的版本号打 `SCVB-v<版本>-macos-arm64.zip` / `.sha256` / `package-summary-macos.md`,传成 artifact `SCVB-macos-arm64-release-<tag>` | 红,不影响 Windows 草稿 |
+| `release-macos` | needs `verify-tag`、`build-mac`、`release`:取回 mac 三件,`shasum -a 256 -c` 并与 `build-mac` 报的 sha256 对拍 → 只往 Windows 已建好的**草稿**上传(`--clobber`),读回逐字节比对 → 标题从「… (Windows x64)」补成「… (Windows x64 · macOS arm64 beta)」 | 红,草稿里只有 Windows 三件、标题保持「(Windows x64)」 |
 
-- 权限:workflow 级只读;只有 `release` job 拿 `contents: write`。所有 action 都 pin 到 40 位 SHA。
-- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);**已发布的 Release 流水线一律不碰**。
+- 权限:workflow 级只读;只有 `release` 与 `release-macos` 两个 job 拿 `contents: write`(`release-macos` 不 checkout、不执行仓库里的脚本)。所有 action 都 pin 到 40 位 SHA。
+- **mac 失败不挡 Windows**:Windows 的 `build` / `release` 不 needs 任何 mac job。mac 那两 job 红在偶发原因(runner、网络)上时,对同一个 run 点「Re-run failed jobs」按设计只重跑 mac 两 job、把三件补传到已有的草稿上(Windows 已成功的 job 不重跑;这条路径还没实跑过,第一次用时核一下)。草稿没建成(Windows 红)时 `release-macos` 跟着跳过,不会单独建一个只有 mac 包的 Release。
+- 同一个 tag 重跑:已有草稿就覆盖资产,并把正文重置为新的 `package-summary.md`(手改过的正文会丢,改正文放在最后一次重跑之后);mac 资产同样 `--clobber` 覆盖,标题只在仍是流水线原样标题时才改(手改过的标题不覆盖,只出 warning)。重跑时 mac 红了,草稿上会留着**上一次**的 mac 三件和合并标题(Windows 那一路只覆盖自己的三件、不改标题);`release-macos` 上传成功但读回那一步红了,草稿上会有 mac 三件而标题仍是「(Windows x64)」—— 所以发布前按 `package-summary.md` / `package-summary-macos.md` 的 `sourceCommit` 与 sha256 逐件核一遍,不要只看标题;**已发布的 Release 流水线一律不碰**(两个写权限 job 都按「已发布 ⇒ 判红」处理)。
 - 许可证全文:`THIRD-PARTY-NOTICES.md`「随二进制分发」表点名的每个许可证(加本项目的 GPL-3.0-or-later)都必须在 `LICENSES/` 里有全文,缺一个 `package.ps1` 就红;只有演练 tag 降为警告并在 `package-summary.md` 的 `missingLicenseTexts` 行写明。反过来,`LICENSES/` 里的每份全文也都必须有这张表的一行(或本项目的 GPL-3.0-or-later)点名它 —— 删了表里一行却留着全文、或只放全文不登记组件,都红,演练 tag 也不放行。这两项检查在 `verify-tag` 的 preflight 里先跑一次(构建之前),打包时再判一次。
 - 声明原文:`THIRD-PARTY-NOTICES.md` 全文里点名的每个 `third_party/notices/<文件>` / `LICENSES/<文件>` 路径都必须在仓库里存在(preflight 与打包各判一次,**演练 tag 也不放行**),打包后再逐个核对它在 zip 里。`third_party/notices/` 整个目录按原相对路径进 zip,所以 NOTICES 里的这些路径在解压目录里原样可查。
 - 草稿 Release 的正文是 `package-summary.md`(版本 / 文件名 / 大小 / SHA-256 / 发布日期 / 源码提交 / 逐条目哈希),发布前按下方模板改写。
-- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过这三处文件之后,先做下面第 0 步。
+- **「tag 触发 → 调用构建 → 建草稿」这一段只有推 tag 才会执行**:PR 上的 CI 只跑 `build-vst3`,不跑 `release.yml`;`scripts/package.ps1` 可以拿 `build-vst3` 的产物在本地试打包(`-BuildDir <artifact 目录> -Version 0.0.0-dryrun`;`LICENSES/` 缺许可证全文时会红在许可证检查上,加 `-AllowMissingLicenseTexts` 可降为警告,这个开关只用于本地试打包与演练 tag),但覆盖不到 workflow 本身。所以首次发版、以及改过第 0 步列的那几处文件之后,先做下面第 0 步。
+
+## macOS 包(B 线,beta)
+
+mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、互不依赖。本节只写 mac 独有的部分;tag 打在哪个提交上、`dev` / `staging` / `prod` 怎么前移,都按下方「发版清单」第 6 步与对应小节,mac 一路只认「被打 tag 的那个提交」。本地怎么编、怎么跑 mac 的测试与打包见 [build-macos.md](build-macos.md)。
+
+- **未签名、未公证。** mac 包不做代码签名也不做公证(与 Windows 同为 U13),用户装完要执行 `xattr` 清掉隔离标记,步骤在 zip 里的 `INSTALL.txt` 与 README。只有 Apple Silicon(arm64),没有 Intel 与 Universal。发布说明里要把这一点写明,别让 mac 用户以为是漏了签名。
+- **草稿里恰好 6 件**:Windows 3 件 + mac 3 件,缺一件、多一件都不能发:
+
+  | 平台 | 资产 |
+  |---|---|
+  | Windows | `SCVB-v<版本>-win64.zip`、`SCVB-v<版本>-win64.zip.sha256`、`package-summary.md` |
+  | mac | `SCVB-v<版本>-macos-arm64.zip`、`SCVB-v<版本>-macos-arm64.zip.sha256`、`package-summary-macos.md` |
+
+  草稿标题在 mac 三件上传并读回成功之后才从「… (Windows x64)」补成「… (Windows x64 · macOS arm64 beta)」。**只有 Windows 三件、标题仍是「(Windows x64)」是 mac 那一路红了**(见上方「mac 失败不挡 Windows」),不是正常形态;此时先查 `build-mac` / `release-macos`,不要把它当成 Windows 单平台版本发出去,除非维护者有意只发 Windows。
+- **核对 6 件与各自的 `.sha256`**(发版清单第 7 步时做;命令在装有 `gh` 的 clone 里执行,`<tag>` 换成实际 tag):
+
+  ```bash
+  gh release view <tag> --repo synchain-oss/scvb --json isDraft,isPrerelease,name,assets \
+    --jq '.isDraft, .isPrerelease, .name, ([.assets[].name] | sort | .[])'    # 恰好 6 个资产名;标题含「macOS arm64 beta」
+  D=$(mktemp -d) && gh release download <tag> --repo synchain-oss/scvb -D "$D" && cd "$D"
+  sha256sum -c SCVB-v*-win64.zip.sha256 SCVB-v*-macos-arm64.zip.sha256    # 两行都是 OK(macOS 上用 shasum -a 256 -c)
+  grep -h '^| sha256 |' package-summary.md package-summary-macos.md     # 与两个 .sha256 里的哈希逐字相同
+  grep -h '^| sourceCommit |' package-summary.md package-summary-macos.md  # 两份一致,都是被打 tag 的那个提交
+  unzip -Z1 SCVB-v*-macos-arm64.zip | grep -cE '^SCVB (Input|Output|Monitor)\.(vst3|component)/$'   # 6
+  unzip -p SCVB-v*-macos-arm64.zip INSTALL.txt | grep -c 'tree/<tag>'    # >= 1:源码声明指向本 tag
+  cd - >/dev/null    # 回到 clone 目录(后面的清理要在 clone 里跑)
+  ```
+
+  `sha256sum -c` 对两个文件一起核,任何一行不是 `OK` 就停在草稿。重跑过的 tag(见上「同一个 tag 重跑」)尤其要核 `sourceCommit`,因为草稿上可能留着上一次的 mac 三件。
+- **mac 演练 tag**:改过 `build-macos.yml` / `macos-oop.yml` 的调用面 / `release.yml` / `scripts/package-macos.sh` 之后,按发版清单第 0 步推一次演练 tag(`v0.0.0-test` 或 `v0.0.0-test.N`)。演练 tag 的 kind 是 `test`,mac 打包会带 `--allow-missing-license-texts`;草稿带 `[pipeline test - delete me]` 前缀。期望:`verify-tag` / `build` / `release` / `build-mac` / `release-macos` 全绿,`build` 里的 `macos-build` / `macos-oop` 两个 caller 因 tag 守卫显示 skipped(一次 tag push 里 `build-macos.yml` 只由 `build-mac` 跑一次),草稿恰好 6 件、标题已补成合并标题,上面的核对命令全过。
+  - 演练 tag 的创建与删除都受 ruleset `protect-release-tags-v` 管(它管 `refs/tags/v*` 的创建与删除),需要仓库管理员的 bypass 才能推与删。
+  - **清理顺序**(先草稿后 tag,与第 0 步一致):
+
+    ```bash
+    gh release delete v0.0.0-test.N --repo synchain-oss/scvb --yes
+    git push origin :refs/tags/v0.0.0-test.N && git tag -d v0.0.0-test.N
+    gh release view v0.0.0-test.N --repo synchain-oss/scvb          # 应报 release not found
+    git ls-remote --tags origin v0.0.0-test.N                        # 应为空
+    ```
+  - 参照:PR #377 的演练记录。第一次演练(`v0.0.0-test.1`)里 `build-mac` 红在 ctest 的一个计时敏感用例上,Windows 三件草稿照常生成、标题保持「(Windows x64)」、`release-macos` 跳过 —— 顺带实证了「mac 失败不挡 Windows」;修好用例后重做,全部 job 绿、草稿恰好 6 件、两个 `.sha256` 核对通过且与各自 summary 一致、两份 summary 的 `sourceCommit` 相同。因此「mac 打包步故意失败」那一次(原方案的演练 #2)没有单独再做,这一点是被第一次的红间接证明的,不是单独演练出来的结论。
+- **发布前的 mac 额外检查**:`build-mac` 绿、`release-macos` 绿(job summary 的资产表列出草稿上全部资产与字节数),并且发版前对目标 ref dispatch 的 `build-vst3` 里,`macos-build` 与 `macos-oop` 也看过一眼(它们不挡 Windows 出包,但红了要记进发版验证清单,见 `CLAUDE.md` §4「出包流程硬规」下的「全绿管到哪几个 job」)。
 
 ## 发版清单
 
-0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `scripts/package.ps1` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
+0. **(首次,或改过 `release.yml` / `build-vst3.yml` / `build-macos.yml` / `scripts/package.ps1` / `scripts/package-macos.sh` 之后)演练一次**:`git tag v0.0.0-test <要验的提交> && git push origin v0.0.0-test`。tag push 跑的是**被打 tag 那个提交里**的 `release.yml`,所以要验的提交必须已含 T40(`feature/v1` 上 T40 合并之后的任一提交即可;演练 tag 是「不在 feature 分支打 tag」的唯一例外,用完即删)。等 Release workflow 全绿,在 Releases 页打开标着 `[pipeline test - delete me]` 的草稿,下载 zip 与 `.sha256`,核对第 7 步那几项。演练完**删草稿再删 tag**:`gh release delete v0.0.0-test --yes` 然后 `git push origin :refs/tags/v0.0.0-test && git tag -d v0.0.0-test`。要再演练一次就用 `v0.0.0-test.2` 之类的新名字,或先删干净再推。
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。新的对比链接指向第 6 步才推的 tag,推之前 GitHub 回 404,CI 的死链检查会红 —— 同一个 PR 在 `.markdown-link-check.json` 里给这两个确切地址加一条临时放行,tag 推上去之后删掉。
-3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc 与正式版用同一个 X.Y.Z)。
+3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处(rc、beta 与正式版用同一个 X.Y.Z)。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。v1 这一次按 J142(2026-09-28):维护者本机长期可用内存不够跑整套 `gates.ps1`,本地全量门禁由 PR head 上 CI 的 `build-and-validate`(构建 + ctest + pluginval)全绿代替;CI 的 pluginval 带 `--skip-gui-tests`,GUI pluginval 那一半由出包前在本机的自测补(见发版验证清单 B6)。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经审校不得发版**(05 §5:未经审校的机翻安全警告发到公开产品是明确禁止项)。审校可以是人工,也可以是经用户授权的 AI 三语交叉核对(以中文为准核 en 与 fr 的意思):v1 这一次按 J127(2026-09-28)由后者代替人工抽检。zh 真源或 en/fr 译文此后再改,`frReview.status` 要改回 `pending` 并重新审校。
-6. **合进 `dev` → `staging` → `prod`,在 `prod` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿;再按下方「`staging` 与 `prod` 两个分支」里的「每次发布的顺序」:开 `dev` → `staging` 的 PR 并合并,对 `staging` dispatch 一次 `build-vst3` 全绿,开 `staging` → `prod` 的 PR 并合并,回读之后在 `prod` 的这个合并提交上打 tag(预发布用 `vX.Y.Z-rc.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**rc 与正式版走同一条链**(J184:`v0.9.0-rc.1` 那一次按 J180 先前移 `staging` / `prod` 再打 tag 的顺序,从此是常规;不同的是两个分支都改为经 PR 前移)。
+6. **合进 `dev` → `staging` → `prod`,在 `prod` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿;再按下方「`staging` 与 `prod` 两个分支」里的「每次发布的顺序」:开 `dev` → `staging` 的 PR 并合并,对 `staging` dispatch 一次 `build-vst3` 全绿,开 `staging` → `prod` 的 PR 并合并,回读之后在 `prod` 的这个合并提交上打 tag(预发布用 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**rc 与正式版走同一条链**(J184:`v0.9.0-rc.1` 那一次按 J180 先前移 `staging` / `prod` 再打 tag 的顺序,从此是常规;不同的是两个分支都改为经 PR 前移)。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
 9. **发布后**:**不再前移任何分支** —— `staging` 与 `prod` 在推 tag 之前就已经到位(J184),发布后只按「每次发布的顺序」第 6 步再回读一次:`prod` 等于 tag 指向的提交,`staging` 是它的祖先且树相同。插件里的文档链接都指向 `prod`(见下「文档链接」),所以本版(rc 也一样)一发布,用户在插件里打开的就是本版的手册。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
 
 ## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
 
-v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`,tag 打在 `dev` 上(J170)。做法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
+v1 的改动先逐张合进主支线 `feature/v1`,发版前再整体合进 `dev`(J170);tag 不打在 `dev` 上,而是打在 `prod` 的合并提交上(J184,见下「`staging` 与 `prod` 两个分支」)。做法是:**把 `feature/v1` 压成一个带 `Signed-off-by` 的提交合进 `dev`,完整历史留在 `feature/v1`**;不改写历史,不 force-push(J171)。
 
 为什么不把 `feature/v1` 直接开 PR 合进 `dev`:主支线累积了几百个提交,`branch-gate` 的 DCO 步读 PR 提交列表的接口最多返回 250 条,所以到 250 条就直接判红(见 `branch-gate.yml` 里的注释);历史里也有少数提交缺 `Signed-off-by`,不改写历史补不上。压成一个提交之后,DCO 只看这一个提交。
 
@@ -168,7 +213,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 - 两个 PR 都用「Create a merge commit」合并(`gh pr merge --merge`),**不要 squash / rebase**:squash 之后 `staging` / `prod` 的历史里没有 `dev` 上的那些提交,下一次晋升会把已经发布过的改动再带一遍。合并提交只在 `staging` / `prod` 上,不在 `dev` 的历史里,这是有意的,`dev` 不回收它们(里程碑的前置检查只看 `dev` 与 `feature/v1`,不受影响)。所以 `prod` 与 tag 指向的是合并提交:sha 与里程碑提交不同,树逐字相同。
 - `branch-gate` 管这两个 PR 的来源:base = `staging` 只收本仓的 `dev`,base = `prod` 只收本仓的 `staging`;别的分支、fork、机器人开到这两个分支的 PR 一律红。DCO 与冻结契约守卫照常跑:DCO 跳过合并提交(上一次晋升留下的合并提交也会出现在提交列表里),其余提交逐个查签名;这批改动碰了冻结契约文件时,对应的变更文档已随 `feature/v1` 一起进来,守卫在 PR 的文件列表里看得到它(与里程碑 PR 同理),PR 照样挂 `status/frozen-contract`。
-- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。三个 review bot 不挑 base,会照常跑;它们不是必需检查,内容也已在子 PR 与里程碑 PR 上审过,但 `staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),bot 留下的讨论要逐条处理、解决之后才能合。
+- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。`claude-review` / `deepseek-review` 不挑 base,会照常跑(`pr-agent` 只在 PR → `dev` 时运行,这两个 PR 上不跑);它们不是必需检查,内容也已在子 PR 与里程碑 PR 上审过,但 `staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),bot 留下的讨论要逐条处理、解决之后才能合。
 - `staging` / `prod` 的分支保护(要求走 PR、0 个审批、`enforce_admins`、禁止 force push 与删除、合并前解决讨论)**原样不动**。两个分支目前都没有必需检查,`branch-gate` 红了 GitHub 也不会拦下合并,所以合并之前自己确认它是绿的。
 
 ### 每次发布的顺序
@@ -206,6 +251,8 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
    ```
 
    push→`staging` 不触发任何 workflow,这一次 dispatch 就是 `staging` 上的全量 CI(`--ref` 与 `-f ref=` 同值,理由见 `CLAUDE.md` §4)。不绿就停:修复是新的提交,经 `feature/v1` → `dev` → `staging` 再走一遍,不在 `staging` 上直接改。
+
+   第 1 步与这一步的「completed / success」都按 `CLAUDE.md` §4「全绿管到哪几个 job」的口径读:`build-vst3` 的 run 里还有两路 mac job(`macos-build` / `macos-oop`,dispatch 时 `scvb-auhost` 另加 macos-26),mac 一红,run 级的 `conclusion` 就是 `failure`。这时改看 job 级:`gh run view <databaseId> --repo synchain-oss/scvb --json jobs --jq '.jobs[] | select(.name == "detect-native" or .name == "build-and-validate") | "\(.name) \(.conclusion)"'`(第 1 步的 `--json` 里加上 `databaseId` 就能取到 run 号),Windows 的这两个 job 都是 `success` 就算绿。按名字**完全相等**筛:mac 那一路在 `--json jobs` 里显示为 `macos-build / build-and-validate-macos`,名字里也带 `build-and-validate`,用子串匹配会把它一起筛进来。要看 mac 的结论,用不带 `select` 的同一条命令(否则「mac 红要记进清单」照命令看不到)。mac 红不挡 Windows 发版,但要记进发版验证清单(见上「macOS 包」一节的「发布前的 mac 额外检查」)。
 
 4. **`staging` → `prod`**:同样开 PR、等 `branch-gate` 绿、讨论全部解决,用 merge commit 合并:
 

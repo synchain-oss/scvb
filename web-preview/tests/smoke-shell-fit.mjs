@@ -12,6 +12,9 @@
 //      本卡的病根就是「档位数字」与「实际倍率」两个真源分家 —— Input/Monitor 各写一次
 //      zoom、Output 一次都不写。判据钉的是「只有一个写方」这个**状态**,而不是某一行
 //      长什么样:谁再加第二处写方,这里立刻红。
+//   ⑤ [M09] 旧 rect 语义(WebKit 26.4 之前)下的降级:hit.js 的语义判定与探针、
+//      shell-fit 的锁 1 / 档位过滤 / 请回 1 的记账,以及三页的接线。页面级那套
+//      (smoke-zoom-legacy-page.mjs)缺浏览器会 SKIP,这里是**恒执行**的那一半。
 //
 // 反向注入记录见 PR 描述的「删除式实得」。
 //
@@ -49,8 +52,16 @@ function eq(got, want, msg) {
 const src = (rel) => readFileSync(join(ROOT, rel), "utf8");
 const url = (rel) => pathToFileURL(join(ROOT, rel)).href;
 
-const { fitFactor, backingFitFactor, installShellFit, shellFitFactor } =
-    await import(url("web/shared/shell-fit.js"));
+const {
+    fitFactor,
+    backingFitFactor,
+    installShellFit,
+    shellFitFactor,
+    zoomLocked,
+    scalePresets,
+    enforceZoomLock,
+} = await import(url("web/shared/shell-fit.js"));
+const HIT = await import(url("web/shared/hit.js"));
 const { DESIGN } = await import(url("web/shared/design-box.js"));
 
 /**
@@ -70,8 +81,12 @@ function fakeEnv(o) {
     const clearedRafs = [];
     let nextId = 1;
     const de = { clientWidth: o.vw, clientHeight: o.vh };
+    // [M09] `o.doc` = 带探针能力的假文档(见 probeDoc);不给就是旧形态(无 createElement ⇒
+    // zoomRectMode 判 unknown ⇒ 不锁),上面各格的行为与改前逐字相同。
+    const doc = o.doc || {};
+    doc.documentElement = de;
     const win = {
-        document: { documentElement: de },
+        document: doc,
         addEventListener: (n, cb) => listeners.set(n, cb),
         removeEventListener: (n) => listeners.delete(n),
         setTimeout: (fn) => {
@@ -388,6 +403,213 @@ log("\n=== ④ 预览壳扮宿主 ===");
             !/frame\.style\.minHeight/.test(body),
         "shell.js:iframe 不再靠 min-width/min-height 兜底",
     );
+}
+
+// ---------------------------------------------------------------- ⑤ [M09] 旧 rect 语义锁 1
+log("\n=== ⑤ [M09] 旧 rect 语义:探测 + 锁 1(node 侧)===");
+
+/**
+ * 带探针能力的假文档:`createElement` 造出的元素报固定的 rect 宽与 offsetWidth。
+ * `made` 记造过几个探针(判缓存),`body.kids` 记挂着没摘的(判「量完当场摘掉」)。
+ */
+function probeDoc(rectW, offsetW = 100) {
+    const made = [];
+    const body = {
+        kids: [],
+        appendChild(c) {
+            this.kids.push(c);
+            return c;
+        },
+        removeChild(c) {
+            this.kids = this.kids.filter((k) => k !== c);
+            return c;
+        },
+    };
+    return {
+        made,
+        body,
+        createElement(tag) {
+            const el = {
+                tag,
+                style: {},
+                attrs: {},
+                setAttribute(k, v) {
+                    this.attrs[k] = v;
+                },
+                getBoundingClientRect: () => ({ width: rectW }),
+                offsetWidth: offsetW,
+            };
+            made.push(el);
+            return el;
+        },
+    };
+}
+
+// ⑤a 纯判定:比值 ≈ 探针 zoom ⇒ 新语义;≈ 1 ⇒ 旧语义;其余 unknown
+{
+    const C = HIT.classifyZoomRect;
+    eq(HIT.ZOOM_PROBE_FACTOR, 2, "探针 zoom = 2");
+    for (const [rw, ow, want] of [
+        [200, 100, HIT.ZOOM_RECT_STANDARD],
+        [199.7, 100, HIT.ZOOM_RECT_STANDARD],
+        [100, 100, HIT.ZOOM_RECT_LEGACY],
+        [100.4, 100, HIT.ZOOM_RECT_LEGACY],
+        [150, 100, HIT.ZOOM_RECT_UNKNOWN],
+        [0, 100, HIT.ZOOM_RECT_UNKNOWN],
+        [200, 0, HIT.ZOOM_RECT_UNKNOWN],
+        [NaN, 100, HIT.ZOOM_RECT_UNKNOWN],
+        [undefined, undefined, HIT.ZOOM_RECT_UNKNOWN],
+    ]) {
+        eq(C(rw, ow), want, `classifyZoomRect(${rw}, ${ow}) = ${want}`);
+    }
+}
+
+// ⑤b 探针:量完当场摘掉;判定结果按文档缓存,unknown 不缓存
+{
+    const legacy = probeDoc(100);
+    eq(HIT.zoomRectMode(legacy), HIT.ZOOM_RECT_LEGACY, "旧语义文档 ⇒ legacy");
+    const css = String(legacy.made[0] && legacy.made[0].style.cssText);
+    check(
+        /zoom:2/.test(css) && /width:100px/.test(css),
+        `探针 = zoom:2、宽 100px(实得 ${css})`,
+    );
+    check(/visibility:hidden/.test(css), "探针不可见");
+    eq(legacy.body.kids.length, 0, "探针量完当场摘掉");
+    HIT.zoomRectMode(legacy);
+    eq(legacy.made.length, 1, "同一文档第二次调用走缓存(不再造探针)");
+
+    const std = probeDoc(200);
+    eq(HIT.zoomRectMode(std), HIT.ZOOM_RECT_STANDARD, "新语义文档 ⇒ standard");
+
+    const blank = probeDoc(0);
+    eq(
+        HIT.zoomRectMode(blank),
+        HIT.ZOOM_RECT_UNKNOWN,
+        "探针没布局出尺寸 ⇒ unknown",
+    );
+    HIT.zoomRectMode(blank);
+    eq(blank.made.length, 2, "unknown 不缓存(下一次调用再量)");
+    eq(
+        HIT.zoomRectMode({ documentElement: {} }),
+        HIT.ZOOM_RECT_UNKNOWN,
+        "没有 createElement 的文档 ⇒ unknown",
+    );
+}
+
+// ⑤c 旧语义:倍率恒 1、档位只剩 1 档、请回 1 每离开 1 档一次只发一次
+{
+    const BOX = DESIGN.output;
+    const env = fakeEnv({
+        vw: Math.round(BOX.w * 0.6),
+        vh: Math.round(BOX.h * 0.6),
+        doc: probeDoc(100),
+    });
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(zoomLocked(), true, "旧语义 ⇒ zoomLocked() = true");
+    eq(
+        [env.el.style.zoom, shellFitFactor()],
+        ["1", 1],
+        "视口 0.6 倍时倍率仍是 1(降级而不是换算)",
+    );
+    env.setViewport(Math.round(BOX.w * 1.5), Math.round(BOX.h * 1.5));
+    h.refresh();
+    eq(env.el.style.zoom, "1", "视口 1.5 倍时倍率仍是 1");
+    eq(scalePresets(BOX.presets), [1], "档位表只留 1 档");
+
+    const calls = [];
+    const req = (f) => calls.push(f);
+    eq(enforceZoomLock(1.5, req), true, "state 回推 1.5 ⇒ 请回 1");
+    eq(calls, [1], "请求的就是 1");
+    eq(enforceZoomLock(1.5, req), false, "回声没到之前再渲染一次 ⇒ 不重复请求");
+    eq(enforceZoomLock(1, req), false, "回到 1 ⇒ 不请求(并清账)");
+    eq(enforceZoomLock(1.5, req), true, "再次被推到 1.5 ⇒ 再请求一次");
+    eq(calls, [1, 1], "两趟离开 1 档 = 两次请求");
+    eq(enforceZoomLock(NaN, req), false, "非数 ⇒ 不请求");
+
+    h.destroy();
+    eq(zoomLocked(), false, "destroy() 后不再锁定(拆完等于没装过)");
+}
+
+// ⑤d 新语义:一个字节都不变 —— 不锁、档位表原样(同一个数组)、从不请求
+{
+    const BOX = DESIGN.output;
+    const env = fakeEnv({
+        vw: Math.round(BOX.w * 0.6),
+        vh: Math.round(BOX.h * 0.6),
+        doc: probeDoc(200),
+    });
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(zoomLocked(), false, "新语义 ⇒ zoomLocked() = false");
+    eq(env.el.style.zoom, "0.6", "新语义下倍率照旧按视口反算(0.6)");
+    check(
+        scalePresets(BOX.presets) === BOX.presets,
+        "新语义下 scalePresets 原样返回**同一个**数组(选项与改前逐字相同)",
+    );
+    const calls = [];
+    eq(
+        enforceZoomLock(1.5, (f) => calls.push(f)),
+        false,
+        "新语义下 enforceZoomLock 不请求",
+    );
+    eq(calls, [], "新语义下一次 setUiScale 都没发");
+    h.destroy();
+}
+
+// ⑤e 三页接线:档位选项全部过 scalePresets、渲染时调 enforceZoomLock、提示节点默认 hidden
+{
+    const WIRING = [
+        {
+            role: "output",
+            js: "web/output/app.js",
+            html: "web/output/index.html",
+            presets: "DESIGN.output.presets",
+            lock: "footer-scale-lock",
+        },
+        {
+            role: "input",
+            js: "web/input/app.js",
+            html: "web/input/index.html",
+            presets: "DESIGN.input.presets",
+            lock: "input.footer.scaleLock",
+        },
+        {
+            role: "monitor",
+            js: "web/monitor/app.js",
+            html: "web/monitor/index.html",
+            presets: "MONITOR_DESIGN.presets",
+            lock: "monitor-scale-lock",
+        },
+    ];
+    for (const w of WIRING) {
+        const body = stripComments(src(w.js));
+        const esc = w.presets.replace(/\./g, "\\.");
+        const all = (body.match(new RegExp(esc, "g")) || []).length;
+        const wrapped = (
+            body.match(new RegExp("scalePresets\\(" + esc + "\\)", "g")) || []
+        ).length;
+        check(
+            all > 0 && all === wrapped,
+            `${w.role}:档位表的每一处取用都过 scalePresets(${wrapped}/${all})`,
+        );
+        check(
+            /enforceZoomLock\(/.test(body),
+            `${w.role}:渲染路径调 enforceZoomLock`,
+        );
+        check(
+            body.includes(`$("${w.lock}")`) && /zoomLocked\(\)/.test(body),
+            `${w.role}:锁定时摘提示节点 ${w.lock} 的 hidden`,
+        );
+        const html = src(w.html);
+        const m = new RegExp(
+            '<span[^>]*data-gb="' + w.lock.replace(/\./g, "\\.") + '"[^>]*>',
+        ).exec(html);
+        check(
+            !!m &&
+                /data-t="scale\.lockedLegacy"/.test(m[0]) &&
+                /\shidden[\s>]/.test(m[0]),
+            `${w.role}:${w.html} 有提示节点(data-t=scale.lockedLegacy,默认 hidden)`,
+        );
+    }
 }
 
 log("");
