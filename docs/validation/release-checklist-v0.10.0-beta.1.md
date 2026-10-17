@@ -16,7 +16,7 @@
 
 | 证据 | 内容 |
 | --- | --- |
-| 用户上机 | 2026-10-16 在 Cubase 上测试包 `7ae5713`,走 W0–W8,**W5 未测** |
+| 用户上机 | 2026-10-16 在 Cubase 上测试包 `7ae5713`,W0–W4、W6–W8 通过,**W5 未测** |
 | 组合 CI | run 38708566079,Windows 与 macOS 两平台全绿 |
 | 导出 null test | 重开工程前后离线导出相差 1 LSB;实时导出对离线导出的残差 RMS 约 −60 dBFS |
 
@@ -59,7 +59,7 @@
   - 状态:⏳ CI
 
 - [ ] **B3 本地全量 `pwsh scripts/gates.ps1`(含真机 GUI pluginval)全绿**
-  - 怎么查:发版清单第 4 步;并按 `CLAUDE.md` 的出包硬规对目标 ref dispatch 一次 `build-vst3` 并全绿。
+  - 怎么查:发版清单第 4 步;并按 `CLAUDE.md` 的出包硬规对 `staging` dispatch 一次 `build-vst3`,Windows 的 `detect-native` 与 `build-and-validate` 两个 job 为 `success` 即绿(mac job 不挡)。
   - 证据:______
   - 状态:⏳ 统筹
 
@@ -100,10 +100,10 @@
 
 ### F. DAW 矩阵
 
-- [ ] **F1 Windows 上机矩阵**
+- [x] **F1 Windows 上机矩阵**
   - 怎么查:`daw-matrix.md` 新增本版一节。
-  - 证据:用户 2026-10-16 在 Cubase 上测试包 `7ae5713`,W0–W8 跑完,**W5 未测**(未测的不算过;W5 的处置由统筹向用户确认:补测,或写 N/A 与理由)。其他 Windows 宿主本版未测。
-  - 状态:⏳ 用户(W5)
+  - 证据:用户 2026-10-16 在 Cubase 上测了测试包 `7ae5713`:W0–W4、W6–W8 通过;**W5(单轨旁路回原声)未测**,用户判断影响不大,不补测。W5 的行为由 CI 用例覆盖:`tests/host/test_host_harness.cpp` 的 `HOST A-8 U3(b)-ii: bypassing the only Input brings the bus back to raw through an 80 ms crossfade, un-bypassing rejoins the mix`(单独旁路唯一一条 Input,总线经 80 ms 交叉切回原声,解除旁路后回到 SCVB 混音),与同文件的 `HOST A-8 U3(b)-ii boundary: …`;`tests/core/test_output_session.cpp` 的 `[A-8] transport running: a lane whose writer freezes keeps its connected_mask and inject bits` 等 `[A-8]` 四条。这些是模拟宿主上的 CI 证据,不是 Cubase 上的实测。W3 中 Cubase 开了监听的那条轨无声并亮「路由失准」,符合判据(读不到数据就必须告警);这是否误报,列入后续排查,不挡本版。其他 Windows 宿主本版未测。
+  - 状态:✅ 已核(W5 未测,见上)
 
 - [ ] **F2 `daw-support-tiers.md` 与 README 的 Tier 表同步**
   - 证据:______
@@ -165,9 +165,9 @@
   - 证据:______
   - 状态:⏳ 统筹
 
-- [ ] **J6 干净 Windows 11 上解压安装,DAW 扫得到并正常工作**
-  - 参考证据:用户 2026-10-16 已在 Cubase 上装并测过测试包 `7ae5713`(不是发布包,也不是干净机)。
-  - 状态:⏳ 用户(是否要求干净机,由统筹向用户确认;不确认则写 N/A 与理由)
+- [x] **J6 干净 Windows 11 上解压安装,DAW 扫得到并正常工作**
+  - N/A(本版):本版未在干净 Windows 11 上验证。用户是在已装 rc.1 的机器上换装测试包 `7ae5713` 测的,安装方式与 rc.1 相同;是否要求干净机,v1.0.0 前再议。
+  - 状态:N/A
 
 ### K. 回滚预案
 
@@ -177,8 +177,8 @@
 
 ### L. 本版追加
 
-- [ ] **L1 `staging` / `prod` 分支按 `docs/RELEASE.md` 前移**
-  - 怎么查:发版清单第 9 步:beta 同 rc 一样只前移 `staging`,不前移 `prod`(以 `docs/RELEASE.md` 现行文字为准)。
+- [ ] **L1 `staging` / `prod` 按 `docs/RELEASE.md` 现行的 J184 / J184a 前移**
+  - 怎么查:链路是 feature → `dev`(里程碑 squash)→ PR(merge commit)进 `staging` → 对 `staging` dispatch `build-vst3`,Windows 的 `detect-native` 与 `build-and-validate` 两个 job 为 `success` 即绿(mac job 不挡)→ PR(merge commit)进 `prod` → tag 打在 `prod` 的合并提交 P 上。两次晋升都走 PR、用 merge commit,不快进、不临时关分支保护;`prod` = 最新已发布版本(含预发布)。回读见 `docs/RELEASE.md`「每次发布的顺序」第 5、6 步:`prod` 等于 tag 指向的提交,`staging` 是它的祖先且树相同;`package-summary.md` 的 `sourceCommit` 是 P。
   - 证据:______
   - 状态:⏳ 统筹
 
@@ -193,14 +193,14 @@
 
 ## 3. 汇总
 
-截至本文件初稿(发版准备卡 M20):共 31 项,**全部未勾**。除 F3 为 N/A 外,其余均待 CI、统筹或用户;「证据」留空的格子表示还没核,不是通过。
+截至发版准备卡 M20 收尾:共 31 项,已勾 F1(✅,W5 未测)与 J6(N/A),其余待 CI 或统筹;F3 为 N/A,按下方说明暂留未勾。「证据」留空的格子表示还没核,不是通过。
 
 | 状态 | 项数 |
 | --- | --- |
-| ✅ 已核 | 0 |
-| N/A | 1(F3) |
+| ✅ 已核 | 1(F1) |
+| N/A | 2(F3、J6) |
 | ⏳ CI | 8(A1、B1、B2、B4、C1、D2、H1、J1) |
 | ⏳ 统筹 | 20 |
-| ⏳ 用户 | 2(F1、J6) |
+| ⏳ 用户 | 0 |
 
-(合计 31:1 + 8 + 20 + 2。F3 的 N/A 在本版也留着未勾框,以免被当成已通过;统筹在 tag 前决定是否勾上。)
+(合计 31:1 + 2 + 8 + 20 + 0。F3 的 N/A 在本版也留着未勾框,以免被当成已通过;统筹在 tag 前决定是否勾上。)
