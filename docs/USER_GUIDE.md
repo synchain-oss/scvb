@@ -292,7 +292,7 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 
 **Can I go beyond 15 tracks?** Not in v1; 15 tracks per group. If you genuinely need more, use a second group (an independent bus domain), but the two groups are not balanced jointly.
 
-**Is macOS supported?** There is a **beta** for Apple Silicon Macs (arm64 only, macOS 11 or later), as VST3 and Audio Unit. It is not code-signed or notarized, so you have to clear the quarantine flag yourself with `xattr` after copying the plugins; the steps are in the macOS zip's `INSTALL.txt` and in the README. Intel Macs, hosts running under Rosetta and GarageBand are not supported. Windows remains the primary, better-tested platform.
+**Is macOS supported?** There is a **beta** for Apple Silicon Macs (arm64 only, macOS 11 or later), as VST3 and Audio Unit. It is not code-signed or notarized, so you have to clear the quarantine flag yourself with `xattr` after copying the plugins; the steps are in the macOS zip's `INSTALL.txt` and in the README. Intel Macs, hosts running under Rosetta and GarageBand are not supported. Windows remains the primary, better-tested platform. The macOS beta zip is uploaded to the Release only after it has passed hands-on acceptance on a real Mac (LUNA); until then the Releases page has only the Windows package.
 
 **Does it work in Logic Pro or LUNA on a Mac?** Neither has been verified yet. Logic Pro: beta / not tested in Logic (Tier 3); Logic loads Audio Units only. LUNA: Tier 3, a hands-on acceptance run is still to come. What we expect from each host's design is written down in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md); none of it is a tested result.
 

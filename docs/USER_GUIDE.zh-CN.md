@@ -290,7 +290,7 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 
 **能超过 15 轨吗?** v1 不能,每组 15 轨。真的需要更多可以用第二个组(独立总线域),但两组之间不做联合平衡。
 
-**支持 macOS 吗?** 有一个面向 Apple Silicon Mac 的 **beta**(只有 arm64,macOS 11 或更高),提供 VST3 与 Audio Unit。它没有代码签名、没有公证,复制完插件后要自己用 `xattr` 去掉隔离属性;步骤在 macOS zip 里的 `INSTALL.txt` 和 README 里。不支持 Intel Mac、在 Rosetta 下运行的宿主和 GarageBand。Windows 仍然是主要的、测得更充分的平台。
+**支持 macOS 吗?** 有一个面向 Apple Silicon Mac 的 **beta**(只有 arm64,macOS 11 或更高),提供 VST3 与 Audio Unit。它没有代码签名、没有公证,复制完插件后要自己用 `xattr` 去掉隔离属性;步骤在 macOS zip 里的 `INSTALL.txt` 和 README 里。不支持 Intel Mac、在 Rosetta 下运行的宿主和 GarageBand。Windows 仍然是主要的、测得更充分的平台。macOS beta 包在 LUNA 真机验收通过后才补传到 Release;在那之前 Releases 页上只有 Windows 包。
 
 **在 Mac 上的 Logic Pro 或 LUNA 里能用吗?** 两个都还没有验证过。Logic Pro:beta / 未在 Logic 实测(Tier 3);Logic 只加载 Audio Unit。LUNA:Tier 3,真机验收还没做。按各宿主的设计我们预期会怎样,写在 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) 里;那些都不是实测结果。
 

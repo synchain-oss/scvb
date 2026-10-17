@@ -74,6 +74,8 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 
 ### macOS(Apple Silicon,beta)
 
+> macOS beta 包在 LUNA 真机验收通过后才补传到 Release;在那之前 Releases 页上只有 Windows 包。
+
 macOS 的 zip 叫 `SCVB-v<版本号>-macos-arm64.zip`(另有 `.sha256`),里面是三个插件的 VST3 与 Audio Unit(`.component`)bundle,以及 `INSTALL.txt`;下面的步骤以 `INSTALL.txt` 为准。这个版本**没有代码签名、没有公证**,所以安装步骤里要去掉隔离属性。在「终端」里执行:
 
 ```
