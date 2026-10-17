@@ -587,6 +587,124 @@ input::placeholder {
     background-color: rgba(var(--wh), 0.68);
 }
 
+/* --------------------------------------------------- 缩放档位下拉(UI-1) */
+/* 触发钮 + 深色玻璃浮层(设计稿 L1017-1020 触发钮 / L1026-1033 浮层),原是 Output 右下角
+   独有的 .footer-scale*,UI-1 起四处共用(Output 右下角与设置页、Monitor / Input 右下角)。
+   行为在 web/shared/scale-select.js;原生 <select> 的展开列表是浏览器自绘的,改不了样式,
+   所以这几处都不再用它。
+   data 属性(scale-select.js 写):
+     .sc-scale        data-open="0|1" / data-placement="up|down" / data-align="start|end"
+     .sc-scale__opt   data-current="0|1" / data-over="0|1"(超屏:灰掉不隐藏,05 §1.2) */
+.sc-scale {
+    position: relative;
+    display: inline-block;
+}
+
+.sc-scale__trigger {
+    position: relative;
+    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-6);
+    padding: var(--sp-4) var(--sp-10);
+    border-radius: var(--r-xs);
+    background: var(--w-16);
+    border: 1px solid rgba(var(--wh), 0.32);
+    cursor: pointer;
+    font-family: var(--ff-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-size: var(--fs-100);
+    color: var(--txt-2);
+}
+
+.sc-scale__trigger:focus-visible {
+    outline: none;
+    border-color: rgba(var(--acc), 0.85);
+}
+
+.sc-scale__trigger svg {
+    fill: none;
+    stroke: var(--txt-3);
+    stroke-width: 1.6px;
+    stroke-linecap: round;
+}
+
+.sc-scale__panel {
+    position: absolute;
+    z-index: 9;
+    right: 0;
+    bottom: calc(100% + var(--sp-9));
+    width: 168px;
+    overflow-y: auto;
+    padding: var(--sp-5);
+    border-radius: var(--r-md);
+    background-color: var(--dark-solid);
+    background-image: var(--zoom-panel-bg);
+    border: 1px solid var(--dark-window-border);
+    box-shadow: var(--zoom-panel-shadow);
+}
+
+.sc-scale[data-placement="down"] .sc-scale__panel {
+    bottom: auto;
+    top: calc(100% + var(--sp-9));
+}
+
+.sc-scale[data-align="start"] .sc-scale__panel {
+    right: auto;
+    left: 0;
+}
+
+.sc-scale[data-open="0"] .sc-scale__panel {
+    display: none;
+}
+
+.sc-scale__opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-10);
+    width: 100%;
+    padding: var(--sp-7) var(--sp-10);
+    border-radius: var(--r-xs);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    outline: none;
+    font-family: var(--ff-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-size: var(--fs-110);
+    color: var(--txt-dark-2);
+}
+
+.sc-scale__opt:hover {
+    background: rgba(var(--wh), 0.05);
+}
+
+.sc-scale__opt[data-current="1"] {
+    background: var(--w-10);
+}
+
+/* 键盘焦点:描一圈强调色(当前档的底色不变,两者可以同时成立) */
+.sc-scale__opt:focus-visible {
+    box-shadow: inset 0 0 0 1px rgba(var(--acc), 0.85);
+}
+
+/* 超屏档位:灰掉 + 说明,不隐藏(05 §1.2) */
+.sc-scale__opt[data-over="1"] {
+    cursor: not-allowed;
+    color: var(--txt-dark-dim);
+}
+
+.sc-scale__note {
+    font-size: var(--fs-90);
+    letter-spacing: var(--mono-ls-pill);
+    color: rgba(var(--wh), 0.45);
+}
+
+.sc-scale__opt[data-over="1"] .sc-scale__note {
+    color: rgba(var(--sem-amber), 0.75);
+}
+
 /* --------------------------------------------------------------- 原生滑杆 */
 input[type="range"] {
     accent-color: var(--acc-slider);

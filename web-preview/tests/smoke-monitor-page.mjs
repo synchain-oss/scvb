@@ -853,12 +853,15 @@ try {
         }
 
         // ---- 缩放:预览 → 确认条出现 → 取消回退(10 秒防呆的两端)
+        // [UI-1] 档位入口是共享下拉(web/shared/scale-select.js),不再是原生 <select>:
+        // 点开触发钮 → 点 80% 那一项(0.8 × 960×720 = 768×576,无头的 800×600 屏放得下)。
         const changed = await evaluate(
             IN(`
-            const sel = gb("monitor-scale");
-            if (!sel) return false;
-            sel.value = "0.8";
-            sel.dispatchEvent(new w.Event("change"));
+            const t = gb("monitor-scale-trigger");
+            const o = gb("monitor-scale-opt-80");
+            if (!t || !o) return false;
+            t.click();
+            o.click();
             return true;
         `),
         );

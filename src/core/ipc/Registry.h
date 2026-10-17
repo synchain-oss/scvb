@@ -40,10 +40,20 @@ inline constexpr std::size_t kRegistrySegmentSize = 4096;
 inline constexpr std::size_t kInputSlotOffset = sizeof(RegistryHeader);
 inline constexpr std::size_t kOutputSlotOffset = sizeof(RegistryHeader) + kMaxChannels * sizeof(InputSlot);
 
-// 真实 pid 探活(Windows:OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+GetExitCodeProcess)。
-// 探活失败(句柄拿不到/退出码非 STILL_ACTIVE)一律判「死」——J10「pid 存活探测失败」条件。
-// 只在消息线程调用,禁止音频线程(OpenProcess 是系统调用)。
+// 真实 pid 探活。
+//   · Windows:OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+GetExitCodeProcess;句柄拿不到 /
+//     退出码非 STILL_ACTIVE 一律判「死」。
+//   · POSIX:kill(pid, 0) == 0 || errno == EPERM(EPERM = 进程在、只是不归我们发信号,仍算活;
+//     ESRCH = 不存在,判死)。pid 超出 pid_t 正数范围时直接判死 —— 转成负数交给 kill 会变成
+//     「按进程组 / 向所有进程」探测,(u32)-1 → kill(-1, 0) 会恒成功。
+//     B 线 M03 之前非 Windows 恒判「活」:DAW 崩溃后留下的槽永远满足不了接管双条件。
+// 判死即 J10「pid 存活探测失败」条件。pid == 0 恒判死。
+// 只在消息线程调用,禁止音频线程(OpenProcess / kill 都是系统调用)。
 bool isProcessAlive(u32 pid) noexcept;
+
+// 本进程 pid(写进 InputSlot / OutputSlot 的那个值,与 isProcessAlive 同一口径)。
+// Windows = GetCurrentProcessId();POSIX = getpid()。三个插件取 pid 只走这一处。
+u32 currentProcessId() noexcept;
 
 // 显示陈旧(>2000ms,仅 UI 显示口径)。
 inline bool isStaleDisplay(u64 heartbeatMs, u64 nowMs) noexcept

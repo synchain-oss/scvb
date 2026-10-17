@@ -1,7 +1,7 @@
 # DAW 支持等级登记
 
 > 状态:演进中
-> 最后更新:2026-09-28
+> 最后更新:2026-10-11
 > 来源:masterPlan 10 §3.4(判定规则)、J124(Live / Studio One 标未验证,U14 修订)
 
 ## 0. 这份文件和 DAW_COMPATIBILITY 的关系
@@ -30,6 +30,8 @@
 | REAPER | 7 | **Tier 2(部分验证)** | 只有 S1 spike 层:R-2 / R-3 / R-4 / R-5 / R-12 与并入 C 系列的场景通过;成品插件与自动化写入没在 REAPER 上测过;RD-04(关 GUI 不写自动化)有宿主端规避 | 成品在 REAPER 上跑完矩阵(见下面「待统筹核」) |
 | Ableton Live | 12 | **Tier 3(未验证)** | 两层都没有上机(U27 让 S1 跳过 Live;J124 首发标未验证) | 真机跑完矩阵;L-5(设备停用)必测 |
 | Studio One | 6 | **Tier 3(未验证)** | 两层都没有上机(U27 仅作可选对照、未执行;J124 首发标未验证);版本按 U9 为 6 | 真机跑完矩阵;Dropout Protection 异 block size 必测 |
+| LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 没有上机。macOS beta 的第一台目标宿主,真机验收清单见 [luna-acceptance.md](luna-acceptance.md);验收前一律「设计上预期 / 未实测」 | LUNA 轻验收 P0(T1–T6)全过后由统筹回填并按 §0 四处同改上调;T1 / T2 / T3 / T6 任一不过,保持 Tier 3 并挡 beta 发版 |
+| Logic Pro(macOS,Apple Silicon) | — | **Tier 3(beta / 未在 Logic 实测)** | 没有上机,也不在 LUNA 验收范围内。只能加载 Audio Unit;GarageBand 不支持。文档里 Logic 一律写 beta / 未在 Logic 实测 | 真机跑完矩阵之后再议;在那之前只写「beta / 未在 Logic 实测」 |
 | FL Studio | 21 | 不在 v1 支持矩阵 | DAW_COMPATIBILITY §4 注明 | — |
 
 **待统筹核**:REAPER 的 Tier 2 取的是 DAW_COMPATIBILITY §4 的现状(#298)。按 §1 的字面,Tier 2 说的是「有限制但有规避」,不是「部分验证」;REAPER 的成品层没测过,严格读更接近 Tier 3「未验证」。维持还是下调由统筹定,改的话按 §0 四处一起改。
@@ -45,4 +47,5 @@
 
 | 日期 | 变化 | 依据 |
 | --- | --- | --- |
+| 2026-10-11 | 新增 LUNA(macOS,Apple Silicon)Tier 3(beta,待验证)与 Logic Pro(macOS)Tier 3(beta / 未在 Logic 实测)两行;四处同改:DAW_COMPATIBILITY §1 / §2.5 / §2.6 / §4、`README.md`、`README.zh-CN.md`、本文件 | M17(macOS beta 用户文档) |
 | 2026-09-28 | Cubase 维持 Tier 1;REAPER 定为 Tier 2(部分验证);Ableton Live 12 与 Studio One 6 定为 Tier 3(未验证) | #298(DAW_COMPATIBILITY 按真机实测收正)、J124 |

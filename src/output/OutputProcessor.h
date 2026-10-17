@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// windows.h 的 min/max 宏会污染 std::numeric_limits<T>::min() 与 std::max;先禁用再包含
-// SegmentBackendWin32.h(其内部 include windows.h 但未定义 NOMINMAX)。
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
@@ -26,10 +20,11 @@
 #include "OutputParams.h"
 #include "OutputUiState.h" // [J148] OutputActiveTab(runtime_.activeTab 的序号类型)
 #include "ParamUndo.h" // [SL-536] 参数 / 配置进插件撤销栈
+#include "diag/VizRateMeter.h" // [B 线 M07b] viz 实得速率(进程内计数,不进共享内存)
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h" // 按平台选段后端(Windows 分支自带 NOMINMAX,见该头)
 #include "analysis/AnalysisPipeline.h"
 #include "analysis/VadPreview.h" // [J146] 拖动档预览的计算核(与流水线 S1 同一份实现)
 #include "output/BusXfade.h"
@@ -915,10 +910,15 @@ private:
     juce::CriticalSection lifecycleMutex_; // 串行化 prepare/release/setState/claim/心跳
 
     // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
-    scvb::SegmentBackendWin32 backend_;
+    scvb::PlatformSegmentBackend backend_; // 按平台选定的段后端(见 ipc/PlatformSegmentBackend.h)
     scvb::output::OutputSession session_;
     // [T44/J75] viz 段发布器(Monitor 只读数据面)。只在 [M] 触碰;processBlock 对 viz 段零写入。
     scvb::output::VizPublisher vizPublisher_;
+    // [B 线 M07b] viz 实得速率(tick = vizTimer_ 回调,publish = 发布器真的发出去的帧),每约 10 s 收一窗,
+    // 装了平台文件日志(mac)时写一行 viz-rate。只在 vizTimer_ 回调里记(消息线程、持 lifecycleMutex_),
+    // prepareToPlay 里 restart;processBlock 不碰。声明在 vizTimer_ 之前:析构时定时器先拆、它后拆。
+    scvb::diag::OutputVizRate vizRate_{
+        scvb::diag::makeVizRateInstanceTag(juce::AudioProcessor::getWrapperTypeDescription(wrapperType))};
     // [SL-192] viz 发布的**独立定时器**,与主 25Hz [M] tick 分开。
     //
     // 为什么不把主 tick 提到 30Hz:那条 tick 上挂着心跳、session tick、看门狗、配置广播、
@@ -1087,6 +1087,8 @@ private:
     int64_t lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     uint32_t podEpoch_ = 0;
+    // [A-5] 当前宿主块的尾(时间线位置):超长块按段读(SL-523)时传给 IMixSource::read,见那里。
+    int64_t readerBlockEnd_ = 0;
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数(超长块按段计,见 renderSpan)/ [M] 仅 DBG
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
     std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
@@ -1125,6 +1127,9 @@ private:
     // 早退路径不推进 fade,残留的 fade 值不代表它刚才在响。每段开头取出即清,只有走完
     // 混音路径才重写,任何早退都让它归零;prepareToPlay 也清(理由见那里)。
     scvb::u32 releasableMask_ = 0;
+    // [A-8] U3(b)-ii:注入轨全部停滞期间,总线输入一旦听得见就闩成「回原声」,直到有注入轨重新读到数据(或不再全部
+    // 停滞)为止。见 renderSpan 里那一段的注释。[A] 独占;prepareToPlay 与 renderSpan 的两条早退清它。
+    bool stalledRawLatched_ = false;
 
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;

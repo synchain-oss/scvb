@@ -21,7 +21,9 @@ import { GROUP_IDS } from "./tab-master.js";
 //
 // 消费(契约 §2,逐字):
 //   scvb.state    → analysis.loudness_mode / center_slot_policy(两设置块白底高亮)、
-//                   features{embedded,bytes}(存储状态)、config_seq(诊断 SEQ)、ui.scale
+//                   features{embedded,bytes}(存储状态)、config_seq(诊断 SEQ)
+//                   (「界面缩放」那张卡的 ui.scale [UI-1] 起不归本文件:它与右下角是同一件共享
+//                    下拉 web/shared/scale-select.js,由 app.js 的 renderScale 一并 setValue)
 //   snapshot      → version{plugin,abi}(版本号)、session_guid(存储 GUID)
 //   scvb.conn     → channels[].heartbeatAgeMs / misalignCount + generation(诊断表)
 //
@@ -361,7 +363,6 @@ export function createTabSettings(opts) {
         diagCopy: $("settings-diagnostics-copy"),
         diagChevron: $("settings-diagnostics-chevron"),
         diagBox: $("settings-diagnostics"),
-        scaleSelect: $("settings-scale-select"),
     };
 
     // 页面内一次性状态(不属 state chunk,重开面板即重置)。
@@ -1405,14 +1406,6 @@ export function createTabSettings(opts) {
         }
     }
 
-    function renderScale(st) {
-        if (!el.scaleSelect) return;
-        const ui = ((st && st.state) || {}).ui || {};
-        const f = ui && Number.isFinite(ui.scale) ? ui.scale : 1;
-        if (el.scaleSelect.value !== String(f))
-            el.scaleSelect.value = String(f);
-    }
-
     function render() {
         const st = getStore();
         syncOptions();
@@ -1421,7 +1414,6 @@ export function createTabSettings(opts) {
         renderVersion(st);
         renderStorage(getT(), st);
         renderDiagnostics();
-        renderScale(st);
     }
 
     /**

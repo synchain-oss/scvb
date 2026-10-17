@@ -334,13 +334,19 @@ void MonitorEditor::emitTick()
         const int grp = processor_.groupId();
         // 组号进基线:lane_revision 每组各自从 0 起递增,只比 revision 会在撞值时永久漏发。
         const bool needLanes = !sentLanes_ || rev != lastSentLaneRevision_ || grp != lastSentLaneGroup_;
-        if (emitIfChanged(bridge::kEvViz, buildVizPayload(needLanes), lastVizJson_) && needLanes)
+        if (emitIfChanged(bridge::kEvViz, buildVizPayload(needLanes), lastVizJson_))
         {
-            // 只在**事件真的发出去**之后才推进基线:编辑器隐藏时事件被丢弃,
-            // 若此时推进,恢复可见后就再也不会补发车道了(PR#54 R4 同款教训)。
-            sentLanes_ = true;
-            lastSentLaneRevision_ = rev;
-            lastSentLaneGroup_ = grp;
+            // [B 线 M07b] 页面实得刷新率:只数**真的发出去**的那一帧(重复帧被 JSON 比对挡掉的、
+            // 隐藏期被丢弃的都不算)。只计数,不新增任何事件或载荷字段。
+            processor_.noteVizPushed(now);
+            if (needLanes)
+            {
+                // 只在**事件真的发出去**之后才推进基线:编辑器隐藏时事件被丢弃,
+                // 若此时推进,恢复可见后就再也不会补发车道了(PR#54 R4 同款教训)。
+                sentLanes_ = true;
+                lastSentLaneRevision_ = rev;
+                lastSentLaneGroup_ = grp;
+            }
         }
     }
 }

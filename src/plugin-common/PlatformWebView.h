@@ -154,6 +154,8 @@ inline juce::ColourGradient shellBackdropGradient(juce::Rectangle<float> area)
 // PlatformWebView —— 平台 WebView 分支集中地(01 §9;01 §6.1 机制 1/2 与机制 3 前半)。
 //   Windows:WebView2(显式后端选择 + 可写 user-data 目录 + 静态 loader 运行时探测);
 //   macOS/Linux:WKWebView / WebKitGTK(JUCE 内建,无需探测,恒可用)。
+// [B 线 M07] 用户看得见的、带平台名字的文案与诊断行也收在这里(WebViewHost.cpp 只调用,不再自己写),
+// 理由是**可测**:WebViewHost.cpp 不进任何测试目标,而本类的 .cpp 进 scvb_plugin_common_tests。
 class PlatformWebView
 {
 public:
@@ -167,18 +169,23 @@ public:
                                                                  const juce::File& userDataFolder);
 
     // user-data 目录的父目录(Windows = %LOCALAPPDATA%\Synchain\SCVB\WebView2)。
+    // [B 线 M07] 其余平台返回**空 File**:WKWebView 用的是默认 WKWebsiteDataStore,不消费这个目录,
+    // 此前落在 tempDirectory/SCVB-WebView(mac 上 = ~/Library/Caches/<宿主名>/)的那个目录只是白建。
     static juce::File userDataFolderRoot();
 
     // 本插件(**不是本实例**)的 user-data 目录 = userDataFolderRoot()/userDataFolderName。
     // WebView2 的浏览器进程组按 UDF 共享 —— 固定目录才能复用进程组,这也是「热启动」判定
     // 得以成立的前提。完整理由见 .cpp 实现处。
+    // [B 线 M07] 根为空时返回空 File(不拼路径:juce 的 File().getChildFile("x") 会得到 "/x")。
     static juce::File makeUserDataFolder(const juce::String& userDataFolderName);
 
-    // 本进程 PID(只进诊断行,便于与任务管理器对照)。非 Windows 返回 0。
+    // 本进程 PID(只进诊断行,便于与任务管理器 / 活动监视器对照)。
+    // [B 线 M07] 非 Windows 由 0 改为 getpid()。
     static int processId();
 
     // 建目录 + 写一个探针文件再删。返回空串 = 可写;否则是可直接进诊断面板的人话原因。
     // WebView2 自己碰这个目录时的失败被 JUCE 吞掉,所以必须我们先测一次。
+    // [B 线 M07] 传空 File(= 本平台不用 UDF)时直接返回空串:不建目录、不写探针。
     static juce::String probeUserDataFolder(const juce::File& folder);
 
     // 运行时三态(机制 3 前半)。「装了但太旧」必须与「没装」分开:两者的用户动作都是装
@@ -267,6 +274,54 @@ public:
     static constexpr int kBackgroundColourMinRuntimeMajor = 87;
 
     static BackgroundColourSupport backgroundColourSupport(const RuntimeInfo& info);
+
+    // [B 线 M07] 本平台的 WebView 引擎。Windows = WebView2(运行时要单独装、有 user-data 目录);
+    // 其余 = 系统 WebKit(macOS 的 WKWebView;Linux 的 WebKitGTK 同族,本仓不出 Linux 包)。
+    // 下面带 `Engine engine = kEngine` 的函数都按它分支:默认取本平台,显式传另一个值只给单测用 ——
+    // 本机没有 Mac,Windows 上的单测靠显式传 systemWebKit 把 mac 那一份文案逐条判过;mac 上另有
+    // [mac] 格核「默认值确实落在 systemWebKit」。**Windows 那一支的文字与改动前逐字相同**,
+    // 由 test_plugin_common.cpp 的 [M07] 钉字格逐字对拍。
+    enum class Engine
+    {
+        webView2,
+        systemWebKit
+    };
+#if JUCE_WINDOWS
+    static constexpr Engine kEngine = Engine::webView2;
+#else
+    static constexpr Engine kEngine = Engine::systemWebKit;
+#endif
+
+    // 兜底面板正文里**提到运行时**的三条(其余几条与平台无关,仍留在 WebViewHost.cpp)。
+    // missing / tooOld 在系统 WebKit 上实际走不到(runtimeInfo() 恒 ok),仍按平台写,免得哪天
+    // 调用点挪动时把「Microsoft Edge WebView2」端到 mac 用户面前。
+    static juce::String missingRuntimeMessage(Engine engine = kEngine);
+    static juce::String tooOldRuntimeMessage(Engine engine = kEngine);
+    // 「导航一次都没开始」那一态(WebViewHost.cpp 头部三态注释的 notStarted)。系统 WebKit 上**走得到**。
+    static juce::String envNotStartedMessage(Engine engine = kEngine);
+
+    // 诊断行里「运行时」那一段:WebView2 = `WebView2 <版本>` / `WebView2 not found`;
+    // 系统 WebKit = `WebKit (system)`(版本跟着 macOS / Safari 走,插件侧不探测)。
+    static juce::String runtimeDiagnosticsField(const RuntimeInfo& info, Engine engine = kEngine);
+
+    // [SL-376 / SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行(WebViewHost 每次加载尝试打一条)。
+    // 这一层是 WebView2 专有的 —— 系统 WebKit 返回**空串**,调用方据此不打这一行。
+    // 四条 WebView2 形态的措辞与理由见 .cpp(从 WebViewHost.cpp 原样搬来,字符不变)。
+    static juce::String backgroundColourDiagnostics(const RuntimeInfo& info, Engine engine = kEngine);
+
+    // [SL-370] 开窗遮挡闸(把 WebView 挪出可视区等首帧,WebViewRevealGate.h)启不启用。
+    // 只在 WebView2 上启用,与 Bridge 一致(bridge 仓 WebViewRevealGate.h 头注【SL-386 与 SCVB 的口径差】):
+    // 闸门为 WebView2 宿主 HWND 首帧之前那段白而设;WKWebView 上没验证过,而首帧信号一旦不到,
+    // 每次开窗都会白等 kRevealFallbackMs(3s)。系统 WebKit 上闸门保持未武装(parked() 恒 false)。
+    static constexpr bool revealGateEnabled(Engine engine = kEngine) { return engine == Engine::webView2; }
+
+    // 兜底面板要不要给「下载运行时」按钮(FallbackPanel 的 install 按钮,文案与链接都是 WebView2 的)。
+    // 系统 WebKit 没有可单独下载的运行时 ⇒ 恒 false。
+    static constexpr bool offersRuntimeDownload(Engine engine = kEngine) { return engine == Engine::webView2; }
+
+    // 诊断行里 user-data 目录那一段。系统 WebKit 不用这个目录(userDataFolderRoot() 为空),
+    // 显示 `(not used)` 而不是一个空路径;非空时原样是完整路径(Windows 逐字不变)。
+    static juce::String userDataFolderDisplay(const juce::File& folder);
 };
 
 } // namespace scvb::webview
