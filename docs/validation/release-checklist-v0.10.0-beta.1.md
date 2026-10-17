@@ -1,6 +1,6 @@
 # 发布前验证清单 —— v0.10.0-beta.1
 
-> 状态:**进行中** —— 用户 2026-10-16 批准发布 `v0.10.0-beta.1`。**本版先只发 Windows**:CI 建出的草稿 Release 里会带 macOS 三件,发布前撤下留存;mac 三件在 LUNA 真机验收通过后补传到同一个 Release([luna-acceptance.md](luna-acceptance.md))。
+> 状态:**已发布**(2026-10-17,pre-release);剩余 ⏳ 项待补。用户 2026-10-16 批准发布 `v0.10.0-beta.1`。**本版先只发 Windows**:发布时 mac 的 `build-mac` 还在跑,mac 三件从没挂上草稿;mac 三件在 LUNA 真机验收通过后手工补传到同一个 Release([luna-acceptance.md](luna-acceptance.md))。
 > 模板:[release-checklist-v0.9.0-rc.1.md](release-checklist-v0.9.0-rc.1.md)。只保留本版适用的项;rc.1 那份的逐项长证据不照搬,本版证据只写在核对基线上实际看过的。
 > 来源:`docs/RELEASE.md` 发版清单(J184 链)。
 > 最后更新:v0.10.0-beta.1 已于 2026-10-17 发布;本轮回填依据是发布后回读的事实——tag 与 prod / staging 的提交关系、`release.yml` run 39008918499 的三个 job 与草稿资产、本机 GUI pluginval、发布与匿名下载回读、tag 保护规则集、#410 主线记回。表里没有对上事实的项保持原样。
@@ -9,8 +9,8 @@
 ## 0. 怎么用
 
 - **版本路线**:`CMakeLists.txt` 改为 `0.10.0`,打 tag `v0.10.0-beta.1`(beta 与正式版共用同一个 `X.Y.Z`)。
-- 每项状态:**✅ 已核**(证据写在项里)/ **⏳ CI**(等 tag 那一跑)/ **⏳ 统筹** / **⏳ 用户** / **N/A + 理由**。只有 ✅ 与 N/A 勾 `[x]`,⏳ 一律 `[ ]`。**留空的项不得当作通过**。
-- **mac 的口径**:本版只发 Windows。mac 相关项统一标「本版先只发 Windows,mac 三件在 LUNA 真机验收后补传同一 Release」;mac 的 CI job(`build-macos.yml`)在 tag 那一跑照常出包,但包在发布前撤下,不进本版 Release 资产。
+- 每项状态:**✅ 已核**(证据写在项里)/ **⏳ CI**(等 tag 那一跑)/ **⏳ 统筹** / **⏳ 用户** / **N/A + 理由**。只有 ✅ 与 N/A 勾 `[x]`;**✅ 已核(有豁免)**=项里有一步经所有者明确裁定省去,偏差与裁定写在该项证据里,**这一档只记本版的裁定,不构成惯例**,⏳ 一律 `[ ]`。**留空的项不得当作通过**。
+- **mac 的口径**:本版只发 Windows。mac 相关项统一标「本版先只发 Windows,mac 三件在 LUNA 真机验收后补传同一 Release」;mac 的 CI job(`build-macos.yml`)在 tag 那一跑照常出包,但不进本版 Release 资产(本版实际是发布时它还没跑完,从没挂上草稿)。
 - 打 tag 前,统筹在 tag 所指提交上把全部 ✅ 项的「怎么查」重跑一遍,结果变了就改回 ⏳。
 
 ## 1. Windows 侧已有证据
@@ -183,7 +183,7 @@
 - [x] **L1 `staging` / `prod` 按 `docs/RELEASE.md` 现行的 J184 / J184a 前移**
   - 怎么查:链路是 feature → `dev`(里程碑 squash)→ PR(merge commit)进 `staging` → 对 `staging` dispatch `build-vst3`,Windows 的 `detect-native` 与 `build-and-validate` 两个 job 为 `success` 即绿(mac job 不挡)→ PR(merge commit)进 `prod` → tag 打在 `prod` 的合并提交 P 上。两次晋升都走 PR、用 merge commit,不快进、不临时关分支保护;`prod` = 最新已发布版本(含预发布)。回读见 `docs/RELEASE.md`「每次发布的顺序」第 5、6 步:`prod` 等于 tag 指向的提交,`staging` 是它的祖先且树相同;`package-summary.md` 的 `sourceCommit` 是 P。
   - 证据:#408(dev → staging)与 #409(staging → prod)都是 PR、merge commit,没有快进,没有临时关保护。tag `v0.10.0-beta.1` = prod = P = `bc04686`;P^2 = staging 的合并提交 S = `b956dd5`,S 的树与 dev 上里程碑提交 `a4a76a3`(#407,feature/macos-au @ `e8a9569` squash 进 dev)逐字相同;`package-summary.md` 的 `sourceCommit` = `bc04686`。**与「怎么查」的偏差**:本次没有对 staging dispatch `build-vst3`——所有者 2026-10-17 要求只在最后构建一轮,以 tag 触发的 `release.yml` 作为本版的完整构建;#407 的 PR 头上 Windows `build-and-validate` 绿。
-  - 状态:✅ 已核(dispatch 一步按所有者裁定省去)
+  - 状态:✅ 已核(有豁免:dispatch 一步经所有者 2026-10-17 裁定省去)
 
 - [x] **L2 `.markdown-link-check.json` 里 CHANGELOG 两条对比链接的临时放行已删**
   - 怎么查:tag 推上去之后,删掉为 `[Unreleased]` / `[0.10.0-beta.1]` 两个对比地址加的临时放行,再跑 `npx -y markdown-link-check -c .markdown-link-check.json CHANGELOG.md`。
