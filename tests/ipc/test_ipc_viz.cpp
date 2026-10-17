@@ -5,8 +5,10 @@
 // 系统性改动,合并冲突面必须归零。进程 spawn / CSV 回收 helper 走新头 tests/support/peer_spawn.h。
 //
 // 对端 = tests/tools/scvb_ipc_peer 的 viz-writer / viz-publisher / viz-reader 三个角色。
-// 真跨进程:真共享内存、真进程退出(段随最后一个句柄消失)、真 TerminateProcess,
-// 绝不用 InProcess 后端模拟(J19 口径)。
+// 真跨进程:真共享内存、真进程退出(段随最后一个持有者离开而消失)、真强杀,
+// 绝不用 InProcess 后端模拟(J19 口径)。[B 线 M12a] 段后端走 PlatformSegmentBackend(Windows 上与
+// 之前同一个类型;macOS 上 viz 段 = POSIX shm,最后一个离开者 shm_unlink)。VizPlane 释放即 unmap、
+// 不走宽限期,所以下面 VIZ-3 的「读方先松手」在两个平台上是同一个意思。
 //
 // 覆盖:
 //   VIZ-1  只读 attach + 几何自检 + 帧头逐项一致 + 车道/位图/断线逐点校验
@@ -14,15 +16,15 @@
 //   VIZ-3  写方进程退出 → 段消失 → 读方回空态;写方再上线 → 读方重连拿到新数据
 //   VIZ-4  真 VizPublisher(而非手搓快照)发布 → 读侧看到降采样数据与断线口径
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <thread>
 
-#include "ipc/SegmentBackendWin32.h"
+#include "ipc/PlatformSegmentBackend.h"
 #include "ipc/VizPlane.h"
 #include "support/peer_spawn.h"
 
@@ -37,24 +39,24 @@ using scvb::ipctest::peer::waitPeer;
 
 namespace
 {
-const std::wstring kPeer = L"scvb_ipc_peer.exe";
+const std::string kPeer = scvb::ipctest::peer::kIpcPeerName;
 
 // 轮询到条件成立或超时;返回是否成立(不自旋死等,超时即判失败并给出可读信息)。
 template<typename Fn>
-bool waitUntil(Fn&& fn, DWORD timeoutMs)
+bool waitUntil(Fn&& fn, std::uint32_t timeoutMs)
 {
-    const ULONGLONG deadline = ::GetTickCount64() + timeoutMs;
+    const std::uint64_t deadline = scvb::steadyNowMs() + timeoutMs;
     for (;;)
     {
         if (fn())
         {
             return true;
         }
-        if (::GetTickCount64() >= deadline)
+        if (scvb::steadyNowMs() >= deadline)
         {
             return false;
         }
-        ::Sleep(20);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
 } // namespace
@@ -139,7 +141,7 @@ TEST_CASE("VIZ-1 viz 段跨进程只读 attach 与一致性读", "[ipc][viz]")
 TEST_CASE("VIZ-2 viz 段不存在时只读方拿到 kFailed(空态,绝不建段)", "[ipc][viz]")
 {
     // 用一个没有任何写方的组(g7):attach 必须失败而非创建段。
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
     scvb::VizPlane reader(backend, 7);
     REQUIRE(reader.attachReadOnly() == scvb::InitResult::kFailed);
     REQUIRE_FALSE(reader.isOpen());
@@ -153,7 +155,7 @@ TEST_CASE("VIZ-2 viz 段不存在时只读方拿到 kFailed(空态,绝不建段)
 TEST_CASE("VIZ-3 写方进程退出 → 读方空态;再上线 → 读方重连", "[ipc][viz]")
 {
     constexpr scvb::u32 kGroup = 3;
-    scvb::SegmentBackendWin32 backend;
+    scvb::PlatformSegmentBackend backend;
 
     // 起点:段不存在。
     {

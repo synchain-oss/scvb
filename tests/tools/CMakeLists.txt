@@ -28,8 +28,10 @@ if(WIN32)
 endif()
 
 # scvb_ipc_peer:L1 双进程 IPC 契约测试的对端进程(10-validation §2.1/§2.3,T07b)。
-# 仅 WIN32;链接 scvb_core;共享 tests/ipc/ipc_contract_harness.h 的环读写语义。
-if(WIN32)
+# 链接 scvb_core;共享 tests/ipc/ipc_contract_harness.h 的环读写语义。
+# [B 线 M12a] 原先仅 WIN32;M12a 起 Apple 上同样构建(段后端走 PlatformSegmentBackend,与消费它的
+# scvb_ipc_tests / scvb_monitor_tests 同一组平台)。其余非 Windows 平台没有真共享内存后端,不构建。
+if(WIN32 OR APPLE)
   add_executable(scvb_ipc_peer
     scvb_ipc_peer.cpp
   )
@@ -83,4 +85,9 @@ endif()
 # 在此挂构建依赖(顶层 add_subdirectory 顺序:tests 在前、tests/tools 在后,故不能写在 tests/ 里)。
 if(TARGET scvb_monitor_tests AND TARGET scvb_ipc_peer)
   add_dependencies(scvb_monitor_tests scvb_ipc_peer)
+endif()
+# [B 线 M12a] scvb_ipc_tests 同理(此前没挂:全量构建 all 时恰好编到,只编这一个目标时对端会缺席,
+# 每个跨进程格在 spawnPeer 上报 ERROR_FILE_NOT_FOUND / ENOENT)。
+if(TARGET scvb_ipc_tests AND TARGET scvb_ipc_peer)
+  add_dependencies(scvb_ipc_tests scvb_ipc_peer)
 endif()

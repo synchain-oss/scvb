@@ -1,4 +1,4 @@
-# Catch2 冒烟(scvb_tests)+ L1 IPC 契约骨架(scvb_ipc_tests,仅 WIN32)。
+# Catch2 冒烟(scvb_tests)+ L1 IPC 契约测试(scvb_ipc_tests,Windows 与 macOS,[B 线 M12a] 起)。
 # 目标结构真源:10-validation §2.1(本卡只落 scvb_tests 冒烟 + scvb_ipc_tests 骨架)。
 enable_testing()
 
@@ -64,6 +64,8 @@ add_executable(scvb_tests
   core/test_track_name_ipc.cpp # [J150] ctrl 段轨道名区 + OutputSession 采信三道门
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
+  core/test_mix_source_provenance.cpp # [A-1] 读环出处判据落点(A-3 的 oracle 模糊测试在此展开)
+  core/test_presence_meter.cpp # [A-1] 在场判据仪器 tests/support/presence_meter.h 的自测
   core/test_panlaw.cpp # [SL-575] 10 §4.4.1 PANLAW-2..5 渲染层对拍(发版验证清单 D3)
   core/test_output_session.cpp
   core/test_feature_fingerprint.cpp
@@ -86,6 +88,33 @@ if(SCVB_TESTS_WITH_EBUR128)
   target_include_directories(scvb_tests PRIVATE ${libebur128_SOURCE_DIR}/ebur128)
   target_link_libraries(scvb_tests PRIVATE ebur128)
 endif()
+
+# [B 线 M06a] macOS 专属源的接缝:POSIX 共享内存后端(M05)的用例落在这里。用独立的
+# target_sources 追加块,不碰上面 scvb_tests 的源列表(跨线协调:那份列表由 A 线一次登记)。
+# Windows 上这个块不生效,scvb_tests 的源集合逐字不变。
+if(APPLE)
+  target_sources(scvb_tests PRIVATE core/test_segment_backend_posix.cpp)
+endif()
+
+# [B 线 M03] 进程身份与 pid 探活的平台口径([platform][identity]):Windows 与 macOS 都编、都跑;
+# 文件内的 POSIX 专属格(fork 后回收的子进程 pid 判死)由 #ifndef _WIN32 守着。同样是独立的
+# target_sources 追加块,不碰上面那份 scvb_tests 源列表。
+target_sources(scvb_tests PRIVATE core/test_platform_identity.cpp)
+
+# [B 线 M04] seqlock 双线程压测(PlayheadShot / MeterShot 的 arm64 内存序)。同样是独立的
+# target_sources 追加块,不碰上面 scvb_tests 的源列表;两平台都编。用例打隐藏标签 [.],所以
+# 下面 `scvb_tests` 那一条 ctest(30s 上界,见 [SL-320] 那段)**不跑**它们;由独立 ctest 条目
+# `scvb_seqlock_stress` 用同一个二进制按标签 `[stress]` 单跑,上界单独给(见紧随的 set_tests_properties)。
+target_sources(scvb_tests PRIVATE core/test_seqlock_stress.cpp)
+
+# [B 线 M04b] AudioRing::write 相邻两笔之间写侧顺序的双线程压测(arm64 内存序)。同样是独立的
+# target_sources 追加块,两平台都编;用例打隐藏标签 [.] 与 [stress],由上面 M04 的 ctest 条目
+# `scvb_seqlock_stress` 一起单跑(同一个二进制按 `[stress]` 选,上界见那一条的 set_tests_properties)。
+target_sources(scvb_tests PRIVATE core/test_audio_ring_stress.cpp)
+
+# [B 线 M07b] viz 实得速率的计数与窗口汇总(src/core/diag/VizRateMeter.*,[M07b][vizrate])。注入逻辑时刻、
+# 不看墙钟,进默认 `scvb_tests` 那一条(上界同那一条)。同样是独立的 target_sources 追加块;两平台都编都跑。
+target_sources(scvb_tests PRIVATE core/test_viz_rate_meter.cpp)
 
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
@@ -145,6 +174,14 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 # ─────────────────────────────────────────────────────────────────────────────
 set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
 
+# [B 线 M04] seqlock 压测的独立条目(源见上面 M04 的 target_sources 块)。用例按墙钟定长:
+# 每种 shot × 三种缓存行摆放 = 6 轮,每轮读侧 100ms,设计时长约 0.6s,不随机器快慢伸缩。
+# [B 线 M04b] 同一条目还跑 AudioRing 写侧压测(test_audio_ring_stress.cpp):4 格,每格读侧至少 150ms,
+# 设计时长约 0.6s;非空洞下限没到时每格最多延到 2s(最坏约 8s)。合计设计约 1.2s、最坏约 9s。
+# 上界沿用 [SL-320] 那段的规则 `max(最慢观测 × 3, 30s)`,落在 30s 这一档(实测见 #366 与 M04b 的 PR 描述)。
+add_test(NAME scvb_seqlock_stress COMMAND scvb_tests "[stress]")
+set_tests_properties(scvb_seqlock_stress PROPERTIES TIMEOUT 30)
+
 # scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
 # ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。
 # 03 §8 P-1/P-2/P-3:遍历 makeOutputLayout 的实际 getParameters() 对拍 tests/golden/params_v0.tsv。
@@ -180,6 +217,13 @@ else()
   target_compile_options(scvb_params_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# [B 线 M06b] AU 参数 ID 冻结表([params][au]):123 个 ParamID 现算的 AU 参数 ID 两两不同、最高位为 0、
+# 等于文件内嵌的表,并与 JUCE 给 VST3 算的 ID 逐项相等。两个参数 ID 宏读根 CMakeLists.txt 的
+# SCVB_PLUGIN_PARAM_ID_DEFINITIONS —— 与三个插件同一个变量,用例里的 static_assert 钉的才是插件的口径。
+# Windows / macOS 都编都跑。独立的 target_sources 追加块,不碰上面那份源列表(跨线协调)。
+target_sources(scvb_params_tests PRIVATE core/test_au_param_ids.cpp)
+target_compile_definitions(scvb_params_tests PRIVATE ${SCVB_PLUGIN_PARAM_ID_DEFINITIONS})
+
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
@@ -187,6 +231,14 @@ set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
 # scvb_monitor_tests:T45 Monitor 三铁律的 L0 断言(0 参数 / 直通按位相等 / 共享段零写入)。
 # 只编 MonitorProcessor.cpp,并定义 SCVB_MONITOR_HEADLESS —— MonitorEditor 依赖 WebViewHost 的
 # 真 WebView2 实例化,与 InputEditor/OutputEditor 同款留给 gate 8 的真机 GUI pluginval。
+# [B 线 M06a] 原先只在 WIN32 下定义(harness 直接用 SegmentBackendWin32、CreateProcessW、CreateMutexW)。
+# [B 线 M12a] Windows 与 macOS 都编都跑:段后端走 PlatformSegmentBackend(macOS = SegmentBackendPosix),
+# support/peer_spawn.h(posix_spawn / waitpid / kill)与 support/exclusive_guard.h(按 uid 的 flock)
+# 都有了 POSIX 实现,对端 scvb_ipc_peer 同样在 Apple 上构建(tests/tools/CMakeLists.txt)。
+# 只放开条件,块内一行不改,Windows 上的源集合与属性逐字不变;TIMEOUT 600 两平台共用(mac 实测 17.16s,
+# CI macos-15 arm64;Windows CI 实测 16s 量级,只拦挂死、不是性能预算)。其余非 Windows 平台(没有真共享内存
+# 后端)仍不定义。
+if(WIN32 OR APPLE)
 add_executable(scvb_monitor_tests
   core/test_monitor_processor.cpp
   # [统筹加码] 全数据链双进程 harness:真 VizPublisher 对端进程 + 真 MonitorProcessor,
@@ -220,6 +272,7 @@ add_test(NAME scvb_monitor_tests COMMAND scvb_monitor_tests)
 # harness 拉真进程(scvb_ipc_peer),给足超时。对端的构建依赖在 tests/tools/CMakeLists.txt 里挂 ——
 # 顶层是先 add_subdirectory(tests) 再 add_subdirectory(tests/tools),此处 scvb_ipc_peer 还不存在。
 set_tests_properties(scvb_monitor_tests PROPERTIES TIMEOUT 600)
+endif()
 
 # scvb_plugin_common_tests:T26 WebView 装配层 L0 单测(链接 juce_gui_extra,离线 Catch2)。
 # 只编可离线单测的 TU:ResourceProvider/BridgeBase/FallbackPanel/PlatformWebView。
@@ -267,6 +320,19 @@ add_test(NAME scvb_plugin_common_tests COMMAND scvb_plugin_common_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_plugin_common_tests PROPERTIES TIMEOUT 30)
 
+# [B 线 M07] WebView C++ 侧 mac 适配的判据([M07] / [mac] 标签,tests/webview/test_plugin_common.cpp):
+#   · PlatformLog.cpp(mac 文件日志:轮转、IpcDiag sink 去重、只在消息线程写)进本目标,每个平台都编都跑;
+#   · SCVB_SOURCE_DIR:[M07][source] 两格读 WebViewHost.cpp 与三个插件入口的源码文本(那几个 TU 依赖真
+#     WebView / 插件 wrapper,不编入,接线只能这样判 —— 与 scvb_input_bridge_tests 的 [SL-463] 同一手法);
+#   · Apple 上另链 scvb_core:IpcDiag 只在 Apple 上编进 scvb_core,SCVB_HAS_POSIX_SHM 也由它 PUBLIC 带过来,
+#     [mac] 那一格要经真 reportIpcDiag() 走一遍 sink。Windows 上不链,源集合只多一个 PlatformLog.cpp。
+# 独立的追加块,不碰上面那份源列表(跨线协调)。
+target_sources(scvb_plugin_common_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/plugin-common/PlatformLog.cpp)
+target_compile_definitions(scvb_plugin_common_tests PRIVATE SCVB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(APPLE)
+  target_link_libraries(scvb_plugin_common_tests PRIVATE scvb_core)
+endif()
+
 # scvb_input_bridge_tests:T30 Input 桥 L0 单测(claim 六值/载荷形状/拒绝语义;链接 JUCE,离线 Catch2)。
 # 只编可离线单测的 TU:InputBridgeLogic + BridgeBase(InputEditor 依赖 WebViewHost 真 WebView2
 # 实例化,留待 gate 8 真机 GUI pluginval 验证,不编入本测试)。
@@ -299,8 +365,10 @@ add_test(NAME scvb_input_bridge_tests COMMAND scvb_input_bridge_tests)
 # [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
 set_tests_properties(scvb_input_bridge_tests PROPERTIES TIMEOUT 30)
 
-# scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
-if(SCVB_BUILD_IPC_TESTS AND WIN32)
+# scvb_ipc_tests:L1 双进程 IPC 契约测试(实现由 T07b 填充)。
+# [B 线 M12a] 原先仅 WIN32;M12a 起 Windows 与 macOS 都编都跑(理由同上面 scvb_monitor_tests 那段)。
+# 其余非 Windows 平台没有真共享内存后端,仍不定义。
+if(SCVB_BUILD_IPC_TESTS AND (WIN32 OR APPLE))
   add_subdirectory(ipc)
 endif()
 
@@ -314,13 +382,20 @@ endif()
 #   · 那两个 TU 里的 createEditor() 会把 WebViewHost/WebView2 拖进来(harness 不需要 GUI);
 #   · createPluginFilter() 在两侧同名,同进程托管两个插件会撞符号。
 # 见 src/output/OutputPluginEntry.cpp 头注。
-# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**(Win32 CreateFileMapping),
-# 属重量级进程外资源测试,不该在非 Windows 上进默认 ctest 集合。
-if(WIN32)
+# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**,只在有真段后端的平台上定义。
+# [B 线 M12b] 原先仅 WIN32;M12b 起 Windows 与 macOS 都编都跑:用例里直接建段的地方一律写
+# PlatformSegmentBackend(Windows = SegmentBackendWin32 / CreateFileMapping,macOS = SegmentBackendPosix /
+# shm_open + flock),同机独占守卫 support/exclusive_guard.h 两平台都有真实现(M12a)。只放开条件,
+# 块内源列表不动,Windows 上的源集合逐字不变。其余非 Windows 平台没有真段后端,仍不定义。
+if(WIN32 OR APPLE)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
-  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真 Win32 段)
+  host/test_host_track_name.cpp # [J150] 轨道名自动填 label(真 Processor + 真共享内存段)
   host/test_host_undo_coverage.cpp # [SL-536] 轨道页开关 × 插件撤销栈
+  # [A-1] 宿主调度模拟器两份落点,用例一律打 `[.][sched]`:主条目默认不跑,由下面的
+  # `scvb_host_sched_tests` 显式选中。
+  host/test_host_sched.cpp # 框架自测(A-2 展开)
+  host/test_host_sched_scenarios.cpp # 复现场景 LS-1…15(A-4 展开)
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
@@ -355,7 +430,6 @@ else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # [SL-311] 显式上界。此前这一套**没有** TIMEOUT 属性,吃 ctest 的默认 1500s ——
 # 一次真挂死要占住机器 25 分钟以上(实测见过 `***Timeout 2278.13 sec`),而它此刻
 # 正持着 `Local\SCVB-ipc-tests`,全机别的 agent 一起等。
@@ -392,5 +466,78 @@ add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # ⚠ 这个数字**不负责收残留**。受控复现里(注入永不返回的用例 + TIMEOUT 30)ctest 到点
 # 确实杀掉了被测进程,返回后立刻数与 5 秒后再数都是 0;但另一次真实场景里残留确实出现过,
 # 成因还没查清。兜底在 `scripts/gates.ps1` gate 6 前后那两次孤儿扫描,不在这里。
+#
+# [B 线 M12b] 上面这些观测与 900 都是 Windows 的;这一条只在 Windows 上登记,macOS 上同一套分成四片(else 段)。
+if(WIN32)
+add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 set_tests_properties(scvb_host_tests PROPERTIES TIMEOUT 900)
+else()
+# [B 线 M12b] macOS:同一个二进制按 Catch2 的 `--shard-count 4 --shard-index <i>` 分成四条,
+# scvb_host_tests_shard1of4 … shard4of4。分片按声明顺序连续切,四片的并集恰好是主条目的全部非隐藏格
+#(不加也不漏;`[.][sched]` 照旧只归下面的 scvb_host_sched_tests)。
+#
+# **为什么要分**(macos-15 arm64 CI 实测,run 38167022531 / 38169510581,不分片的一条):
+#   · 900 s 到点被杀,只跑完 182 / 181 格,其余没跑;跑完的格**全绿**。同一格的耗时中位数是 Windows CI
+#     的 2.34 倍,慢在等待而不是算力:同一进程里 25Hz juce::Timer 的实得间隔 p50 92 ms / p90 179 ms,
+#     runDispatchLoopUntil(1) 实得 p50 10 ms(Windows CI 同一测法 40.5 ms / 1.0 ms),而这里的用例多是
+#     「泵消息直到某个 Timer 驱动的条件成立」。整轮声明 NSProcessInfo 活动(App Nap 豁免,另试过加
+#     LatencyCritical)实测没有改善(Timer p50 102 / 144 ms),粒度来自 runner 环境,测试里改不了。
+#   · 整套估计约 1260 s(跑完的格取实测、其余按 2.34 倍外推)。不为一个平台把拦挂死的线抬到 1500 s
+#     附近(那就失去了 SL-311 要的「早拦」),改成分片,每片仍用上面那条 900 s 线。
+#   · 分片不省总时长:四条照样串行(exclusive_guard 互斥,mac 的 ctest 步不带 -j)。它保的是每条都在
+#     900 s 线下,以及一片挂死被杀时另几片的结论还在 —— 被杀的那片会在 POSIX 上留下无主段(SIGKILL 来不及
+#     shm_unlink),build-macos.yml 的 11a 残段基线随之红,这是对的。
+# 切点按格数、不按耗时,所以四片不等长。实测(run 38174830485,macos-15 arm64):144.8 / 249.2 / 544.4 /
+# 458.6 s,最长那片对 900 s 约 1.65 倍余量(分片前按格外推的估计是 141 / 251 / 530 / 334 s,第 4 片偏乐观)。
+foreach(scvb_host_shard RANGE 3)
+  math(EXPR scvb_host_shard_no "${scvb_host_shard} + 1")
+  add_test(NAME scvb_host_tests_shard${scvb_host_shard_no}of4
+           COMMAND scvb_host_tests --shard-count 4 --shard-index ${scvb_host_shard})
+  set_tests_properties(scvb_host_tests_shard${scvb_host_shard_no}of4 PROPERTIES TIMEOUT 900)
+endforeach()
+endif()
+
+# [A-1] scvb_host_sched_tests:宿主调度模拟器(A 线)的独立条目。同一个二进制,只靠 Catch2 的
+# 过滤串 `[sched]` 选出 `host/test_host_sched*.cpp` 里打 `[.][sched]` 的用例:
+#   · `[.]` 隐藏 ⇒ 上面的主条目 `scvb_host_tests` 命令行不变、默认**不跑**它们,主条目
+#     那个量过的 900s 上界和它的基线都不受影响;
+#   · 过滤串里显式写出 `[sched]` 时,Catch2 会选中带这个标签的隐藏用例(实测见下);
+#   · 过滤不到任何用例时 Catch2 以**非零**退出(实测见下)—— 所以两份 sched 文件各放了一条
+#     最小用例,模拟器场景落地之前这条也不会红;
+#   · `[sched]` 这个标签在 `scvb_tests` 里另有一条(`[j146][sched]` 那条,`core/test_vad_preview.cpp`)。
+#     过滤是按二进制生效的,这里只选 `scvb_host_tests` 里的,互不影响。
+# 为什么单开一条、不并进主条目:模拟器场景要按墙钟节拍跑(500ms / 5s 那几道门限只能实时等),
+# 整套会长,上界要单独量;并进主条目会把 900s 那个量过的数冲掉。
+# 与主条目一样持 `support/exclusive_guard.h` 的进程互斥,两条串行跑(gates 与 CI 的 ctest 都不带 -j)。
+#
+# **观测**(A-1 落地时只有两条脚手架用例;本机,经 with-ipc-lock 手跑 ctest 三轮):
+#     scvb_host_sched_tests       0.03 0.04 0.04 (s,`Passed` 那一列)
+# 同一份二进制直接跑 `"[sched]"`:2 例全过,三轮墙钟 0.04–0.05s;过滤串换成不存在的标签时
+# 打印 `No tests ran`、退出码 2。
+# **观测**(A-2 落框架自测之后,10 例;本机经构建槽 + with-ipc-lock 手跑 ctest 六轮,CI 一轮):
+#     本机 8.91 8.82 8.88 / 8.98 8.97 8.93 s;CI(build-and-validate)8.46 s。
+# 数字取 120,不按 `max(最慢观测 × 3, 30s)` 落回 30 那一档 —— 这一套**失败的跑比通过的跑慢**
+#(与上面主条目 `HOST L-6b` 同一形态):交接走不完时,每台 rig 的 settle() 要等满 8s 墙钟上限才放弃。
+# ①②③ 各建一台;⑥ 建三台,但 `REQUIRE(rig.settle())` 第一次失败就中止整个用例,所以 ⑥ 只计一次 ——
+# 合计四次等待约 32s,加上 ⑤ 的 2s 实时与其余用例,约 35s。若以后把 ⑥ 改成 CHECK、或给每次 once()
+# 单开 SECTION,三台都会等满,失败路径涨到约 51s,120 仍够。30s 会把这种最该被看见的失败改判成
+# Timeout,超时之后那几台的断言原文都来不及打出来。
+# 120 = 失败路径约 35s 的 3 倍余量、通过路径约 9s 的 13 倍,仍远低于 ctest 默认的 1500s。
+# ⚠ A-4 落场景后**重新量**并只改这个数 —— 本文件里 A 线的源文件与 ctest 条目由 A-1 一次登记完,
+#   之后不再增删,只改这里的 TIMEOUT 与观测。
+# **观测**(A-4 落场景 LS-1…15 与 harness 里的 N2b 两条之后,49 例;本机经构建槽 + with-ipc-lock 手跑,
+#   同机有别的 agent 在构建 / 跑 gates):
+#     ctest 三轮:187.58 / 190.27 / 186.80 s(Passed);CI(build-and-validate,48 例时)187.59 s。
+#   其中按墙钟实时跑的格(pace=1:LS-11a/b、LS-12 实时格、LS-14、LS-15、LS-13 几何格的改布局段、N2b)
+#   合计约 90 s,是下限,机器再快也省不掉;其余按 pace=16 跑,CPU 跟不上时会变慢。
+#   ⚠ 纯时间线格早先用 pace=0(每周期 runDispatchLoopUntil(1))时,开发中整套量到过 193 s / 210 s /
+#   660 s(其间用例略有增减);推断是每周期那一次睡眠吃系统计时器粒度(未单独验证),改成 pace=16 之后
+#   三轮相差不到 1 s(见场景文件 kFastPace 的注释)。
+# 数字取 600,不是 120:
+#   · 通过路径:最慢观测(190 s)的约 3.2 倍,给负载下的纯时间线格留余量;
+#   · 失败路径:场景台交接的等待预算 8 s,第一台走不完之后其余台只给 1.5 s(test_host_sched_scenarios.cpp
+#     的 runScenario),一百多台 ⇒ 交接全坏时多出约 3 min,仍在 600 s 内、断言原文打得出来;
+#   · 仍远低于 ctest 默认的 1500 s。设计稿的整套目标 ≤ 5 分钟(300 s),现在约 190 s。
+add_test(NAME scvb_host_sched_tests COMMAND scvb_host_tests "[sched]")
+set_tests_properties(scvb_host_sched_tests PROPERTIES TIMEOUT 600)
 endif()

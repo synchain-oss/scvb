@@ -8,7 +8,7 @@ namespace scvb
 
 namespace
 {
-// v1 仅 Windows,OS 前缀固定 "Local\"(与 CtrlPlane.cpp 的 ctrlFullName 同构)。
+// 调用方统一传 Windows 形态的全名,OS 前缀固定 "Local\"(POSIX 后端内部再映射;与 CtrlPlane.cpp 的 ctrlFullName 同构)。
 std::wstring vizFullName(u32 group)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kViz);
