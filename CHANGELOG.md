@@ -20,7 +20,7 @@
   `LITELLM.EXTRA_HEADERS`。pr-agent 的输出上限改用真正生效的 `DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS`
   (v0.39.0 并未实现 `config.max_output_tokens`,不抬高则 litellm 默认只发 4096,带推理的模型会把额度
   全花在 reasoning 上、审查空跑而 job 报绿)。**触发面不变**:`pr-agent` 仍只在 PR → `dev` 时运行,
-  `claude-review` / `deepseek-review` 仍覆盖所有 base 分支。(pending #412)
+  `claude-review` / `deepseek-review` 仍覆盖所有 base 分支。(#412)
 
 ### 修复
 
