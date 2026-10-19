@@ -1,4 +1,4 @@
-name: Claude PR Review
+name: Claude PR Review (Opus 5.5)
 
 # Claude（Opus 5.5）代码审查，走用户的 Claude 订阅（OAuth token，不按量计费）。只审不改。
 # 所有非晋升 PR 都跑（跳过 draft / fork / dependabot；dev → staging → prod 的晋升 PR 不审）。
@@ -6,6 +6,7 @@ name: Claude PR Review
 # 里统一维护；这里只放本仓专属的审查重点（focus）与背景（extra_prompt）。
 # 保留的约束：J31（仅 same-repo，中央 workflow 里做）；J20（本仓 workflow 不得用向 fork PR 供密的触发事件，见 CLAUDE.md §0 第 4 条；fork PR 的 AI 审查只走 review-dispatch 的 /review）。
 # review-dispatch.yml 自带一份 prompt（不再从本文件读取），改 focus / extra_prompt 时要同步它。
+# deepseek-review.yml 的 focus / extra_prompt 与本文件一致，唯一的差别是「输出方式」一节（无行内评论工具）；同步时不要把它覆盖回 inline comment 写法。
 
 on:
   pull_request:
@@ -20,7 +21,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
-    uses: Synchain-oss/ci-workflows/.github/workflows/claude-review.yml@62556ec3f2b4e049c5b099ebd9c56c4a2888a0a9 # v1.1.0
+    uses: Synchain-oss/ci-workflows/.github/workflows/claude-review.yml@8028e34628bc2276ca978d87ccfc364432742820 # v1.3.1
     with:
       focus: |
         ### 1. 实时音频线程安全(最高优先级)
