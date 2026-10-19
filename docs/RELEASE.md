@@ -213,7 +213,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 - 两个 PR 都用「Create a merge commit」合并(`gh pr merge --merge`),**不要 squash / rebase**:squash 之后 `staging` / `prod` 的历史里没有 `dev` 上的那些提交,下一次晋升会把已经发布过的改动再带一遍。合并提交只在 `staging` / `prod` 上,不在 `dev` 的历史里,这是有意的,`dev` 不回收它们(里程碑的前置检查只看 `dev` 与 `feature/v1`,不受影响)。所以 `prod` 与 tag 指向的是合并提交:sha 与里程碑提交不同,树逐字相同。
 - `branch-gate` 管这两个 PR 的来源:base = `staging` 只收本仓的 `dev`,base = `prod` 只收本仓的 `staging`;别的分支、fork、机器人开到这两个分支的 PR 一律红。DCO 与冻结契约守卫照常跑:DCO 跳过合并提交(上一次晋升留下的合并提交也会出现在提交列表里),其余提交逐个查签名;这批改动碰了冻结契约文件时,对应的变更文档已随 `feature/v1` 一起进来,守卫在 PR 的文件列表里看得到它(与里程碑 PR 同理),PR 照样挂 `status/frozen-contract`。
-- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。`claude-review` / `deepseek-review` 不挑 base,会照常跑(`pr-agent` 只在 PR → `dev` 时运行,这两个 PR 上不跑);它们不是必需检查,内容也已在子 PR 与里程碑 PR 上审过,但 `staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),bot 留下的讨论要逐条处理、解决之后才能合。
+- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。这两个 PR 上也不跑任何 AI review:中央 `claude-review` 跳过晋升 PR(`dev` → `staging`、`staging` → `prod`),`pr-agent` 只在 PR → `dev` 时运行,`deepseek-review` 只能手动触发;内容已在子 PR 与里程碑 PR 上审过。`staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),PR 上若有人留了讨论,要逐条处理、解决之后才能合。
 - `staging` / `prod` 的分支保护(要求走 PR、0 个审批、`enforce_admins`、禁止 force push 与删除、合并前解决讨论)**原样不动**。两个分支目前都没有必需检查,`branch-gate` 红了 GitHub 也不会拦下合并,所以合并之前自己确认它是绿的。
 
 ### 每次发布的顺序

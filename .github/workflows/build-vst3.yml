@@ -7,8 +7,8 @@ name: Build & Validate
 #
 #   轻档  子 PR(base=`feature/**`)**且没碰 native 路径**:不跑本工作流。仍跑 format
 #         (clang-format / web-smoke / docs-truth)、compliance(gitleaks / REUSE /
-#         check-privacy / 设计盒)与 claude-review / deepseek-review 两个 review bot
-#         (pr-agent 只在 PR → dev 时运行)。
+#         check-privacy / 设计盒)与 claude-review 一个 review bot
+#         (pr-agent 只在 PR → dev 时运行;deepseek-review 只能手动触发)。
 #         **[SL-283] 修正**:碰了 native 路径(src / tests / cmake / CMakeLists.txt /
 #         **web** / third_party / 钉版文件 / 本文件 / 两个 mac reusable workflow /
 #         scripts/package-macos.sh 及它调用的 scripts/package.ps1、scripts/lib/release-version.ps1)
