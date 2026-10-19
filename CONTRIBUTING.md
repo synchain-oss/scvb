@@ -53,7 +53,7 @@ git rebase --signoff      # 一段区间
 | `branch-gate` 的**命名规则** | 对开到 `dev` 的 fork PR **不 exit 1**(开到 `staging` / `prod` 的一律红,这两个分支只收发版晋升)。只断言 head 分支名不在上述长期分支名集合(防同名伪装晋升),**不强制 `feat/*` 命名** —— 命名规则仅约束 same-repo 分支 |
 | `branch-gate` 的**另两条断言** | **对 fork 照常生效**:DCO(每个 commit 要有 `Signed-off-by:`)与冻结契约 path guard(见 §8)任一不过,`branch-gate` 同样红。豁免的只有命名规则那一条 |
 | 构建 / 测试 | 只跑**无 secrets** 的 job(`build-vst3` / `format` / `branch-gate` / `compliance`),且需维护者批准 workflow run 后才开始跑 |
-| AI review bot | `claude-review` / `deepseek-review` / `pr-agent` 都带 same-repo 条件,**fork PR 一律不自动跑** |
+| AI review bot | `claude-review` / `deepseek-review` / `pr-agent` 都带 same-repo 条件(现在由 `Synchain-oss/ci-workflows` 的中央 workflow 判定),**fork PR 一律不自动跑**;`deepseek-review` 只能手动触发 |
 | `external` label | 由**维护者手工添加**(fork PR 的 `GITHUB_TOKEN` 只读,workflow 内加不了标签) |
 | fork PR 的 AI 审查 | 只走两条合规路:**方案 D** = 维护者评论 `/review` 显式触发(本仓的默认实现,`.github/workflows/review-dispatch.yml`);**方案 C** = workflow_run 两阶段、全程不 checkout PR 代码(本仓未实现,保留为合规替代)。见 [CLAUDE.md](./CLAUDE.md) §0 铁律第 4 条 |
 
