@@ -1,4 +1,4 @@
-name: Claude PR Review
+name: Claude PR Review (Opus 5.5)
 
 # Claude（Opus 5.5）代码审查，走用户的 Claude 订阅（OAuth token，不按量计费）。只审不改。
 # 所有非晋升 PR 都跑（跳过 draft / fork / dependabot；dev → staging → prod 的晋升 PR 不审）。
@@ -20,7 +20,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
-    uses: Synchain-oss/ci-workflows/.github/workflows/claude-review.yml@62556ec3f2b4e049c5b099ebd9c56c4a2888a0a9 # v1.1.0
+    uses: Synchain-oss/ci-workflows/.github/workflows/claude-review.yml@8028e34628bc2276ca978d87ccfc364432742820 # v1.3.1
     with:
       focus: |
         ### 1. 实时音频线程安全(最高优先级)

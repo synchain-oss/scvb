@@ -1,4 +1,4 @@
-name: PR Agent
+name: PR Agent (DeepSeek V4.1 Flash)
 
 # pr-agent（describe / review / improve），DeepSeek V4.1 Flash 经 OpenCode Go，按量计费。
 # 只在 PR → dev 上跑（base 过滤在中央 workflow 里做），PR 每次 push 都重跑。
@@ -21,7 +21,7 @@ jobs:
       contents: read        # pr-agent 要读 PR 文件与 .pr_agent.toml
       issues: write
       pull-requests: write
-    uses: Synchain-oss/ci-workflows/.github/workflows/pr-agent.yml@62556ec3f2b4e049c5b099ebd9c56c4a2888a0a9 # v1.1.0
+    uses: Synchain-oss/ci-workflows/.github/workflows/pr-agent.yml@8028e34628bc2276ca978d87ccfc364432742820 # v1.3.1
     with:
       provider: opencode-go
       ignore_globs: '["scripts/curve-parity-golden.json","docs/design/*","docs/images/*","screenshots*/*","third_party/miniz/*","third_party/notices/*","web/js/juce/*","web/fonts/*.woff2","tests/golden/state/*.bin","LICENSES/*","*.png","*.jpg","*.woff2"]'
