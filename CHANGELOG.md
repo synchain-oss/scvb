@@ -27,8 +27,8 @@
   `workflow_dispatch` 手动触发。检查名随之变为 `pr-agent / pr-agent`、`claude-pr-review / review`,
   `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。(#413)
 - **中央 review workflow 升级到 v1.3.1,workflow 名标出模型**:三个调用方改钉中央 `v1.3.1`(commit SHA)。v1.3.0 的安全修复:
-  `workflow_dispatch` 下中央 workflow 会把 `CLAUDE.md` / `.claude/` / `.mcp.json` 还原成 base 版本;`dev` → `prod` 的晋升 PR 不跑任何 AI review。
-  触发面以本条为准:`claude-review` 覆盖所有非晋升 PR 的 base;上一条 #412 里「`deepseek-review` 仍覆盖所有 base 分支」的说法已过时(它现在只能手动触发)。(#415)
+  `workflow_dispatch` 下中央 workflow 会把 `CLAUDE.md` / `.claude/` / `.mcp.json` 还原成 base 版本。另订正文档:`dev` → `staging`、`staging` → `prod` 的晋升 PR 不跑任何 AI review。
+  触发面以本条为准:`claude-review` 覆盖所有非晋升 PR 的 base;#412 条目里「`deepseek-review` 仍覆盖所有 base 分支」的说法已过时(它现在只能手动触发)。(#415)
 
 ### 修复
 
