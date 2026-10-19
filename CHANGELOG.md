@@ -16,7 +16,7 @@
   三个文件缩成薄调用方,只留本仓专属的 `focus` / `extra_prompt` / `ignore_globs`;模型、工具边界、符号链接拒审、超时、
   pr-agent 镜像(按 digest 钉住、无备用模型)统一在中央维护,调用方按 commit SHA 引用。`deepseek-review` 改为只能
   `workflow_dispatch` 手动触发。检查名随之变为 `pr-agent / pr-agent`、`claude-pr-review / review`,
-  `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。
+  `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。(#414)
 
 ### 修复
 
