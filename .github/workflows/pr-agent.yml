@@ -21,7 +21,7 @@ jobs:
       contents: read        # pr-agent 要读 PR 文件与 .pr_agent.toml
       issues: write
       pull-requests: write
-    uses: Synchain-oss/ci-workflows/.github/workflows/pr-agent.yml@5c5defd08f79a320261700a5c1d8696af5a20ec0 # v1.3.2
+    uses: Synchain-oss/ci-workflows/.github/workflows/pr-agent.yml@070537914c9af4c2742b8fc5c7f63e06daef82ae # v1.3.3
     with:
       provider: opencode-go
       ignore_globs: '["scripts/curve-parity-golden.json","docs/design/*","docs/images/*","screenshots*/*","third_party/miniz/*","third_party/notices/*","web/js/juce/*","web/fonts/*.woff2","tests/golden/state/*.bin","LICENSES/*","*.png","*.jpg","*.woff2"]'
