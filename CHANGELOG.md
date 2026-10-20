@@ -30,6 +30,7 @@
   `workflow_dispatch` 下中央 workflow 会把 `CLAUDE.md` / `.claude/` / `.mcp.json` 还原成 base 版本。另订正文档:`dev` → `staging`、`staging` → `prod` 的晋升 PR 不跑任何 AI review。
   触发面以本条为准:`claude-review` 覆盖所有非晋升 PR 的 base;#412 条目里「`deepseek-review` 仍覆盖所有 base 分支」的说法已过时(它现在只能手动触发)。(#415)
 - **中央 review workflow 升级到 v1.3.2**:三个调用方改钉中央 `v1.3.2`(commit SHA)。调用方无输入与行为变化;中央侧变化:`claude-review` / `deepseek-review` 的模型工具拒绝清单新增 `Read(//github/**)`,`claude-review` 与 `pr-agent` 在 step summary 里记录实际运行的中央 commit。(#417)
+- **中央 review workflow 升级到 v1.3.3**:三个调用方改钉中央 `v1.3.3`(commit SHA)。调用方无输入与行为变化;中央侧变化:`pr-agent` 的输入预算 `max_model_tokens` 随 provider 取默认值(`anthropic` 为 500000,原 800000;`opencode-go` / `deepseek-api` 仍为 800000),因为 pr-agent 用 OpenAI 分词器计数、会低估 Claude token,大 PR 上 800000 预算的 prompt 实测 1001327 个 Haiku token、超出 1M 窗口而无审查产出;step summary 同时列出输入预算。本仓 `pr-agent` 调用方用 `opencode-go`,行为不变。(#419)
 
 ### 修复
 
