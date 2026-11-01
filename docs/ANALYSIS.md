@@ -4,13 +4,13 @@
 > 最后更新: 2026-08-24(蒸馏自 ADR-007..010 + 计划 02/03)
 > 真源: 本文件(由 `docs/constitution/ADR.md` + masterPlan/plan/02/03 蒸馏)
 
-本文蒸馏 SCVB 的分析算法面:特征提取 → VAD → 分段 → 段响度 → 自动分配 → L/R 平衡 → pan 曲线。每条语义标注 ADR 编号;实现级细则(滤波器系数、状态机、测试向量)以计划 02 为准,本文只给契约级口径。
+本文蒸馏 SCVB 的分析算法面:特征提取 → VAD → 分段 → 段响度 → 自动分配 → L/R 平衡。pan 曲线、全局 Width、每轨 width 只在播放时叠加,不属于分析。每条语义标注 ADR 编号;实现级细则(滤波器系数、状态机、测试向量)以计划 02 为准,本文只给契约级口径。
 
 ## 1. 分析流水线总览
 
 ```text
 特征流(每 hop) → VAD(能量域双阈值) → 分段(能量谷/换气容忍) → 段响度
-    → 自动分配(槽位 + 匈牙利) → L/R 平衡(ρ=cos2θ 迭代) → pan 曲线(角度域 EQ)
+    → 自动分配(槽位 + 匈牙利) → L/R 平衡(ρ=cos2θ 迭代)
 ```
 
 采集**只存特征不存音频**(ADR-007);分析产物 = 每版本每轨的分段时间线曲线(pan/vol),是「真身」,存 Output state(ADR-005)。
@@ -56,5 +56,5 @@
 - **equal-power pan(sin/cos)**,Output 内部实现,与宿主 pan law 无关(前提:人声轨与总线的宿主 pan 保持居中,文档写明)。
 - **不用 M/S 拉宽**:width>1 会对幅度声像源造成极性反转(research/07);期望宽度 = 几何角度缩放(把分配角乘以 width 系数)。
 - **stereo dual-pan+width 模型**(J57):L/R 各自 equal-power pan,pan 参数 = 弧中心,每轨 width = 张开度,width=0 收成 mono。
-- **pan 角度域增益曲线**:x=pan 角[-100,+100],y=gain dB;点类型 bell/shelf/cut 三种,带 Q;实现按 EQ 曲线插值同构(J07 增 side: out|left|right)。
+- **pan 角度域增益曲线**:x=pan 角[-100,+100],y=gain dB;点类型 bell/shelf/cut 三种,带 Q;实现按 EQ 曲线插值同构(J07 增 side: out|left|right)。**只在播放时叠加**:分析不读它,写进宿主的 pan/vol 车道也不受它影响。
 - **段间过渡**:在段边界(停顿/换气)切换,默认 ramp 80ms(可调),避免可闻跳变。

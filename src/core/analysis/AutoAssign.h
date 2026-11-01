@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "analysis/PanCurve.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -103,7 +101,6 @@ struct BalanceConfig
     double volSoftMax = 9.0; // vol_soft_window 上界。
     double uHardMin = -24.0; // 参数硬范围下界(仅文档/截断参照)。
     double uHardMax = 12.0; // 参数硬范围上界。
-    std::vector<PanCurvePoint> panCurve; // 曲线 G(P);空 → G≡0(c≡1)。
     double deltaMax = 15.0; // δ ∈ [−15,+15](§6.4 step 3)。
     double deltaPrecision = 0.1; // δ 步进精度。
     int deltaBinaryIters = 20; // δ 二分 ≤20 次。

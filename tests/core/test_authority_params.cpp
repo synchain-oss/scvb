@@ -942,3 +942,33 @@ TEST_CASE("AUTH-PARAMS-21 [J157] 预览何时作废:撤回 / 已提交曲线变�
     CHECK(f.auth.versionActive() == 2);
     CHECK_FALSE(f.auth.panCurvePreviewLive());
 }
+
+// 曲线只在播放时叠加(变更文档 20261101-pan-curve-playback-only.md):打印器写进宿主的值、
+// 冻结时用户手调的值、FOLLOW 档用户画的自动化,都来自这一层引擎值,而改曲线碰不到它。
+TEST_CASE("AUTH-PARAMS-22 改 pan 曲线不改引擎值(引擎 / 冻结 / 跟随三档)", "[authority][params][pancurve]")
+{
+    AuthorityParamsFixture f;
+    auto ev = constCurve(30.0, -3.0);
+    f.auth.setCurve(1, 0, &ev);
+    f.handles.rawPan[0][0]->store(-40.0f);
+    f.handles.rawVol[0][0]->store(5.0f);
+
+    const auto valuesBeforeAndAfterCurve = [&f](bool engine, float frz, float expectPan, float expectVol) {
+        f.auth.setPanCurve(1, {});
+        f.handles.rawFrz[0][0]->store(frz);
+        const auto before = f.auth.processBlock(engine, 0.0);
+        REQUIRE(before[0].pan == Approx(expectPan).margin(1e-6));
+        REQUIRE(before[0].volDb == Approx(expectVol).margin(1e-6));
+
+        f.auth.setPanCurve(1, bellAt0(-12.0f));
+        const auto after = f.auth.processBlock(engine, 0.0);
+        // 判别量:这张表真的送到了音频线程,否则「值没变」是因为曲线根本没生效。
+        REQUIRE(f.auth.arbiter().panCurveLut() == f.auth.activePanCurveLut().get());
+        CHECK(after[0].pan == before[0].pan);
+        CHECK(after[0].volDb == before[0].volDb);
+    };
+
+    valuesBeforeAndAfterCurve(/*engine=*/true, 0.0f, 30.0f, -3.0f); // 引擎权威:段表值
+    valuesBeforeAndAfterCurve(/*engine=*/true, 3.0f, -40.0f, 5.0f); // 全冻结:用户手调的值
+    valuesBeforeAndAfterCurve(/*engine=*/false, 0.0f, -40.0f, 5.0f); // FOLLOW:用户画的自动化
+}

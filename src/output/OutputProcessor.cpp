@@ -4922,7 +4922,6 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // [J146] 收进 `analysisVadParamsOf` / `analysisSegParamsOf`(本文件顶部),拖动档预览走同一份。
     cfg.vad = analysisVadParamsOf(runtime_);
     cfg.segmentation = analysisSegParamsOf(runtime_);
-    cfg.balance.panCurve = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)].panCurve;
     // J69/02 §5.6:中心槽策略取 state(Tab4 那一档此前零消费方,拧了不生效)。
     if (runtime_.centerSlotPolicy == "lead_exclusive")
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::LeadExclusive;

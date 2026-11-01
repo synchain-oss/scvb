@@ -3213,14 +3213,14 @@ void monoPair(float pan, float volDb, float globalWidth, const scvb::PanCurveXfa
 // ⚠ 不能只拿单个通道做分母:equal-power 下 pan=+100 时 gL = cos(π/2),float 里是 -0.0f,
 // 比值当场没意义(第一版我就是这么写的,被 `bare > 0` 那条前置断言拦下)。
 // 而 gL²+gR² ≡ 1(ADR-010),所以能量比恰好就是增益比,与 pan 落在哪儿无关。
-double monoAppliedDb(float pan, float globalWidth, const scvb::PanCurveXfade& curve)
+double monoAppliedDb(float pan, float globalWidth, const scvb::PanCurveXfade& curve, float volDb = 0.0f)
 {
     float l = 0.0f;
     float r = 0.0f;
     float bl = 0.0f;
     float br = 0.0f;
-    monoPair(pan, 0.0f, globalWidth, curve, l, r);
-    monoPair(pan, 0.0f, globalWidth, kNoCurve, bl, br);
+    monoPair(pan, volDb, globalWidth, curve, l, r);
+    monoPair(pan, volDb, globalWidth, kNoCurve, bl, br);
     const double withG = std::sqrt(static_cast<double>(l) * l + static_cast<double>(r) * r);
     const double bare = std::sqrt(static_cast<double>(bl) * bl + static_cast<double>(br) * br);
     return 20.0 * std::log10(withG / bare);
@@ -3338,4 +3338,25 @@ TEST_CASE("SL442-MIX-3 G 查在 P_eff 上,不是名义角(width≠100 才分得�
     // 而共用弧中心的实现会给出 evalCurve(P_eff=0),两边都是这个值 —— 与上面两条都不符。
     const double atArcCentre = scvb::evalCurve(points, 0.0);
     REQUIRE(std::fabs(dRightSub - atArcCentre) > 5.0);
+}
+
+TEST_CASE("SL442-MIX-4 曲线是叠加层:施加的增益只取决于 P_eff,和车道上的 vol 无关", "[mix][math][pancurve]")
+{
+    // 曲线不进分析之后,它和段表 / 宿主自动化之间就只剩这一层关系:vol 走它的,G 在 P_eff 上再叠一层。
+    // 哪天有人把 G 烘进 vol,或者让 G 随 vol 变,这里红。
+    const auto points = sl442Curve();
+    scvb::PanCurveLut lut;
+    lut.rebuild(points);
+    const scvb::PanCurveXfade curve{&lut, nullptr, 1.0f};
+
+    for (const float vol : {-18.0f, -6.0f, 0.0f, 9.0f})
+    {
+        for (const double pan : {-30.0, 0.0, 30.0, 63.33})
+        {
+            REQUIRE(monoAppliedDb(static_cast<float>(pan), 100.0f, curve, vol) ==
+                    Catch::Approx(scvb::evalCurve(points, pan)).margin(0.05));
+        }
+        // 判别量:谷底真的压了 9 dB,否则「和 vol 无关」可能只是「什么都没压」。
+        REQUIRE(monoAppliedDb(30.0f, 100.0f, curve, vol) == Catch::Approx(-9.0).margin(0.05));
+    }
 }
