@@ -19,7 +19,7 @@ jobs:
     name: clang-format # required check context
     runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned clang-format
         # 用 pip 版而非 apt 版:apt 的版本随 runner 镜像漂移,同一份代码在本地/CI 会格式化出不同结果。
         # 版本号必须与 scripts/gates.ps1 和 .clang-format 头注释里写的一致。
@@ -43,7 +43,7 @@ jobs:
     # 排队时间挡住;反过来 C++ 的 PR 也该照跑这套 —— web/ 是被 C++ 侧 WebView
     # 加载的真源。与 scripts/gates.ps1 的 Gate 3e 同口径。
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # 测试用到 node 内建 fetch 与全局 WebSocket;与 web-preview/README
@@ -186,7 +186,7 @@ jobs:
     # 其后 IPC 对拍 = Gate 3g、字体覆盖 = Gate 3h,各与本地同一条命令;
     # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这个号上线没有」。
           # 默认的 fetch-depth: 1 只给一条提交 ⇒ 已上线集合近乎为空 ⇒ 那道门禁永远绿。

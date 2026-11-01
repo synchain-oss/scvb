@@ -94,7 +94,7 @@ jobs:
     outputs:
       native: ${{ steps.scan.outputs.native }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # pull_request 事件下 checkout 的是 refs/pull/N/merge 这个**合并提交**,
           # 它的 ^1 = base、^2 = head,所以 `git diff HEAD^1 HEAD` 正好是本 PR 的改动面。
@@ -281,7 +281,7 @@ jobs:
       # webview2-nuget-* 一起挤掉,表现为「CI 照样绿,只是又慢回去了」。
       SCCACHE_CACHE_SIZE: 1G
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # 只有 workflow_dispatch 才用 input;其余事件留空 = actions/checkout 的默认
           # 行为(PR 用 merge ref、push 用 push 的 sha)。
