@@ -115,7 +115,7 @@ SCVB 没有做代码签名,所以 Windows 与浏览器会把它当作「未知�
 
 ### Input 单页
 
-Input 是单页:channel 选择、组选择、连接状态、电平、直通/静音状态、就地 gain 开关。**配置的真源在 Output**,Input 上显示与可调的值实际读写的是 Output 的 state(经控制面 IPC)。
+Input 是单页:channel 选择、组选择、连接状态、电平、直通/静音状态。Input 没有 pan 和音量控件。**配置的真源在 Output**,Input 上显示与可调的值实际读写的是 Output 的 state(经控制面 IPC)。
 
 ### 首启引导与 tour
 
@@ -312,7 +312,7 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 - **单独渲染一条装了 SCVB Input 的人声轨得到的是静音文件**,替换式渲染会把原素材换成静音;做法见上面的「导出与渲染」,详见 `docs/KNOWN_ISSUES.md` 的 KI-4;
 - Output 不报告额外延迟(设计如此,不是限制);
 - run 切换时旧 run 尾部 ≤40ms 可能漏采,补播即复原;
-- Input 侧只做就地 gain,不做就地 pan(否则会和 Output 的 dual-pan 双重处理);
+- Input 侧不调 pan 也不调音量,这两件事都只在 Output 上做(在 Input 上做 pan 会和 Output 的 dual-pan 双重处理);
 - **DAW 的静音(Mute)、独奏(Solo)与推子对 SCVB 的输出不起作用**:要把某一轨从 SCVB 的输出里去掉,关掉 Output 轨道页该轨的「ON」开关。详见 `docs/KNOWN_ISSUES.md` 的 KI-8;
 - **波形页上建选区、选段与改分段(拖动、分割或删除段边界)暂时只能用鼠标或触控板**,计划在 v1.0.0 之前补上键盘做法。详见 `docs/KNOWN_ISSUES.md` 的 KI-10;
 - **macOS 是 beta**:只有 Apple Silicon、没有签名、还没有任何宿主经过验证(Logic:beta / 未在 Logic 实测)。详见 `docs/KNOWN_ISSUES.md` 的 KI-12 起;
