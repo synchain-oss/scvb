@@ -6,6 +6,7 @@ name: Claude PR Review (Opus 5.5)
 # 里统一维护；这里只放本仓专属的审查重点（focus）与背景（extra_prompt）。
 # 保留的约束：J31（仅 same-repo，中央 workflow 里做）；J20（本仓 workflow 不得用向 fork PR 供密的触发事件，见 CLAUDE.md §0 第 4 条；fork PR 的 AI 审查只走 review-dispatch 的 /review）。
 # review-dispatch.yml 自带一份 prompt（不再从本文件读取），改 focus / extra_prompt 时要同步它。
+# deepseek-review.yml 的 focus / extra_prompt 与本文件一致，唯一的差别是「输出方式」一节（无行内评论工具）；同步时不要把它覆盖回 inline comment 写法。
 
 on:
   pull_request:
