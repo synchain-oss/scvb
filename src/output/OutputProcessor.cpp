@@ -892,6 +892,8 @@ void ScvbOutputAudioProcessor::renderBus(float* const* out, const float* const* 
 {
     // [J95①] 宪法:「时间窗与 ramp 全部只对实时路径有效」。离线下 Input 同块静音,总线交叉若还走 80ms,
     // 交接点上总线输入已是零、混音只露出 sin(θ) 那一份,导出文件里就是一个从零淡入的坑。
+    // 所有目标变化一视同仁(有意):[A-8] 回原声、[SL-521] 最后一条轨关掉在离线下也是同块到位。
+    // 这两种情况下总线两端都不是同一份信号,硬切可能有台阶,但离线渲染中途很少出现,不值得再分一条路径。
     if (isNonRealtime())
     {
         busXfade_.snapTo(targetMix);
@@ -1015,6 +1017,8 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
 
     // arm 平滑器:per-channel 注入 fade(上线/下线 80ms)+ 全局 width + ms_balance g_M/g_S(10ms)。
     // [J95①] 上线/下线的 ramp 只对实时路径有效:离线下 Input 是同块硬切,这边同块到位,交接点才不留坑。
+    // inject 里含 enabledMask_,所以面板开关轨在离线下也是同块到位,不走 SL-488 的 80ms 淡出(有意):
+    // 渲染中途很少有人去点面板,为它把交接沿和面板沿分开不值得。
     const bool offline = isNonRealtime();
     for (int ch = 0; ch < 15; ++ch)
     {
