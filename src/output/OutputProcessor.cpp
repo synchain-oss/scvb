@@ -1443,10 +1443,18 @@ void ScvbOutputAudioProcessor::timerCallback()
         const bool playing = (shot.flags & scvb::engine::kPlayheadIsPlaying) != 0;
         const double tSec = shot.sampleRate > 0.0 ? static_cast<double>(shot.timeSamples) / shot.sampleRate : -1.0;
         // 段包络之外没有东西可写;用户选了范围时,范围之外也不写(契约 §1.3)。
-        const bool inRange =
-            printRangeValid_ && tSec >= printRangeStartS_ && tSec <= printRangeEndS_ &&
-            scvb::output::playheadInUserRange(runtime_.rangeMode, runtime_.rangeStartS, runtime_.rangeEndS, tSec);
-        // 只读观察实例不写(硬约束 6);被宿主旁路的实例也不写:旁路 = 停止调音。
+        // DAW 循环档直接看这一拍的循环区:runtime_ 里那份只有编辑器开着时才跟着走,窗口关着时挪了循环区,那份就是旧的。
+        // 循环区暂时读不到时沿用上次的范围,和编辑器同一口径。
+        double userStartS = runtime_.rangeStartS;
+        double userEndS = runtime_.rangeEndS;
+        if (runtime_.rangeMode == 1)
+        {
+            scvb::output::hostLoopSeconds(shot, userStartS, userEndS);
+        }
+        const bool inRange = printRangeValid_ && tSec >= printRangeStartS_ && tSec <= printRangeEndS_ &&
+                             scvb::output::playheadInUserRange(runtime_.rangeMode, userStartS, userEndS, tSec);
+        // 只读观察实例不写(硬约束 6);被宿主旁路的实例也不写:旁路 = 停止调音。kUnavailable / kAbiMismatch 同样不写:
+        // 没有段就没有引擎数据。
         const bool mayWrite = session_.state() == scvb::output::OutputClaimState::kActive &&
                               (shot.flags & scvb::engine::kPlayheadHostBypassed) == 0;
 

@@ -585,23 +585,8 @@ void OutputEditor::emitMeters()
 
 bool OutputEditor::hostLoopSeconds(double& startS, double& endS) const
 {
-    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
-    // JUCE 的 AudioPlayHead::LoopPoints 只有 ppqStart/ppqEnd —— 换算成秒必须有 tempo。
-    // 宿主给了 cycle 却没给 bpm(或 bpm<=0)时不猜:按「无循环区」处理,UI 走 loopMissing 档。
-    if ((pod.flags & scvb::engine::kPlayheadCycleValid) == 0)
-        return false;
-    if ((pod.flags & scvb::engine::kPlayheadTempoValid) == 0 || pod.bpm <= 0.0)
-        return false;
-
-    const double secPerBeat = 60.0 / pod.bpm;
-    const double s = pod.loopStartPpq * secPerBeat;
-    const double e = pod.loopEndPpq * secPerBeat;
-    if (!(e > s) || !std::isfinite(s) || !std::isfinite(e))
-        return false; // 空/倒置循环区不算有效
-
-    startS = s;
-    endS = e;
-    return true;
+    // 读不到时按「无循环区」处理,UI 走 loopMissing 档。
+    return scvb::output::hostLoopSeconds(processor_.playheadSnapshot(), startS, endS);
 }
 
 bool OutputEditor::syncDawLoopRange()

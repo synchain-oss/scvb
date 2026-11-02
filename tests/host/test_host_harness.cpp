@@ -8570,6 +8570,34 @@ TEST_CASE("HOST 打印:用户选的范围之外不写", "[host][print][printguar
     CHECK(modeAt(0.5) == scvb::engine::AuthorityMode::Print);
 }
 
+// DAW 循环档的范围只有编辑器开着时才同步到 runtime。这里没有编辑器:挪了循环区,打印要跟着这一拍的循环区走,
+// 读不到循环区时沿用上次的范围。反向 = 打印改回只看 runtime ⇒ 新循环区里不写、旧循环区里照写。
+TEST_CASE("HOST 打印:窗口关着时挪 DAW 循环区,范围跟着走", "[host][print][printguard]")
+{
+    MonoMultiRig r;
+    printFromStart(r);
+    const auto modeAt = [&](double seconds) {
+        r.ph.timeSamples = static_cast<std::int64_t>(seconds * kSr);
+        r.runBlocks(4, 0.5f);
+        MonoMultiRig::pump(120);
+        return r.out.getPrinter().mode();
+    };
+    r.ph.bpm = 120.0; // 1 拍 = 0.5 秒
+    r.ph.haveLoop = true;
+    r.out.runtime().rangeMode = 1;
+    r.out.runtime().rangeStartS = 0.0; // 编辑器上次同步到的范围
+    r.out.runtime().rangeEndS = 0.5;
+
+    r.ph.loopStartPpq = 2.0; // 1.0–1.5 秒
+    r.ph.loopEndPpq = 3.0;
+    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Armed);
+    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print);
+
+    r.ph.loopStartPpq = 3.0; // 空循环区:沿用上次的范围
+    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Print);
+    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Armed);
+}
+
 // 以前旁路路径不发布播放头:快照冻在旁路前,停走带之后打印态卡在 Print,gesture 一直开着。
 // 反向 = 去掉 publishPlayhead ⇒ 时间不动、停走带也退不出来;去掉 kPlayheadHostBypassed 那条判据 ⇒ 旁路中还在 Print。
 TEST_CASE("HOST 打印:被旁路时不写,播放头照走", "[host][print][printguard]")
