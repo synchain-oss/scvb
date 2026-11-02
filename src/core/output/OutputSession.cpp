@@ -570,7 +570,9 @@ u32 OutputSession::offlineStartVerdict(const InputSlot* inputs) const noexcept
         }
         const u64 hb = slot.heartbeat_ms.load(std::memory_order_acquire);
         const bool hbFresh = hb >= preparedAt ? hb != 0 : !isStaleDisplay(hb, preparedAt);
-        if (!hbFresh || slot.sample_rate != sampleRate || !sources_[i].layoutCurrent())
+        // sample_rate 是段里的 plain u32(布局冻结),volatile 读一次,防止编译器拆开或重读,和 layoutCurrent 同一口径。
+        const u32 inputRate = *static_cast<const volatile u32*>(&slot.sample_rate);
+        if (!hbFresh || inputRate != sampleRate || !sources_[i].layoutCurrent())
         {
             return 0;
         }

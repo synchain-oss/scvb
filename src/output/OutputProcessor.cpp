@@ -1327,6 +1327,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 可能在 prepare 之后才 setNonRealtime(true)(JUCE 允许运行期切换),只在 prepare 里取
     // 会漏掉那一路,而漏掉的表现恰好就是本卡要修的前段静音。
     // [A] 可能在这中间切了标志、同步过了(syncNonRealtimeFlag):再看一眼,别把它盖回旧值。
+    // 这只是把窗口缩小,关不掉:复核和第二次写之间仍有窗口。最终以 [A] 块首的 syncNonRealtimeFlag 为准,错的值活不过一块。
     const bool offlineNow = isNonRealtime();
     session_.setNonRealtime(offlineNow);
     if (isNonRealtime() != offlineNow)
