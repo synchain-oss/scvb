@@ -2841,8 +2841,10 @@ struct MonoMultiRig
     juce::AudioBuffer<float> inBuf{1, kBlock};
     juce::MidiBuffer midi;
 
-    MonoMultiRig()
+    // inputChannels = 2:三个 Input 都走立体声布局,Output 经音频环段头检测成 stereo 轨。
+    explicit MonoMultiRig(int inputChannels = 1)
     {
+        inBuf.setSize(inputChannels, kBlock);
         out.setGroupId(kGroup);
         // [SL-324] **读回断言**:越界会静默回落到默认组,写了什么不等于用了什么。
         REQUIRE(out.groupId() == kGroup);
@@ -2852,8 +2854,9 @@ struct MonoMultiRig
         {
             auto p = std::make_unique<ScvbInputAudioProcessor>();
             juce::AudioProcessor::BusesLayout mono;
-            mono.inputBuses.add(juce::AudioChannelSet::mono());
-            mono.outputBuses.add(juce::AudioChannelSet::mono());
+            const auto set = inputChannels == 2 ? juce::AudioChannelSet::stereo() : juce::AudioChannelSet::mono();
+            mono.inputBuses.add(set);
+            mono.outputBuses.add(set);
             p->setBusesLayout(mono);
             p->setGroupId(kGroup);
             p->setChannelId(i + 1);
@@ -14988,6 +14991,59 @@ TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 
     r.out.setPanCurve(v, {}); // 已提交的就是空表(从没画过)
     CHECK_FALSE(r.out.authority().panCurvePreviewLive());
     CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+}
+
+// ---------------------------------------------------------------------------
+// 每轨 width 和全局 Width 只在播放时起作用。这里钉真实链路:Input 走立体声布局,调了它们之后重新分析,结果不变。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 每轨 width 与全局 Width 不进分析:调了之后重新分析,段表逐位相同", "[host][analyze][width]")
+{
+    MonoMultiRig r(2);
+    r.variedCrest = true;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 1.0);
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        REQUIRE(r.out.runtime().channels[static_cast<std::size_t>(ch - 1)].sourceChannels == 2);
+    }
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const auto analyze = [&r, &win] {
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+        std::vector<std::vector<std::array<double, 5>>> t;
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            t.push_back(r.segTableOf(ch));
+        }
+        return t;
+    };
+
+    const auto before = analyze();
+    REQUIRE(r.fallbackLevel() >= 1); // 0 = 这次没跑过平衡,下面的相等是空过
+    bool anyOffCentre = false;
+    for (const double p : r.pansOf())
+    {
+        anyOffCentre = anyOffCentre || std::abs(p) > 30.0;
+    }
+    REQUIRE(anyOffCentre); // 全在中间时子声像对称,width 接进分析也改不动解
+
+    const int v = r.out.versionActive();
+    auto& apvts = r.out.getAPVTS();
+    const auto setParam = [&apvts](const juce::String& id, float value) {
+        auto* p = apvts.getParameter(id);
+        REQUIRE(p != nullptr);
+        p->setValueNotifyingHost(p->convertTo0to1(value));
+    };
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        setParam(scvb::params::widthId(v, ch), 20.0f);
+    }
+    CHECK((analyze() == before));
+
+    setParam("width", 40.0f);
+    CHECK((analyze() == before));
 }
 
 // ===========================================================================
