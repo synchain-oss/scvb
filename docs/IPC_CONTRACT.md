@@ -42,7 +42,7 @@ struct alignas(64) OutputSlot {       // size 64;×1,OutputSlot0 @1024
   atomic<u32> state;                  // 0   0=空闲 1=已声明 2=活跃(主实例)
   u32 pid;                            // 4
   atomic<u64> heartbeat_ms;           // 8
-  atomic<u32> connected_mask;         // 16  Output 视角:哪些 channel 数据健康(bit{N-1})
+  atomic<u32> connected_mask;         // 16  Output 视角:哪些 channel 数据健康(bit{N-1});离线下另含「Output 已接上这一轨」,见 §4 [J95①] 注
   atomic<u32> config_seq;             // 20  Output 配置版本号,Input UI 变化检测
   u32 _pad[10];                       // 24..64 填满 cacheline
 };
@@ -180,7 +180,14 @@ struct OutputGlobalInfo {          // size 256 align 64
 - **连接状态灯**:Input 读 OutputSlot.heartbeat + connected_mask;Output 读各 InputSlot.heartbeat
 - **健康 Output 判定(J12)**:Input 直通↔静音仲裁的「健康 Output」= OutputSlot 心跳新鲜(≤2000ms 口径)∧ `connected_mask` 含本 channel;检测不到健康 Output → Input 直通(80ms ramp + 5s 滞回,ADR-002 v1)
   - [A-8] `connected_mask` 注(措辞补充,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261011-a8-suspend-not-offline.md`):§1 里「哪些 channel 数据健康」**不要求写头此刻在推进**。走带在跑时,写头冻结(宿主在静音段 / 无 region 处暂停调用该 Input,或用户旁路它)的轨只要槽活跃、心跳新鲜、采样率一致、读方已绑定且未失准,Output 就**保留该位**(挂起 ≠ 掉线),于是 Input 照旧按「健康 Output」静音、写方一恢复读方同块就读到;走带停住时写头冻结 ≥ 500ms 仍清该位(行为同前)。心跳陈旧、失准、停摆看门狗闩住(KI-6)照旧清位。挂起的轨 Output 侧照常报 `suspended`(SCVB_CONTRACT §2.3)
-  - [J95①] `connected_mask` 注(措辞补充,布局 / abi 不变,见 `docs/contract-changes/20261102-offline-first-block-handoff.md`):实时路径不变,[M] 按判定置位、清位。Output 离线渲染时写方分开:**置位由 Output 的 [A] 做**,这一块确实读到了这一轨(或这一轨被面板关着,没东西要读)才置;**[M] 只撤不置**:判定不在线或失准就清这一轨;停摆看门狗跳闸、连续无时间线 ≥0.5 秒时清全部位,并把判定一起清空。所以离线下这一位除了「数据健康」还多一层意思:Output 已经接上这一轨。离线下的判定也比上面 [A-8] 注列的宽:走带停住时写头冻结不清位,心跳陈旧连续两拍才算,看门狗 hold 不闩,失准只在缺口之后还没读到过数据时才算,而且失准的轨不退出读取。Input 的判据(本位在 ∧ 槽活跃 ∧ 心跳没确认陈旧 ⇒ 静音)本身不变。Output 也在离线态时,Input 在 Output 读到这一轨之后、自己处理的下一块才静音;宿主让写方提前跑一段时,这个点在时间线上还要再晚这一段。Output 还在实时路径上时(只有 Input 这条链被切离线),[M] 照常置位,Input 读到位就静音,这是 KI-4 的形状,本条不改变它。总线的归属:Output 这一块读到任何一条启用的轨,就整块替换总线,读到的轨不叠加也不缺,没读到的轨这一块没声;一条都没读到时总线直通:位还没置的 Input 的原声留在总线上,已经静音的 Input 这一块没声;判定里的轨全被面板关着时除外,这时总线给静音,不留原声。所以 Output 一直读不到某一轨时,这条 Input 一直直通,但只有别的轨也都读不到,它的声音才在总线上。接在 Input 之后的发送听得到 Input 静音之前的原声。撤和补的先后:[M] 先发布判定、后清位,[A] 置位之后回头复核这份判定,这一轨已被撤出判定就自己清掉;失准的轨还留在判定里,[M] 清位之后 [A] 下一次读到会再置回。Output 离线 prepare 时清空全部位(没有 release 的重新 prepare 不走 claim 里的清零,上一轮的位不能留到这一轮)。只在 `ProcessData` 里报离线的宿主走不到这一步:位不清,Input 第一块就可能静音,第一块也可能用 [M] 已发布的判定
+  - [J95①] `connected_mask` 注(措辞补充,布局 / abi 不变,见 `docs/contract-changes/20261102-offline-first-block-handoff.md`):实时路径不变,[M] 按判定置位、清位。Output 离线渲染时:
+    - **写方分工**:置位由 Output 的 [A] 做,这一块确实读到了这一轨(或这一轨被面板关着,没东西要读)才置。所以离线下这一位除了「数据健康」还多一层意思:Output 已经接上这一轨。
+    - **[M] 只撤不置**:判定不在线或失准就清这一轨;停摆看门狗跳闸、连续无时间线 ≥0.5 秒时清全部位,并把判定一起清空。离线下的判定也比上面 [A-8] 注列的宽:走带停住时写头冻结不清位,心跳陈旧连续两拍才算,看门狗 hold 不闩,失准只在缺口之后还没读到过数据时才算,而且失准的轨不退出读取。
+    - **Input 什么时候静音**:Input 的判据(本位在 ∧ 槽活跃 ∧ 心跳没确认陈旧 ⇒ 静音)本身不变。Output 也在离线态时,Input 在 Output 读到这一轨之后、自己处理的下一块才静音;宿主让写方提前跑一段时,这个点在时间线上还要再晚这一段。接在 Input 之后的发送听得到 Input 静音之前的原声。Output 还在实时路径上时(只有 Input 这条链被切离线),[M] 照常置位,Input 读到位就静音,这是 KI-4 的形状,本条不改变它。
+    - **总线的归属**:Output 这一块读到任何一条启用的轨,就整块替换总线,读到的轨不叠加也不缺,没读到的轨这一块没声。一条都没读到时总线直通:位还没置的 Input 的原声留在总线上,已经静音的 Input 这一块没声;判定里的轨全被面板关着时除外,这时总线给静音,不留原声。所以 Output 一直读不到某一轨时,这条 Input 一直直通,但只有别的轨也都读不到,它的声音才在总线上。
+    - **撤和补的先后**:[M] 先发布判定、后清位,[A] 置位之后回头复核这份判定,这一轨已被撤出判定就自己清掉;失准的轨还留在判定里,[M] 清位之后 [A] 下一次读到会再置回。
+    - **prepare 清位**:Output 离线 prepare 时清空全部位(没有 release 的重新 prepare 不走 claim 里的清零,上一轮的位不能留到这一轮)。
+    - **走不到这一步的宿主**:只在 `ProcessData` 里报离线的宿主 prepare 时标志还没切:位不清,Input 第一块就可能静音,第一块也可能用 [M] 已发布的判定
 
 ```c
 struct CtrlRecord {                // size 24 align 8([J46]:value 定型 u64;四字段 atomic 化,尺寸/偏移不变)

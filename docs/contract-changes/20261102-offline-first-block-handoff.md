@@ -8,7 +8,7 @@
 
 - [ ] docs/PARAMETERS.md(自动化参数)—— **不动**。
 - [x] docs/IPC_CONTRACT.md(共享内存段名/布局)—— 加两条说明文字:§2「离线一轮的清环」,§4「健康 Output 判定(J12)」下面的「[J95①] `connected_mask` 注」。
-      同步改两处列举:§2 `epoch` 行的行内注释多列「离线一轮清环」(SL-505 新增几何改写时也改过这行注释),[A-5] 的「`write_head` 归 0」括注多列「离线清环」。
+      同步改三处:§2 `epoch` 行的行内注释多列「离线一轮清环」(SL-505 新增几何改写时也改过这行注释),[A-5] 的「`write_head` 归 0」括注多列「离线清环」,§1 `connected_mask` 行的行内注释补「离线下另含 Output 已接上这一轨」。
       段名、字段、偏移、大小、对齐、abi **零变化**(`node scripts/check-ipc-doc-parity.mjs --strict-missing` 退 0)。
 - [ ] docs/STATE_SCHEMA.md(state schema)—— **不动**。
 - [ ] docs/SCVB_CONTRACT.md(桥面契约)—— **不动**。
@@ -20,7 +20,7 @@ path guard 之外同 PR 改两处:`docs/adr/0002-routing-architecture.md` 在 [J
 
 - `docs/adr/0002` 是从 `docs/constitution/ADR.md` 拆出来的,头注要求改动走修宪流程,而宪法原件在 masterPlan 仓,不在本仓。这段补注是这条规矩的例外,由用户批准,目前只在 `docs/adr/0002`,宪法原件和副本还没有。
   原件更新之后,副本按「头注 + 原件逐字节」重建(`scripts/check-constitution-sync.ps1` 比对)。在那之前两边有差异。权威文本仍是 `docs/constitution/ADR.md`(`docs/adr/README.md`),这段补注是等待修宪的说明,不改变权威顺序;文字和实现不一致时,按 IPC_CONTRACT 的仲裁规则以实现代码为准。
-- `src/core/output/OutputSession.h` 的 `setNonRealtime` 注释还写着「两边同块交接」。本 PR 是纯文档,留到下一张碰这段代码的卡一起改。
+- `src/core/output/OutputSession.h` 的 `setNonRealtime` 注释、`src/input/InputProcessor.cpp` 的 `processBlock` 里 [SL-254 / J95①] 那段的小标题还写着「同块交接」。本 PR 是纯文档,留到下一张碰这段代码的卡一起改。
 
 ## 变更内容
 
@@ -59,7 +59,7 @@ path guard 之外同 PR 改两处:`docs/adr/0002-routing-architecture.md` 在 [J
 - `connected_mask` 仍是 Output 写、Input 读的同一个位。Input 的判据(本位在 ∧ 槽活跃 ∧ 心跳没确认陈旧 ⇒ 静音)本身不变。#430 起离线下无时间线和负时间线的块也走这条判据,之前这些块看 C18 模式字。其余变化在 Output 什么时候置和撤这个位。
 - 读方对写头归零的处理(规则 5)本来就有,几何改写走的是同一条路,这次没有改。
 - 用户可感知的变化已由 #429、#430 的 CHANGELOG 记录,本 PR 不带来新的行为变化。
-- 未修的边界(还没进 KNOWN_ISSUES,需要用户裁定是否接受):只在 `ProcessData` 里报离线的宿主(JUCE 在 process 里才切标志)prepare 时看不到离线。这时不清环,这一轮没被调用的 Input 留下的音频理论上可能读进文件开头;Output 也不清位,实时留下的位还在,Input 第一块就可能静音,第一块可能用 [M] 已发布的判定。
+- 未修的边界(本 PR 还没进 KNOWN_ISSUES,嵌套测试的 PR 把它和第一块交接的其他边界一起登记):只在 `ProcessData` 里报离线的宿主(JUCE 在 process 里才切标志)prepare 时看不到离线。这时不清环,这一轮没被调用的 Input 留下的音频理论上可能读进文件开头;Output 也不清位,实时留下的位还在,Input 第一块就可能静音,第一块可能用 [M] 已发布的判定。
   第一块判定为 0 而位还留着时,总线直通、Input 静音,这一轨到 [M] 第一拍之前没声。这些都是读代码得出的,没有实测过这样的宿主。
   清环没有挪到标志上升沿去补:在 [A] 上清 4 MB 太重,在 [M] 上会和正在写的 [A] 撞。
 - 冻结项自查:`node scripts/check-ipc-doc-parity.mjs --strict-missing` 与 `node scripts/check-bridge-parity.mjs` 退 0;golden 与宪法副本未动。
