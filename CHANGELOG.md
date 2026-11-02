@@ -18,7 +18,7 @@
   `docs/contract-changes/20261101-pan-curve-playback-only.md`)(#427)
 - **IPC 契约和 ADR-002 补了离线交接的说明,不改布局和 abi**:#429、#430 改了离线导出时 Output 和 Input 怎么交接,原来的文字和实现对不上了。`docs/IPC_CONTRACT.md` §2、§4 加了离线一轮清环、
   离线下谁置和撤 `connected_mask` 的说明,`docs/adr/0002-routing-architecture.md` 加了第一块交接补注。这次只改文字,不带来新的行为变化。宪法原件还没同步(变更文档
-  `docs/contract-changes/20261102-offline-first-block-handoff.md`)
+  `docs/contract-changes/20261102-offline-first-block-handoff.md`)(#432)
 
 ### 新增
 
