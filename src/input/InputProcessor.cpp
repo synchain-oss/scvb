@@ -87,6 +87,14 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     // (经 configuredChannelId),已改用行为级判据直接钉这两个消费者(见"加载期冲突"用例
     // 补的 CHECK(bridgeTickSnapshot().configuredChannelId == 5)),不再依赖存档这条间接路径。
     channelId_ = static_cast<int>(session_.channelId());
+    // 只在 prepare 这一刻看标志:VST3 宿主经 setupProcessing 先切标志再 prepare(REAPER 实测也是这个顺序),AU 切标志后
+    // JUCE 也会再 prepare 一次。没走到这里的只有一条路:宿主只在 ProcessData 里报离线(JUCE 在 process 里才切标志),
+    // 这时不清环,这次没被调用的 Input 留下的旧音频理论上可能读进文件开头。不挪到标志上升沿去补:[A] 上清 4 MB 太重,
+    // [M] 上会和正在写的 [A] 撞。
+    if (isNonRealtime())
+    {
+        session_.resetRingForOfflinePass();
+    }
     rampSwitcher_.prepare(sampleRate_);
 
     // claim 未就绪(I6 未分配 / I2 冲突 / I0 / I1)→ 输出走直通档(人声不消失)。
@@ -158,6 +166,23 @@ void ScvbInputAudioProcessor::writeTailFromZero(const scvb::AudioRingBinding* b,
     expectedNext_ = tail;
     scvb::AudioRing::write(b, 0, interleaved + static_cast<std::size_t>(skip) * static_cast<std::size_t>(srcChannels_),
                            tail);
+}
+
+// 非实时下这一块该走哪一档。判据的理由见 processBlock 里 [J95①] 那段注释。返回 false = 不是离线,或者还没有 Output 槽。
+bool ScvbInputAudioProcessor::offlineStageNow(const scvb::input::InputSessionBlockView& block,
+                                              scvb::input::OutputStageMode& target) const noexcept
+{
+    if (!isNonRealtime() || block.outputSlot == nullptr || block.channel < 1 || block.channel > scvb::kMaxChannels)
+    {
+        return false;
+    }
+    const scvb::u32 mask = block.outputSlot->connected_mask.load(std::memory_order_acquire);
+    const bool maskBit = (mask & (1u << (block.channel - 1))) != 0;
+    const bool slotActive = block.outputSlot->state.load(std::memory_order_acquire) == scvb::kSlotActive;
+    const bool confirmedDead = outputStale_.load(std::memory_order_acquire) != 0;
+    target = (maskBit && slotActive && !confirmedDead) ? scvb::input::OutputStageMode::kSilence
+                                                       : scvb::input::OutputStageMode::kPassthrough;
+    return true;
 }
 
 void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
@@ -250,9 +275,15 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
                 scvb::AudioRing::write(block.audio, ts, capInterleaved_.data(), m);
             }
         }
-        // 无/负时间线:输出走当前档(步骤 6)。
+        // 无/负时间线:输出走当前档(步骤 6)。离线不看 c18Stage_:它是实时路径留下的,这一块 Output 还是直通。
         meter_.store(peak, std::memory_order_relaxed);
-        const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+        scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+        scvb::input::OutputStageMode offlineTarget = scvb::input::OutputStageMode::kPassthrough;
+        if (offlineStageNow(block, offlineTarget))
+        {
+            mode = static_cast<scvb::u32>(offlineTarget);
+            rampSwitcher_.snapTo(offlineTarget);
+        }
         rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
                              mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
                                  ? scvb::input::OutputStageMode::kSilence
@@ -329,8 +360,8 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     // 用户 v5.6.3 离线导出前约 10 秒全静音就是它(≈250x)。1.7x 近实时那档静音为 0 —— 所以
     // 实时反相能完美抵消、离线不能。
     //
-    // 修法(J95① 裁定):非实时下 Input **逐块**读 `connected_mask` 决定档位,与 Output 在
-    // 同一次 evaluateChannels 里置的 injectMask 对齐 ⇒ 同块交接。
+    // 修法(J95① 裁定):非实时下 Input **逐块**读 `connected_mask` 决定档位。这一位在 Output 读到这条轨之后才置
+    // (offlineConfirmInjected),所以 Input 在 Output 第一次读到的下一块静音;这之前 Output 已经整块替换总线,不叠加。
     // ⛔ **不能只把 Output 那个 200ms 闸改成样本计**:Input 的静音时刻同样由 [M] 驱动、同样随
     // 倍速变晚(实测 48x 下第 264 块才静音),单改一侧会让注入远早于静音 ⇒ 几百块**双路叠加**,
     // 对 null test 与静音同样致命且更隐蔽(它是响的)。宪法 ADR.md [J32→ADR-002] 已把这条禁令入册。
@@ -348,16 +379,11 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     //    本卡明令要防的**双路叠加**;state 逐块读还让「优雅退场」零延迟地回直通。
     //  · 心跳新鲜度需要时钟、音频线程取不到,只能由 [M] 发布,且**极性必须是「已确认死」**:
     //    换成「在场位」(尚未确认活 ⇒ 不静音)会在上升沿晚一拍,实测即刻红(注入@304 早于静音@320)。
-    if (isNonRealtime() && block.outputSlot != nullptr && block.channel >= 1 && block.channel <= scvb::kMaxChannels)
+    scvb::input::OutputStageMode offlineTarget = scvb::input::OutputStageMode::kPassthrough;
+    if (offlineStageNow(block, offlineTarget))
     {
-        const scvb::u32 mask = block.outputSlot->connected_mask.load(std::memory_order_acquire);
-        const bool maskBit = (mask & (1u << (block.channel - 1))) != 0;
-        const bool slotActive = block.outputSlot->state.load(std::memory_order_acquire) == scvb::kSlotActive;
-        const bool confirmedDead = outputStale_.load(std::memory_order_acquire) != 0;
-        const auto target = (maskBit && slotActive && !confirmedDead) ? scvb::input::OutputStageMode::kSilence
-                                                                      : scvb::input::OutputStageMode::kPassthrough;
-        mode = static_cast<scvb::u32>(target);
-        rampSwitcher_.snapTo(target); // 同块硬切:ramp 也是墙钟量,离线会被放大成超长淡入
+        mode = static_cast<scvb::u32>(offlineTarget);
+        rampSwitcher_.snapTo(offlineTarget); // 同块硬切:ramp 也是墙钟量,离线会被放大成超长淡入
     }
 
     rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,

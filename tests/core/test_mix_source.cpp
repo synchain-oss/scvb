@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -125,6 +126,40 @@ TEST_CASE("ShmRingMixSource 冷启动(写方尚未追上)不计失准", "[mix][r
     f.header.write_head_samples.store(8, std::memory_order_release);
     REQUIRE(src.read(0, out.data(), 8));
     CHECK(src.gapCount() == 0);
+}
+
+// REAPER 导出时写方成串领先:首块锚在 t0 之后写头一口气走出去好几块。量到的提前量不是上界,不能据此撤锚。
+TEST_CASE("ShmRingMixSource 写方成串领先:离线不撤首块的锚,实时照旧", "[mix][ring][SL254]")
+{
+    RingFixture f;
+    f.header.write_head_samples.store(8, std::memory_order_release);
+    ShmRingMixSource src;
+    const bool offline = GENERATE(true, false);
+    src.setLeadUnbounded(offline);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(8 * 2);
+    REQUIRE(src.read(0, out.data(), 8));
+
+    // 写头一步走出去 5 块,远超首块量到的提前量(8)+ 块长。
+    f.header.write_head_samples.store(48, std::memory_order_release);
+    CHECK(src.read(8, out.data(), 8) == offline);
+    CHECK(src.read(16, out.data(), 8) == offline);
+}
+
+TEST_CASE("ShmRingMixSource layoutCurrent:快照与段头几何对不上就是假", "[mix][ring][SL254]")
+{
+    RingFixture f;
+    ShmRingMixSource src;
+    CHECK_FALSE(src.layoutCurrent());
+    src.bind(&f.header, f.data.data());
+    CHECK(src.layoutCurrent());
+    f.header.channels = 1;
+    CHECK_FALSE(src.layoutCurrent());
+    f.header.channels = 2;
+    f.header.sample_rate += 1; // 读方不按采样率寻址
+    CHECK(src.layoutCurrent());
+    f.header.sample_rate -= 1;
+    CHECK(src.layoutCurrent());
 }
 
 TEST_CASE("ShmRingMixSource 写头停滞 → 记饿读,不记失准(v5 P1-7)", "[mix][ring]")
@@ -253,6 +288,76 @@ bool holdsPositions(const std::vector<float>& out, int64_t t0, int n)
     return true;
 }
 } // namespace
+
+// 导出中途宿主定位(区域渲染):读方和写方一起跳到新位置,写方已经成串写在前面。锚要下在读方的落点:量到的提前量在这里
+// 不是上界。下不了锚就要等读方追上写头,这几块 Input 已经静音,文件里就是一段空。
+TEST_CASE("ShmRingMixSource 离线打开时,跳到新位置的锚不按量到的提前量卡", "[mix][ring][SL254]")
+{
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 1000, 64);
+    ShmRingMixSource src;
+    const bool offline = GENERATE(true, false);
+    src.setLeadUnbounded(offline);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(1000, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 9000, 64 * 17);
+    CHECK(src.read(9000, out.data(), 64, 2) == offline);
+    if (offline)
+    {
+        CHECK(holdsPositions(out, 9000, 64));
+    }
+}
+
+// 写方领先时定位:上一代还没读完的尾段照读。这里钉的是别名判据(spanBound)还按量到的提前量算。
+TEST_CASE("ShmRingMixSource 离线打开时,换代后上一代的尾段照读", "[mix][ring][SL254]")
+{
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 1000, 512);
+    ShmRingMixSource src;
+    src.setLeadUnbounded(true);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(1000, out.data(), 64, 1));
+    REQUIRE(src.read(1064, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 2048, 64);
+    for (int64_t t0 = 1128; t0 < 1512; t0 += 64)
+    {
+        INFO("t0=" << t0);
+        REQUIRE(src.read(t0, out.data(), 64, 1));
+        CHECK(holdsPositions(out, t0, 64));
+    }
+}
+
+// 换代之后写方走得慢:读不到的这段算不算缺口,宽限还按量到的提前量算。量不出来就退回固定的 200 ms,这几块就成了假缺口。
+TEST_CASE("ShmRingMixSource 离线打开时,换代后的宽限照旧按量到的提前量算", "[mix][ring][SL254]")
+{
+    RingFixture f(1u << 16, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 0, 20000);
+    ShmRingMixSource src;
+    src.setLeadUnbounded(true);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(0, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 100000, 32);
+    int64_t head = 100032;
+    for (int b = 0; b < 300; ++b)
+    {
+        src.read(100000 + b * 64, out.data(), 64, 1);
+        writePositions(f, head, 1);
+        ++head;
+    }
+    CHECK(src.gapCount() == 0);
+}
 
 TEST_CASE("ShmRingMixSource A-5 换代后写头未动:上一代窗照读,写方在前方另起一代时不把中间的旧环槽当本代数据",
           "[mix][ring][a5]")

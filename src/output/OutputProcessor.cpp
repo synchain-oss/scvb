@@ -186,6 +186,7 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 
     const auto now = scvb::steadyNowMs();
     session_.prepare(static_cast<scvb::u32>(sr), static_cast<scvb::u32>(preparedMaxBlock_), now);
+    publishEnabledMask(); // 命令行导出在第一块之前一拍 [M] 都不跑,工程里关掉的轨也不能进第一块
     authority_.prepare(sr, handles_);
     busXfade_.prepare(sr);
     busXfade_.resetToPassthrough();
@@ -788,6 +789,7 @@ scvb::output::MeterPod ScvbOutputAudioProcessor::meterSnapshot() const
 void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
+    syncNonRealtimeFlag();
 
     // [SL-487] 宿主块长可以超过 prepare 时预告的上限(离线 bounce 放大块长、或播放中超发)。
     // 内部缓冲(accum/trackBuf)按 preparedMaxBlock_ 定长,所以**按它分段把整块处理完**。
@@ -942,7 +944,10 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
 
     // 与轨启用位求交:关掉的轨整轨不进混音(§1.15;DAW_COMPATIBILITY §「设备停用」把面板轨道
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
-    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
+    const bool offline = isNonRealtime();
+    const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 inject = eligible & enabled;
 
     // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
     // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
@@ -969,7 +974,12 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
         std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
         const float* silentMix[2] = {accumL_.data(), accumR_.data()};
-        renderBus(out, in, silentMix, n, /*targetMix=*/false);
+        // 离线下这组的轨全被面板关掉时直接给静音(面板关轨的稳态就是这一轨没声):这一块 Input 还直通,走总线会漏出来。
+        if (offline)
+        {
+            session_.offlineConfirmInjected(eligible);
+        }
+        renderBus(out, in, silentMix, n, /*targetMix=*/offline && eligible != 0);
         publishSilentMeters();
         stalledRawLatched_ = false; // [A-8] 同上
         return;
@@ -996,6 +1006,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 读 live channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
     std::array<bool, 15> hasData{};
     std::array<scvb::u32, 15> nch{};
+    scvb::u32 readOkMask = 0;
     for (int ch = 1; ch <= 15; ++ch)
     {
         if ((live & (1u << (ch - 1))) == 0)
@@ -1012,14 +1023,18 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
             releasableMask_ |= (1u << (ch - 1)); // [SL-488] 本段真混进母线 ⇒ 下一段若离开 inject 可续读淡出
+            readOkMask |= (1u << (ch - 1));
         }
+    }
+    if (offline)
+    {
+        session_.offlineConfirmInjected(readOkMask | (eligible & ~enabled)); // 面板关着的轨没东西要读,照样静音
     }
 
     // arm 平滑器:per-channel 注入 fade(上线/下线 80ms)+ 全局 width + ms_balance g_M/g_S(10ms)。
     // [J95①] 上线/下线的 ramp 只对实时路径有效:离线下 Input 是同块硬切,这边同块到位,交接点才不留坑。
     // inject 里含 enabledMask_,所以面板开关轨在离线下也是同块到位,不走 SL-488 的 80ms 淡出(有意):
     // 渲染中途很少有人去点面板,为它把交接沿和面板沿分开不值得。
-    const bool offline = isNonRealtime();
     for (int ch = 0; ch < 15; ++ch)
     {
         const float target = (inject & (1u << ch)) != 0 ? 1.0f : 0.0f;
@@ -1033,11 +1048,21 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             fade.setTargetValue(target);
         }
     }
-    globalWidthSmoother_.setTargetValue(readGlobalWidth());
     const float ms = readMsBalance();
     const float tms = ms / 100.0f;
-    gMSmoother_.setTargetValue(1.0f - std::max(tms, 0.0f));
-    gSSmoother_.setTargetValue(1.0f - std::max(-tms, 0.0f));
+    if (offline)
+    {
+        // 平滑也是实时路径的东西(J95①):命令行导出之前一块都没混过,不跳过去的话开头 10 ms 宽度和 M/S 是错的。
+        globalWidthSmoother_.setCurrentAndTargetValue(readGlobalWidth());
+        gMSmoother_.setCurrentAndTargetValue(1.0f - std::max(tms, 0.0f));
+        gSSmoother_.setCurrentAndTargetValue(1.0f - std::max(-tms, 0.0f));
+    }
+    else
+    {
+        globalWidthSmoother_.setTargetValue(readGlobalWidth());
+        gMSmoother_.setTargetValue(1.0f - std::max(tms, 0.0f));
+        gSSmoother_.setTargetValue(1.0f - std::max(-tms, 0.0f));
+    }
 
     // 逐样本:取值(平滑)→ gain/pan(mono equal-power / stereo dual-pan+width)→ 求和 → ms_balance。
     for (int i = 0; i < n; ++i)
@@ -1110,11 +1135,24 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
     // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
     // [A-8] 注入轨全部停滞且总线输入听得见时同样交叉回直通(见上)。
+    // 离线下一条注入轨都没读到数据时同样回直通:Input 这一块没写(被旁路、宿主没调它),它的声音还在总线输入上。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    renderBus(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
+    renderBus(out, in, mix, n,
+              /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_) && !(offline && !injectHasData));
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
+}
+
+void ScvbOutputAudioProcessor::syncNonRealtimeFlag() noexcept
+{
+    // 宿主可以在 prepare 之后才切离线标志(JUCE 的 VST3 / AU 外壳都允许)。renderSpan 逐块读这个标志,session 这一侧
+    // 要跟它同块,不能等下一拍 [M]:导出的前几十块里读方已经走离线路径,下锚规则还是实时的,就是一段一段的空洞。
+    const bool offline = isNonRealtime();
+    if (offline != session_.nonRealtime())
+    {
+        session_.setNonRealtime(offline);
+    }
 }
 
 void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int offset, int n, int64_t t0)
@@ -1122,10 +1160,25 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
     // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
-    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
+    const bool offline = isNonRealtime();
+    const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 inject = eligible & enabled;
     if (inject == 0)
     {
+        if (offline)
+        {
+            session_.offlineConfirmInjected(eligible);
+        }
         bypassHasData_.fill(false); // 早退也要清:否则收尾的 publishMeters 会拿上一块的 hasData
+        if (offline && eligible != 0)
+        {
+            // 这一组的轨全被面板关了,稳态是没声。Input 这几块还直通,不清的话开头漏一段原声,同 renderSpan。
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+            {
+                buffer.clear(c, offset, n);
+            }
+        }
         return; // 总线上只挂 Output / 尚无 Input / 全被关掉:直通
     }
 
@@ -1136,6 +1189,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     hasData.fill(false);
     srcCh.fill(0);
     bool anyData = false;
+    scvb::u32 readOkMask = 0;
     for (int ch = 1; ch <= 15; ++ch)
     {
         if ((inject & (1u << (ch - 1))) == 0)
@@ -1154,6 +1208,11 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         hasData[static_cast<std::size_t>(ch - 1)] = true;
         srcCh[static_cast<std::size_t>(ch - 1)] = src.channels();
         anyData = true;
+        readOkMask |= (1u << (ch - 1));
+    }
+    if (offline)
+    {
+        session_.offlineConfirmInjected(readOkMask | (eligible & ~enabled));
     }
 
     if (!anyData)
@@ -1202,6 +1261,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
                                                     juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
+    syncNonRealtimeFlag();
     // [SL-487] 与 processBlock 同口径:按 preparedMaxBlock_ 分段把整块处理完,不只处理前 n 个样本。
     const int total = buffer.getNumSamples();
     if (total <= 0 || preparedMaxBlock_ <= 0)
@@ -1244,6 +1304,19 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
     }
 }
 
+void ScvbOutputAudioProcessor::publishEnabledMask() noexcept
+{
+    std::uint32_t mask = 0;
+    for (int t = 0; t < 15; ++t)
+    {
+        if (runtime_.channels[static_cast<std::size_t>(t)].enabled)
+        {
+            mask |= (1u << t);
+        }
+    }
+    enabledMask_.store(mask, std::memory_order_release);
+}
+
 void ScvbOutputAudioProcessor::timerCallback()
 {
     const auto now = scvb::steadyNowMs();
@@ -1253,7 +1326,14 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 要不要走 [J32] 那道 **墙钟** 200ms 注入延迟。放在 tick 首而不是 prepareToPlay:宿主
     // 可能在 prepare 之后才 setNonRealtime(true)(JUCE 允许运行期切换),只在 prepare 里取
     // 会漏掉那一路,而漏掉的表现恰好就是本卡要修的前段静音。
-    session_.setNonRealtime(isNonRealtime());
+    // [A] 可能在这中间切了标志、同步过了(syncNonRealtimeFlag):再看一眼,别把它盖回旧值。
+    // 这只是把窗口缩小,关不掉:复核和第二次写之间仍有窗口。最终以 [A] 块首的 syncNonRealtimeFlag 为准,错的值活不过一块。
+    const bool offlineNow = isNonRealtime();
+    session_.setNonRealtime(offlineNow);
+    if (isNonRealtime() != offlineNow)
+    {
+        session_.setNonRealtime(!offlineNow);
+    }
 
     // 4Hz 心跳(250ms 折半在 25Hz 定时器内)。
     if (now - lastHeartbeatMs_ >= scvb::kHeartbeatIntervalMs)
@@ -1267,7 +1347,12 @@ void ScvbOutputAudioProcessor::timerCallback()
     tickOwnerLockRefresh(now);
 
     // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
-    session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
+    // 读撕裂(写者正在写)时沿用上一拍,不把「没读到」当成「走带停了」。
+    scvb::engine::PlayheadPod playhead{};
+    if (playheadShot_.read(playhead))
+    {
+        session_.setTransportPlaying((playhead.flags & scvb::engine::kPlayheadIsPlaying) != 0);
+    }
     session_.tick(now);
     reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)
     leadRecorder_.drainInto(leadTimeline_); // [SL-216] 音频线程记下的 lead_select 块并入时间线
@@ -1373,19 +1458,11 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
     // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
     // 且有单测,却**没有任何生产调用点**,于是开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
+    for (int t = 0; t < 15; ++t)
     {
-        std::uint32_t mask = 0;
-        for (int t = 0; t < 15; ++t)
-        {
-            const bool on = runtime_.channels[static_cast<std::size_t>(t)].enabled;
-            printer_.setTrackEnabled(t, on);
-            if (on)
-            {
-                mask |= (1u << t);
-            }
-        }
-        enabledMask_.store(mask, std::memory_order_release);
+        printer_.setTrackEnabled(t, runtime_.channels[static_cast<std::size_t>(t)].enabled);
     }
+    publishEnabledMask();
 
     tickRecapture();
 

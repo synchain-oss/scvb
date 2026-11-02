@@ -1108,6 +1108,8 @@ private:
     // §1.15 的 enabled 此前**全 Output 侧零消费**:混音不看它、打印器的车道闸(setTrackEnabled,
     // 已实现且有单测)没有任何生产调用点 —— 开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
     std::atomic<std::uint32_t> enabledMask_{0x7FFFu};
+    void publishEnabledMask() noexcept; // [M] 从 runtime_.channels 算出 enabledMask_
+    void syncNonRealtimeFlag() noexcept; // [A] 块首
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     std::vector<float> accumL_;

@@ -149,6 +149,11 @@ u64 ShmRingMixSource::epoch() const noexcept
 // 代际状态
 // ---------------------------------------------------------------------------
 
+int64_t ShmRingMixSource::anchorLeadRef() const noexcept
+{
+    return leadUnbounded_.load(std::memory_order_relaxed) ? -1 : leadHiRef(); // 见 setLeadUnbounded
+}
+
 int64_t ShmRingMixSource::leadHiRef() const noexcept
 {
     if (leadPrev_.samples > 0)
@@ -156,6 +161,18 @@ int64_t ShmRingMixSource::leadHiRef() const noexcept
         return leadPrev_.hi;
     }
     return leadCur_.samples > 0 ? leadCur_.hi : -1;
+}
+
+bool ShmRingMixSource::layoutCurrent() const noexcept
+{
+    const AudioRingBinding* b = binding_.load(std::memory_order_acquire);
+    if (b == nullptr || !b->bound || b->header == nullptr)
+    {
+        return false;
+    }
+    // plain u32,对齐的 32 位读是单次访问,同 read() 里的 channels 比对。
+    const volatile AudioRingHeader* const h = b->header;
+    return h->channels == b->geo.channels && h->ring_frames == b->geo.ringFrames;
 }
 
 int64_t ShmRingMixSource::spanBound(int64_t prevN, int64_t ring) const noexcept
@@ -407,7 +424,9 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
     if (headZero_ || !headConfirmed_)
     {
         // 换代(或归零)之后写头第一次动:此后的写头一定是本代写的。暂定的头(R5)也在这里复核。
-        if (curAnchored_ && anchorOnUnconfirmed_ && (w < lastW_ || w - lastW_ > spanBound(prevN, ring)))
+        const int64_t anchorLead = anchorLeadRef();
+        if (curAnchored_ && anchorOnUnconfirmed_ &&
+            (w < lastW_ || w - lastW_ > (anchorLead >= 0 ? anchorLead : ring) + prevN))
         {
             // 锚是对着一个可能属于上一代的写头下的,写头这一动(往回、或一下子远远超过提前量上界)
             // 与「那就是本代的头」对不上 ⇒ 这个锚不可信,按规则重来。
@@ -466,7 +485,7 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
     // 它一个提前量;领先得更多,说明写方本代起点在读方前面(读写目标不一致)或者这个头根本不是本代的。
     // 没量到过提前量(刚绑定)时退到旧实现的套圈界(一个环长)。slack = 本段之后这一宿主块还剩的长度
     // (超长块分段读,SL-523):写方已经写完整个宿主块,写头相对本段自然多领先这一截。
-    const int64_t lim = leadHiRef();
+    const int64_t lim = anchorLeadRef();
     const bool near = t0 <= w && (w - t0) <= (lim >= 0 ? lim : ring) + slack;
     // 锁步 = 上一代里写头从不领先读方超过一块(写方一次产出或读方一块,取大者),且曾恰好停在读方块尾。
     // 两条都要:写方领先时停调,读方追上冻住的写头那几块里「停在块尾」也会成立(那是追上,不是锁步)。
