@@ -42,7 +42,7 @@ struct alignas(64) OutputSlot {       // size 64;×1,OutputSlot0 @1024
   atomic<u32> state;                  // 0   0=空闲 1=已声明 2=活跃(主实例)
   u32 pid;                            // 4
   atomic<u64> heartbeat_ms;           // 8
-  atomic<u32> connected_mask;         // 16  Output 视角:哪些 channel 数据健康(bit{N-1})
+  atomic<u32> connected_mask;         // 16  Output 视角:哪些 channel 数据健康(bit{N-1});离线下另含「Output 已接上这一轨」,见 §4 [J95①] 注
   atomic<u32> config_seq;             // 20  Output 配置版本号,Input UI 变化检测
   u32 _pad[10];                       // 24..64 填满 cacheline
 };
@@ -62,17 +62,18 @@ struct AudioRingHeader {              // size 40 align 8
   u32 channels;                       // 16  v1.4/J57:1=mono 2=stereo(claim 方在 prepareToPlay 写定;布局变化时原地改写,见下「几何纪律」)
   u32 _pad;                           // 20  对齐 8
   atomic<u64> write_head_samples;     // 24  时间线绝对样本位置:下一帧将写到的 timeline pos
-  atomic<u64> epoch;                  // 32  时间线跳变(定位/循环回跳)或几何改写时 +1,读方据此丢弃跨代数据
+  atomic<u64> epoch;                  // 32  时间线跳变(定位/循环回跳)、几何改写或离线一轮清环时 +1,读方据此丢弃跨代数据
 };
 float32 ring[ring_frames*channels]; // v1.4/J57:channels=1|2,stereo 为 interleaved LR(ADR-003 v2.0),地址 = ((timeline_pos & (ring_frames-1)) * channels + c)
 ```
 
 - 写(Input 音频线程):按块以 playhead `timeInSamples` 为地址写入;transport 非线性跳变 → epoch+1 后继续
 - **几何纪律**([SL-505] 按已实现行为订正,见 SL-482 / SL-486):几何字段(`sample_rate` / `ring_frames` / `channels`)由 claim 方在 prepareToPlay 写定,**运行期可原地改写** —— 同一 channel 重新 prepare 时采样率或声道布局变了,或 attach 到一个几何与本次请求不符的存活旧段时,写方就地写新几何、`write_head_samples` 归零、`epoch`+1。段恒按 stereo 容量创建(`ring_frames`×2 个 float),改写不重开段、不扩容;mono 只用前半。读方的音频线程只用 attach 时发布的不可变几何快照寻址,**不按段头几何寻址**([A-5] 起音频线程每块按值比对段头 `channels`,只比对、不寻址,见下「读」);由读方非实时线程周期性按值比对段头几何,不一致即重绑、发布新快照(旧注释口径与订正理由见 `docs/contract-changes/20260926-j106-j107-sl505-contract-supplement.md`)
+- **离线一轮的清环**([J95①] 措辞补充,布局 / abi 不变,见 `docs/contract-changes/20261102-offline-first-block-handoff.md`):Input 在 prepareToPlay 里看到宿主已宣告离线渲染时,`write_head_samples` 归零、`epoch`+1、环体清零,**几何字段不变**(写方此刻不在写,清环不在音频线程上)。这是几何改写之外写头归零的第二种情形,顺序同样是先归零、再 +1。读方看到写头为 0 时上一代一律不读;没赶上看到 0、直接看到新一代第一笔时走一般的换代规则,环里也已经没有上一轮的音频。所以这一轮带着离线标志 prepare 过、但没被宿主调用的 Input(被旁路、轨不参与)写头一直是 0,读方读不到它。从后面才开始写、但赶在 Output 第一块之前已经写过的 Input,读方把起点认在自己这一块,从这个起点到写方第一帧之间读到的是清环留下的零,而且算读到。这是下面 [A-5]「不早于写方本代真实的第一帧」和「每一帧都是写方写下的」在离线下的例外:离线下读方下锚不按实测提前量设限(退回一个环长那一档),锚可以早于写方第一帧。读方已经开始读之后才开始写的 Input 走一般的换代规则,一般读不到零,写头确认之前的块读失败。没带离线标志 prepare 的实例走不到这一步,只在 `ProcessData` 里报离线的宿主就是这样(prepare 时标志还没切):这时不清环,没被调用的 Input 留下的音频理论上可能读进文件开头
 - 读(Output 音频线程):按自身块的 [t0,t1) 读取;区间未被覆盖(write_head 落后或 epoch 不符)→ 该轨该块静音 + 失准计数(UI 警告)。[A-5] 措辞补充(读方语义,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261009-a5-reader-generation-handover.md`):
   - 「覆盖」按**代**判:读方只交出能确认「每一帧都是写方为该时间线位置写下的数据」的块(哪一代写的都可以),否则整块静音;
   - **当前一代**:从读方能确认的本代起点(不早于写方本代真实的第一帧)到 `write_head`;读方确认不了本代起点时(写方单独换代、读方自己没跳,例如写方领先时从停调恢复)只从已确认是本代的写头起读,之前的部分该块静音;
-  - **上一代未被覆盖的尾段可读**:epoch 只差 1 时,上一代已确认写过、且新一代不可能写到同一环槽的那一段继续可读(例:写方领先时循环回绕或定位,读方还在播的上一圈 / 定位前尾段);`write_head` 归 0(几何改写)时上一代一律不读;
+  - **上一代未被覆盖的尾段可读**:epoch 只差 1 时,上一代已确认写过、且新一代不可能写到同一环槽的那一段继续可读(例:写方领先时循环回绕或定位,读方还在播的上一圈 / 定位前尾段);`write_head` 归 0(几何改写、离线清环)时上一代一律不读;
     - [A-16] 措辞补充(读方语义,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261014-a16-reader-precopy.md`):读方可以在写方发布写头之后、换代之前,把本代已确认的帧拷进读方进程内的私有缓冲。换代之后,只要新一代已发布的跨度整个在读方当前位置之下至少一个提前量、读方此后也没有跳变、漏读或静止重读,上一代尾段就从这份拷贝交出 —— 环槽是否已被新一代换掉、在途写落在哪里,都不再影响这些帧;交出的是读方拷贝时确认过的、写方为该位置写下的数据。新一代一旦发布到读方附近,这份拷贝立即作废;`write_head` 归 0、读方换绑时同样作废。「覆盖」按代判、几何改写时上一代一律不读、段头 `channels` 不一致不读、失准口径,一概不变;
   - 段头 `channels` 与读方几何快照不一致(布局正在改写、读方还没换绑)→ 该块不读(段头值只比对、不寻址);
   - 失准计数口径不变:只在本代已读到过数据之后、写方仍在推进却读不到或被套圈时计;换代交接期与写头停滞不计。[A-6] 补一条(见 `docs/contract-changes/20261011-a6-misalign-positive-presence.md`):本代还没读到过数据、写方在推进,读方却一直读不到(读方从一代开始就领先写头一类)时,同一段连续读失败超过宽限(读方时间线 200ms 与「2 × 实测提前量上界 + 一块」取大,按样本计;读方在已确认的本代起点之下那一形再加一个提前量上界)之后,写方在推进的每一块照计;写头停滞照旧不计;段头 `channels` 不一致而不读的块不计、也不算进宽限
@@ -179,6 +180,14 @@ struct OutputGlobalInfo {          // size 256 align 64
 - **连接状态灯**:Input 读 OutputSlot.heartbeat + connected_mask;Output 读各 InputSlot.heartbeat
 - **健康 Output 判定(J12)**:Input 直通↔静音仲裁的「健康 Output」= OutputSlot 心跳新鲜(≤2000ms 口径)∧ `connected_mask` 含本 channel;检测不到健康 Output → Input 直通(80ms ramp + 5s 滞回,ADR-002 v1)
   - [A-8] `connected_mask` 注(措辞补充,布局 / abi / 写方行为不变,见 `docs/contract-changes/20261011-a8-suspend-not-offline.md`):§1 里「哪些 channel 数据健康」**不要求写头此刻在推进**。走带在跑时,写头冻结(宿主在静音段 / 无 region 处暂停调用该 Input,或用户旁路它)的轨只要槽活跃、心跳新鲜、采样率一致、读方已绑定且未失准,Output 就**保留该位**(挂起 ≠ 掉线),于是 Input 照旧按「健康 Output」静音、写方一恢复读方同块就读到;走带停住时写头冻结 ≥ 500ms 仍清该位(行为同前)。心跳陈旧、失准、停摆看门狗闩住(KI-6)照旧清位。挂起的轨 Output 侧照常报 `suspended`(SCVB_CONTRACT §2.3)
+  - [J95①] `connected_mask` 注(措辞补充,布局 / abi 不变,见 `docs/contract-changes/20261102-offline-first-block-handoff.md`):实时路径不变,[M] 按判定置位、清位。Output 离线渲染时:
+    - **写方分工**:置位由 Output 的 [A] 做,这一块确实读到了这一轨(或这一轨被面板关着,没东西要读)才置。所以离线下这一位除了「数据健康」还多一层意思:Output 已经接上这一轨。
+    - **[M] 只撤不置**:判定不在线或失准就清这一轨;停摆看门狗跳闸、连续无时间线 ≥0.5 秒时清全部位,并把判定一起清空。离线下的判定也比上面 [A-8] 注列的宽:走带停住时写头冻结不清位,心跳陈旧连续两拍才算,看门狗 hold 不闩,失准只在缺口之后还没读到过数据时才算,而且失准的轨不退出读取。
+    - **Input 什么时候静音**:Input 的判据(本位在 ∧ 槽活跃 ∧ 心跳没确认陈旧 ⇒ 静音)本身不变。Output 也在离线态时,Input 在 Output 读到这一轨之后、自己处理的下一块才静音;宿主让写方提前跑一段时,这个点在时间线上还要再晚这一段。接在 Input 之后的发送听得到 Input 静音之前的原声。Output 还在实时路径上时(只有 Input 这条链被切离线),[M] 照常置位,Input 读到位就静音,这是 KI-4 的形状,本条不改变它。
+    - **总线的归属**:Output 这一块读到任何一条启用的轨,就整块替换总线,读到的轨不叠加也不缺,没读到的轨这一块没声。一条都没读到时总线直通:位还没置的 Input 的原声留在总线上,已经静音的 Input 这一块没声;判定里的轨全被面板关着时除外,这时总线给静音,不留原声。所以 Output 一直读不到某一轨时,这条 Input 一直直通,但只有别的轨也都读不到,它的声音才在总线上。
+    - **撤和补的先后**:[M] 先发布判定、后清位,[A] 置位之后回头复核这份判定,这一轨已被撤出判定就自己清掉;失准的轨还留在判定里,[M] 清位之后 [A] 下一次读到会再置回。
+    - **prepare 清位**:Output 离线 prepare 时清空全部位(没有 release 的重新 prepare 不走 claim 里的清零,上一轮的位不能留到这一轮)。
+    - **走不到这一步的宿主**:只在 `ProcessData` 里报离线的宿主 prepare 时标志还没切:位不清,Input 第一块就可能静音,第一块也可能用 [M] 已发布的判定
 
 ```c
 struct CtrlRecord {                // size 24 align 8([J46]:value 定型 u64;四字段 atomic 化,尺寸/偏移不变)
