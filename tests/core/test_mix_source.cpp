@@ -312,7 +312,7 @@ TEST_CASE("ShmRingMixSource 离线打开时,跳到新位置的锚不按量到的
     }
 }
 
-// 写方领先时定位:上一代还没读完的尾段照读。setLeadUnbounded 只管下锚和撤锚,这条不该受它影响。
+// 写方领先时定位:上一代还没读完的尾段照读。这里钉的是别名判据(spanBound)还按量到的提前量算。
 TEST_CASE("ShmRingMixSource 离线打开时,换代后上一代的尾段照读", "[mix][ring][SL254]")
 {
     RingFixture f(4096, 2);
@@ -333,6 +333,30 @@ TEST_CASE("ShmRingMixSource 离线打开时,换代后上一代的尾段照读", 
         REQUIRE(src.read(t0, out.data(), 64, 1));
         CHECK(holdsPositions(out, t0, 64));
     }
+}
+
+// 换代之后写方走得慢:读不到的这段算不算缺口,宽限还按量到的提前量算。量不出来就退回固定的 200 ms,这几块就成了假缺口。
+TEST_CASE("ShmRingMixSource 离线打开时,换代后的宽限照旧按量到的提前量算", "[mix][ring][SL254]")
+{
+    RingFixture f(1u << 16, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 0, 20000);
+    ShmRingMixSource src;
+    src.setLeadUnbounded(true);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(0, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 100000, 32);
+    int64_t head = 100032;
+    for (int b = 0; b < 300; ++b)
+    {
+        src.read(100000 + b * 64, out.data(), 64, 1);
+        writePositions(f, head, 1);
+        ++head;
+    }
+    CHECK(src.gapCount() == 0);
 }
 
 TEST_CASE("ShmRingMixSource A-5 换代后写头未动:上一代窗照读,写方在前方另起一代时不把中间的旧环槽当本代数据",

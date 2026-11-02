@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -2204,6 +2205,27 @@ TEST_CASE("SL-254:离线下心跳只陈旧一拍不撤轨", "[output][session][S
     r.out.tick(stall + 80);
     CHECK(r.out.offlineInjectMask() == kBoth);
     CHECK(r.probe.connectedMask() == kBoth);
+
+    // 又陈旧一拍:看的是连续两拍,中间好过就从头算。
+    const scvb::u64 again = stall + 10 + scvb::kStaleDisplayMs + 1;
+    second.heartbeat(again);
+    r.out.tick(again);
+    CHECK(r.out.offlineInjectMask() == kBoth);
+    CHECK(r.probe.connectedMask() == kBoth);
+
+    // 上一轮最后一拍是陈旧的,不带进下一轮。
+    const scvb::u64 next = again + 10;
+    r.out.release(next);
+    REQUIRE(r.out.prepare(48000, 512, next) == OutputClaimState::kActive);
+    r.in.heartbeat(next);
+    second.heartbeat(next);
+    REQUIRE(r.out.offlineInjectMask() == kBoth);
+    r.out.offlineConfirmInjected(kBoth);
+    r.out.bumpBlockCounter();
+    const scvb::u64 stallNext = next + scvb::kStaleDisplayMs + 1;
+    second.heartbeat(stallNext);
+    r.out.tick(stallNext);
+    CHECK(r.out.offlineInjectMask() == kBoth);
 }
 
 TEST_CASE("SL-254:实时下心跳陈旧当拍就撤", "[output][session][SL254]")
@@ -2307,8 +2329,9 @@ TEST_CASE("SL-254:改到被占用的组,离线路径什么都不做", "[output][
 }
 
 // [M] 撤轨的同时 [A] 正要补位:发布在前、清位在后,[A] 回头复核时看得见新判定,自己把位撤掉。次序反了,位就留在判定
-// 之外:Input 静音、Output 不读。这是个概率性的钉子,所以跑很多轮。
-TEST_CASE("SL-254:[M] 撤轨时 [A] 正好补位,位不留在判定之外", "[output][session][SL254]")
+// 之外:Input 静音、Output 不读。概率性的钉子:evaluateChannels 的次序每次都红,forceClearMask 的次序一次进程只红一到
+// 三成,所以它挡得住持续的回归、挡不住偶发。看门狗那条路径的次序它够不着(写头不动,不跳闸)。
+TEST_CASE("SL-254:[M] 撤轨时 [A] 正好补位,位不留在判定之外", "[output][session][SL254][race]")
 {
     scvb::SegmentBackendInProcess::resetAll();
     OfflineStartRig r;
@@ -2322,17 +2345,33 @@ TEST_CASE("SL-254:[M] 撤轨时 [A] 正好补位,位不留在判定之外", "[ou
             audioRuns.fetch_add(1, std::memory_order_release);
         }
     });
+    // 等 [A] 再跑满两轮:它看见了这边刚写的东西,补上的位也撤回去了。forceClearMask 的清位是普通 store,不先排空的话,
+    // [A] 跑两轮时可能还没看见它,第三轮才补位,这里就读到一个马上要自己消失的位(实测最多两成的进程假红)。
     const auto audioRanTwice = [&] {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         const scvb::u64 from = audioRuns.load(std::memory_order_acquire);
-        while (audioRuns.load(std::memory_order_acquire) < from + 2)
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        for (int spin = 1; audioRuns.load(std::memory_order_acquire) < from + 2; ++spin)
         {
-            std::this_thread::yield();
+            if (spin % 4096 == 0)
+            {
+                if (std::chrono::steady_clock::now() > deadline)
+                {
+                    return false;
+                }
+                std::this_thread::yield();
+            }
         }
+        return true;
     };
     int leftOver = 0;
+    bool audioStuck = false;
     scvb::u64 now = 2000;
     r.in.heartbeat(now);
-    for (int round = 0; round < 4000 && leftOver == 0; ++round)
+    // 机器忙的时候少跑几轮,不吃 ctest 的超时。
+    const auto budget = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    for (int round = 0; round < 4000 && leftOver == 0 && !audioStuck && std::chrono::steady_clock::now() < budget;
+         ++round)
     {
         now += 10;
         if ((round & 1) != 0)
@@ -2344,16 +2383,83 @@ TEST_CASE("SL-254:[M] 撤轨时 [A] 正好补位,位不留在判定之外", "[ou
             r.out.tick(now + scvb::kStaleDisplayMs + 1);
             r.out.tick(now + scvb::kStaleDisplayMs + 41);
         }
-        audioRanTwice();
+        audioStuck = !audioRanTwice();
         leftOver += r.probe.connectedMask() != 0 ? 1 : 0;
         r.in.heartbeat(now + scvb::kStaleDisplayMs + 50);
         r.out.tick(now + scvb::kStaleDisplayMs + 60); // 判定回来
-        audioRanTwice();
+        audioStuck = audioStuck || !audioRanTwice();
         now += scvb::kStaleDisplayMs + 60;
     }
     stop.store(true, std::memory_order_relaxed);
     audio.join();
+    CHECK_FALSE(audioStuck);
     CHECK(leftOver == 0);
+}
+
+// 观察者不动主实例的位:它的离线 prepare 只清自己认领到的那一组。
+TEST_CASE("SL-254:观察者的离线 prepare 不动主实例的位", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    r.out.offlineConfirmInjected(r.out.offlineInjectMask());
+    REQUIRE(r.probe.connectedMask() == kCh3Bit);
+    OutputSession observer(r.backend, 2002);
+    observer.setNonRealtime(true);
+    REQUIRE(observer.prepare(48000, 512, 1250) == OutputClaimState::kObserver);
+    CHECK(r.probe.connectedMask() == kCh3Bit);
+}
+
+// 被旁路的 Output 不发布播放头,走带在 [M] 那边一直读到「没在跑」。离线下写头冻着不是走带停了的证据:撤了这一轨,它的
+// Input 接着直通,总线又被别的轨替换,它回来之前文件里就少这一轨。实时下走带确实停了才这样,规则不变。
+TEST_CASE("SL-254:走带读到「没在跑」时写头冻着的轨,离线不撤、实时撤", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    InputSession second(r.backend, 1002);
+    second.setChannelId(5);
+    REQUIRE(second.prepare(48000, 512, 1, 1050) == InputClaimState::kActive);
+    r.out.release(1190);
+    REQUIRE(r.out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    constexpr scvb::u32 kBoth = kCh3Bit | kCh5Bit;
+    REQUIRE(r.out.offlineInjectMask() == kBoth);
+    r.out.offlineConfirmInjected(kBoth);
+
+    bool offline = true;
+    SECTION("离线")
+    {
+        offline = true;
+    }
+    SECTION("实时")
+    {
+        offline = false;
+    }
+    r.out.setNonRealtime(offline);
+    r.out.setTransportPlaying(false);
+    float buf[16] = {};
+    std::int64_t pos = 16;
+    scvb::u64 now = 1300;
+    const auto run = [&](bool ch3Writes) {
+        if (ch3Writes)
+        {
+            scvb::AudioRing::write(r.in.audioRing().acquire(), pos, buf, 16);
+        }
+        scvb::AudioRing::write(second.audioRing().acquire(), pos, buf, 16);
+        pos += 16;
+        r.in.heartbeat(now);
+        second.heartbeat(now);
+        r.out.bumpBlockCounter();
+        r.out.tick(now);
+        now += 40;
+    };
+    while (now < 1420)
+    {
+        run(true);
+    }
+    while (now < 2200)
+    {
+        run(false);
+    }
+    CHECK(((r.probe.connectedMask() & kCh3Bit) != 0) == offline);
 }
 
 // 看门狗跳闸的这一拍:evaluateChannels 刚发布过判定,看门狗清 mask 时要一起清,否则到下一拍之前读方还会把位补回去。
@@ -2474,6 +2580,7 @@ TEST_CASE("SL-254:看门狗闩着进离线,不分批接回", "[output][session][
         out.tick(now);
         INFO("tick " << tick);
         REQUIRE(out.offlineInjectMask() == kBoth);
+        REQUIRE(probe.connectedMask() == kBoth);
     }
 }
 

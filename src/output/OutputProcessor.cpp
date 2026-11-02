@@ -1326,7 +1326,13 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 要不要走 [J32] 那道 **墙钟** 200ms 注入延迟。放在 tick 首而不是 prepareToPlay:宿主
     // 可能在 prepare 之后才 setNonRealtime(true)(JUCE 允许运行期切换),只在 prepare 里取
     // 会漏掉那一路,而漏掉的表现恰好就是本卡要修的前段静音。
-    session_.setNonRealtime(isNonRealtime());
+    // [A] 可能在这中间切了标志、同步过了(syncNonRealtimeFlag):再看一眼,别把它盖回旧值。
+    const bool offlineNow = isNonRealtime();
+    session_.setNonRealtime(offlineNow);
+    if (isNonRealtime() != offlineNow)
+    {
+        session_.setNonRealtime(!offlineNow);
+    }
 
     // 4Hz 心跳(250ms 折半在 25Hz 定时器内)。
     if (now - lastHeartbeatMs_ >= scvb::kHeartbeatIntervalMs)
@@ -1340,7 +1346,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     tickOwnerLockRefresh(now);
 
     // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
-    // 读撕裂(写者正在写)时沿用上一拍:离线下这一拍直接决定读不读挂起的轨,不能把「没读到」当成「走带停了」。
+    // 读撕裂(写者正在写)时沿用上一拍,不把「没读到」当成「走带停了」。
     scvb::engine::PlayheadPod playhead{};
     if (playheadShot_.read(playhead))
     {
