@@ -10803,11 +10803,16 @@ TEST_CASE("HOST SL-254:流停着时删掉的 Input 不进导出第一块", "[hos
             MonoMultiRig::pump(50);
         }
     }
+    float maxDiff = 0.0f;
     for (int c = 0; c < 2; ++c)
     {
-        CHECK(firstBlock.getReadPointer(c)[0] ==
-              Catch::Approx(bus.getReadPointer(c)[kBlock - 1]).margin(kBusTransparentTolerance));
+        const float steady = bus.getReadPointer(c)[kBlock - 1];
+        for (int s = 0; s < kBlock; ++s)
+        {
+            maxDiff = std::max(maxDiff, std::abs(firstBlock.getReadPointer(c)[s] - steady));
+        }
     }
+    CHECK(maxDiff <= kBusTransparentTolerance);
 }
 
 // ⑭ 与 ⑨ 成镜像:实时路径重新 prepare 后仍从直通起步,不吃离线这条路。
@@ -10832,11 +10837,21 @@ TEST_CASE("HOST SL-254:实时路径重新 prepare 后仍从直通起步", "[host
 
     // Input 的输出不接:实时下它还在 J12 的滞回里按静音走,接上量到的是 0,分不出 Output 走了哪条路。
     constexpr float kBusLevel = 0.3f;
-    exportBlock(r, bus, /*callOutput=*/false);
-    fillConstant(bus, kBusLevel);
-    r.out.processBlock(bus, r.midi);
-    CHECK(bus.getReadPointer(0)[0] == Catch::Approx(kBusLevel).margin(kBusTransparentTolerance));
-    CHECK(bus.getReadPointer(1)[0] == Catch::Approx(kBusLevel).margin(kBusTransparentTolerance));
+    float maxDiff = 0.0f;
+    for (int b = 0; b < 4; ++b)
+    {
+        exportBlock(r, bus, /*callOutput=*/false);
+        fillConstant(bus, kBusLevel);
+        r.out.processBlock(bus, r.midi);
+        for (int c = 0; c < 2; ++c)
+        {
+            for (int s = 0; s < kBlock; ++s)
+            {
+                maxDiff = std::max(maxDiff, std::abs(bus.getReadPointer(c)[s] - kBusLevel));
+            }
+        }
+    }
+    CHECK(maxDiff <= kBusTransparentTolerance);
 }
 
 // ④ 【复审 r1 红旗】非实时下健康前提不被豁免:Output 释放后 Input 必须回直通,不得恒静音。
