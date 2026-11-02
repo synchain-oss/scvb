@@ -669,31 +669,39 @@ try {
             "横幅 ⑥「宿主未提供时间线」在场(它才是说真因的那条)",
         );
         check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
-        // [SL-509] 采集开着 ⇒ 这把开关不挡(只挡「打开」)。改前这里是 data-disabled=1,用户关不掉采集。
-        check(
-            !p.captureSwitchBlocked,
-            "[SL-509] 采集开着时采集开关可点(data-disabled=0)—— noTimeline 只挡「打开」",
+        // 下面读的都是 Tab1 的节点,而 open() 把页面切到了「波形与分段」,app.js 只投影当前激活 tab
+        // (`switch (content.getAttribute("data-tab"))` 那段)。切走之前 Tab1 有没有赶上投影到 noTimeline,
+        // 看 scvb.error 和点击谁先到,所以这里曾偶发红。先回 Tab1,再轮询到开关投影出 noTimeline。
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
         );
         // [SL-478] §5.1 noTimeline 的 UI 落点只有采集 / 输出这两把开关。
         // 真桥对分析/参数/过渡/范围都照常受理,Tab1 的写闸此前把它们一并灰掉
         // (那时 noTimeline 恒 false,走不到);生产者接上后必须收窄,否则 Tab1 大面积灰死。
         check(
-            p.outputSwitchBlocked,
+            await waitFor(
+                IN(`const n = gb("master-output-toggle-switch");
+                    return !!n && n.getAttribute("data-disabled") === "1";`),
+            ),
             "[SL-478] 输出开关同样被挡(data-disabled=1)",
         );
+        const m = await evaluate(PROBE);
+        check(m !== null, "取到页内 DOM 快照(回 Tab1 之后)");
+        // [SL-509] 采集开着 ⇒ 这把开关不挡(只挡「打开」)。改前这里是 data-disabled=1,用户关不掉采集。
         check(
-            p.analyzeState !== "disabled" && p.analyzeState !== "(缺节点)",
-            `[SL-478] 分析按钮不因 noTimeline 变 disabled(§1.6 无此拒绝态),实得 ${p.analyzeState}`,
+            m !== null && m.captureEnabled && !m.captureSwitchBlocked,
+            "[SL-509] 采集开着时采集开关可点(data-disabled=0)—— noTimeline 只挡「打开」",
+        );
+        check(
+            m !== null &&
+                m.analyzeState !== "disabled" &&
+                m.analyzeState !== "(缺节点)",
+            `[SL-478] 分析按钮不因 noTimeline 变 disabled(§1.6 无此拒绝态),实得 ${m === null ? null : m.analyzeState}`,
         );
         // [SL-509] 真点一下:采集关掉(mock 与真桥同口径,noTimeline 下受理 on=false)。
         // 取 DOM 节点 .click():走 onActivate 的 click 监听,即开关自己的闸。
-        // 先回 Tab1:open() 把页面切到了「波形与分段」,而 app.js 只投影当前激活 tab
-        // (`switch (content.getAttribute("data-tab"))` 那段),不切回来开关的 DOM 不会刷新。
         // 不写死 sleep(CLAUDE.md §10):点完之后轮询到「开关已显示为关」再取快照,
         // 上界是 waitFor 的默认预算;没等到就当场判红,不靠 mock 的回声常数。
-        await evaluate(
-            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
-        );
         await evaluate(
             IN(
                 `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
