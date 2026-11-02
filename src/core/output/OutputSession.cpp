@@ -37,6 +37,7 @@ OutputClaimState OutputSession::prepare(u32 sampleRate, u32 maxBlock, u64 nowMs)
 {
     sampleRate_ = sampleRate;
     maxBlock_ = maxBlock;
+    blockCounterAtPrepare_ = blockCounter_.load(std::memory_order_relaxed);
     return openAndClaim(nowMs);
 }
 
@@ -121,6 +122,7 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         state_.store(OutputClaimState::kObserver, std::memory_order_release);
         stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
+        offlineReadyMask_.store(0, std::memory_order_release); // 这一组现在归别的 Output,上次的判定作废
         return state_.load(std::memory_order_relaxed);
     }
     if (cr != Registry::ClaimResult::kClaimed)
@@ -129,13 +131,16 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         return state_.load(std::memory_order_relaxed);
     }
     state_.store(OutputClaimState::kActive, std::memory_order_release);
+    claimedInputSlots_.store(registry_.inputSlot(1), std::memory_order_release);
+    claimedSlot_.store(registry_.outputSlot(), std::memory_order_release);
     attachAudioRings();
     return state_.load(std::memory_order_relaxed);
 }
 
 void OutputSession::attachAudioRings()
 {
-    // 幂等:只 attach 尚未绑定且 slot 活跃的 channel(attach 失败由 [M] 25Hz 重试)。
+    // 幂等:只 attach 尚未绑定且 slot 活跃(或上次还接得上,见 offlineInjectMask)的 channel(attach 失败由 [M] 25Hz 重试)。
+    const u32 ready = offlineReadyMask_.load(std::memory_order_relaxed);
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
@@ -149,7 +154,8 @@ void OutputSession::attachAudioRings()
             continue; // 句柄在途(宽限期),不重复 attach
         }
         InputSlot* slot = registry_.inputSlot(ch);
-        if (slot == nullptr || slot->state.load(std::memory_order_acquire) != kSlotActive)
+        const bool slotActive = slot != nullptr && slot->state.load(std::memory_order_acquire) == kSlotActive;
+        if (!slotActive && (ready & (1u << (ch - 1))) == 0)
         {
             continue;
         }
@@ -332,6 +338,10 @@ void OutputSession::evaluateChannels(u64 nowMs)
     const bool tripped = ctrl_.watchdogTripped();
     u32 inject = 0;
     u32 stalled = 0;
+    u32 ready = 0;
+    // 这次 prepare 之后 Output 还没跑过。宿主把 Output 准备好了却不调用它(比如它所在的轨不参与这次导出)时,
+    // 离线下不能让 Input 静音:看门狗要等墙钟,而这段墙钟按导出倍速放大成很长一段无声。
+    const bool outputNotRunYet = blockCounter_.load(std::memory_order_relaxed) == blockCounterAtPrepare_;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const std::size_t idx = static_cast<std::size_t>(ch - 1);
@@ -442,15 +452,26 @@ void OutputSession::evaluateChannels(u64 nowMs)
         //   仍显示「已连接」(用户裁定 U3(c))。
         // · 宿主因总线输入静音而停调 Output(H2)仍走 KI-6 路径,本条不涉及。
         const bool keepThroughStall = transportPlaying_;
-        const bool online =
-            slotActive && hbFresh && srMatch && bound && !misaligned && (!suspended || keepThroughStall) && !held;
+        const bool reachable = slotActive && hbFresh && srMatch && bound && !misaligned && !held;
+        if (reachable)
+        {
+            ready |= (1u << (ch - 1));
+        }
+        const bool online = reachable && (!suspended || keepThroughStall);
         if (online)
         {
             if (suspended)
             {
                 stalled |= (1u << (ch - 1)); // 保持在线的挂起轨([A] 判「注入轨全部停滞」用,U3(b)-ii)
             }
-            registry_.setConnectedMaskBit(ch);
+            if (nonRealtime() && outputNotRunYet)
+            {
+                registry_.clearConnectedMaskBit(ch);
+            }
+            else
+            {
+                registry_.setConnectedMaskBit(ch);
+            }
             if (!onlinePrev_[idx])
             {
                 onlineSinceMs_[idx] = nowMs; // 上线时刻(注入延迟起点)
@@ -465,14 +486,8 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // 读 connected_mask 跟着同块静音 ⇒ 交接落在同一块,既不静音也不叠加。
             // 实时路径逐字不动(200ms / muted 确认位 / 80ms ramp 全保留)。
             //
-            // ⚠ 残留上限 **≤1 块**,不是 0:本次评估在 [M] 上跑,若它恰好落在 Input 的 processBlock
-            // 与 Output 的 processBlock **之间**,那一块就是「Input 还直通 ∧ Output 已注入」的叠加。
-            // 实时下被 200ms 闸盖住,非实时是新引入的。要真归零得把交接点锚到时间线(某个 hop /
-            // timeInSamples,两侧同用),那是比本卡更大的改动。**别把它当成 0** —— 一块的量级与
-            // 「几百块叠加」(被禁用的单改一侧修法)差三个数量级,可接受;但后来人若把 [M] 频率
-            // 调低或把块长调大,这个上限会跟着涨。
-            // 这一块的实际听感:Output 那侧同块到位后是整块替换总线(`renderBus`),直通的那份被盖掉,
-            // 不会真的叠成两份;反方向(Input 已读到 mask、Output 还没读到本次 inject)仍可能缺一块。
+            // 这里定下的 inject 在离线路径上只给诊断与 [A-6] 的在场判定用:音频线程读的是 offlineInjectMask(),
+            // 交接不再等这一拍,见它的实现注释。
             const u32 flags = slot->flags.load(std::memory_order_acquire);
             const bool muted = (flags & kFlagMuted) != 0;
             if (nonRealtime() || muted || (nowMs - onlineSinceMs_[idx] >= kInjectDelayMs))
@@ -488,6 +503,41 @@ void OutputSession::evaluateChannels(u64 nowMs)
     }
     stalledMask_.store(stalled, std::memory_order_release);
     injectMask_.store(inject, std::memory_order_release);
+    // 首块之前只加不减:Output 先于 Input 重新 prepare 时,这之间落下的一拍里 Input 的槽还没回来,不代表它不在了。
+    offlineReadyMask_.store(outputNotRunYet ? (offlineReadyMask_.load(std::memory_order_relaxed) | ready) : ready,
+                            std::memory_order_release);
+}
+
+u32 OutputSession::offlineInjectMask() noexcept
+{
+    // [J95①] 离线的交接点不能等 [M]:evaluateChannels 按墙钟 25Hz 跑,音频却跑在墙钟前面 N 倍,等它第一拍就是
+    // 导出开头留一段没平衡的原声(实测约 100x 下长达 1.75s),长度还随机器快慢变。嵌套时每个 Output 各等各的,
+    // 一处切换就是一个台阶。所以这里用上一拍就定下的判定,从导出的第一块起注入,并当场补上 connected_mask:
+    //  · 第一块 Input 已经跑完(总线依赖它),它读到的还是清着的位、直通了这一块;Output 整块替换总线,这份直通被盖掉,
+    //    既不叠加也不缺。下一块 Input 按补上的位静音。总线上看不到中间态,与 J95「两侧同块」等价。
+    //  · 上一拍的判定可能已过期(音频流停着时删了一轨):这里再按槽逐块核一次,首块时所有 Input 都已 prepare 完,
+    //    槽不活跃就是真的不在了 —— 否则读方会把留在环里的旧数据混进来。
+    //  · 载入后一拍都没跑过就开始导出时掩码为空,退回「第一拍交接」。
+    OutputSlot* slot = claimedSlot_.load(std::memory_order_acquire);
+    const InputSlot* inputs = claimedInputSlots_.load(std::memory_order_acquire);
+    if (slot == nullptr || inputs == nullptr)
+    {
+        return 0;
+    }
+    const u32 ready = offlineReadyMask_.load(std::memory_order_acquire);
+    u32 live = 0;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        if ((ready & (1u << i)) != 0 && inputs[i].state.load(std::memory_order_acquire) == kSlotActive)
+        {
+            live |= (1u << i);
+        }
+    }
+    if ((slot->connected_mask.load(std::memory_order_acquire) & live) != live)
+    {
+        slot->connected_mask.fetch_or(live, std::memory_order_release);
+    }
+    return live;
 }
 
 void OutputSession::refreshGlobalInfo(u64 nowMs)
@@ -569,6 +619,8 @@ void OutputSession::tick(u64 nowMs)
         if (cr == Registry::ClaimResult::kClaimed)
         {
             state_.store(OutputClaimState::kActive, std::memory_order_release);
+            claimedInputSlots_.store(registry_.inputSlot(1), std::memory_order_release);
+            claimedSlot_.store(registry_.outputSlot(), std::memory_order_release);
             attachAudioRings();
         }
         else if (cr == Registry::ClaimResult::kAbiMismatch)
@@ -599,6 +651,7 @@ void OutputSession::tick(u64 nowMs)
         registry_.clearConnectedMask();
         stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
+        offlineReadyMask_.store(0, std::memory_order_release);
     }
     // kReacquireBit:CtrlPlane 已放开这一轨的 hold。这里**不**直接置位 —— 置位只有 evaluateChannels 一个
     // 口子:下一拍它按与其它上线同一套判据置位(停摆期间掉线的轨不会被硬置一拍),并重走 [J32] 握手。
@@ -611,6 +664,9 @@ void OutputSession::tick(u64 nowMs)
 OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 maxBlock, u64 nowMs)
 {
     // 释放旧组 OutputSlot → Unmap 旧组段。
+    claimedSlot_.store(nullptr, std::memory_order_release);
+    claimedInputSlots_.store(nullptr, std::memory_order_release);
+    offlineReadyMask_.store(0, std::memory_order_release); // 这张判定是旧组的
     releaseSlot();
     releaseSegments();
     resetChannelTracking(); // PR#53 第5轮:释放旧组后重置 per-channel 跟踪(旧组时序不得污染新组判定)
@@ -633,6 +689,8 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
 
 void OutputSession::release(u64 nowMs)
 {
+    claimedSlot_.store(nullptr, std::memory_order_release);
+    claimedInputSlots_.store(nullptr, std::memory_order_release);
     releaseSlot();
     releaseSegments();
     resetChannelTracking();
@@ -816,6 +874,7 @@ void OutputSession::forceClearMask() noexcept
     registry_.clearConnectedMask();
     stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
+    offlineReadyMask_.store(0, std::memory_order_release);
 }
 
 void OutputSession::forceSetConnectedMaskBit(u32 channel)

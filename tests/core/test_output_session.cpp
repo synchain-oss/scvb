@@ -1912,6 +1912,7 @@ TEST_CASE("SL-254:非实时下首次上线即注入(跳过 200ms 墙钟闸)", "[
     REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
     out.setNonRealtime(true); // 宿主宣告离线渲染
     REQUIRE(out.nonRealtime());
+    out.bumpBlockCounter(); // Output 跑过了,见下一条
 
     // ★ 与上面那条 [J32] 用例**同一时序**(单次 tick、无 muted 位、0 < 200ms):
     //   实时下 injectMask 必为 0,非实时下必须**当拍**置位 —— 同块交接的 Output 半边。
@@ -1920,6 +1921,135 @@ TEST_CASE("SL-254:非实时下首次上线即注入(跳过 200ms 墙钟闸)", "[
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE((probe.connectedMask() & (1u << 2)) != 0);
     REQUIRE((out.injectMask() & (1u << 2)) != 0); // 实时形态在这里红(injectMask == 0)
+}
+
+namespace
+{
+// 离线掩码几条用例共用:ch3 的 Input 上线写过数据,Output 判定过一拍,然后两边都 release(宿主开始导出的样子)。
+constexpr scvb::u32 kCh3Bit = 1u << 2;
+
+struct ExportStartRig
+{
+    scvb::SegmentBackendInProcess backend;
+    InputSession in{backend, 1001};
+    OutputSession out{backend, 2001};
+    scvb::Registry probe{backend, 1};
+    float buf[16] = {};
+
+    ExportStartRig()
+    {
+        in.setChannelId(3);
+        REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+        in.heartbeat(1100);
+        scvb::AudioRing::write(in.audioRing().acquire(), 0, buf, 16);
+        REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+        out.bumpBlockCounter();
+        out.tick(1300);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE((probe.connectedMask() & kCh3Bit) != 0);
+        out.release(1400);
+        in.release(1400);
+        out.setNonRealtime(true);
+    }
+};
+} // namespace
+
+// 宿主准备好了 Output 却不调用它:没有东西替换总线,Input 不能按 mask 静音。
+TEST_CASE("SL-254:非实时下 Output 还没跑过就不置 connected 位", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+    REQUIRE(r.in.prepare(48000, 512, 1, 1500) == InputClaimState::kActive);
+    r.in.heartbeat(1500);
+
+    r.out.tick(1540);
+    CHECK((r.probe.connectedMask() & kCh3Bit) == 0);
+
+    r.out.bumpBlockCounter();
+    r.out.tick(1580);
+    CHECK((r.probe.connectedMask() & kCh3Bit) != 0);
+}
+
+TEST_CASE("SL-254:离线注入判定跨 release 保留,首块就能用并当场补位", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+    REQUIRE(r.in.prepare(48000, 512, 1, 1500) == InputClaimState::kActive);
+
+    REQUIRE((r.probe.connectedMask() & kCh3Bit) == 0); // claimOutput 从 Free 接手时清过
+    CHECK(r.out.injectMask() == 0); // [M] 一拍都没跑
+    CHECK((r.out.offlineInjectMask() & kCh3Bit) != 0);
+    CHECK((r.probe.connectedMask() & kCh3Bit) != 0);
+    CHECK(r.out.mixSource(3).bound());
+}
+
+// Output 先于 Input 重新 prepare 时环要提前绑上(首块前可能一拍 [M] 都没有),中间那一拍也不能把判定抹掉。
+TEST_CASE("SL-254:Output 先 prepare,判定不被中间那一拍抹掉", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+    CHECK(r.out.mixSource(3).bound());
+
+    r.out.tick(1540); // Input 的槽还没回来
+    REQUIRE(r.in.prepare(48000, 512, 1, 1560) == InputClaimState::kActive);
+    CHECK((r.out.offlineInjectMask() & kCh3Bit) != 0);
+}
+
+// 首块时 Input 的槽不活跃就是真的不在了:流停着时被删掉的轨,不能把它留在环里的旧数据混进导出。
+TEST_CASE("SL-254:离线注入按槽逐块核,不在的 Input 不进", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+
+    CHECK(r.out.offlineInjectMask() == 0);
+    CHECK((r.probe.connectedMask() & kCh3Bit) == 0);
+}
+
+// 跑过之后判定按当拍算:Input 走了就该掉。
+TEST_CASE("SL-254:首块之后离线判定跟着当拍走", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+    REQUIRE(r.in.prepare(48000, 512, 1, 1500) == InputClaimState::kActive);
+    r.in.heartbeat(1500);
+    r.out.bumpBlockCounter();
+    r.out.tick(1540);
+    REQUIRE((r.out.offlineInjectMask() & kCh3Bit) != 0);
+
+    r.in.release(1560);
+    r.out.tick(1580);
+    r.in.prepare(48000, 512, 1, 1590); // 槽回来了,但刚才那一拍已经判定它不在
+    CHECK(r.out.offlineInjectMask() == 0);
+}
+
+// 判定是旧组的:改组之后不能带到新组,也不能写新组的 connected_mask。
+TEST_CASE("SL-254:改组清掉离线判定", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.out.prepare(48000, 512, 1500) == OutputClaimState::kActive);
+    REQUIRE(r.out.changeGroup(2, 48000, 512, 1520) == OutputClaimState::kActive);
+
+    InputSession other(r.backend, 1002);
+    other.setGroupId(2);
+    other.setChannelId(3);
+    REQUIRE(other.prepare(48000, 512, 1, 1530) == InputClaimState::kActive);
+    CHECK(r.out.offlineInjectMask() == 0);
+}
+
+// release 之后 [M] 不再是主实例,音频线程不得写 connected_mask(那时这个槽可能已经是别人的)。
+TEST_CASE("SL-254:没有占用 OutputSlot 时离线路径什么都不做", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    ExportStartRig r;
+    REQUIRE(r.in.prepare(48000, 512, 1, 1500) == InputClaimState::kActive);
+    CHECK(r.out.offlineInjectMask() == 0);
+    CHECK((r.probe.connectedMask() & kCh3Bit) != 0); // release 不清位(见 Registry::releaseOutput),这里只钉「没新写」
 }
 
 TEST_CASE("SL-254:非实时标志可运行期切回,实时闸随即恢复", "[output][session][SL254]")

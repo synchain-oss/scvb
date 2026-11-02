@@ -942,7 +942,9 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
 
     // 与轨启用位求交:关掉的轨整轨不进混音(§1.15;DAW_COMPATIBILITY §「设备停用」把面板轨道
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
-    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
+    const bool offline = isNonRealtime();
+    const scvb::u32 inject =
+        (offline ? session_.offlineInjectMask() : session_.injectMask()) & enabledMask_.load(std::memory_order_acquire);
 
     // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
     // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
@@ -1019,7 +1021,6 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // [J95①] 上线/下线的 ramp 只对实时路径有效:离线下 Input 是同块硬切,这边同块到位,交接点才不留坑。
     // inject 里含 enabledMask_,所以面板开关轨在离线下也是同块到位,不走 SL-488 的 80ms 淡出(有意):
     // 渲染中途很少有人去点面板,为它把交接沿和面板沿分开不值得。
-    const bool offline = isNonRealtime();
     for (int ch = 0; ch < 15; ++ch)
     {
         const float target = (inject & (1u << ch)) != 0 ? 1.0f : 0.0f;
@@ -1110,8 +1111,10 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 替换总线(ADR-002):稳态=完全替换;进出瞬间经 busXfade 等功率交叉(§5.2 过渡语义)。
     // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
     // [A-8] 注入轨全部停滞且总线输入听得见时同样交叉回直通(见上)。
+    // 离线下一条注入轨都没读到数据时同样回直通:Input 这一块没写(被旁路、宿主没调它),它的声音还在总线输入上。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    renderBus(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
+    renderBus(out, in, mix, n,
+              /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_) && !(offline && !injectHasData));
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
@@ -1122,7 +1125,8 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
     // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
-    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 inject = (isNonRealtime() ? session_.offlineInjectMask() : session_.injectMask()) &
+                             enabledMask_.load(std::memory_order_acquire);
     if (inject == 0)
     {
         bypassHasData_.fill(false); // 早退也要清:否则收尾的 publishMeters 会拿上一块的 hasData

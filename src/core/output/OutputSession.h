@@ -156,6 +156,9 @@ public:
     ShmRingMixSource& mixSource(u32 channel);
     const ShmRingMixSource& mixSource(u32 channel) const;
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
+    // [A] 离线导出这一块该注入哪些轨,并把这些轨的 connected_mask 位补上(Input 下一块跟着静音)。
+    // 判据与时机见 OutputSession.cpp 的实现注释。实时路径不调它。
+    u32 offlineInjectMask() noexcept;
     // [A-8] 保持在线的挂起轨(写头冻结 ≥ kSuspendStallMs,但按 E2 规则仍在线;bit{N-1})。只含在线轨,
     // 与 injectMask 同一次评估里发布。[A] 用它判「注入轨是否全部停滞」(U3(b)-ii),不用它决定读不读环。
     // ⚠ 它与 injectMask 是**两个**原子量,不是同一次快照:[A] 可能读到跨过一次 [M] 更新的旧新组合,最坏让「全部停滞」
@@ -334,6 +337,15 @@ private:
     std::atomic<u32> injectMask_{0};
     // [A-8] 保持在线的挂起轨(见 stalledMask());[M] 25Hz 写,与 injectMask_ 同拍。
     std::atomic<u32> stalledMask_{0};
+    // 离线路径的注入依据(见 offlineInjectMask):[M] 每拍发布「这一轨的 Input 接得上」,不看走带;
+    // 同组的 release / 重新 prepare 不清,改组、让位给别的 Output、看门狗与时间线前置清。
+    std::atomic<u32> offlineReadyMask_{0};
+    // 本实例已占用的 OutputSlot 与同一段里的 InputSlot 表,给音频线程用(Registry 的访问器不是给 [A] 调的)。
+    // [M] 发布,未占用时为空。旧映射有 500ms 宽限期,音频线程块内用完不跨块持有。
+    std::atomic<OutputSlot*> claimedSlot_{nullptr};
+    std::atomic<InputSlot*> claimedInputSlots_{nullptr};
+    // 最近一次 prepare 时的 blockCounter_:相等 = 这次 prepare 之后 Output 一块都还没跑。[M] 读写。
+    u64 blockCounterAtPrepare_ = 0;
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
     std::atomic<u64> blockCounter_{0};
 
