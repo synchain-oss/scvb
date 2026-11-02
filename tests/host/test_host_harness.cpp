@@ -8518,6 +8518,23 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     r.out.removeListener(&spy);
 }
 
+// 把走带放到 seconds,轮询到打印态变成 want。打印态是消息线程上的定时器判的,mac runner 上它的节拍不够细
+// (tests/CMakeLists.txt 记的 p90 179 ms),固定时长的 pump 会偶发赶不上。判错时等满上界后返回实际状态,断言照红。
+static scvb::engine::AuthorityMode printModeAt(MonoMultiRig& r, double seconds, scvb::engine::AuthorityMode want)
+{
+    for (int tries = 0; tries < 40; ++tries)
+    {
+        r.ph.timeSamples = static_cast<std::int64_t>(seconds * kSr);
+        r.runBlocks(4, 0.5f);
+        MonoMultiRig::pump(50);
+        if (r.out.getPrinter().mode() == want)
+        {
+            break;
+        }
+    }
+    return r.out.getPrinter().mode();
+}
+
 // 进到 PRINT 的共同前提:分析过、输出开着、走带在跑、播放头在段里。
 static void printFromStart(MonoMultiRig& r)
 {
@@ -8530,10 +8547,7 @@ static void printFromStart(MonoMultiRig& r)
     r.out.setOutputEnabled(false);
     MonoMultiRig::pump(300);
     r.out.setOutputEnabled(true);
-    r.ph.timeSamples = 0;
-    r.runBlocks(40, 0.5f);
-    MonoMultiRig::pump(300);
-    REQUIRE(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    REQUIRE(printModeAt(r, 0.0, scvb::engine::AuthorityMode::Print) == scvb::engine::AuthorityMode::Print);
 }
 
 // 契约 §1.3:ON 且「播放中 ∧ 在 range 内」才是 PRINT。以前打印只看段包络:手动范围限制不了写入,界面却显示没在写。
@@ -8542,13 +8556,9 @@ TEST_CASE("HOST 打印:用户选的范围之外不写", "[host][print][printguar
 {
     MonoMultiRig r;
     printFromStart(r);
-    const auto modeAt = [&](double seconds) {
-        r.ph.timeSamples = static_cast<std::int64_t>(seconds * kSr);
-        r.runBlocks(4, 0.5f);
-        MonoMultiRig::pump(120);
-        return r.out.getPrinter().mode();
-    };
-    REQUIRE(modeAt(0.5) == scvb::engine::AuthorityMode::Print);
+    using Mode = scvb::engine::AuthorityMode;
+    const auto modeAt = [&](double seconds, Mode want) { return printModeAt(r, seconds, want); };
+    REQUIRE(modeAt(0.5, Mode::Print) == Mode::Print);
 
     int rangeMode = 2; // manual
     SECTION("手动")
@@ -8562,12 +8572,12 @@ TEST_CASE("HOST 打印:用户选的范围之外不写", "[host][print][printguar
     r.out.runtime().rangeMode = rangeMode;
     r.out.runtime().rangeStartS = 1.0;
     r.out.runtime().rangeEndS = 1.5;
-    CHECK(modeAt(0.5) == scvb::engine::AuthorityMode::Armed); // 范围之前
-    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print); // 范围里
-    CHECK(modeAt(2.0) == scvb::engine::AuthorityMode::Armed); // 范围之后
+    CHECK(modeAt(0.5, Mode::Armed) == Mode::Armed); // 范围之前
+    CHECK(modeAt(1.2, Mode::Print) == Mode::Print); // 范围里
+    CHECK(modeAt(2.0, Mode::Armed) == Mode::Armed); // 范围之后
 
     r.out.runtime().rangeMode = 0; // 跟随:不限
-    CHECK(modeAt(0.5) == scvb::engine::AuthorityMode::Print);
+    CHECK(modeAt(0.5, Mode::Print) == Mode::Print);
 }
 
 // DAW 循环档的范围只有编辑器开着时才同步到 runtime。这里没有编辑器:挪了循环区,打印要跟着这一拍的循环区走,
@@ -8576,12 +8586,8 @@ TEST_CASE("HOST 打印:窗口关着时挪 DAW 循环区,范围跟着走", "[host
 {
     MonoMultiRig r;
     printFromStart(r);
-    const auto modeAt = [&](double seconds) {
-        r.ph.timeSamples = static_cast<std::int64_t>(seconds * kSr);
-        r.runBlocks(4, 0.5f);
-        MonoMultiRig::pump(120);
-        return r.out.getPrinter().mode();
-    };
+    using Mode = scvb::engine::AuthorityMode;
+    const auto modeAt = [&](double seconds, Mode want) { return printModeAt(r, seconds, want); };
     r.ph.bpm = 120.0; // 1 拍 = 0.5 秒
     r.ph.haveLoop = true;
     r.out.runtime().rangeMode = 1;
@@ -8589,20 +8595,20 @@ TEST_CASE("HOST 打印:窗口关着时挪 DAW 循环区,范围跟着走", "[host
     r.out.runtime().rangeEndS = 0.5;
 
     r.ph.haveLoop = false; // 一次都没读到过:只能用编辑器那份
-    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Print);
-    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Armed);
+    CHECK(modeAt(0.2, Mode::Print) == Mode::Print);
+    CHECK(modeAt(1.2, Mode::Armed) == Mode::Armed);
 
     r.ph.haveLoop = true;
     r.ph.loopStartPpq = 2.0; // 1.0–1.5 秒
     r.ph.loopEndPpq = 3.0;
-    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Armed);
-    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print);
+    CHECK(modeAt(0.2, Mode::Armed) == Mode::Armed);
+    CHECK(modeAt(1.2, Mode::Print) == Mode::Print);
 
     // 这一拍读不到(空循环区):沿用刚才读到的 1.0–1.5,不退回编辑器那份 0–0.5。
     // 反向 = 读不到时用 runtime_ ⇒ 这两条都翻。
     r.ph.loopStartPpq = 3.0;
-    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Armed);
-    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print);
+    CHECK(modeAt(0.2, Mode::Armed) == Mode::Armed);
+    CHECK(modeAt(1.2, Mode::Print) == Mode::Print);
 }
 
 // 以前旁路路径不发布播放头:快照冻在旁路前,停走带之后打印态卡在 Print,gesture 一直开着。
@@ -8632,28 +8638,33 @@ TEST_CASE("HOST 打印:被旁路时不写,播放头照走", "[host][print][print
                 MonoMultiRig::pump(8);
             }
         }
-        MonoMultiRig::pump(120);
+    };
+    const auto runBypassedUntilArmed = [&]() {
+        for (int tries = 0; tries < 40 && r.out.getPrinter().mode() != scvb::engine::AuthorityMode::Armed; ++tries)
+        {
+            runBypassed(4);
+            MonoMultiRig::pump(50);
+        }
+        return r.out.getPrinter().mode();
     };
 
     r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
-    runBypassed(20);
-    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
+    CHECK(runBypassedUntilArmed() == scvb::engine::AuthorityMode::Armed);
+    runBypassed(4);
     const auto moving = r.out.playheadSnapshot();
     CHECK((moving.flags & scvb::engine::kPlayheadIsPlaying) != 0);
     CHECK(moving.timeSamples == r.ph.timeSamples - kBlock); // 不是旁路前冻住的那一刻
 
     r.ph.playing = false;
     runBypassed(10);
+    MonoMultiRig::pump(300);
     const auto stopped = r.out.playheadSnapshot();
     CHECK((stopped.flags & scvb::engine::kPlayheadIsPlaying) == 0);
     CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Armed);
 
     // 解除旁路再播:回到 Print。
     r.ph.playing = true;
-    r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
-    r.runBlocks(8, 0.5f);
-    MonoMultiRig::pump(120);
-    CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print);
+    CHECK(printModeAt(r, 0.5, scvb::engine::AuthorityMode::Print) == scvb::engine::AuthorityMode::Print);
 }
 
 // 硬约束 6:同组第二个 Output 只读观察。以前三态求值不看 claim:工程里存着输出开、守卫确认之后它照样进 Print,
@@ -8693,7 +8704,7 @@ TEST_CASE("HOST 打印:只读观察实例不写", "[host][print][printguard]")
             MonoMultiRig::pump(12);
         }
     }
-    MonoMultiRig::pump(120);
+    MonoMultiRig::pump(300);
     CHECK(r.out.getPrinter().mode() == scvb::engine::AuthorityMode::Print); // 主实例照写
     CHECK(second->getPrinter().mode() != scvb::engine::AuthorityMode::Print);
 
