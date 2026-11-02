@@ -311,7 +311,7 @@ private:
     bool positivePresence(std::size_t idx, bool wasInjected, u64 nowMs) noexcept;
     // [A] 第一块的判定,见 offlineInjectMask。
     u32 offlineStartVerdict(const InputSlot* inputs) const noexcept;
-    // 看门狗闩着时第一块不自己判,等 [M]:逐轨接回归它管。
+    // [M] 占槽成功后把本实例的 OutputSlot / InputSlot 表发布给 [A](offlineInjectMask 用);release / changeGroup 时清空。
     void noteClaimedForOffline() noexcept;
     void refreshGlobalInfo(u64 nowMs);
     void consumeCommands(u64 nowMs);
@@ -360,7 +360,10 @@ private:
     // [M] 发布,未占用时为空。旧映射有 500ms 宽限期,音频线程块内用完不跨块持有。
     std::atomic<OutputSlot*> claimedSlot_{nullptr};
     std::atomic<InputSlot*> claimedInputSlots_{nullptr};
-    // 最近一次 prepare 时的 blockCounter_:相等 = 这次 prepare 之后 Output 一块都还没跑。[M] 读写。
+    static_assert(decltype(claimedSlot_)::is_always_lock_free && decltype(claimedInputSlots_)::is_always_lock_free,
+                  "离线路径的槽指针必须 lock-free(§8)");
+    // 最近一次 prepare 时的 blockCounter_:相等 = 这次 prepare 之后 Output 一块都还没跑。
+    // prepare 写,evaluateChannels 读,两边都在 [M]:和 sampleRate_ 同一口径(REAPER 开始渲染时也在主线程调 prepare,实测)。
     u64 blockCounterAtPrepare_ = 0;
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
     std::atomic<u64> blockCounter_{0};

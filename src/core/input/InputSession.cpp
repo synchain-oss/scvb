@@ -137,7 +137,7 @@ void InputSession::resetRingForOfflinePass() noexcept
     // 静音,不是上一次播放留下的声音。在 prepare 里做,4 MB 一次,不在音频线程上。
     if (b->data != nullptr)
     {
-        std::memset(b->data, 0, static_cast<std::size_t>(b->header->ring_frames) * 2u * sizeof(float));
+        std::memset(b->data, 0, static_cast<std::size_t>(b->geo.ringFrames) * 2u * sizeof(float));
     }
 }
 

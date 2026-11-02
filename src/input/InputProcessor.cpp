@@ -87,6 +87,10 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     // (经 configuredChannelId),已改用行为级判据直接钉这两个消费者(见"加载期冲突"用例
     // 补的 CHECK(bridgeTickSnapshot().configuredChannelId == 5)),不再依赖存档这条间接路径。
     channelId_ = static_cast<int>(session_.channelId());
+    // 只在 prepare 这一刻看标志:VST3 宿主经 setupProcessing 先切标志再 prepare(REAPER 实测也是这个顺序),AU 切标志后
+    // JUCE 也会再 prepare 一次。没走到这里的只有一条路:宿主只在 ProcessData 里报离线(JUCE 在 process 里才切标志),
+    // 这时不清环,这次没被调用的 Input 留下的旧音频理论上可能读进文件开头。不挪到标志上升沿去补:[A] 上清 4 MB 太重,
+    // [M] 上会和正在写的 [A] 撞。
     if (isNonRealtime())
     {
         session_.resetRingForOfflinePass();
