@@ -290,7 +290,7 @@ export const T = {
             "切到「写入自动化」后,参数由分析结果自动驱动;要把参数录成自动化,请在 DAW 侧打开 Latch 或 Write。",
         "tour.step12.title": "声像 / 音量分布",
         "tour.step12.body":
-            "这是全体轨道的声像与音量的实时状态:柱高 = 音量,横位 = 声像;横向细线 = 立体声源的张开度与角度域曲线。",
+            "这是全体轨道的声像与音量的实时状态:柱高 = 音量,横位 = 声像;横向细线 = 立体声源的张开度。",
         "tour.step9.title": "Width · 最大角度",
         "tour.step9.body": "整体宽度的上限:最大张开角 0–90°。",
         "tour.step10.title": "MS Balance",
@@ -1358,7 +1358,7 @@ export const T = {
             "Switch to WRITE AUTOMATION and the parameters are driven by the analysis result. To record them as automation, arm Latch or Write on the DAW side.",
         "tour.step12.title": "Pan / level distribution",
         "tour.step12.body":
-            "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread and the angle-domain curve.",
+            "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread.",
         "tour.step9.title": "Width · max angle",
         "tour.step9.body": "The overall width limit: max spread angle 0–90°.",
         "tour.step10.title": "MS Balance",
@@ -2220,7 +2220,7 @@ export const T = {
             "Passez en ÉCRITURE AUTOMATION et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
         "tour.step12.title": "Répartition pan / volume",
         "tour.step12.body":
-            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la fine ligne horizontale = l'ouverture de la source stéréo et la courbe angulaire.",
+            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la fine ligne horizontale = l'ouverture de la source stéréo.",
         "tour.step9.title": "Width · angle max",
         "tour.step9.body":
             "La limite de largeur globale : angle d'ouverture max 0–90°.",

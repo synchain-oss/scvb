@@ -117,7 +117,7 @@ Set the DAW's automation mode to **Write** or **Latch** and play through once mo
 
 ### The Input single page
 
-Input is a single page: channel selection, group selection, connection status, level, passthrough/mute status, in-place gain switch. **The configuration's source of truth lives in the Output** — the values Input shows and edits are read from and written to the Output's state over the control-plane IPC.
+Input is a single page: channel selection, group selection, connection status, level, passthrough/mute status. Input has no pan or volume controls. **The configuration's source of truth lives in the Output** — the values Input shows and edits are read from and written to the Output's state over the control-plane IPC.
 
 ### First-run guide and tour
 
@@ -321,7 +321,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 - **rendering a vocal track that has SCVB Input on it by itself gives a silent file**, and a render that replaces the original audio replaces it with silence; what to do is under "Exporting and rendering" above, details in KI-4 of `docs/KNOWN_ISSUES.md`;
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
-- Input does in-place gain only, not in-place pan (which would double up with the Output's dual-pan);
+- Input adjusts neither pan nor volume; both happen only on the Output (panning on the Input would double up with the Output's dual-pan);
 - **the DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
 - **on the waveform page, making a selection, selecting a segment and editing segments (dragging, splitting or removing a boundary) need a mouse or touchpad for now**; a keyboard way to do them is planned before v1.0.0. Details in `docs/KNOWN_ISSUES.md` (KI-10);
 - **macOS is a beta**: Apple Silicon only, unsigned, no host verified yet (Logic: beta / not tested in Logic). Details in `docs/KNOWN_ISSUES.md` (KI-12 onward);

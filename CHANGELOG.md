@@ -21,11 +21,25 @@
 
 ### 变更
 
+- **review bot 从 DeepSeek 直连迁到 OpenCode Go 网关**(`deepseek-review` / `pr-agent`):
+  端点由 `https://api.deepseek.com/anthropic` 改为 `https://opencode.ai/zen/go`,模型改用 `deepseek-v4.1-flash`
+  —— 该网关只认裸 id,`[1M]` 后缀会返回 `Model is unavailable`,而裸 id 本身就是 1M 上下文(实测约 96 万
+  token 输入通过、约 107 万被拒)。secret 由 `DEEPSEEK_KEY` 改为仓库级 `OPENCODE_GO_API_KEY_FOR_REVIEW`。
+  网关强制要求会话头:claude-code-action 侧用 job 级 `ANTHROPIC_CUSTOM_HEADERS`,pr-agent 侧用
+  `LITELLM.EXTRA_HEADERS`。pr-agent 的输出上限改用真正生效的 `DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS`
+  (v0.39.0 并未实现 `config.max_output_tokens`,不抬高则 litellm 默认只发 4096,带推理的模型会把额度
+  全花在 reasoning 上、审查空跑而 job 报绿)。**触发面不变**:`pr-agent` 仍只在 PR → `dev` 时运行,
+  `claude-review` / `deepseek-review` 仍覆盖所有 base 分支。(#412)
 - **review bot 改为调用 `Synchain-oss/ci-workflows` 的中央可复用 workflow**(`claude-review` / `deepseek-review` / `pr-agent`):
   三个文件缩成薄调用方,只留本仓专属的 `focus` / `extra_prompt` / `ignore_globs`;模型、工具边界、符号链接拒审、超时、
   pr-agent 镜像(按 digest 钉住、无备用模型)统一在中央维护,调用方按 commit SHA 引用。`deepseek-review` 改为只能
   `workflow_dispatch` 手动触发。检查名随之变为 `pr-agent / pr-agent`、`claude-pr-review / review`,
-  `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。(#414)
+  `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。(#413)
+- **中央 review workflow 升级到 v1.3.1,workflow 名标出模型**:三个调用方改钉中央 `v1.3.1`(commit SHA)。v1.3.0 的安全修复:
+  `workflow_dispatch` 下中央 workflow 会把 `CLAUDE.md` / `.claude/` / `.mcp.json` 还原成 base 版本。另订正文档:`dev` → `staging`、`staging` → `prod` 的晋升 PR 不跑任何 AI review。
+  触发面以本条为准:`claude-review` 覆盖所有非晋升 PR 的 base;#412 条目里「`deepseek-review` 仍覆盖所有 base 分支」的说法已过时(它现在只能手动触发)。(#415)
+- **中央 review workflow 升级到 v1.3.2**:三个调用方改钉中央 `v1.3.2`(commit SHA)。调用方无输入与行为变化;中央侧变化:`claude-review` / `deepseek-review` 的模型工具拒绝清单新增 `Read(//github/**)`,`claude-review` 与 `pr-agent` 在 step summary 里记录实际运行的中央 commit。(#417)
+- **中央 review workflow 升级到 v1.3.3**:三个调用方改钉中央 `v1.3.3`(commit SHA)。调用方无输入与行为变化;中央侧变化:`pr-agent` 的输入预算 `max_model_tokens` 随 provider 取默认值(`anthropic` 为 500000,原 800000;`opencode-go` / `deepseek-api` 仍为 800000),因为 pr-agent 用 OpenAI 分词器计数、会低估 Claude token,大 PR 上 800000 预算的 prompt 实测 1001327 个 Haiku token、超出 1M 窗口而无审查产出;step summary 同时列出输入预算。本仓 `pr-agent` 调用方用 `opencode-go`,行为不变。(#419)
 
 ### 修复
 
