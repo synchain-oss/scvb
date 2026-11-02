@@ -20,7 +20,7 @@ path guard 之外同 PR 改两处:`docs/adr/0002-routing-architecture.md` 在 [J
 
 - `docs/adr/0002` 是从 `docs/constitution/ADR.md` 拆出来的,头注要求改动走修宪流程,而宪法原件在 masterPlan 仓,不在本仓。这段补注是这条规矩的例外,由用户批准,目前只在 `docs/adr/0002`,宪法原件和副本还没有。
   原件更新之后,副本按「头注 + 原件逐字节」重建(`scripts/check-constitution-sync.ps1` 比对)。在那之前两边有差异。权威文本仍是 `docs/constitution/ADR.md`(`docs/adr/README.md`),这段补注是等待修宪的说明,不改变权威顺序;文字和实现不一致时,按 IPC_CONTRACT 的仲裁规则以实现代码为准。
-- `src/core/output/OutputSession.h` 的 `setNonRealtime` 注释、`src/input/InputProcessor.cpp` 的 `processBlock` 里 [SL-254 / J95①] 那段的小标题还写着「同块交接」。本 PR 是纯文档,留到下一张碰这段代码的卡一起改。
+- `src/core/output/OutputSession.h` 的 `setNonRealtime` 注释、`src/input/InputProcessor.cpp` 的 `processBlock` 里 [SL-254 / J95①] 那段的小标题还写着「同块交接」,`tests/host/test_host_harness.cpp`、`tests/core/test_output_session.cpp` 里也有几处同样的注释。本 PR 是纯文档,留到下一张碰这段代码的卡一起改,并确认 host 用例「Input 的静音最多晚一块」在写方提前跑一段时还能不能这么说。
 
 ## 变更内容
 
