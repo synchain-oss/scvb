@@ -8588,14 +8588,21 @@ TEST_CASE("HOST 打印:窗口关着时挪 DAW 循环区,范围跟着走", "[host
     r.out.runtime().rangeStartS = 0.0; // 编辑器上次同步到的范围
     r.out.runtime().rangeEndS = 0.5;
 
+    r.ph.haveLoop = false; // 一次都没读到过:只能用编辑器那份
+    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Print);
+    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Armed);
+
+    r.ph.haveLoop = true;
     r.ph.loopStartPpq = 2.0; // 1.0–1.5 秒
     r.ph.loopEndPpq = 3.0;
     CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Armed);
     CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print);
 
-    r.ph.loopStartPpq = 3.0; // 空循环区:沿用上次的范围
-    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Print);
-    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Armed);
+    // 这一拍读不到(空循环区):沿用刚才读到的 1.0–1.5,不退回编辑器那份 0–0.5。
+    // 反向 = 读不到时用 runtime_ ⇒ 这两条都翻。
+    r.ph.loopStartPpq = 3.0;
+    CHECK(modeAt(0.2) == scvb::engine::AuthorityMode::Armed);
+    CHECK(modeAt(1.2) == scvb::engine::AuthorityMode::Print);
 }
 
 // 以前旁路路径不发布播放头:快照冻在旁路前,停走带之后打印态卡在 Print,gesture 一直开着。

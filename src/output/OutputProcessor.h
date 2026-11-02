@@ -950,6 +950,10 @@ private:
     bool printRangeValid_ = false;
     double printRangeStartS_ = 0.0;
     double printRangeEndS_ = 0.0;
+    // 消息线程上次从快照读到的 DAW 循环区(秒)。见 timerCallback。
+    bool lastHostLoopValid_ = false;
+    double lastHostLoopStartS_ = 0.0;
+    double lastHostLoopEndS_ = 0.0;
     // 总线交叉淡变 + per-channel 淡入(§5.2 过渡语义 R2)。
     scvb::output::BusXfade busXfade_;
 
