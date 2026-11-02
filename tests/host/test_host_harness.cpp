@@ -10974,7 +10974,21 @@ TEST_CASE("HOST SL-254:第一块判不了时留在原声,第一拍接上", "[hos
         INFO("块 " << b);
         CHECK(blockDiff(bus, dry) <= kBusTransparentTolerance);
     }
-    MonoMultiRig::pump(60);
+    // [M] 第一拍什么时候来看真实时间,mac runner 上 60 ms 等不到:轮询到接上为止。
+    // 等的这段每一块要么还是原声,要么已经全接上,不能只接上一部分轨。
+    bool connected = false;
+    for (int tries = 0; tries < 150 && !connected; ++tries)
+    {
+        MonoMultiRig::pump(20);
+        exportBlock(r, bus, /*callOutput=*/true);
+        connected = blockDiff(bus, level) <= kBusTransparentTolerance;
+        if (!connected)
+        {
+            INFO("第 " << tries << " 次轮询");
+            REQUIRE(blockDiff(bus, dry) <= kBusTransparentTolerance);
+        }
+    }
+    REQUIRE(connected);
     for (int b = 0; b < 8; ++b)
     {
         exportBlock(r, bus, /*callOutput=*/true);
@@ -11167,8 +11181,8 @@ TEST_CASE("HOST SL-254:面板全关的组,被旁路的 Output 导出第一块也
     r.ph.timeSamples -= kBlock;
     r.out.processBlockBypassed(bus, r.midi);
     r.ph.timeSamples += kBlock;
-    CHECK(bus.getMagnitude(0, kBlock) == 0.0f);
-    CHECK(bus.getMagnitude(1, kBlock) == 0.0f);
+    CHECK(bus.getMagnitude(0, 0, kBlock) == 0.0f);
+    CHECK(bus.getMagnitude(1, 0, kBlock) == 0.0f);
     fillConstant(r.inBuf, kExportLevels[0]);
     r.ins[0]->processBlock(r.inBuf, r.midi);
     CHECK(r.inBuf.getMagnitude(0, kBlock) == 0.0f);
