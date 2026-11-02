@@ -49,6 +49,7 @@
 #include "ipc/PlatformSegmentBackend.h" // [B 线 M12b] Windows = SegmentBackendWin32,mac = SegmentBackendPosix
 #include "ipc/VizPlane.h"
 #include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
+#include "output/MixMath.h" // pan 曲线播放叠加用例的解析期望
 #include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
 #include "state/InputStateCodec.h" // [SL-234] Input 侧 CFGS 同一处夹取缺口
 #include "state/OutputStateCodec.h"
@@ -14988,6 +14989,271 @@ TEST_CASE("HOST J157:撤回预览 / 旧版本号 / 点表没变的松手 —— 
     r.out.setPanCurve(v, {}); // 已提交的就是空表(从没画过)
     CHECK_FALSE(r.out.authority().panCurvePreviewLive());
     CHECK(blocksUntil(r, 6, [&](float p) { return p > base * 0.9f; }) > 0);
+}
+
+// ---------------------------------------------------------------------------
+// pan 曲线只在播放时叠加(变更文档 20261101-pan-curve-playback-only.md)。
+//
+// 三条用例对应对用户的三条承诺:
+//   ① 分析不读曲线:同一份采集换曲线重新分析,段表逐位相同;
+//   ② 写入不受曲线影响:打印器读的是各轨 pan/vol 曲线,里面没有 G;
+//   ③ 播放仍然叠加:输出按 G(P_eff) 变,而且和宿主参数(用户画的自动化)互不覆盖。
+// ---------------------------------------------------------------------------
+namespace
+{
+
+// 只压右半边。**必须左右不对称**:对称曲线左右压得一样多,左右平衡本来就不变,
+// 曲线就算还接在分析里,用例①也照样全绿(wideBell 就是这种曲线,不能拿来测这件事)。
+std::vector<scvb::PanCurvePoint> rightShelf(float db)
+{
+    scvb::PanCurvePoint p;
+    p.angle = 10.0f;
+    p.gainDb = db;
+    p.shape = scvb::PanCurveShape::shelf;
+    p.q = 2.0f;
+    p.side = scvb::PanCurveSide::right;
+    return {p};
+}
+
+using SegTables = std::vector<std::vector<std::array<double, 5>>>;
+
+SegTables segTablesOf(MonoMultiRig& r)
+{
+    SegTables t;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        t.push_back(r.segTableOf(ch));
+    }
+    return t;
+}
+
+// 两份段表里 volDb 的最大差。判据仍是逐位相等,这个数只为红的时候说得清差多少。
+double maxVolDiff(const SegTables& a, const SegTables& b)
+{
+    double d = 0.0;
+    for (std::size_t ch = 0; ch < std::min(a.size(), b.size()); ++ch)
+    {
+        for (std::size_t s = 0; s < std::min(a[ch].size(), b[ch].size()); ++s)
+        {
+            d = std::max(d, std::abs(a[ch][s][3] - b[ch][s][3]));
+        }
+    }
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("HOST 曲线不进分析:换曲线重新分析,段表逐位相同(全量 / 范围 / 另一版本)", "[host][analyze][pancurve]")
+{
+    MonoMultiRig r;
+    r.variedCrest = true; // 三轨能量各异,左右平衡才有东西可解。必须在采集之前置位
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 1.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const auto analyze = [&r](double startS, double endS) {
+        REQUIRE(r.runAnalysisIn(startS, endS, /*clearManual=*/true));
+        return segTablesOf(r);
+    };
+
+    const auto curve = rightShelf(-12.0f);
+    const int v1 = r.out.versionActive();
+
+    // ---- 全量 ----
+    const SegTables flatFull = analyze(win.startS, win.endS);
+    REQUIRE(r.fallbackLevel() >= 1); // 0 = 这次没跑过平衡,下面的相等全是空过
+
+    // 前提:各轨确实落在曲线增益差得开的位置。差不开的话,曲线接在分析里也改不动解,
+    // 下面的相等同样是空过。
+    double gMin = std::numeric_limits<double>::max();
+    double gMax = std::numeric_limits<double>::lowest();
+    const auto pans = r.pansOf();
+    REQUIRE_FALSE(pans.empty());
+    for (const double p : pans)
+    {
+        const double g = scvb::evalCurve(curve, p);
+        gMin = std::min(gMin, g);
+        gMax = std::max(gMax, g);
+    }
+    INFO("各段 pan 上曲线增益的跨度 = " << (gMax - gMin) << " dB");
+    REQUIRE(gMax - gMin > 3.0);
+
+    r.out.setPanCurve(v1, curve);
+    const SegTables curvedFull = analyze(win.startS, win.endS);
+    INFO("全量:volDb 最大差 = " << maxVolDiff(flatFull, curvedFull));
+    CHECK((curvedFull == flatFull)); // 把曲线接回 startAnalysis ⇒ 这里红
+
+    // ---- 范围 ----
+    // 范围分析的产物取决于范围外的既有段,所以两边都从同一份全量段表起步。
+    const double len = win.endS - win.startS;
+    const double rangeStartS = win.startS + len * 0.25;
+    const double rangeEndS = win.startS + len * 0.75;
+    r.out.setPanCurve(v1, {});
+    (void)analyze(win.startS, win.endS);
+    const SegTables flatRange = analyze(rangeStartS, rangeEndS);
+    (void)analyze(win.startS, win.endS);
+    r.out.setPanCurve(v1, curve);
+    const SegTables curvedRange = analyze(rangeStartS, rangeEndS);
+    INFO("范围:volDb 最大差 = " << maxVolDiff(flatRange, curvedRange));
+    CHECK((curvedRange == flatRange));
+
+    // ---- 另一个版本:曲线按版本存,分析也不读那一份 ----
+    REQUIRE(r.out.setVersionActive(2));
+    const int v2 = r.out.versionActive();
+    REQUIRE(v2 == 2);
+    const SegTables flatV2 = analyze(win.startS, win.endS);
+    r.out.setPanCurve(v2, rightShelf(-6.0f));
+    const SegTables curvedV2 = analyze(win.startS, win.endS);
+    INFO("V2:volDb 最大差 = " << maxVolDiff(flatV2, curvedV2));
+    CHECK((curvedV2 == flatV2));
+}
+
+TEST_CASE("HOST 曲线不进写入:改曲线不改打印器读的值,写进宿主的 Pan/Vol 里没有 G", "[host][analyze][print][pancurve]")
+{
+    MonoMultiRig r;
+    r.variedCrest = true;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 1.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+
+    const int v = r.out.versionActive();
+    const auto curve = rightShelf(-12.0f);
+
+    // 打印器未冻结分支采样的就是这些曲线对象(AutomationPrinter 的 panAt / volAt)。
+    const auto sampleCurves = [&] {
+        std::vector<double> s;
+        const auto curves = r.out.authority().activeCurves();
+        for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+        {
+            const auto* c = curves[static_cast<std::size_t>(ch - 1)];
+            REQUIRE(c != nullptr);
+            for (int k = 0; k <= 200; ++k)
+            {
+                const double t = win.startS + (win.endS - win.startS) * k / 200.0;
+                s.push_back(c->panAt(t));
+                s.push_back(c->volAt(t));
+            }
+        }
+        return s;
+    };
+    const auto before = sampleCurves();
+    r.out.setPanCurve(v, curve);
+    CHECK(sampleCurves() == before);
+
+    // 找一条落在曲线压低区的轨:在那里 G 最大,混进打印值就看得出来。
+    int rightCh = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount && rightCh == 0; ++ch)
+    {
+        if (scvb::evalCurve(curve, r.firstPan(ch)) < -6.0)
+        {
+            rightCh = ch;
+        }
+    }
+    REQUIRE(rightCh != 0);
+
+    // 端到端:打开输出、走带回已分析区域,宿主参数上的值就是曲线真身的值,不带 G。
+    // 判据取「最近半秒内的真身值」:打印器在 25 Hz 定时器上采样,落在哪一拍取决于机器负载。
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = static_cast<std::int64_t>(win.startS * kSr);
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+
+    const auto curves = r.out.authority().activeCurves();
+    const auto* c = curves[static_cast<std::size_t>(rightCh - 1)];
+    REQUIRE(c != nullptr);
+    const auto* rawPan = r.out.getAPVTS().getRawParameterValue(scvb::params::panId(v, rightCh));
+    const auto* rawVol = r.out.getAPVTS().getRawParameterValue(scvb::params::volId(v, rightCh));
+    REQUIRE(rawPan != nullptr);
+    REQUIRE(rawVol != nullptr);
+    const double tEnd = static_cast<double>(r.ph.timeSamples) / kSr;
+    double bestPan = std::numeric_limits<double>::max();
+    double bestVol = std::numeric_limits<double>::max();
+    for (int k = 0; k <= 50; ++k)
+    {
+        const double t = tEnd - 0.01 * k;
+        bestPan = std::min(bestPan, std::abs(static_cast<double>(rawPan->load()) - c->panAt(t)));
+        bestVol = std::min(bestVol, std::abs(static_cast<double>(rawVol->load()) - c->volAt(t)));
+    }
+    INFO("ch" << rightCh << " 打印值与真身的差:pan " << bestPan << ",vol " << bestVol);
+    CHECK(bestPan < 0.5);
+    CHECK(bestVol < 0.5); // G 在这里是 -12 dB,混进打印值的话差 12 dB
+}
+
+TEST_CASE("HOST 曲线仍在播放时叠加:输出按 G(P_eff) 变,宿主参数和曲线互不覆盖(实时 / 离线)", "[host][pancurve]")
+{
+    for (const bool offline : {false, true})
+    {
+        CAPTURE(offline);
+        Rig r;
+        if (offline)
+        {
+            r.in.setNonRealtime(true);
+            r.out.setNonRealtime(true);
+        }
+        REQUIRE(settleFollowBase(r) > 0.05f); // FOLLOW 档:pan/vol 取宿主参数,等于用户在 DAW 里画的自动化
+
+        const int v = r.out.versionActive();
+        auto& apvts = r.out.getAPVTS();
+        auto* panParam = apvts.getParameter(scvb::params::panId(v, kTestChannel));
+        REQUIRE(panParam != nullptr);
+        const auto* rawPan = apvts.getRawParameterValue(scvb::params::panId(v, kTestChannel));
+        const auto* rawVol = apvts.getRawParameterValue(scvb::params::volId(v, kTestChannel));
+        const float volBefore = rawVol->load();
+
+        const auto setPan = [&](float pan) { panParam->setValueNotifyingHost(panParam->convertTo0to1(pan)); };
+        struct LR
+        {
+            double l = 0.0;
+            double r = 0.0;
+        };
+        const auto measure = [&r] {
+            r.runBlocks(40, 0.5f); // 够走完参数平滑与 30 ms 曲线淡入
+            r.runBlocks(1, 0.5f, /*pumpEveryN=*/0);
+            return LR{r.outBuf.getMagnitude(0, 0, kBlock), r.outBuf.getMagnitude(1, 0, kBlock)};
+        };
+        // 解析期望走实时链同一个原语:Rig 的 Input 是立体声布局,左右同一路正弦,每轨 width 默认 100。
+        const auto expected = [](const std::vector<scvb::PanCurvePoint>& points, float pan) {
+            scvb::PanCurveLut lut;
+            lut.rebuild(points);
+            const scvb::PanCurveXfade xf{&lut, nullptr, 1.0f};
+            float l = 0.0f;
+            float rr = 0.0f;
+            scvb::output::mixStereoSample(1.0f, 1.0f, pan, 0.0f, 100.0f, 100.0f, 1.0f, xf, l, rr);
+            return LR{l, rr};
+        };
+        const auto db = [](double a, double b) { return 20.0 * std::log10(a / b); };
+
+        const auto curve = rightShelf(-12.0f);
+
+        // ---- 右 60:子声像 (-40, +100),只有右子声像被压 ----
+        setPan(60.0f);
+        const LR flatRight = measure();
+        REQUIRE(flatRight.r > 0.05);
+        r.out.setPanCurve(v, curve);
+        const LR curvedRight = measure();
+
+        const LR e0 = expected({}, 60.0f);
+        const LR e1 = expected(curve, 60.0f);
+        REQUIRE(std::abs(db(e1.r, e0.r)) > 1.0); // 判别量:这个位置上曲线确实压得动,否则下面全是空过
+        CHECK(db(curvedRight.l, flatRight.l) == Catch::Approx(db(e1.l, e0.l)).margin(0.1));
+        CHECK(db(curvedRight.r, flatRight.r) == Catch::Approx(db(e1.r, e0.r)).margin(0.1));
+
+        // 改曲线不碰宿主参数。
+        CHECK(rawPan->load() == Catch::Approx(60.0f).margin(1e-3));
+        CHECK(rawVol->load() == volBefore);
+
+        // ---- 反过来:动宿主参数不碰曲线,曲线按新的角继续叠加 ----
+        setPan(-60.0f); // 子声像 (-100, +40)
+        const LR curvedLeft = measure();
+        CHECK(samePanPoints(r.out.crvsSnapshot().versions[static_cast<std::size_t>(v - 1)].panCurve, curve));
+        const LR e2 = expected(curve, -60.0f);
+        CHECK(db(curvedLeft.l, curvedLeft.r) == Catch::Approx(db(e2.l, e2.r)).margin(0.1));
+    }
 }
 
 // ===========================================================================

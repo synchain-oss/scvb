@@ -244,8 +244,7 @@ TEST_CASE("CURVE-7 cut slope LUT worst-case <= 0.015 dB", "[pancurve]")
 }
 
 // [SL-442] 空点列表 = 「从没画过曲线」的工程。G 接进实时链(02 §8.1 步骤 5)之后,
-// 这条决定了老工程声音变不变 —— 此前它只是一句注释(AutoAssign.h「空 → G≡0(c≡1)」),
-// 全仓没有任何用例钉住它。缺它的后果不是「少测一点」:把 evalCurve 的起始值从 0 改成
+// 这条决定了老工程声音变不变 —— 此前全仓没有任何用例钉住它。缺它的后果不是「少测一点」:把 evalCurve 的起始值从 0 改成
 // 别的、或让 rebuild 对空点列表写进未初始化内容,都不会有任何东西红。
 TEST_CASE("CURVE-8 empty point list is exactly 0 dB (unity gain) everywhere", "[pancurve]")
 {

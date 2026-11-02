@@ -307,7 +307,7 @@ export const T = {
         "tour.step15.title": "角度域曲线",
         // [J153] 双击点即删,不用先选中(curve-editor.js 的 dblclick:hitTest 命中即 deleteAt)。
         "tour.step15.body":
-            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
+            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点。曲线只在播放时叠加,不影响分析和写入的自动化,改完不用重新分析",
         "tour.step16.title": "本页:轨道",
         "tour.step16.body":
             "每个通道占一行,构成 15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动调节。",
@@ -1375,7 +1375,7 @@ export const T = {
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
-            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click a point to delete it. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
+            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click a point to delete it. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points. The curve is applied at playback only: it does not affect analysis or the written automation, so you do not need to re-analyze after changing it.",
         "tour.step16.title": "This page: Tracks",
         "tour.step16.body":
             "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
@@ -2238,7 +2238,7 @@ export const T = {
             "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre les intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
-            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez sur un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
+            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez sur un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points. La courbe n'est appliquée qu'à la lecture : elle n'affecte ni l'analyse ni l'automation écrite, inutile de relancer l'analyse après l'avoir modifiée.",
         "tour.step16.title": "Cette page : Pistes",
         "tour.step16.body":
             "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
