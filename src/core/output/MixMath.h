@@ -12,10 +12,9 @@
 // 三点冻结,改之前先读:
 //   ① **叠加不替代** —— G 在 dB 域加到 v(= 引擎值层的 volDb)上,不替代 v 的任何部分;
 //   ② **查在 P_eff 上** —— 即经 `scaleByGlobalWidth` 缩放**之后**的角,不是名义角;
-//   ③ stereo **每个子声像各查一次**(与 §6.1 的 ĉ_L/ĉ_R 同构),不是拿弧中心查一次。
-// ⚠ ② 与分析侧**故意不同轴**:§6.1 解 c_i 用的是名义 P(分析基准 width=100%),这里用 P_eff。
-//    这不是 bug,别「修」成一致 —— 正是这个差异使得「改了 width 要提示重新平衡」(§6.5)成立。
-//    (那条 dirty 提示当前**尚未实现**,是 §6.5 的已知缺口,已另行登记整族卡。)
+//   ③ stereo 的两个子声像 clamp(P∓w) 经全局 width 缩放后**各查一次**,不是拿弧中心查一次。
+// ⚠ 分析和写入都不读 G 与全局 width:它们只在播放时叠加,改了不用重新分析,也不提示重新平衡
+//    (变更文档 20261101-pan-curve-playback-only.md)。
 
 #include <algorithm>
 #include <cmath>
@@ -132,7 +131,7 @@ inline void mixStereoSample(float sL, float sR, float pan, float volDb, float tr
     panGains(subL, gL_L, gR_L);
     panGains(subR, gL_R, gR_R);
 
-    // ★ 两个子声像**各查一次** G(与 §6.1 的 ĉ_L/ĉ_R 同构),且查在缩放后的 subL/subR 上。
+    // ★ 两个子声像**各查一次** G,且查在缩放后的 subL/subR 上。
     // 拿弧中心查一次再共用是错的:张开度一大,两个子声像会落在曲线上差别很大的两处,
     // 共用等于把一侧的增益按到另一侧头上。
     // 折进各自的 pan 增益(而不是折进 vg):G≡0 时两个因子**恰为 1.0f**,乘法按位恒等,
