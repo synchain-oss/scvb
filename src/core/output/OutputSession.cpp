@@ -472,7 +472,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
         // · 「挂起」照常上桥(stallEpisode_ → ChannelConnInfo::suspended,中性提示);Input 面板在宿主挂起期间
         //   仍显示「已连接」(用户裁定 U3(c))。
         // · 宿主因总线输入静音而停调 Output(H2)仍走 KI-6 路径,本条不涉及。
-        // 离线下写头冻着不说明走带停了:被旁路的 Output 不发布播放头,这里一直读到「没在跑」。
+        // 离线下写头冻着不说明走带停了:这一拍读到的走带态可能还是渲染开始之前的。
         const bool keepThroughStall = transportPlaying_ || offline;
         // 离线下失准的轨不退出读取:能不能回来看读方下一块读不读得到,读不到它的 Input 就一直直通(下面清位)。
         const bool reachable = slotActive && !hbGone && srMatch && bound && !held && (offline || !misaligned);

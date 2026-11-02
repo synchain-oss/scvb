@@ -25,6 +25,7 @@ enum PlayheadFlag : uint32_t
     kPlayheadTempoValid = 1u << 3,
     kPlayheadMusicValid = 1u << 4,
     kPlayheadTimeSigValid = 1u << 5, // [J147] 宿主给了拍号(timeSigNum/timeSigDen 有效)
+    kPlayheadHostBypassed = 1u << 6, // 这一块走的是宿主旁路路径(打印器不写)
 };
 
 // POD 载荷,一次性整体发布。字段并集已含 04 的 range 跟随 / tempo 采样点表需求。
