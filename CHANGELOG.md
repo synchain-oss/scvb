@@ -21,6 +21,8 @@
 
 ### 变更
 
+- **手册写明立体声轨在分析里按一个点算,不读每轨 width**:算法没有变,这里钉住现状并写明已知限制:单声道轨和左右内容不同的宽立体声轨混用时,
+  分析后的混音默认宽度下可能偏向一侧约 2–3 dB(KI-20)。(#428)
 - **review bot 从 DeepSeek 直连迁到 OpenCode Go 网关**(`deepseek-review` / `pr-agent`):
   端点由 `https://api.deepseek.com/anthropic` 改为 `https://opencode.ai/zen/go`,模型改用 `deepseek-v4.1-flash`
   —— 该网关只认裸 id,`[1M]` 后缀会返回 `Model is unavailable`,而裸 id 本身就是 1M 上下文(实测约 96 万

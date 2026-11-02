@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm> // [SL-273] std::max(两路 maxAbsDiff)
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <string> // [SL-382] hasWarning 的入参
@@ -66,6 +67,39 @@ PipelineConfig makeConfig(std::size_t numHops, int activeTracks)
 }
 
 } // namespace
+
+TEST_CASE("PIPE stereo 轨按一个点算:解和同能量的 mono 轨相同", "[analysis][pipeline]")
+{
+    // 这是有意的选择,不是漏接:改成按子声像算之后,全是 stereo 轨的工程左右差反而变大、回退和警告明显变多
+    // (对比数据见 docs/ANALYSIS.md §7 的已知限制与引入本用例的 PR)。要改这条,先重新评估求解器。
+    const auto run = [](SourceChannels source) {
+        std::array<PipelineTrackFeatures, kPipelineTracks> features;
+        features[0] = makeAlternating(1, 200, 0, 0.2f);
+        features[1] = makeAlternating(1, 200, 0, 0.05f);
+        auto cfg = makeConfig(features[0].kwMs.size(), 2);
+        for (int t = 0; t < 2; ++t)
+        {
+            cfg.tracks[static_cast<std::size_t>(t)].source = source;
+        }
+        const auto res = runAnalysisPipeline(features, cfg);
+        REQUIRE_FALSE(res.cancelled);
+        return res;
+    };
+
+    const auto mono = run(SourceChannels::Mono);
+    const auto stereo = run(SourceChannels::Stereo);
+    for (std::size_t t = 0; t < 2; ++t)
+    {
+        CAPTURE(t);
+        REQUIRE(mono.segments[t].size() == 1);
+        REQUIRE(stereo.segments[t].size() == 1);
+        // 判别量:解确实离开了中心、音量确实动了。全是 0 的话,下面的相等是空过。
+        CHECK(std::abs(mono.segments[t][0].pan) > 30.0);
+        CHECK(std::abs(mono.segments[t][0].volDb) > 0.5);
+        CHECK(std::abs(stereo.segments[t][0].pan - mono.segments[t][0].pan) < 1e-9);
+        CHECK(std::abs(stereo.segments[t][0].volDb - mono.segments[t][0].volDb) < 1e-9);
+    }
+}
 
 TEST_CASE("PIPE-1 单轨有声/静音交替 → 切出多段", "[analysis][pipeline][t37]")
 {
