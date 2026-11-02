@@ -887,6 +887,18 @@ bool busInputAudible(const float* const* in, int n) noexcept
 }
 } // namespace
 
+void ScvbOutputAudioProcessor::renderBus(float* const* out, const float* const* in, const float* const* mix, int n,
+                                         bool targetMix) noexcept
+{
+    // [J95①] 宪法:「时间窗与 ramp 全部只对实时路径有效」。离线下 Input 同块静音,总线交叉若还走 80ms,
+    // 交接点上总线输入已是零、混音只露出 sin(θ) 那一份,导出文件里就是一个从零淡入的坑。
+    if (isNonRealtime())
+    {
+        busXfade_.snapTo(targetMix);
+    }
+    busXfade_.render(out, in, mix, n, targetMix);
+}
+
 void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0)
 {
     // [SL-488] 上一段真混进了哪些轨:取出即清。只有走到混音路径末尾才重写(见 releasableMask_
@@ -917,7 +929,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             timelineValid_.store(1, std::memory_order_relaxed); // 负 t0 是有效时间线([J51])
         }
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
-        busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
+        renderBus(out, in, lastMix, n, /*targetMix=*/false);
         publishSilentMeters();
         stalledRawLatched_ = false; // [A-8] 总线已在回直通,「全部停滞」那一段不再延续
         return;
@@ -955,7 +967,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
         std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
         const float* silentMix[2] = {accumL_.data(), accumR_.data()};
-        busXfade_.render(out, in, silentMix, n, /*targetMix=*/false);
+        renderBus(out, in, silentMix, n, /*targetMix=*/false);
         publishSilentMeters();
         stalledRawLatched_ = false; // [A-8] 同上
         return;
@@ -1002,9 +1014,20 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     }
 
     // arm 平滑器:per-channel 注入 fade(上线/下线 80ms)+ 全局 width + ms_balance g_M/g_S(10ms)。
+    // [J95①] 上线/下线的 ramp 只对实时路径有效:离线下 Input 是同块硬切,这边同块到位,交接点才不留坑。
+    const bool offline = isNonRealtime();
     for (int ch = 0; ch < 15; ++ch)
     {
-        channelFade_[static_cast<std::size_t>(ch)].setTargetValue((inject & (1u << ch)) != 0 ? 1.0f : 0.0f);
+        const float target = (inject & (1u << ch)) != 0 ? 1.0f : 0.0f;
+        auto& fade = channelFade_[static_cast<std::size_t>(ch)];
+        if (offline)
+        {
+            fade.setCurrentAndTargetValue(target);
+        }
+        else
+        {
+            fade.setTargetValue(target);
+        }
     }
     globalWidthSmoother_.setTargetValue(readGlobalWidth());
     const float ms = readMsBalance();
@@ -1084,7 +1107,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // [SL-521] 目标按 inject:只剩释放中的轨(最后一条轨刚关掉)时交叉回直通。
     // [A-8] 注入轨全部停滞且总线输入听得见时同样交叉回直通(见上)。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
-    busXfade_.render(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
+    renderBus(out, in, mix, n, /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_));
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);

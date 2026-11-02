@@ -3075,6 +3075,29 @@ TEST_CASE("ShmRingMixSource bind/unbind 与 read 并发不崩(原子快照)", "[
     REQUIRE(out[1] == 56.0f);
 }
 
+TEST_CASE("BusXfade::snapTo:同块到位,第一个样本就是目标端", "[output][xfade]")
+{
+    scvb::output::BusXfade xf;
+    xf.prepare(48000.0);
+    constexpr int n = 16;
+    std::vector<float> in(n, 1.0f), mix(n, 0.25f), out(n, 7.0f);
+    const float* ip[2] = {in.data(), in.data()};
+    const float* mp[2] = {mix.data(), mix.data()};
+    float* op[2] = {out.data(), out.data()};
+
+    xf.snapTo(true);
+    REQUIRE(xf.isSettledMix());
+    xf.render(op, ip, mp, n, true);
+    REQUIRE(out[0] == 0.25f);
+    REQUIRE(out[n - 1] == 0.25f);
+
+    xf.snapTo(false);
+    REQUIRE(xf.isSettledPassthrough());
+    out.assign(n, 7.0f);
+    xf.render(op, ip, mp, n, false);
+    REQUIRE(out[0] == 7.0f); // 稳态直通不写输出(真实调用里 out 与 in 同内存)
+}
+
 TEST_CASE("BusXfade 直通⇄混音等功率交叉(无别名/无 +3dB 泵感)", "[mix][busxfade]")
 {
     scvb::output::BusXfade xf;

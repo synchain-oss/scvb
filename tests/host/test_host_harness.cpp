@@ -10419,6 +10419,117 @@ TEST_CASE("HOST SL-254:实时路径仍走 J32 原协议(注入延迟未被顺手
     CHECK(r.out.misalignCount(kTestChannel) == 0); // [A-6] 零误报
 }
 
+namespace
+{
+// 把 Input 的输出接进 Output 的输入,逐样本量总线输出与原始信号的差。runOfflineHandover 不路由、
+// 只按块量峰值,淡入第一块的峰值就过了「非零」,所以它量不出 Output 这一侧的 80ms ramp 留下的坑。
+struct RoutedBusProbe
+{
+    int firstInputSilent = -1;
+    float maxDiff = 0.0f;
+    int worstBlock = -1;
+};
+
+RoutedBusProbe runRoutedBus(Rig& r, int blocksPerPump, int totalBlocks)
+{
+    RoutedBusProbe p;
+    juce::AudioBuffer<float> source(2, kBlock);
+    for (int i = 0; i < totalBlocks; ++i)
+    {
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        source.makeCopyOf(r.inBuf);
+        r.in.processBlock(r.inBuf, r.midi);
+        if (p.firstInputSilent < 0 && r.inBuf.getMagnitude(0, kBlock) < 1e-6f)
+            p.firstInputSilent = i;
+        r.outBuf.makeCopyOf(r.inBuf);
+        r.out.processBlock(r.outBuf, r.midi);
+        for (int c = 0; c < 2; ++c)
+        {
+            for (int s = 0; s < kBlock; ++s)
+            {
+                const float d = std::abs(r.outBuf.getReadPointer(c)[s] - source.getReadPointer(c)[s]);
+                if (d > p.maxDiff)
+                {
+                    p.maxDiff = d;
+                    p.worstBlock = i;
+                }
+            }
+        }
+        r.ph.timeSamples += kBlock;
+        if ((i % blocksPerPump) == blocksPerPump - 1)
+            Rig::pumpMessages(1);
+    }
+    return p;
+}
+
+// 比浮点舍入大、比任何听得出的差小(约 -106 dBFS)。段值全是默认(pan 0 / vol 0 dB),混音应当透明。
+constexpr float kBusTransparentTolerance = 5e-6f;
+} // namespace
+
+// ⑥ 防坑:同块交接要两侧都同块。Input 硬切而 Output 还走 80ms ramp 时,交接点上的声音从零淡入。
+//    反向 = 去掉 `renderBus` 的 snapTo 或逐轨 fade 的同块到位 ⇒ 差值接近信号幅度,本条红。
+TEST_CASE("HOST SL-254:非实时交接前后,总线上的信号逐样本不变", "[host][SL254]")
+{
+    for (const int blocksPerPump : {8, 16, 32})
+    {
+        Rig r;
+        r.in.setNonRealtime(true);
+        r.out.setNonRealtime(true);
+        r.ph.playing = true;
+
+        const auto p = runRoutedBus(r, blocksPerPump, kHandoverPumps * blocksPerPump);
+        INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 最大差=" << p.maxDiff << " @"
+                              << p.worstBlock);
+        REQUIRE(p.firstInputSilent >= 0); // 前置:确实交接过
+        CHECK(p.maxDiff <= kBusTransparentTolerance);
+    }
+}
+
+// ⑦ 工程早已连上、再开始导出(用户最常见的走法):宿主 setNonRealtime + prepareToPlay 后,第一块就该是满的。
+//    反向 = 去掉 `renderBus` 的 snapTo ⇒ prepareToPlay 把总线交叉放回直通端,导出开头 80ms 从零淡入,本条红。
+TEST_CASE("HOST SL-254:已连上的工程开始离线导出,第一块就是满的", "[host][SL254]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(60, 0.5f);
+
+    r.in.setNonRealtime(true);
+    r.out.setNonRealtime(true);
+    r.in.prepareToPlay(kSr, kBlock);
+    r.out.prepareToPlay(kSr, kBlock);
+
+    const auto p = runRoutedBus(r, 16, kHandoverPumps * 16);
+    INFO("Input静音@" << p.firstInputSilent << " 最大差=" << p.maxDiff << " @" << p.worstBlock);
+    REQUIRE(p.firstInputSilent == 0); // 前置:mask 还在,Input 从第一块起就是静音
+    CHECK(p.maxDiff <= kBusTransparentTolerance);
+}
+
+// ⑧ 与 ⑥ 成镜像:实时路径的 Output 一侧仍走 80ms ramp(J32 / ADR-010),首个注入块不是满的。
+//    Output 输入不接总线,量到的就是它自己的混音。反向 = 把同块到位铺到实时 ⇒ 首块即满幅,本条红。
+TEST_CASE("HOST SL-254:实时路径的 Output 注入仍走 ramp", "[host][SL254]")
+{
+    Rig r;
+    r.ph.playing = true;
+    float firstInjectPeak = -1.0f;
+    for (int i = 0; i < 600 && firstInjectPeak < 0.0f; ++i)
+    {
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        r.outBuf.clear();
+        r.in.processBlock(r.inBuf, r.midi);
+        r.out.processBlock(r.outBuf, r.midi);
+        const float peak = r.outBuf.getMagnitude(0, kBlock);
+        if (peak > 1e-6f)
+            firstInjectPeak = peak;
+        r.ph.timeSamples += kBlock;
+        if ((i % 4) == 3)
+            Rig::pumpMessages(20);
+    }
+    INFO("首个注入块峰值=" << firstInjectPeak);
+    REQUIRE(firstInjectPeak > 0.0f);
+    CHECK(firstInjectPeak < 0.25f);
+}
+
 // ④ 【复审 r1 红旗】非实时下健康前提不被豁免:Output 释放后 Input 必须回直通,不得恒静音。
 //
 //    `Registry::releaseOutput()` 把 OutputSlot.state 置回 kSlotFree 时**不清 connected_mask**
