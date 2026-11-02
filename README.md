@@ -160,7 +160,7 @@ These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/K
 - **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then play as the raw, unbalanced image until the host calls the Output again; the tracks then rejoin one at a time, so a track not yet reached stays silent for a moment (KI-6).
 - **Balance estimates are off in unison / doubled passages**: when several tracks sing the same line with very similar sound, they usually add up louder than the analysis expects (KI-9).
 - **SCVB Output reports no latency to the DAW**; alignment is done by timeline addressing, so do not try to "fix" it with latency compensation (PDC) (hard rule 8).
-- **Input only adjusts its own track's level, never its pan**; panning is handled entirely by the Output.
+- **Input adjusts neither pan nor volume**; both happen only on the Output.
 - **Every track takes part in automatic pan by default, stereo tracks included**; to keep a stereo track's own image, switch off "participate in auto pan" for that track on the Output's Tracks page (hard rule 7).
 
 ## Documentation
