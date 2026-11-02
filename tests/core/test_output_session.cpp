@@ -2147,6 +2147,73 @@ TEST_CASE("SL-254:观察者接手之后离线路径才生效", "[output][session
     CHECK(second.offlineInjectMask() == kCh3Bit);
 }
 
+// 判定之后 Input 不健康了:[M] 这一拍把位撤掉,Input 回直通;读方也不再读。
+TEST_CASE("SL-254:离线下 [M] 判不健康就撤 connected 位", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    REQUIRE(r.out.offlineInjectMask() == kCh3Bit);
+    r.out.offlineConfirmInjected(kCh3Bit);
+    REQUIRE(r.probe.connectedMask() == kCh3Bit);
+    r.out.bumpBlockCounter();
+
+    SECTION("心跳陈旧")
+    {
+        r.out.tick(1100 + scvb::kStaleDisplayMs + 1);
+    }
+    SECTION("Input 走了")
+    {
+        r.in.release(1300);
+        r.out.tick(1310);
+    }
+    CHECK(r.probe.connectedMask() == 0);
+    CHECK(r.out.offlineInjectMask() == 0);
+}
+
+// 看门狗跳闸的这一拍:evaluateChannels 刚发布过判定,看门狗清 mask 时要一起清,否则到下一拍之前读方还会把位补回去。
+TEST_CASE("SL-254:离线下看门狗跳闸当拍就不读", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    OutputSession out(backend, 2001);
+    out.setNonRealtime(true);
+    out.setTransportPlaying(true);
+    REQUIRE(out.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    float buf[16] = {};
+    scvb::u64 now = 1000;
+    std::int64_t pos = 0;
+    const auto inputRuns = [&] {
+        scvb::AudioRing::write(in.audioRing().acquire(), pos, buf, 16);
+        pos += 16;
+        in.heartbeat(now);
+        out.heartbeat(now);
+    };
+    // Output 一直被调用,轨在判定里。
+    for (; now < 1300; now += 20)
+    {
+        inputRuns();
+        out.bumpBlockCounter();
+        out.tick(now);
+    }
+    REQUIRE(out.offlineInjectMask() == kCh3Bit);
+    out.offlineConfirmInjected(kCh3Bit);
+    REQUIRE(probe.connectedMask() == kCh3Bit);
+    // Output 不再被调用,Input 还在写:跳闸的那一拍 connected 位被清。
+    while (probe.connectedMask() != 0)
+    {
+        REQUIRE(now < 10000);
+        now += 20;
+        inputRuns();
+        out.tick(now);
+    }
+    CHECK(out.offlineInjectMask() == 0);
+}
+
 TEST_CASE("SL-254:清 mask 的两条路都把离线判定一起清掉", "[output][session][SL254]")
 {
     scvb::SegmentBackendInProcess::resetAll();

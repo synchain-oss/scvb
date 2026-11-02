@@ -11240,14 +11240,52 @@ TEST_CASE("HOST SL-254:实时路径重新 prepare 后仍从直通起步", "[host
     // Input 的输出不接:实时下它还在 J12 的滞回里按静音走,接上量到的是 0,分不出 Output 走了哪条路。
     constexpr float kBusLevel = 0.3f;
     float maxDiff = 0.0f;
-    for (int b = 0; b < 4; ++b)
-    {
-        exportBlock(r, bus, /*callOutput=*/false);
-        fillConstant(bus, kBusLevel);
-        r.out.processBlock(bus, r.midi);
-        maxDiff = std::max(maxDiff, blockDiff(bus, {kBusLevel, kBusLevel}));
-    }
+    const auto blocks = [&](int count) {
+        for (int b = 0; b < count; ++b)
+        {
+            exportBlock(r, bus, /*callOutput=*/false);
+            fillConstant(bus, kBusLevel);
+            r.ph.timeSamples -= kBlock;
+            r.out.processBlock(bus, r.midi);
+            r.ph.timeSamples += kBlock;
+            maxDiff = std::max(maxDiff, blockDiff(bus, {kBusLevel, kBusLevel}));
+        }
+    };
+    blocks(4);
+    // [M] 跑过之后读方绑上了、判定也有了,[J32] 的 200 ms 还没到:实时要接着直通。离线那条路这时已经在混音。
+    MonoMultiRig::pump(60);
+    blocks(96);
     CHECK(maxDiff <= kBusTransparentTolerance);
+}
+
+// 实时的重新 prepare 不动环:清写头只属于离线的这一轮(旧音频不进导出)。实时下读方还在读,prepare 不该让它看到写头回零。
+//    反向 = InputProcessor 不分离线实时都 resetRingForOfflinePass ⇒ 实时这一节写头回零,本条红。
+TEST_CASE("HOST SL-254:Input 只在离线 prepare 时清写头", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    settleForExport(r);
+
+    scvb::PlatformSegmentBackend backend;
+    scvb::SegmentView view;
+    REQUIRE(backend.openExisting(scvb::segmentAudioName(MonoMultiRig::kGroup, 1), view) == scvb::InitResult::kOk);
+    const auto* ring = static_cast<const scvb::AudioRingHeader*>(view.base);
+    const auto headBefore = ring->write_head_samples.load(std::memory_order_acquire);
+    REQUIRE(headBefore > 0);
+
+    r.ins[0]->releaseResources();
+    SECTION("实时")
+    {
+        r.ins[0]->prepareToPlay(kSr, kBlock);
+        CHECK(ring->write_head_samples.load(std::memory_order_acquire) == headBefore);
+    }
+    SECTION("离线")
+    {
+        r.ins[0]->setNonRealtime(true);
+        r.ins[0]->prepareToPlay(kSr, kBlock);
+        CHECK(ring->write_head_samples.load(std::memory_order_acquire) == 0);
+    }
+    backend.unmap(view);
 }
 
 // ④ 【复审 r1 红旗】非实时下健康前提不被豁免:Output 释放后 Input 必须回直通,不得恒静音。
