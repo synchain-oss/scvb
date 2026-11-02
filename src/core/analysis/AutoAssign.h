@@ -43,8 +43,8 @@ struct TrackMeta
     bool participateInAutoPan = true; // [J83] 未显式设置一律 true(默认档归 state 层,不按源声道推导)。
     SourceChannels source = SourceChannels::Mono; // 透传(参与/默认值由 participate 布尔承载)。
     double currentPan = 0.0; // 现值(manual / nonpart 轨保持此值,不被改写)。
-    double width =
-        0.0; // stereo 源的张开度(不进代价函数)。分析管线不填,恒 0:stereo 轨按一个点算,见 docs/ANALYSIS.md §7。
+    // stereo 源的张开度(不进代价函数)。分析管线不填,恒 0:stereo 轨按一个点算,见 docs/ANALYSIS.md §7。
+    double width = 0.0;
     bool hasPrev = false; // 是否携带上一区间解;false → w_cont/w_side 项为 0(首区间)。
     double prevPan = 0.0; // P_i^{t−1}(上一区间名义 pan)。
 };
