@@ -789,6 +789,7 @@ scvb::output::MeterPod ScvbOutputAudioProcessor::meterSnapshot() const
 void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
+    syncNonRealtimeFlag();
 
     // [SL-487] 宿主块长可以超过 prepare 时预告的上限(离线 bounce 放大块长、或播放中超发)。
     // 内部缓冲(accum/trackBuf)按 preparedMaxBlock_ 定长,所以**按它分段把整块处理完**。
@@ -1047,11 +1048,21 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             fade.setTargetValue(target);
         }
     }
-    globalWidthSmoother_.setTargetValue(readGlobalWidth());
     const float ms = readMsBalance();
     const float tms = ms / 100.0f;
-    gMSmoother_.setTargetValue(1.0f - std::max(tms, 0.0f));
-    gSSmoother_.setTargetValue(1.0f - std::max(-tms, 0.0f));
+    if (offline)
+    {
+        // 平滑也是实时路径的东西(J95①):命令行导出之前一块都没混过,不跳过去的话开头 10 ms 宽度和 M/S 是错的。
+        globalWidthSmoother_.setCurrentAndTargetValue(readGlobalWidth());
+        gMSmoother_.setCurrentAndTargetValue(1.0f - std::max(tms, 0.0f));
+        gSSmoother_.setCurrentAndTargetValue(1.0f - std::max(-tms, 0.0f));
+    }
+    else
+    {
+        globalWidthSmoother_.setTargetValue(readGlobalWidth());
+        gMSmoother_.setTargetValue(1.0f - std::max(tms, 0.0f));
+        gSSmoother_.setTargetValue(1.0f - std::max(-tms, 0.0f));
+    }
 
     // 逐样本:取值(平滑)→ gain/pan(mono equal-power / stereo dual-pan+width)→ 求和 → ms_balance。
     for (int i = 0; i < n; ++i)
@@ -1133,6 +1144,17 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
 }
 
+void ScvbOutputAudioProcessor::syncNonRealtimeFlag() noexcept
+{
+    // 宿主可以在 prepare 之后才切离线标志(JUCE 的 VST3 / AU 外壳都允许)。renderSpan 逐块读这个标志,session 这一侧
+    // 要跟它同块,不能等下一拍 [M]:导出的前几十块里读方已经走离线路径,下锚规则还是实时的,就是一段一段的空洞。
+    const bool offline = isNonRealtime();
+    if (offline != session_.nonRealtime())
+    {
+        session_.setNonRealtime(offline);
+    }
+}
+
 void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int offset, int n, int64_t t0)
 {
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
@@ -1149,6 +1171,14 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
             session_.offlineConfirmInjected(eligible);
         }
         bypassHasData_.fill(false); // 早退也要清:否则收尾的 publishMeters 会拿上一块的 hasData
+        if (offline && eligible != 0)
+        {
+            // 这一组的轨全被面板关了,稳态是没声。Input 这几块还直通,不清的话开头漏一段原声,同 renderSpan。
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+            {
+                buffer.clear(c, offset, n);
+            }
+        }
         return; // 总线上只挂 Output / 尚无 Input / 全被关掉:直通
     }
 
@@ -1231,6 +1261,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
                                                     juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
+    syncNonRealtimeFlag();
     // [SL-487] 与 processBlock 同口径:按 preparedMaxBlock_ 分段把整块处理完,不只处理前 n 个样本。
     const int total = buffer.getNumSamples();
     if (total <= 0 || preparedMaxBlock_ <= 0)
@@ -1309,7 +1340,12 @@ void ScvbOutputAudioProcessor::timerCallback()
     tickOwnerLockRefresh(now);
 
     // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
-    session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
+    // 读撕裂(写者正在写)时沿用上一拍:离线下这一拍直接决定读不读挂起的轨,不能把「没读到」当成「走带停了」。
+    scvb::engine::PlayheadPod playhead{};
+    if (playheadShot_.read(playhead))
+    {
+        session_.setTransportPlaying((playhead.flags & scvb::engine::kPlayheadIsPlaying) != 0);
+    }
     session_.tick(now);
     reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)
     leadRecorder_.drainInto(leadTimeline_); // [SL-216] 音频线程记下的 lead_select 块并入时间线

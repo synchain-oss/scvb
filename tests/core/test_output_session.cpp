@@ -5,10 +5,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "analysis/LoudnessMode.h"
@@ -1999,7 +2001,10 @@ TEST_CASE("SL-254:第一块有 Input 读方没绑上,全部不读", "[output][se
     REQUIRE(late.prepare(48000, 512, 1, 1220) == InputClaimState::kActive);
 
     CHECK(r.out.offlineInjectMask() == 0);
-    CHECK(r.out.offlineInjectMask() == 0); // 这一判只判一次,不每块重算
+    // 这一判只判一次:条件变了也不重算,否则就是导出中途切到混音。
+    late.release(1210);
+    CHECK(r.out.offlineInjectMask() == 0);
+    REQUIRE(late.prepare(48000, 512, 1, 1220) == InputClaimState::kActive);
 
     r.out.bumpBlockCounter();
     r.in.heartbeat(1250);
@@ -2157,9 +2162,10 @@ TEST_CASE("SL-254:离线下 [M] 判不健康就撤 connected 位", "[output][ses
     REQUIRE(r.probe.connectedMask() == kCh3Bit);
     r.out.bumpBlockCounter();
 
-    SECTION("心跳陈旧")
+    SECTION("心跳连续两拍陈旧")
     {
         r.out.tick(1100 + scvb::kStaleDisplayMs + 1);
+        r.out.tick(1100 + scvb::kStaleDisplayMs + 41);
     }
     SECTION("Input 走了")
     {
@@ -2168,6 +2174,186 @@ TEST_CASE("SL-254:离线下 [M] 判不健康就撤 connected 位", "[output][ses
     }
     CHECK(r.probe.connectedMask() == 0);
     CHECK(r.out.offlineInjectMask() == 0);
+}
+
+// 主线程被占住之后 Output 的定时器可能排在 Input 的前面:这一拍的陈旧不是 Input 没了的证据。少读一轨,它的声音就从
+// 替换过的总线上没了。Input 的定时器跟上之后什么也没发生过。
+TEST_CASE("SL-254:离线下心跳只陈旧一拍不撤轨", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    InputSession second(r.backend, 1002);
+    second.setChannelId(5);
+    REQUIRE(second.prepare(48000, 512, 1, 1050) == InputClaimState::kActive);
+    r.out.release(1190);
+    REQUIRE(r.out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    constexpr scvb::u32 kBoth = kCh3Bit | kCh5Bit;
+    REQUIRE(r.out.offlineInjectMask() == kBoth);
+    r.out.offlineConfirmInjected(kBoth);
+    r.out.bumpBlockCounter();
+
+    const scvb::u64 stall = 1100 + scvb::kStaleDisplayMs + 1;
+    second.heartbeat(stall); // 只有 ch3 的定时器还没轮到
+    r.out.tick(stall);
+    CHECK(r.out.offlineInjectMask() == kBoth);
+    CHECK(r.probe.connectedMask() == kBoth);
+
+    r.in.heartbeat(stall + 10);
+    second.heartbeat(stall + 10);
+    r.out.tick(stall + 40);
+    r.out.tick(stall + 80);
+    CHECK(r.out.offlineInjectMask() == kBoth);
+    CHECK(r.probe.connectedMask() == kBoth);
+}
+
+TEST_CASE("SL-254:实时下心跳陈旧当拍就撤", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    r.out.setNonRealtime(false);
+    r.out.bumpBlockCounter();
+    r.out.tick(1300);
+    REQUIRE(r.probe.connectedMask() == kCh3Bit);
+    r.out.tick(1100 + scvb::kStaleDisplayMs + 1);
+    CHECK(r.probe.connectedMask() == 0);
+}
+
+// 实时的重新 prepare 不动位,离线这一轮的位只由读到数据的块置。没有 release 的 prepare 不走 claim 里的清零。
+TEST_CASE("SL-254:没有 release 的离线 prepare 清掉上一轮的位", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    r.out.setNonRealtime(false);
+    r.out.bumpBlockCounter();
+    r.out.tick(1300);
+    REQUIRE(r.probe.connectedMask() == kCh3Bit);
+
+    SECTION("实时:不动")
+    {
+        REQUIRE(r.out.prepare(48000, 512, 1310) == OutputClaimState::kActive);
+        CHECK(r.probe.connectedMask() == kCh3Bit);
+    }
+    SECTION("离线:清掉,第一块照常判")
+    {
+        r.out.setNonRealtime(true);
+        REQUIRE(r.out.prepare(48000, 512, 1310) == OutputClaimState::kActive);
+        CHECK(r.probe.connectedMask() == 0);
+        CHECK(r.out.offlineInjectMask() == kCh3Bit);
+    }
+}
+
+// 切回实时:位又由 [M] 置,[J32] 的闸回来,读方的下锚规则回来。
+TEST_CASE("SL-254:导出之后切回实时", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    REQUIRE(r.out.mixSource(3).leadUnbounded());
+    r.out.setNonRealtime(false);
+    CHECK_FALSE(r.out.mixSource(3).leadUnbounded());
+    r.out.bumpBlockCounter();
+    r.out.tick(1300);
+    CHECK(r.probe.connectedMask() == kCh3Bit);
+    CHECK(r.out.injectMask() == 0);
+    r.out.tick(1510);
+    CHECK(r.out.injectMask() == kCh3Bit);
+}
+
+// 导出换采样率:Output 先 prepare,绑到的是 Input 还没改的旧采样率。读方不按它寻址,第一块照样判得了,[M] 也不重绑:
+// 重绑会丢掉下好的锚,而 Input 已经静音。回到实时才换绑。
+TEST_CASE("SL-254:导出换采样率不等 [M]、也不重绑", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(44100, 512, 1, 1000) == InputClaimState::kActive);
+    OutputSession out(backend, 2001);
+    out.setNonRealtime(true);
+    out.setTransportPlaying(true);
+    REQUIRE(out.prepare(48000, 512, 1100) == OutputClaimState::kActive);
+    REQUIRE(out.mixSource(3).sampleRate() == 44100);
+    in.release(1150);
+    REQUIRE(in.prepare(48000, 512, 1, 1200) == InputClaimState::kActive);
+
+    CHECK(out.offlineInjectMask() == kCh3Bit);
+    out.bumpBlockCounter();
+    in.heartbeat(1210);
+    out.tick(1240);
+    CHECK(out.mixSource(3).sampleRate() == 44100);
+    CHECK(out.offlineInjectMask() == kCh3Bit);
+
+    out.setNonRealtime(false);
+    out.tick(1280);
+    CHECK(out.mixSource(3).sampleRate() == 48000);
+}
+
+// 改到一个已经有主实例的组,自己成了观察者:离线路径什么都不做,新组的位不动。
+TEST_CASE("SL-254:改到被占用的组,离线路径什么都不做", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    OutputSession owner(r.backend, 2002);
+    REQUIRE(owner.changeGroup(2, 48000, 512, 1205) == OutputClaimState::kActive);
+    scvb::Registry probe2(r.backend, 2);
+    REQUIRE(probe2.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(r.out.offlineInjectMask() == kCh3Bit);
+
+    REQUIRE(r.out.changeGroup(2, 48000, 512, 1220) == OutputClaimState::kObserver);
+    // 旧组的段这时候已经解映射了(进程内后端看不出来,所以查位):确认不能落到它上面,也不能落到新组。
+    r.out.offlineConfirmInjected(kCh3Bit);
+    CHECK(r.probe.connectedMask() == 0);
+    CHECK(probe2.connectedMask() == 0);
+    CHECK(r.out.offlineInjectMask() == 0);
+}
+
+// [M] 撤轨的同时 [A] 正要补位:发布在前、清位在后,[A] 回头复核时看得见新判定,自己把位撤掉。次序反了,位就留在判定
+// 之外:Input 静音、Output 不读。这是个概率性的钉子,所以跑很多轮。
+TEST_CASE("SL-254:[M] 撤轨时 [A] 正好补位,位不留在判定之外", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    OfflineStartRig r;
+    r.out.bumpBlockCounter();
+    std::atomic<bool> stop{false};
+    std::atomic<scvb::u64> audioRuns{0};
+    std::thread audio([&] {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            r.out.offlineConfirmInjected(r.out.offlineInjectMask());
+            audioRuns.fetch_add(1, std::memory_order_release);
+        }
+    });
+    const auto audioRanTwice = [&] {
+        const scvb::u64 from = audioRuns.load(std::memory_order_acquire);
+        while (audioRuns.load(std::memory_order_acquire) < from + 2)
+        {
+            std::this_thread::yield();
+        }
+    };
+    int leftOver = 0;
+    scvb::u64 now = 2000;
+    r.in.heartbeat(now);
+    for (int round = 0; round < 4000 && leftOver == 0; ++round)
+    {
+        now += 10;
+        if ((round & 1) != 0)
+        {
+            r.out.forceClearMask();
+        }
+        else
+        {
+            r.out.tick(now + scvb::kStaleDisplayMs + 1);
+            r.out.tick(now + scvb::kStaleDisplayMs + 41);
+        }
+        audioRanTwice();
+        leftOver += r.probe.connectedMask() != 0 ? 1 : 0;
+        r.in.heartbeat(now + scvb::kStaleDisplayMs + 50);
+        r.out.tick(now + scvb::kStaleDisplayMs + 60); // 判定回来
+        audioRanTwice();
+        now += scvb::kStaleDisplayMs + 60;
+    }
+    stop.store(true, std::memory_order_relaxed);
+    audio.join();
+    CHECK(leftOver == 0);
 }
 
 // 看门狗跳闸的这一拍:evaluateChannels 刚发布过判定,看门狗清 mask 时要一起清,否则到下一拍之前读方还会把位补回去。
@@ -2225,48 +2411,70 @@ TEST_CASE("SL-254:清 mask 的两条路都把离线判定一起清掉", "[output
     CHECK(r.probe.connectedMask() == 0);
 }
 
-// 看门狗闩着时(导出之前 Output 被停调过)第一块不自己判:逐轨接回归 [M] 管。
-TEST_CASE("SL-254:看门狗闩着时第一块不读", "[output][session][SL254]")
+// 导出之前 Output 被停调过(KI-6),看门狗闩着进离线。逐轨接回按墙钟 200 ms 一轨,离线不吃:总线一旦被先接回的轨替换,
+// 没接回的轨就从文件里没了,第 k 轨缺 (k-1)×200 ms×倍速。不管 [M] 跑到哪一拍,读的都是全部轨。
+TEST_CASE("SL-254:看门狗闩着进离线,不分批接回", "[output][session][SL254]")
 {
     scvb::SegmentBackendInProcess::resetAll();
     scvb::SegmentBackendInProcess backend;
-    InputSession in(backend, 1001);
-    in.setChannelId(3);
-    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    InputSession a(backend, 1001);
+    a.setChannelId(3);
+    REQUIRE(a.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    InputSession b(backend, 1002);
+    b.setChannelId(5);
+    REQUIRE(b.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
     OutputSession out(backend, 2001);
     out.setTransportPlaying(true);
     REQUIRE(out.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    constexpr scvb::u32 kBoth = kCh3Bit | kCh5Bit;
+
     float buf[16] = {};
     scvb::u64 now = 1000;
     std::int64_t pos = 0;
+    const auto inputsRun = [&] {
+        scvb::AudioRing::write(a.audioRing().acquire(), pos, buf, 16);
+        scvb::AudioRing::write(b.audioRing().acquire(), pos, buf, 16);
+        pos += 16;
+        a.heartbeat(now);
+        b.heartbeat(now);
+        out.heartbeat(now);
+    };
     // Output 一直被调用,轨上线。
     for (; now < 1300; now += 20)
     {
-        scvb::AudioRing::write(in.audioRing().acquire(), pos, buf, 16);
-        pos += 16;
+        inputsRun();
         out.bumpBlockCounter();
-        in.heartbeat(now);
-        out.heartbeat(now);
         out.tick(now);
     }
-    scvb::Registry probe(backend, 1);
-    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
-    REQUIRE((probe.connectedMask() & kCh3Bit) != 0);
-    // Output 不再被调用,Input 还在写:看门狗跳闸,位被清。
+    REQUIRE(probe.connectedMask() == kBoth);
+    // Output 不再被调用,Input 还在写:看门狗跳闸。
     for (; now < 2000; now += 20)
     {
-        scvb::AudioRing::write(in.audioRing().acquire(), pos, buf, 16);
-        pos += 16;
-        in.heartbeat(now);
-        out.heartbeat(now);
+        inputsRun();
         out.tick(now);
     }
-    REQUIRE((probe.connectedMask() & kCh3Bit) == 0);
+    REQUIRE(probe.connectedMask() == 0);
 
     out.release(now);
     out.setNonRealtime(true);
-    REQUIRE(out.prepare(48000, 512, now + 10) == OutputClaimState::kActive);
-    CHECK(out.offlineInjectMask() == 0);
+    REQUIRE(out.prepare(48000, 512, now) == OutputClaimState::kActive);
+    a.release(now);
+    REQUIRE(a.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+    b.release(now);
+    REQUIRE(b.prepare(48000, 512, 1, now) == InputClaimState::kActive);
+    CHECK(out.offlineInjectMask() == kBoth);
+    out.offlineConfirmInjected(kBoth);
+    for (int tick = 0; tick < 40; ++tick)
+    {
+        now += 40;
+        inputsRun();
+        out.bumpBlockCounter();
+        out.tick(now);
+        INFO("tick " << tick);
+        REQUIRE(out.offlineInjectMask() == kBoth);
+    }
 }
 
 // 失准的恢复窗是墙钟,离线下按倍速放大。离线只认读方的证据,且读不到时一直清着位,读到当块回来。

@@ -41,7 +41,14 @@ OutputClaimState OutputSession::prepare(u32 sampleRate, u32 maxBlock, u64 nowMs)
     offlineReadyMask_.store(0, std::memory_order_release);
     preparedAtMs_.store(nowMs, std::memory_order_release);
     preparedSampleRate_.store(sampleRate, std::memory_order_release);
-    return openAndClaim(nowMs);
+    const OutputClaimState st = openAndClaim(nowMs);
+    // 离线这一轮 connected 位只由读到数据的块置。没有 release 的重新 prepare 不走 claim 里的清零,上一轮的位要在这里清:
+    // 留着的话 Input 第一块就静音,而这个 Output 可能根本读不到它。
+    if (nonRealtime() && st == OutputClaimState::kActive)
+    {
+        registry_.clearConnectedMask();
+    }
+    return st;
 }
 
 void OutputSession::heartbeat(u64 nowMs)
@@ -205,7 +212,9 @@ void OutputSession::refreshAudioGeometry(std::size_t idx)
     // 段恒按 stereo 容量创建、ring_frames 恒为 kDefaultRingFrames,所以 channels 读成 2 也不
     // 越界(mono 只用前半);下一拍 25Hz(≤40ms)再比一次就纠正。相比修前的「错到 Output
     // 卸载为止」是严格收敛。
-    if (b->header->sample_rate == b->geo.sampleRate && b->header->channels == b->geo.channels &&
+    // 离线下只有采样率变了不重绑:宿主按别的采样率导出时 Output 先 prepare,绑到的是 Input 还没改的旧值。
+    // 读方按 channels 和 ring_frames 寻址,采样率只影响宽限长短;这时重绑会丢掉已经下好的锚,而 Input 已经静音了。
+    if ((b->header->sample_rate == b->geo.sampleRate || nonRealtime()) && b->header->channels == b->geo.channels &&
         b->header->ring_frames == b->geo.ringFrames)
     {
         return; // 快照仍与段头一致:不重绑(重绑会往 owned_ 里再压一份,只在真变了时才做)
@@ -351,6 +360,11 @@ void OutputSession::evaluateChannels(u64 nowMs)
         const bool slotActive = slot != nullptr && slot->state.load(std::memory_order_acquire) == kSlotActive;
         const bool hbFresh =
             slot != nullptr && !isStaleDisplay(slot->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+        // 离线下这一拍直接决定读不读这一轨,而被读的轨一旦少一条,它的声音就从替换过的总线上没了。心跳只靠 Input 的 [M]
+        // 定时器刷:主线程被 prepare 链或别的插件占住 2 秒之后,这一拍可能排在 Input 的定时器前面,这不是 Input 没了的
+        // 证据。连续两拍(中间 Input 的定时器都跑过一遍)才算。实时路径一拍就算,不变。
+        const bool hbGone = !hbFresh && (!offline || hbStalePrevTick_[idx]);
+        hbStalePrevTick_[idx] = !hbFresh;
         const bool srMatch = slot != nullptr && slot->sample_rate == sampleRate_;
         const bool bound = sources_[idx].bound();
 
@@ -439,7 +453,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
 
         const bool inHold = (hold & (1u << (ch - 1))) != 0;
         const bool inputStillMuted = slot != nullptr && (slot->flags.load(std::memory_order_acquire) & kFlagMuted) != 0;
-        const bool held = inHold && (tripped || !inputStillMuted);
+        // 离线不闩:逐轨接回按墙钟 200 ms 一轨,导出里就是第 k 轨缺 (k-1)×200 ms×倍速 —— 总线已经被先接回的轨替换了,
+        // 没接回的轨就没了(J95①:时间窗只属于实时)。Output 没被调用时 [A] 不读也不置位,Input 照样回直通。
+        const bool held = !offline && inHold && (tripped || !inputStillMuted);
         // [A-8] E2「挂起 ≠ 掉线」(设计稿 §3.6,用户裁定 U3(a)):走带在跑时写头冻结(宿主在静音段 / 无 region 处
         // 暂停调用 Input,或用户旁路它)**不再让轨掉线** —— 其余条件(槽活跃 ∧ 心跳新鲜 ∧ 采样率一致 ∧ 已绑定 ∧
         // ¬失准 ∧ 不在 hold 里)全都成立就照旧置 connected_mask 位、照旧注入。修前写头冻结 500ms 即掉线、退出注入集,
@@ -458,7 +474,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
         // · 宿主因总线输入静音而停调 Output(H2)仍走 KI-6 路径,本条不涉及。
         const bool keepThroughStall = transportPlaying_;
         // 离线下失准的轨不退出读取:能不能回来看读方下一块读不读得到,读不到它的 Input 就一直直通(下面清位)。
-        const bool reachable = slotActive && hbFresh && srMatch && bound && !held && (offline || !misaligned);
+        const bool reachable = slotActive && !hbGone && srMatch && bound && !held && (offline || !misaligned);
         const bool online = reachable && (!suspended || keepThroughStall);
         if (online)
         {
@@ -486,8 +502,8 @@ void OutputSession::evaluateChannels(u64 nowMs)
             //
             // [SL-254 / J95①] **非实时(离线渲染)不走这道延迟** —— 它是墙钟量,而离线的音频
             // 时间线跑在墙钟前面 N 倍,同一个窗口会吃掉 N 倍样本(实测 122x 下前段静音 4.69s)。
-            // 非实时下与 setConnectedMaskBit 在**同一次评估**里一起置 injectMask,Input 侧逐块
-            // 读 connected_mask 跟着同块静音 ⇒ 交接落在同一块,既不静音也不叠加。
+            // 非实时下这一轨从第一块起就读,Input 在 Output 读到它之后的下一块静音(offlineConfirmInjected)。
+            // Output 整块替换总线,所以既不静音也不叠加;只有接在 Input 之后的发送能听到这几块原声。
             // 实时路径逐字不动(200ms / muted 确认位 / 80ms ramp 全保留)。
             //
             // 这里定下的 inject 在离线路径上只给诊断与 [A-6] 的在场判定用:音频线程读的是 offlineInjectMask(),
@@ -530,10 +546,6 @@ void OutputSession::evaluateChannels(u64 nowMs)
 
 void OutputSession::noteClaimedForOffline() noexcept
 {
-    if (ctrl_.watchdogTripped() || ctrl_.watchdogHoldMask() != 0)
-    {
-        offlineReadyMask_.store(kOfflineJudged, std::memory_order_release); // 判成「一轨都不读」,等 [M]
-    }
     claimedInputSlots_.store(registry_.inputSlot(1), std::memory_order_release);
     claimedSlot_.store(registry_.outputSlot(), std::memory_order_release);
 }
@@ -573,7 +585,7 @@ u32 OutputSession::offlineInjectMask() noexcept
     // 每个 Output 各等各的,一处切换就是一个台阶。也不能靠「上一拍的判定」:命令行导出之前一拍都没跑过。
     // 所以第一块由 [A] 自己判(offlineStartVerdict),之后交回 [M] 每拍发布的判定,这一轮 [M] 的第一拍不影响音频。
     //  · 第一块 Input 已经跑完(总线依赖它),它还直通;Output 整块替换总线,这份直通被盖掉,既不叠加也不缺。
-    //  · Input 的静音位读到数据才置(offlineConfirmInjected),所以 Output 读不到时它照旧直通。
+    //  · Input 的静音位读到数据才置(offlineConfirmInjected),所以 Output 一直读不到时它照旧直通。
     //  · 判定之后这里只再按槽逐块核一次:Input 中途退场不等下一拍。
     const InputSlot* inputs = claimedInputSlots_.load(std::memory_order_acquire);
     if (inputs == nullptr || claimedSlot_.load(std::memory_order_acquire) == nullptr)
@@ -724,10 +736,11 @@ void OutputSession::tick(u64 nowMs)
     const WatchdogResult wr = ctrl_.tickWatchdog(nowMs);
     if (wr.action == WatchdogAction::kClearMask)
     {
+        // 先发布、后清位,同 evaluateChannels。
+        offlineReadyMask_.store(kOfflineJudged, std::memory_order_release);
         registry_.clearConnectedMask();
         stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
-        offlineReadyMask_.store(kOfflineJudged, std::memory_order_release);
     }
     // kReacquireBit:CtrlPlane 已放开这一轨的 hold。这里**不**直接置位 —— 置位只有 evaluateChannels 一个
     // 口子:下一拍它按与其它上线同一套判据置位(停摆期间掉线的轨不会被硬置一拍),并重走 [J32] 握手。
@@ -762,7 +775,10 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     maxBlock_ = maxBlock;
 
     // 换新组 registry + ctrl + 重走 claim(01 §4.2 改组转移)。
-    return openAndClaim(nowMs);
+    const OutputClaimState st = openAndClaim(nowMs);
+    // 音频线程不拿锁:正在跑的那一块可能拿旧组的槽判过一次,判定在这里再清一遍,下一块按新组重判。
+    offlineReadyMask_.store(0, std::memory_order_release);
+    return st;
 }
 
 void OutputSession::release(u64 nowMs)
@@ -949,10 +965,10 @@ u64 OutputSession::epoch(u32 channel) const
 
 void OutputSession::forceClearMask() noexcept
 {
+    offlineReadyMask_.store(kOfflineJudged, std::memory_order_release); // 先发布、后清位,同 evaluateChannels
     registry_.clearConnectedMask();
     stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);
-    offlineReadyMask_.store(kOfflineJudged, std::memory_order_release);
 }
 
 void OutputSession::forceSetConnectedMaskBit(u32 channel)
@@ -993,6 +1009,7 @@ void OutputSession::resetChannelTracking() noexcept
     // [J32] 200ms 注入延迟(切换瞬间立即注入);陈旧 lastWriteHeadChangeMs_ 可能误触 kSuspendStallMs 提前挂起。
     onlinePrev_.fill(false);
     onlineSinceMs_.fill(0);
+    hbStalePrevTick_.fill(false);
     misalignedSinceMs_.fill(0);
     lastWriteHead_.fill(0);
     lastWriteHeadChangeMs_.fill(0);

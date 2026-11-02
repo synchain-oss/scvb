@@ -158,8 +158,7 @@ public:
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
     // [A] 离线导出这一块该读哪些轨。判据与时机见 OutputSession.cpp 的实现注释。实时路径不调它。
     u32 offlineInjectMask() noexcept;
-    // [A] 离线:这些轨这一块确实读到了,置 connected_mask 位,Input 下一块跟着静音。读不到的轨不置:它还直通,
-    // 不会出现「Input 静音、Output 又读不到」。
+    // [A] 离线:这些轨这一块确实读到了,置 connected_mask 位,Input 下一块跟着静音。从没读到过的轨不置:它还直通。
     void offlineConfirmInjected(u32 mask) noexcept;
     // [A-8] 保持在线的挂起轨(写头冻结 ≥ kSuspendStallMs,但按 E2 规则仍在线;bit{N-1})。只含在线轨,
     // 与 injectMask 同一次评估里发布。[A] 用它判「注入轨是否全部停滞」(U3(b)-ii),不用它决定读不读环。
@@ -230,6 +229,7 @@ public:
     // [SL-254 / J95①] 宿主宣告的离线(非实时)渲染态。由 ScvbOutputAudioProcessor 从
     // `isNonRealtime()` 同步下来;为真时交接不走 [M] 的墙钟:[A] 自己判定、读到就注入、读到才让 Input 静音,
     // 两边同块交接(offlineInjectMask)。理由与禁止「仅样本闸」的实测见宪法 ADR.md [J32→ADR-002] J95① 补注。
+    // [M] 和 [A] 都可能调(宿主可以在 prepare 之后才切离线标志):只动原子量,不分配。
     void setNonRealtime(bool on) noexcept
     {
         nonRealtime_.store(on, std::memory_order_relaxed);
@@ -373,6 +373,7 @@ private:
 
     // [M] per-channel 状态。
     std::array<bool, kMaxChannels> onlinePrev_{};
+    std::array<bool, kMaxChannels> hbStalePrevTick_{}; // 离线:上一拍这一轨心跳已陈旧,见 evaluateChannels
     std::array<u64, kMaxChannels> onlineSinceMs_{};
     std::array<u64, kMaxChannels> misalignedSinceMs_{};
     std::array<u32, kMaxChannels> lastGapCount_{};

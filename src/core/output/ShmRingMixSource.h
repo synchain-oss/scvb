@@ -215,10 +215,12 @@ public:
     bool readOkSinceLastGap() const noexcept { return readOkSinceGap_.load(std::memory_order_relaxed); }
     // 离线导出里写方可以一口气领先任意多块(REAPER 的预渲染线程实测成串地跑),量到的提前量不是上界:按上界用它,
     // 首块锚好之后写头第一次动就会被判成「远超提前量」、撤锚重来,白丢几块,而 Input 那边已经静音了。
-    // 打开后按「没量到过提前量」处理(leadHiRef 恒为 -1,各处退回环长 / 200 ms 那一档)。[M] 写,[A] 读。
+    // 打开后下锚和撤锚不看量到的提前量(退回环长那一档,见 anchorLeadRef)。上一代窗和宽限照旧用量到的值:那里要的是
+    // 「新一代最多写了多少」的估计,退回环长等于换代时上一代的尾段一律读不了。[M] 写,[A] 读。
     void setLeadUnbounded(bool on) noexcept { leadUnbounded_.store(on, std::memory_order_relaxed); }
-    // 绑定快照与段头几何还对得上(按值比对、不寻址):Input 在 Output 之后重新 prepare 并改了布局 / 采样率时,
-    // 要等 [M] 换绑。音频线程可调。
+    bool leadUnbounded() const noexcept { return leadUnbounded_.load(std::memory_order_relaxed); }
+    // 绑定快照与段头布局还对得上(按值比对、不寻址):Input 在 Output 之后重新 prepare 并改了布局时要等 [M] 换绑。
+    // 采样率不算:读方不按它寻址,它只影响宽限长短。音频线程可调。
     bool layoutCurrent() const noexcept;
 
     // [A-16] 预拷贝的进程内计数(只计数,不报警)。[A] 写(relaxed),任意线程读。
@@ -305,6 +307,7 @@ private:
     // [A-6] (a) 类持续读不到的宽限(样本):max(kUnreadGraceMs 读方时间线, 2·实测提前量上界 + 本块长)。
     int64_t unreadGrace(int64_t n, u32 sampleRate) const noexcept;
     int64_t leadHiRef() const noexcept; // 实测提前量上界(没量到过 → -1)
+    int64_t anchorLeadRef() const noexcept; // 下锚 / 撤锚用的提前量上界,见 setLeadUnbounded
     // 新一代在被首次观测前可能已写的跨度上界(prevN = 上一次 read() 的块长)。
     int64_t spanBound(int64_t prevN, int64_t ring) const noexcept;
     int64_t inflightGuard() const noexcept { return stepMaxPrev_ > stepMaxCur_ ? stepMaxPrev_ : stepMaxCur_; }

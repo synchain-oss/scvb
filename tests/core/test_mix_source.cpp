@@ -156,8 +156,8 @@ TEST_CASE("ShmRingMixSource layoutCurrent:快照与段头几何对不上就是�
     f.header.channels = 1;
     CHECK_FALSE(src.layoutCurrent());
     f.header.channels = 2;
-    f.header.sample_rate += 1;
-    CHECK_FALSE(src.layoutCurrent());
+    f.header.sample_rate += 1; // 读方不按采样率寻址
+    CHECK(src.layoutCurrent());
     f.header.sample_rate -= 1;
     CHECK(src.layoutCurrent());
 }
@@ -288,6 +288,52 @@ bool holdsPositions(const std::vector<float>& out, int64_t t0, int n)
     return true;
 }
 } // namespace
+
+// 导出中途宿主定位(区域渲染):读方和写方一起跳到新位置,写方已经成串写在前面。锚要下在读方的落点:量到的提前量在这里
+// 不是上界。下不了锚就要等读方追上写头,这几块 Input 已经静音,文件里就是一段空。
+TEST_CASE("ShmRingMixSource 离线打开时,跳到新位置的锚不按量到的提前量卡", "[mix][ring][SL254]")
+{
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 1000, 64);
+    ShmRingMixSource src;
+    const bool offline = GENERATE(true, false);
+    src.setLeadUnbounded(offline);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(1000, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 9000, 64 * 17);
+    CHECK(src.read(9000, out.data(), 64, 2) == offline);
+    if (offline)
+    {
+        CHECK(holdsPositions(out, 9000, 64));
+    }
+}
+
+// 写方领先时定位:上一代还没读完的尾段照读。setLeadUnbounded 只管下锚和撤锚,这条不该受它影响。
+TEST_CASE("ShmRingMixSource 离线打开时,换代后上一代的尾段照读", "[mix][ring][SL254]")
+{
+    RingFixture f(4096, 2);
+    f.header.epoch.store(1, std::memory_order_release);
+    writePositions(f, 1000, 512);
+    ShmRingMixSource src;
+    src.setLeadUnbounded(true);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(64 * 2, -1.0f);
+    REQUIRE(src.read(1000, out.data(), 64, 1));
+    REQUIRE(src.read(1064, out.data(), 64, 1));
+
+    f.header.epoch.fetch_add(1, std::memory_order_release);
+    writePositions(f, 2048, 64);
+    for (int64_t t0 = 1128; t0 < 1512; t0 += 64)
+    {
+        INFO("t0=" << t0);
+        REQUIRE(src.read(t0, out.data(), 64, 1));
+        CHECK(holdsPositions(out, t0, 64));
+    }
+}
 
 TEST_CASE("ShmRingMixSource A-5 换代后写头未动:上一代窗照读,写方在前方另起一代时不把中间的旧环槽当本代数据",
           "[mix][ring][a5]")

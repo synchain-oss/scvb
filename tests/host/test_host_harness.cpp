@@ -10504,7 +10504,7 @@ TEST_CASE("HOST SL-254:已连上的工程开始离线导出,第一块就是满�
 
     const auto p = runRoutedBus(r, 16, kHandoverPumps * 16);
     INFO("Input静音@" << p.firstInputSilent << " 最大差=" << p.maxDiff << " @" << p.worstBlock);
-    REQUIRE(p.firstInputSilent == 0); // 前置:mask 还在,Input 从第一块起就是静音
+    REQUIRE(p.firstInputSilent == 1); // 前置:这一轮的位由 Output 读到才置:第一块 Input 直通,下一块静音
     CHECK(p.maxDiff <= kBusTransparentTolerance);
 }
 
@@ -11048,6 +11048,77 @@ TEST_CASE("HOST SL-254:离线下注入轨都读不到数据时总线直通", "[h
     CHECK(maxDiff <= kBusTransparentTolerance);
 }
 
+// ⑱ 的旁路版:被旁路的 Output 同样要读到才让 Input 静音。
+//    反向 = renderBypassedUnity 用 inject 而不是 readOkMask 置位 ⇒ Input 下一块静音,总线上什么都没有,本条红。
+TEST_CASE("HOST SL-254:被旁路的 Output 读不到的 Input 一直直通", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    settleForExport(r);
+    startExport(r, ExportStart::kOutputFirst);
+
+    constexpr float kBusLevel = 0.3f;
+    float lowestInput = 1.0f;
+    float busDiff = 0.0f;
+    for (int b = 0; b < 64; ++b)
+    {
+        fillConstant(bus, kBusLevel);
+        r.out.processBlockBypassed(bus, r.midi);
+        busDiff = std::max(busDiff, blockDiff(bus, {kBusLevel, kBusLevel}));
+        for (std::size_t i = 0; i < r.ins.size(); ++i)
+        {
+            fillConstant(r.inBuf, kExportLevels[i]);
+            r.ins[i]->processBlock(r.inBuf, r.midi);
+            if (i == 0)
+            {
+                lowestInput = std::min(lowestInput, r.inBuf.getMagnitude(0, kBlock));
+            }
+        }
+        r.ph.timeSamples += kBlock;
+    }
+    CHECK(lowestInput == Catch::Approx(kExportLevels[0]).margin(kBusTransparentTolerance));
+    CHECK(busDiff <= kBusTransparentTolerance);
+}
+
+// 面板关掉一轨:读方不读它,Input 这一轨也要静音(这是它的发送上能听到的东西),其余轨照常混。
+//    反向 = offlineConfirmInjected 不带 eligible & ~enabled ⇒ 这条 Input 一直直通,本条红。
+TEST_CASE("HOST SL-254:面板关掉一轨,导出时这一轨的 Input 也静音", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    settleForExport(r);
+    r.out.runtime().channels[0].enabled = false;
+    ++r.out.runtime().configSeq;
+    MonoMultiRig::pump(100);
+    startExport(r, ExportStart::kOutputFirst);
+    exportBlock(r, bus, /*callOutput=*/true);
+    fillConstant(r.inBuf, kExportLevels[0]);
+    r.ins[0]->processBlock(r.inBuf, r.midi);
+    CHECK(r.inBuf.getMagnitude(0, kBlock) == 0.0f);
+}
+
+// 面板全关又被旁路:稳态是没声,第一块同样不能漏原声。
+//    反向 = renderBypassedUnity 这条早退不清总线 ⇒ 第一块是原声,本条红。
+TEST_CASE("HOST SL-254:面板全关的组,被旁路的 Output 导出第一块也没声", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    settleForExport(r);
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        r.out.runtime().channels[static_cast<std::size_t>(ch - 1)].enabled = false;
+    }
+    ++r.out.runtime().configSeq;
+    MonoMultiRig::pump(100);
+    startExport(r, ExportStart::kOutputFirst);
+    exportBlock(r, bus, /*callOutput=*/false);
+    r.ph.timeSamples -= kBlock;
+    r.out.processBlockBypassed(bus, r.midi);
+    r.ph.timeSamples += kBlock;
+    CHECK(bus.getMagnitude(0, kBlock) == 0.0f);
+    CHECK(bus.getMagnitude(1, kBlock) == 0.0f);
+}
+
 // ⑳ 只有一条 Input 这次没被调用(被旁路):别的轨照常混,它留在环里的旧音频不能进文件。
 //    settle 与导出是同一个电平,所以旧数据进来就等于三轨齐全的实时稳态。
 //    反向 = Input 的 prepare 不清环 ⇒ 第一块就是实时稳态,本条红。
@@ -11087,8 +11158,123 @@ TEST_CASE("HOST SL-254:这次没被调用的 Input,旧音频不进导出", "[hos
     CHECK(drift <= kBusTransparentTolerance);
 }
 
+// ⑳ 的另一个形状:这条 Input 这一轮从后面才开始写(宿主跳过了开头几块),又赶在 Output 第一块之前写了。读方把起点认在
+//    Output 的第一块,开头那几块从环里读到的不能是上一次播放留下的声音。settle 与导出同电平,旧数据进来就是三轨齐全。
+//    反向 = resetRingForOfflinePass 不清环体 ⇒ 开头两块是实时稳态,本条红。
+TEST_CASE("HOST SL-254:Input 从后面才开始写,开头读到静音而不是旧音频", "[host][SL254]")
+{
+    MonoMultiRig r;
+    const ExportLevel level = settleForExport(r);
+    startExport(r, ExportStart::kOutputFirst);
+    ExportScheduler sched(r);
+    sched.written[0] = 2;
+    sched.runInput(0, 1);
+    sched.runInput(1, 3);
+    sched.runInput(2, 3);
+    sched.runOutput();
+    const ExportLevel head{sched.bus.getReadPointer(0)[0], sched.bus.getReadPointer(1)[0]};
+    CHECK(blockDiff(sched.bus, level) > 0.05f);
+    sched.runOutput();
+    CHECK(blockDiff(sched.bus, head) <= kBusTransparentTolerance);
+    sched.runOutput();
+    CHECK(blockDiff(sched.bus, level) <= kBusTransparentTolerance);
+}
+
+// REAPER 渲染对话框可以选和工程不同的采样率:Output 先 prepare 时 Input 还在旧采样率上,绑到的是旧值。
+//    反向 = layoutCurrent 比对采样率 ⇒ 第一块原声;离线下照旧重绑 ⇒ [M] 第一拍把锚丢了,Input 已静音,几块全零。本条红。
+TEST_CASE("HOST SL-254:按别的采样率导出,第一块起就是混音,[M] 也不打断", "[host][SL254]")
+{
+    MonoMultiRig r;
+    const ExportLevel level = settleForExport(r);
+    constexpr double kExportSr = 44100.0;
+    const auto restart = [&](juce::AudioProcessor& p) {
+        p.releaseResources();
+        p.setNonRealtime(true);
+        p.prepareToPlay(kExportSr, kBlock);
+    };
+    restart(r.out);
+    for (auto& in : r.ins)
+    {
+        restart(*in);
+    }
+    r.ph.timeSamples = 0;
+    r.ph.playing = true;
+    ExportScheduler sched(r);
+    for (int round = 0; round < 8; ++round)
+    {
+        sched.runInputs(3);
+        for (int b = 0; b < 3; ++b)
+        {
+            sched.runOutputAndCompare(level);
+        }
+        MonoMultiRig::pump(50);
+    }
+    INFO("最大差=" << sched.worstDiff << " @块" << sched.worstBlock);
+    CHECK(sched.worstDiff <= kBusTransparentTolerance);
+}
+
+// 宿主在 prepare 之后才切离线标志(JUCE 的 VST3 / AU 外壳都允许)。Output 这一侧要在块首跟上,不能等 [M]。
+//    反向 = 不在块首同步 session ⇒ 读方走离线路径、下锚规则还是实时的,首串之后全零,本条红。
+TEST_CASE("HOST SL-254:宿主在 prepare 之后才切离线标志,导出全程都是混音", "[host][SL254]")
+{
+    MonoMultiRig r;
+    const ExportLevel level = settleForExport(r);
+    r.out.releaseResources();
+    r.out.prepareToPlay(kSr, kBlock);
+    for (auto& in : r.ins)
+    {
+        in->releaseResources();
+        in->prepareToPlay(kSr, kBlock);
+    }
+    r.out.setNonRealtime(true);
+    for (auto& in : r.ins)
+    {
+        in->setNonRealtime(true);
+    }
+    r.ph.timeSamples = 0;
+    r.ph.playing = true;
+    ExportScheduler sched(r);
+    for (const int burst : {1, 5, 2, 9, 1, 1, 17, 3})
+    {
+        sched.runInputs(burst);
+        for (int b = 0; b < burst; ++b)
+        {
+            sched.runOutputAndCompare(level);
+        }
+    }
+    INFO("最大差=" << sched.worstDiff << " @块" << sched.worstBlock);
+    CHECK(sched.worstDiff <= kBusTransparentTolerance);
+}
+
+// 命令行导出之前一块都没混过:M/S 和宽度的平滑器还在构造值上。平滑是实时路径的东西(J95①),第一块就该是稳态。
+//    反向 = renderSpan 离线下也走 setTargetValue ⇒ 第一块前 10 ms 是斜坡,本条红。
+TEST_CASE("HOST SL-254:命令行导出第一块,M/S 不走平滑", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    setExportPans(r);
+    auto* ms = r.out.getAPVTS().getParameter("ms_balance");
+    REQUIRE(ms != nullptr);
+    ms->setValueNotifyingHost(ms->convertTo0to1(50.0f));
+    startExport(r, ExportStart::kOutputFirst);
+    exportBlock(r, bus, /*callOutput=*/true);
+    const ExportLevel tail{bus.getReadPointer(0)[kBlock - 1], bus.getReadPointer(1)[kBlock - 1]};
+    CHECK(blockDiff(bus, tail) <= kBusTransparentTolerance);
+}
+
+// 导出从负时间线开始(倒计时、pre-roll):这几块 Output 直通,Input 不能照实时路径留下的档位静音。
+//    反向 = 无 / 负时间线的分支读 c18Stage_ ⇒ 这几块全零,本条红。
+TEST_CASE("HOST SL-254:导出从负时间线开始,Input 不按实时留下的档位静音", "[host][SL254]")
+{
+    MonoMultiRig r;
+    settleForExport(r);
+    startExport(r, ExportStart::kOutputFirst, -2 * static_cast<std::int64_t>(kBlock));
+    fillConstant(r.inBuf, kExportLevels[0]);
+    r.ins[0]->processBlock(r.inBuf, r.midi);
+    CHECK(r.inBuf.getMagnitude(0, kBlock) == Catch::Approx(kExportLevels[0]).margin(kBusTransparentTolerance));
+}
+
 // ⑬ 音频流停着时删掉一轨再导出:第一块不能把它留在环里的旧数据混进来,剩下两轨也不能因为它少了一块。
-//    反向 = offlineInjectMask 不按槽核 ⇒ 这一轨的旧数据进第一块,和后面稳定下来的值对不上,本条红。
 TEST_CASE("HOST SL-254:流停着时删掉的 Input 不进导出第一块", "[host][SL254]")
 {
     MonoMultiRig r;
