@@ -12,6 +12,8 @@
 
 ### 变更
 
+- **手册写明立体声轨在分析里按一个点算,不读每轨 width**:算法没有变,这里钉住现状并写明已知限制:单声道轨和左右内容不同的宽立体声轨混用时,
+  分析后的混音默认宽度下可能偏向一侧约 2–3 dB(KI-20)。(#428)
 - **review bot 改为调用 `Synchain-oss/ci-workflows` 的中央可复用 workflow**(`claude-review` / `deepseek-review` / `pr-agent`):
   三个文件缩成薄调用方,只留本仓专属的 `focus` / `extra_prompt` / `ignore_globs`;模型、工具边界、符号链接拒审、超时、
   pr-agent 镜像(按 digest 钉住、无备用模型)统一在中央维护,调用方按 commit SHA 引用。`deepseek-review` 改为只能
