@@ -689,7 +689,7 @@ try {
         check(m !== null, "取到页内 DOM 快照(回 Tab1 之后)");
         // [SL-509] 采集开着 ⇒ 这把开关不挡(只挡「打开」)。改前这里是 data-disabled=1,用户关不掉采集。
         check(
-            m !== null && !m.captureSwitchBlocked,
+            m !== null && m.captureEnabled && !m.captureSwitchBlocked,
             "[SL-509] 采集开着时采集开关可点(data-disabled=0)—— noTimeline 只挡「打开」",
         );
         check(
