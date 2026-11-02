@@ -788,7 +788,9 @@ private:
     void timerCallback() override;
 
     // [A] 从 playhead 构造 C8 快照并发布(§5.2 / C8)。
-    void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing);
+    void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing, bool bypassed);
+    // [A] 时间线跳变记账(§5.2 步骤 2):processBlock 与 processBlockBypassed 共用。
+    void trackPodEpoch(bool haveTime, int64_t t0, int total, bool playing) noexcept;
 
     // [M] 按 claim 态裁决 viz 段的建/释放:唯一写方 = 本组 claim 到 OutputSlot 的那一个
     // ([J66] 同组内只读观察)。**每拍都做** —— claim 态会在接管/让位/改组时翻转。

@@ -638,9 +638,7 @@ void OutputEditor::emitPlayhead()
 
     // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
     const auto& rt = processor_.runtime();
-    bool inRange = true;
-    if (rt.rangeMode != 0)
-        inRange = timeS >= rt.rangeStartS && timeS < rt.rangeEndS;
+    const bool inRange = scvb::output::playheadInUserRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, timeS);
 
     juce::var payload = obj();
     put(payload, "timeS", timeS);

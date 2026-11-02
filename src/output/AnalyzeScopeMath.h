@@ -71,6 +71,12 @@ struct CoverageWindow
     bool valid() const { return endS > startS; }
 };
 
+// 播放头在不在用户选的范围里:跟随档恒真,其余档按 [startS, endS)。界面的 inRange(契约 §2.6)和打印(§1.3)读同一条。
+inline bool playheadInUserRange(int rangeMode, double rangeStartS, double rangeEndS, double playheadS)
+{
+    return rangeMode == 0 || (playheadS >= rangeStartS && playheadS < rangeEndS);
+}
+
 inline CoverageWindow captureProgressWindow(bool playing, int rangeMode, double rangeStartS, double rangeEndS,
                                             double playheadS, double capturedExtentS)
 {

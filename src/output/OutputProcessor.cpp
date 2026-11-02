@@ -312,8 +312,24 @@ float ScvbOutputAudioProcessor::readMsBalance() const noexcept
     return handles_.rawMsBalance != nullptr ? handles_.rawMsBalance->load(std::memory_order_relaxed) : 0.0f;
 }
 
+void ScvbOutputAudioProcessor::trackPodEpoch(bool haveTime, int64_t t0, int total, bool playing) noexcept
+{
+    // pod epoch(§5.2 步骤 2;停走带静止 t0 不变不算跳变)。
+    if (haveTime && t0 >= 0)
+    {
+        if (t0 != expectedNextOut_ && (playing || t0 != lastT0Out_))
+        {
+            ++podEpoch_;
+        }
+        lastT0Out_ = t0;
+        // [SL-487] 按宿主给的整块长推进 —— 取夹取后的 n 的话,超长块之后下一块的 t0 恒对不上,
+        // 每块都会被误判成时间线跳变(epoch 连跳 ⇒ 打印器每块 endAllGestures)。
+        expectedNextOut_ = t0 + total;
+    }
+}
+
 void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime,
-                                               bool playing)
+                                               bool playing, bool bypassed)
 {
     scvb::engine::PlayheadPod pod;
     pod.sampleRate = sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
@@ -326,6 +342,10 @@ void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::Positi
     if (pos.getIsLooping())
     {
         pod.flags |= scvb::engine::kPlayheadIsLooping;
+    }
+    if (bypassed)
+    {
+        pod.flags |= scvb::engine::kPlayheadHostBypassed;
     }
     if (const auto ppq = pos.getPpqPosition(); ppq.hasValue())
     {
@@ -824,20 +844,9 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         }
     }
 
-    // pod epoch(§5.2 步骤 2;停走带静止 t0 不变不算跳变)。
-    if (haveT0 && t0 >= 0)
-    {
-        if (t0 != expectedNextOut_ && (playing || t0 != lastT0Out_))
-        {
-            ++podEpoch_;
-        }
-        lastT0Out_ = t0;
-        // [SL-487] 按宿主给的整块长推进 —— 取夹取后的 n 的话,超长块之后下一块的 t0 恒对不上,
-        // 每块都会被误判成时间线跳变(epoch 连跳 ⇒ 打印器每块 endAllGestures)。
-        expectedNextOut_ = t0 + total;
-    }
+    trackPodEpoch(haveT0, t0, total, playing);
     readerBlockEnd_ = t0 + total; // [A-5] 超长块按段读时,读环要知道这一宿主块写方写到哪(IMixSource::read)
-    publishPlayhead(pos, haveT0, playing);
+    publishPlayhead(pos, haveT0, playing, /*bypassed=*/false);
 
     // [SL-216 / J136] 记下这一块的 lead_select —— 分析据此知道「这段时间谁是主唱」。
     // 只在走带播放且时间线有效时记:停住时宿主给的是定位点上的值,不代表那段时间被「经过」过。
@@ -1273,20 +1282,27 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
     releasableMask_ = 0;
 
     int64_t t0 = 0;
-    bool haveT0 = false;
+    bool haveTime = false;
+    bool playing = false;
+    juce::AudioPlayHead::PositionInfo pos = juce::AudioPlayHead::PositionInfo{};
     if (juce::AudioPlayHead* ph = getPlayHead())
     {
         const juce::Optional<juce::AudioPlayHead::PositionInfo> p = ph->getPosition();
         if (p.hasValue())
         {
-            if (const juce::Optional<int64_t> ts = p->getTimeInSamples(); ts.hasValue() && *ts >= 0)
+            pos = *p;
+            playing = pos.getIsPlaying();
+            if (const juce::Optional<int64_t> ts = pos.getTimeInSamples(); ts.hasValue())
             {
                 t0 = *ts;
-                haveT0 = true;
+                haveTime = true;
             }
         }
     }
-    if (!haveT0)
+    // 旁路也要发布播放头:不发的话快照冻在旁路前那一刻,停走带之后打印器还以为在跑,gesture 一直开着。
+    trackPodEpoch(haveTime, t0, total, playing);
+    publishPlayhead(pos, haveTime, playing, /*bypassed=*/true);
+    if (!haveTime || t0 < 0)
     {
         publishSilentMeters(); // 与 processBlock 三条早退同口径:不发就冻在最后一次有声的高度
         return; // 无时间线:直通(不替换)
@@ -1426,7 +1442,13 @@ void ScvbOutputAudioProcessor::timerCallback()
         const auto shot = playheadSnapshot();
         const bool playing = (shot.flags & scvb::engine::kPlayheadIsPlaying) != 0;
         const double tSec = shot.sampleRate > 0.0 ? static_cast<double>(shot.timeSamples) / shot.sampleRate : -1.0;
-        const bool inRange = printRangeValid_ && tSec >= printRangeStartS_ && tSec <= printRangeEndS_;
+        // 段包络之外没有东西可写;用户选了范围时,范围之外也不写(契约 §1.3)。
+        const bool inRange =
+            printRangeValid_ && tSec >= printRangeStartS_ && tSec <= printRangeEndS_ &&
+            scvb::output::playheadInUserRange(runtime_.rangeMode, runtime_.rangeStartS, runtime_.rangeEndS, tSec);
+        // 只读观察实例不写(硬约束 6);被宿主旁路的实例也不写:旁路 = 停止调音。
+        const bool mayWrite = session_.state() == scvb::output::OutputClaimState::kActive &&
+                              (shot.flags & scvb::engine::kPlayheadHostBypassed) == 0;
 
         scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
         if (outputEnabled_)
@@ -1435,8 +1457,8 @@ void ScvbOutputAudioProcessor::timerCallback()
             // 引擎驱动(authority_.processBlock 读的是 session_.outputEnabled(),不看守卫),试听不受影响。
             // 两种来由(加载守卫 / [J166] 首次开输出)走的是**这同一行**判据,不分来由。
             const bool guardPending = printGuardPending();
-            mode = (playing && inRange && !guardPending) ? scvb::engine::AuthorityMode::Print
-                                                         : scvb::engine::AuthorityMode::Armed;
+            mode = (playing && inRange && mayWrite && !guardPending) ? scvb::engine::AuthorityMode::Print
+                                                                     : scvb::engine::AuthorityMode::Armed;
         }
         printer_.setMode(mode);
     }
