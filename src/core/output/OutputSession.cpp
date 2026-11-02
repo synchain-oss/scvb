@@ -471,6 +471,8 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // timeInSamples,两侧同用),那是比本卡更大的改动。**别把它当成 0** —— 一块的量级与
             // 「几百块叠加」(被禁用的单改一侧修法)差三个数量级,可接受;但后来人若把 [M] 频率
             // 调低或把块长调大,这个上限会跟着涨。
+            // 这一块的实际听感:Output 那侧同块到位后是整块替换总线(`renderBus`),直通的那份被盖掉,
+            // 不会真的叠成两份;反方向(Input 已读到 mask、Output 还没读到本次 inject)仍可能缺一块。
             const u32 flags = slot->flags.load(std::memory_order_acquire);
             const bool muted = (flags & kFlagMuted) != 0;
             if (nonRealtime() || muted || (nowMs - onlineSinceMs_[idx] >= kInjectDelayMs))

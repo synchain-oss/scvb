@@ -818,6 +818,8 @@ private:
     //     同一宿主块内两者不变,不会误触发 30ms 切换斜坡;
     //   · 负 t0 按段判:跨过 0 的超长块前几段直通、后几段混音,中间经 busXfade 等功率交叉。
     void renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0);
+    // 总线交叉的唯一入口:离线下先同块到位再渲染([J95①],理由见实现处的注释)。
+    void renderBus(float* const* out, const float* const* in, const float* const* mix, int n, bool targetMix) noexcept;
 
     // [A] 本块电平测量并发布(§2.5 数据面)。hasData/nch 为本块读环结果,trackGain 为本块
     // 起点仲裁目标导出的线性增益;busL/busR = 求和后的总线缓冲(nullptr = 本块未混音)。
