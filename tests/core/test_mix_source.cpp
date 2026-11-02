@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -125,6 +126,40 @@ TEST_CASE("ShmRingMixSource 冷启动(写方尚未追上)不计失准", "[mix][r
     f.header.write_head_samples.store(8, std::memory_order_release);
     REQUIRE(src.read(0, out.data(), 8));
     CHECK(src.gapCount() == 0);
+}
+
+// REAPER 导出时写方成串领先:首块锚在 t0 之后写头一口气走出去好几块。量到的提前量不是上界,不能据此撤锚。
+TEST_CASE("ShmRingMixSource 写方成串领先:离线不撤首块的锚,实时照旧", "[mix][ring][SL254]")
+{
+    RingFixture f;
+    f.header.write_head_samples.store(8, std::memory_order_release);
+    ShmRingMixSource src;
+    const bool offline = GENERATE(true, false);
+    src.setLeadUnbounded(offline);
+    src.bind(&f.header, f.data.data());
+    std::vector<float> out(8 * 2);
+    REQUIRE(src.read(0, out.data(), 8));
+
+    // 写头一步走出去 5 块,远超首块量到的提前量(8)+ 块长。
+    f.header.write_head_samples.store(48, std::memory_order_release);
+    CHECK(src.read(8, out.data(), 8) == offline);
+    CHECK(src.read(16, out.data(), 8) == offline);
+}
+
+TEST_CASE("ShmRingMixSource layoutCurrent:快照与段头几何对不上就是假", "[mix][ring][SL254]")
+{
+    RingFixture f;
+    ShmRingMixSource src;
+    CHECK_FALSE(src.layoutCurrent());
+    src.bind(&f.header, f.data.data());
+    CHECK(src.layoutCurrent());
+    f.header.channels = 1;
+    CHECK_FALSE(src.layoutCurrent());
+    f.header.channels = 2;
+    f.header.sample_rate += 1;
+    CHECK_FALSE(src.layoutCurrent());
+    f.header.sample_rate -= 1;
+    CHECK(src.layoutCurrent());
 }
 
 TEST_CASE("ShmRingMixSource 写头停滞 → 记饿读,不记失准(v5 P1-7)", "[mix][ring]")

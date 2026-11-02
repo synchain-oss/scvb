@@ -186,6 +186,7 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 
     const auto now = scvb::steadyNowMs();
     session_.prepare(static_cast<scvb::u32>(sr), static_cast<scvb::u32>(preparedMaxBlock_), now);
+    publishEnabledMask(); // 命令行导出在第一块之前一拍 [M] 都不跑,工程里关掉的轨也不能进第一块
     authority_.prepare(sr, handles_);
     busXfade_.prepare(sr);
     busXfade_.resetToPassthrough();
@@ -943,8 +944,9 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 与轨启用位求交:关掉的轨整轨不进混音(§1.15;DAW_COMPATIBILITY §「设备停用」把面板轨道
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
     const bool offline = isNonRealtime();
-    const scvb::u32 inject =
-        (offline ? session_.offlineInjectMask() : session_.injectMask()) & enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 inject = eligible & enabled;
 
     // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
     // inject 快照同时决定「读不读环」和「fade 目标设成几」:此前刚离开 inject 的轨当段起就不再
@@ -971,7 +973,12 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
         std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
         const float* silentMix[2] = {accumL_.data(), accumR_.data()};
-        renderBus(out, in, silentMix, n, /*targetMix=*/false);
+        // 离线下这组的轨全被面板关掉时直接给静音(面板关轨的稳态就是这一轨没声):这一块 Input 还直通,走总线会漏出来。
+        if (offline)
+        {
+            session_.offlineConfirmInjected(eligible);
+        }
+        renderBus(out, in, silentMix, n, /*targetMix=*/offline && eligible != 0);
         publishSilentMeters();
         stalledRawLatched_ = false; // [A-8] 同上
         return;
@@ -998,6 +1005,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 读 live channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
     std::array<bool, 15> hasData{};
     std::array<scvb::u32, 15> nch{};
+    scvb::u32 readOkMask = 0;
     for (int ch = 1; ch <= 15; ++ch)
     {
         if ((live & (1u << (ch - 1))) == 0)
@@ -1014,7 +1022,12 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
             hasData[static_cast<std::size_t>(ch - 1)] = true;
             nch[static_cast<std::size_t>(ch - 1)] = src.channels();
             releasableMask_ |= (1u << (ch - 1)); // [SL-488] 本段真混进母线 ⇒ 下一段若离开 inject 可续读淡出
+            readOkMask |= (1u << (ch - 1));
         }
+    }
+    if (offline)
+    {
+        session_.offlineConfirmInjected(readOkMask | (eligible & ~enabled)); // 面板关着的轨没东西要读,照样静音
     }
 
     // arm 平滑器:per-channel 注入 fade(上线/下线 80ms)+ 全局 width + ms_balance g_M/g_S(10ms)。
@@ -1125,10 +1138,16 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
     // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
-    const scvb::u32 inject = (isNonRealtime() ? session_.offlineInjectMask() : session_.injectMask()) &
-                             enabledMask_.load(std::memory_order_acquire);
+    const bool offline = isNonRealtime();
+    const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 inject = eligible & enabled;
     if (inject == 0)
     {
+        if (offline)
+        {
+            session_.offlineConfirmInjected(eligible);
+        }
         bypassHasData_.fill(false); // 早退也要清:否则收尾的 publishMeters 会拿上一块的 hasData
         return; // 总线上只挂 Output / 尚无 Input / 全被关掉:直通
     }
@@ -1140,6 +1159,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     hasData.fill(false);
     srcCh.fill(0);
     bool anyData = false;
+    scvb::u32 readOkMask = 0;
     for (int ch = 1; ch <= 15; ++ch)
     {
         if ((inject & (1u << (ch - 1))) == 0)
@@ -1158,6 +1178,11 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         hasData[static_cast<std::size_t>(ch - 1)] = true;
         srcCh[static_cast<std::size_t>(ch - 1)] = src.channels();
         anyData = true;
+        readOkMask |= (1u << (ch - 1));
+    }
+    if (offline)
+    {
+        session_.offlineConfirmInjected(readOkMask | (eligible & ~enabled));
     }
 
     if (!anyData)
@@ -1246,6 +1271,19 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
         renderBypassedUnity(buffer, offset, n, t0 + offset);
         publishMeters(bypassHasData_, bypassChannels_, unityGain, accumL_.data(), accumR_.data(), n);
     }
+}
+
+void ScvbOutputAudioProcessor::publishEnabledMask() noexcept
+{
+    std::uint32_t mask = 0;
+    for (int t = 0; t < 15; ++t)
+    {
+        if (runtime_.channels[static_cast<std::size_t>(t)].enabled)
+        {
+            mask |= (1u << t);
+        }
+    }
+    enabledMask_.store(mask, std::memory_order_release);
 }
 
 void ScvbOutputAudioProcessor::timerCallback()
@@ -1377,19 +1415,11 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
     // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
     // 且有单测,却**没有任何生产调用点**,于是开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
+    for (int t = 0; t < 15; ++t)
     {
-        std::uint32_t mask = 0;
-        for (int t = 0; t < 15; ++t)
-        {
-            const bool on = runtime_.channels[static_cast<std::size_t>(t)].enabled;
-            printer_.setTrackEnabled(t, on);
-            if (on)
-            {
-                mask |= (1u << t);
-            }
-        }
-        enabledMask_.store(mask, std::memory_order_release);
+        printer_.setTrackEnabled(t, runtime_.channels[static_cast<std::size_t>(t)].enabled);
     }
+    publishEnabledMask();
 
     tickRecapture();
 

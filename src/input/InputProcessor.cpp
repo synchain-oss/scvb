@@ -87,6 +87,10 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     // (经 configuredChannelId),已改用行为级判据直接钉这两个消费者(见"加载期冲突"用例
     // 补的 CHECK(bridgeTickSnapshot().configuredChannelId == 5)),不再依赖存档这条间接路径。
     channelId_ = static_cast<int>(session_.channelId());
+    if (isNonRealtime())
+    {
+        session_.resetRingForOfflinePass();
+    }
     rampSwitcher_.prepare(sampleRate_);
 
     // claim 未就绪(I6 未分配 / I2 冲突 / I0 / I1)→ 输出走直通档(人声不消失)。

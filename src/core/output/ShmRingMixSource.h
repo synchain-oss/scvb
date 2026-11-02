@@ -213,6 +213,13 @@ public:
     // 它为真(正向在场)。读方在计缺口的同一处清掉、读成功时置上 —— 精确到块,不受 [M] 拍粒度影响:缺口之后同一拍里
     // 紧接着读到的那一块也算(普通的瞬时失准撤下时机与修前相同)。
     bool readOkSinceLastGap() const noexcept { return readOkSinceGap_.load(std::memory_order_relaxed); }
+    // 离线导出里写方可以一口气领先任意多块(REAPER 的预渲染线程实测成串地跑),量到的提前量不是上界:按上界用它,
+    // 首块锚好之后写头第一次动就会被判成「远超提前量」、撤锚重来,白丢几块,而 Input 那边已经静音了。
+    // 打开后按「没量到过提前量」处理(leadHiRef 恒为 -1,各处退回环长 / 200 ms 那一档)。[M] 写,[A] 读。
+    void setLeadUnbounded(bool on) noexcept { leadUnbounded_.store(on, std::memory_order_relaxed); }
+    // 绑定快照与段头几何还对得上(按值比对、不寻址):Input 在 Output 之后重新 prepare 并改了布局 / 采样率时,
+    // 要等 [M] 换绑。音频线程可调。
+    bool layoutCurrent() const noexcept;
 
     // [A-16] 预拷贝的进程内计数(只计数,不报警)。[A] 写(relaxed),任意线程读。
     // privateRead / privateFrame:从私有副本交出过帧的块数 / 帧数(成功的块才算)。
@@ -405,6 +412,7 @@ private:
     std::atomic<u32> persistentFailCount_{0};
     std::atomic<u32> readAttemptCount_{0};
     std::atomic<bool> readOkSinceGap_{false}; // [A] 写(relaxed),[M] 读;见 readOkSinceLastGap()
+    std::atomic<bool> leadUnbounded_{false}; // 见 setLeadUnbounded()
     static_assert(decltype(readOkSinceGap_)::is_always_lock_free, "readOkSinceGap_ must be lock-free (audio thread)");
     std::atomic<u32> privateReadCount_{0};
     std::atomic<u64> privateFrameCount_{0};

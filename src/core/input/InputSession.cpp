@@ -122,6 +122,17 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
     return state_;
 }
 
+void InputSession::resetRingForOfflinePass() noexcept
+{
+    const AudioRingBinding* b = audioRing_.acquire();
+    if (b == nullptr || !b->bound || b->header == nullptr)
+    {
+        return;
+    }
+    b->header->write_head_samples.store(0, std::memory_order_release);
+    AudioRing::bumpEpoch(b);
+}
+
 void InputSession::heartbeat(u64 nowMs)
 {
     const u32 ch = claimedChannel_.load(std::memory_order_relaxed);

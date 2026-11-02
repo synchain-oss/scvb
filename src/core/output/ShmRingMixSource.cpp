@@ -151,11 +151,27 @@ u64 ShmRingMixSource::epoch() const noexcept
 
 int64_t ShmRingMixSource::leadHiRef() const noexcept
 {
+    if (leadUnbounded_.load(std::memory_order_relaxed))
+    {
+        return -1; // 见 setLeadUnbounded
+    }
     if (leadPrev_.samples > 0)
     {
         return leadPrev_.hi;
     }
     return leadCur_.samples > 0 ? leadCur_.hi : -1;
+}
+
+bool ShmRingMixSource::layoutCurrent() const noexcept
+{
+    const AudioRingBinding* b = binding_.load(std::memory_order_acquire);
+    if (b == nullptr || !b->bound || b->header == nullptr)
+    {
+        return false;
+    }
+    // plain u32,对齐的 32 位读是单次访问,同 read() 里的 channels 比对。
+    const volatile AudioRingHeader* const h = b->header;
+    return h->channels == b->geo.channels && h->sample_rate == b->geo.sampleRate && h->ring_frames == b->geo.ringFrames;
 }
 
 int64_t ShmRingMixSource::spanBound(int64_t prevN, int64_t ring) const noexcept
