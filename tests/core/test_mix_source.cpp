@@ -3756,3 +3756,28 @@ TEST_CASE("起播窗口:写方没换代时读不到别处的数据", "[mix][ring
     CHECK_FALSE(s.read(0));
     CHECK(s.src.gapCount() == 0u);
 }
+
+// 写方单独换代、读方之后才跳(写方排在后面,Output 起播头几块的时间戳又跳了一下):这一代不是从读方跳到的位置
+// 起写的,首次下锚照旧受实测提前量限制,不放宽。这里的写方是旧版 Input:从停住的位置后面起播也只加 1,
+// 起播窗口不放宽靠的就是「两方在同一块跳」这一条(新版 Input 这时加 2,隔代本来就不放宽)。
+// 反向 = 推迟锚定在窗口里也放宽 ⇒ 锚落在读方跳到的位置,读出这一代没写过的环槽。
+TEST_CASE("起播窗口:写方单独换代之后读方才跳,首次下锚不放宽", "[mix][ring][playstart]")
+{
+    constexpr int64_t kWriterFrom = 48000;
+    constexpr int64_t kReaderTo = 4096;
+    StoppedThenPlay s;
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE_FALSE(s.read(0)); // 写方还没写:不读
+    s.writerJumps();
+    s.writerWrites(kWriterFrom, 1);
+    CHECK_FALSE(s.read(kStartBlock)); // 读方没跳,这一代的头在 kWriterFrom 之后,读方这里没有本代数据
+    s.writerWrites(kWriterFrom + kStartBlock, 1);
+    ++s.readerEpoch;
+    CHECK_FALSE(s.read(kReaderTo));
+    s.writerWrites(kWriterFrom + 2 * kStartBlock, 1);
+    CHECK_FALSE(s.read(kReaderTo + kStartBlock));
+    s.src.setStartWindow(false);
+    s.writerWrites(kWriterFrom + 3 * kStartBlock, 1);
+    CHECK_FALSE(s.read(kReaderTo + 2 * kStartBlock));
+}
