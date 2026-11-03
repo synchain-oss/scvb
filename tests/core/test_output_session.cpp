@@ -4347,7 +4347,7 @@ struct PlayStartFixture
 } // namespace
 
 // 起播的位置和 Input 停着时重写的位置对不上,读方放宽下锚就可能读到环槽里的旧内容:这几种都不接。
-// 反向 = 判定不看位置 / 不看 stoppedAtMask_ ⇒ 对应的 SECTION 红。
+// 反向 = 判定不看位置 / 不看停着时的轨掩码(stoppedAt_ 的低 16 位)⇒ 对应的 SECTION 红。
 TEST_CASE("起播判定:Input 不是从这里起写的 → 不接,照旧等 [M]", "[output][session][playstart]")
 {
     PlayStartFixture f;
@@ -4547,7 +4547,7 @@ TEST_CASE("起播判定:有一条没确认静音 → 全部不读", "[output][se
     CHECK_FALSE(f.out->mixSource(1).startWindow());
 }
 
-// 判定是全有或全无:一条不可达,别的轨也不读。心跳断了、新上线的那两格另外被 stoppedAtMask_ 挡着;采样率不符那一格
+// 判定是全有或全无:一条不可达,别的轨也不读。心跳断了、新上线的那两格另外被停着时的轨掩码挡着;采样率不符那一格
 // 写头就在这里,只有逐位的 reachable 挡得住。forceClearMask 那格靠 startReachable 的掩码。
 // 反向 = 判定不看逐位的 reachable ⇒ 采样率不符那一格读了另一条轨,这条的声音没了。
 TEST_CASE("起播判定:[M] 上一拍判不可达的轨在 → 全部不读", "[output][session][playstart]")
@@ -4585,7 +4585,7 @@ TEST_CASE("起播判定:[M] 上一拍判不可达的轨在 → 全部不读", "[
     CHECK(f.out->realtimeInjectMask() == 0);
 }
 
-// 走带在跑时 stoppedAtMask_ 也是 0,所以这条不单独钉 kClearMask 分支对 reachableMask_ 的清零,那一处是多一层防护。
+// 走带在跑时停着时的轨掩码也是 0,所以这条不单独钉 kClearMask 分支对 reachableMask_ 的清零,那一处是多一层防护。
 TEST_CASE("起播判定:看门狗跳闸之后 → 全部不读", "[output][session][playstart]")
 {
     PlayStartFixture f;

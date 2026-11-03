@@ -39,7 +39,7 @@ path guard 之外同 PR 改两处:`docs/adr/0002-routing-architecture.md` 在 [J
 | IPC_CONTRACT §4「[实时起播] 注入注」 | [A] 不等 [M] 置位就读;J32 的确认就是 muted 位;交还给 [M] 的时点 | `OutputSession::realtimeInjectMask`、`ScvbOutputAudioProcessor::renderSpan` / `renderBypassedUnity` |
 | ADR-002「[J32 补注:实时起播]」 | 用的是 J32 括号里那一支(等 muted 确认位),先读、后置位,顺序和字面不同 | 同上 |
 
-**不属于契约、因此没写进冻结文档的**:`reachableMask_`、`tickSawPlaying_`、`stoppedAtMask_` / `stoppedAtPos_`、`startMask_`、`blockWasPlaying_`(Output 进程内 [M]↔[A] 原子量),`ShmRingMixSource` 的起播窗口状态(读方进程内),Input 的 `stoppedLastBlock_` / `stoppedT0_`(写方进程内)。
+**不属于契约、因此没写进冻结文档的**:`reachableMask_`、`tickSawPlaying_`、`stoppedAt_`(停的位置与轨掩码装在一个原子量里)、`startMask_`、`blockWasPlaying_`(Output 进程内 [M]↔[A] 原子量),`ShmRingMixSource` 的起播窗口状态(读方进程内),Input 的 `stoppedLastBlock_` / `stoppedT0_`(写方进程内)。
 
 ## 兼容性影响
 

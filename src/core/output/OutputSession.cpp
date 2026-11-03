@@ -353,8 +353,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
     u32 ready = 0;
     u32 reachableNow = 0;
     u32 stoppedAtNow = 0;
-    const u32 stoppedAtPrev = stoppedAtMask_.load(std::memory_order_relaxed);
-    const int64_t stoppedAtPosPrev = stoppedAtPos_.load(std::memory_order_relaxed);
+    const u64 stoppedAtPrevPacked = stoppedAt_.load(std::memory_order_relaxed);
+    const u32 stoppedAtPrev = stoppedAtMask(stoppedAtPrevPacked);
+    const int64_t stoppedAtPosPrev = stoppedAtPos(stoppedAtPrevPacked);
     u32 withdraw = 0;
     const bool offline = nonRealtime();
     // 这次 prepare 之后 Output 还没跑过:离线判定留给 [A] 的第一块。这之间的一拍可能落在 Input 重新 prepare 之前,
@@ -557,8 +558,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
     }
     stalledMask_.store(stalled, std::memory_order_release);
     injectMask_.store(inject, std::memory_order_release);
-    stoppedAtPos_.store(transportPosition_, std::memory_order_relaxed);
-    stoppedAtMask_.store(stoppedAtNow, std::memory_order_relaxed);
+    stoppedAt_.store(packStoppedAt(transportPosition_, stoppedAtNow), std::memory_order_relaxed);
     reachableMask_.store(kOfflineJudged | reachableNow, std::memory_order_release);
     tickSawPlaying_.store(transportPlaying_ ? 1u : 0u, std::memory_order_release); // 排在 injectMask_ 之后
     if (!outputNotRunYet)
@@ -622,12 +622,15 @@ u32 OutputSession::realtimeStartVerdict(int64_t t0) const noexcept
     {
         return 0;
     }
+    // 位置和停着时的证据一次读出,是 [M] 同一拍的。可达性可能比它们早一拍([M] 刚好在两次读之间跑完下一拍):
+    // 两拍的可达判定都是真的判定,不是旧位置的证据;交出去之后每块还要和 [M] 最新的可达判定再求交(startReachable)。
     const u32 reachable = reachableMask_.load(std::memory_order_acquire);
-    if ((reachable & kOfflineJudged) == 0 || t0 < 0 || t0 != stoppedAtPos_.load(std::memory_order_relaxed))
+    const u64 stoppedAtPacked = stoppedAt_.load(std::memory_order_relaxed);
+    if ((reachable & kOfflineJudged) == 0 || t0 < 0 || t0 != stoppedAtPos(stoppedAtPacked))
     {
         return 0;
     }
-    const u32 stoppedAt = stoppedAtMask_.load(std::memory_order_relaxed);
+    const u32 stoppedAt = stoppedAtMask(stoppedAtPacked);
     u32 verdict = 0;
     for (u32 i = 0; i < kMaxChannels; ++i)
     {

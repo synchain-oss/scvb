@@ -160,11 +160,23 @@ public:
     // [A] 每块开头调一次(旁路路径也调):看走带是不是刚起。t0 < 0 = 这一块没有时间线。判据见 OutputSession.cpp
     // 的实现注释。
     void noteBlockTransport(bool playing, int64_t t0) noexcept;
-    // [A] 实时这一块该读哪些轨:[M] 发布的 injectMask,加上走带刚起、[M] 还没看到时的起播判定。
+    // [A] 实时这一块该读哪些轨(inject):[M] 发布的 injectMask,加上走带刚起、[M] 还没看到时的起播判定。
     // 起播判定再和 [M] 最新的可达判定求交:改组、看门狗清位当拍就生效,不用等 [A] 下一个判定。
-    u32 realtimeInjectMask() const noexcept { return injectMask() | startReachable(); }
-    // [A] 只由起播判定带进来、[M] 还没判的轨。
-    u32 startOnlyMask() const noexcept { return startReachable() & ~injectMask(); }
+    // startOnly = 其中只由起播判定带进来、[M] 还没判的轨。两样从同一次读算出来:分两次读的话,中间 [M] 发布了新的
+    // injectMask,两处判断用的就不是同一刻的状态。一块里要用到两样的,取一次快照。
+    struct RealtimeInject
+    {
+        u32 inject;
+        u32 startOnly;
+    };
+    RealtimeInject realtimeInject() const noexcept
+    {
+        const u32 published = injectMask();
+        const u32 start = startReachable();
+        return {published | start, start & ~published};
+    }
+    u32 realtimeInjectMask() const noexcept { return realtimeInject().inject; }
+    u32 startOnlyMask() const noexcept { return realtimeInject().startOnly; }
     // [A] 离线导出这一块该读哪些轨。判据与时机见 OutputSession.cpp 的实现注释。实时路径不调它。
     u32 offlineInjectMask() noexcept;
     // [A] 离线:这些轨这一块确实读到了,置 connected_mask 位,Input 下一块跟着静音。从没读到过的轨不置:它还直通。
@@ -377,9 +389,18 @@ private:
     std::atomic<u32> tickSawPlaying_{0};
     // [M] 上一拍看到的:走带停着,这些轨的写头正好领先 Output 停的位置不到一块(或者上一拍是这样、这一拍写方已经
     // 从这里起播先走了,见 evaluateChannels)。在 reachableMask_ 之前发布。
-    static_assert(std::atomic<int64_t>::is_always_lock_free);
-    std::atomic<u32> stoppedAtMask_{0};
-    std::atomic<int64_t> stoppedAtPos_{-1};
+    // 停的位置和这份轨掩码装在同一个原子量里,[A] 一次读出来的两样一定是 [M] 同一拍的。分开存的话,停着时挪了位置
+    // 那一拍 [A] 可能拿到新位置配旧位置的证据。高 48 位 = 位置 + 1(0 = 没有位置),低 16 位 = 轨掩码。
+    static_assert(kMaxChannels <= 16);
+    static_assert(std::atomic<u64>::is_always_lock_free);
+    std::atomic<u64> stoppedAt_{0};
+    // 位置到 2^47(384 kHz 下十一年多)就当没有证据:起播判定照旧等 [M],写方先走一步的那条也不留。
+    static constexpr u64 packStoppedAt(int64_t pos, u32 mask) noexcept
+    {
+        return pos < 0 || pos >= (int64_t{1} << 47) ? 0 : (static_cast<u64>(pos + 1) << 16) | (mask & 0xFFFFu);
+    }
+    static constexpr int64_t stoppedAtPos(u64 packed) noexcept { return static_cast<int64_t>(packed >> 16) - 1; }
+    static constexpr u32 stoppedAtMask(u64 packed) noexcept { return static_cast<u32>(packed & 0xFFFFu); }
     // [A] 读写;[M] 只在 prepare 里清(setStateInformation 会在音频运行时走到 prepare,所以是原子量)。清和 [A] 撞了也无妨:
     // prepare 先清了 reachableMask_,[M] 判过之前 startReachable 都是 0。
     std::atomic<bool> blockWasPlaying_{false};

@@ -4101,7 +4101,7 @@ TEST_CASE("SCHED LS-17: pressing play within the raw-return window has every lan
 }
 
 // 反向 = 判定不看起播位置 ⇒ output-quirk 红(压在淡入上算错);Input 不做一次加 2 ⇒ input-quirk、skip-after-stop 红。
-// no-region 那一格不看 stoppedAtMask_ 也挡得住(写头在别处,near 不成立),它钉的是轨一定会回来。
+// no-region 那一格不看停着时的轨掩码也挡得住(写头在别处,near 不成立),它钉的是轨一定会回来。
 TEST_CASE("SCHED LS-17: a start the writers did not begin at never reads stale ring contents", "[.][sched]")
 {
     for (const char* cell : {"input-quirk", "output-quirk", "no-region", "skip-after-stop"})

@@ -956,7 +956,9 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
     const bool offline = isNonRealtime();
     const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
-    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.realtimeInjectMask();
+    // 这一块的 inject 和下面的 startNoData 从同一份快照算。
+    const scvb::output::OutputSession::RealtimeInject realtime = session_.realtimeInject();
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : realtime.inject;
     const scvb::u32 inject = eligible & enabled;
 
     // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
@@ -1135,7 +1137,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     const bool allStalled = inject != 0 && (inject & ~session_.stalledMask()) == 0 && !injectHasData;
     // 起播判定带进来的轨一条都还没读到时,先不往混音走:混音是空的,Input 全在静音,走过去什么也得不到;
     // 总线上要是有原声(没接 Input 的声源),这段交叉还会把它的句首吃掉。读到第一块再走。
-    const bool startNoData = (inject & ~session_.startOnlyMask()) == 0 && !injectHasData;
+    const bool startNoData = (inject & ~realtime.startOnly) == 0 && !injectHasData;
     if (!allStalled)
     {
         stalledRawLatched_ = false;
