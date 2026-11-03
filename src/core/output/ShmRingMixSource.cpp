@@ -191,6 +191,7 @@ void ShmRingMixSource::clearWindows() noexcept
     curAnchored_ = false;
     curVf_ = 0;
     anchorOnUnconfirmed_ = false;
+    anchorFromStart_ = false;
     anchorAtStepHead_ = false;
     prevOn_ = false;
     prevBLowKnown_ = false;
@@ -356,6 +357,7 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
     curAnchored_ = false;
     curVf_ = 0;
     anchorOnUnconfirmed_ = false;
+    anchorFromStart_ = false;
     anchorAtStepHead_ = false;
     headConfirmed_ = false;
     headTentative_ = false;
@@ -366,6 +368,7 @@ void ShmRingMixSource::newGeneration(u64 e, int64_t w, bool flux, bool jumped, b
     lastW_ = 0;
     jumpedInGen_ = jumped;
     jumpedAtGenStart_ = jumped;
+    startWindowSawGen_ = startWindowSawGen_ || startWindow_;
     syncUsed_ = false;
     contiguousInGen_ = true;
     framesSinceGen_ = 0;
@@ -426,7 +429,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
         // 换代(或归零)之后写头第一次动:此后的写头一定是本代写的。暂定的头(R5)也在这里复核。
         const int64_t anchorLead = anchorLeadRef();
         if (curAnchored_ && anchorOnUnconfirmed_ &&
-            (w < lastW_ || w - lastW_ > (anchorLead >= 0 ? anchorLead : ring) + prevN))
+            (w < lastW_ || (!anchorFromStart_ && w - lastW_ > (anchorLead >= 0 ? anchorLead : ring) + prevN)))
         {
             // 锚是对着一个可能属于上一代的写头下的,写头这一动(往回、或一下子远远超过提前量上界)
             // 与「那就是本代的头」对不上 ⇒ 这个锚不可信,按规则重来。
@@ -447,6 +450,7 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
             curVf_ = std::max(curVf_, stepMinPrev_ > 0 ? w - stepMinPrev_ : w);
         }
         anchorOnUnconfirmed_ = false;
+        anchorFromStart_ = false;
         anchorAtStepHead_ = false;
         // 确认之前记下的写头(firstObservation 的 curHi_ = w)可能是上一代的旧头,不能算进本代的最大写头。
         curHi_ = 0;
@@ -468,8 +472,11 @@ void ShmRingMixSource::sameGeneration(int64_t w, bool flux, bool jumped, bool sk
     else
     {
         const int64_t step = w - lastW_;
-        stepMaxCur_ = std::max(stepMaxCur_, step);
-        stepMinCur_ = stepMinCur_ > 0 ? std::min(stepMinCur_, step) : step;
+        if (!startWindow_) // 起播那一下的突发不算写方的常态,不带进下一代的上界。提前量同理,见 read 末尾。
+        {
+            stepMaxCur_ = std::max(stepMaxCur_, step);
+            stepMinCur_ = stepMinCur_ > 0 ? std::min(stepMinCur_, step) : step;
+        }
         if (prevOn_ && step > spanBound(prevN, ring))
         {
             prevOn_ = false; // 规则 6 末句:写方单块产出超过上界 ⇒ 本代禁用上一代窗
@@ -485,7 +492,10 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
     // 它一个提前量;领先得更多,说明写方本代起点在读方前面(读写目标不一致)或者这个头根本不是本代的。
     // 没量到过提前量(刚绑定)时退到旧实现的套圈界(一个环长)。slack = 本段之后这一宿主块还剩的长度
     // (超长块分段读,SL-523):写方已经写完整个宿主块,写头相对本段自然多领先这一截。
-    const int64_t lim = anchorLeadRef();
+    const bool syncRule = jumpedAtGenStart_;
+    const bool deferredRule = jumpedInGen_ && !jumpedAtGenStart_;
+    const bool startSync = startWindow_ && syncRule && genBacklog_ < 2; // 见 setStartWindow(每代只用一次由下面那道门管)
+    const int64_t lim = startSync ? -1 : anchorLeadRef();
     const bool near = t0 <= w && (w - t0) <= (lim >= 0 ? lim : ring) + slack;
     // 锁步 = 上一代里写头从不领先读方超过一块(写方一次产出或读方一块,取大者),且曾恰好停在读方块尾。
     // 两条都要:写方领先时停调,读方追上冻住的写头那几块里「停在块尾」也会成立(那是追上,不是锁步)。
@@ -496,13 +506,12 @@ void ShmRingMixSource::tryAnchor(int64_t t0, int64_t w, int n, int64_t slack, in
     // 规则 3 同步规则(读方在首次看到本代的那一块也跳了)与规则 4 推迟锚定(写方单独换代之后,读方
     // 第一次自己跳变):锚在读方自己的跳变落点之后的当前位置。每代只用一次 —— 读方之后的跳变与写方
     // 本代起点无关。积压了 ≥2 代时(中间有没见过的代),非锁步的写方先等写头确认是本代的再判(R3)。
-    const bool syncRule = jumpedAtGenStart_;
-    const bool deferredRule = jumpedInGen_ && !jumpedAtGenStart_;
     if ((syncRule || deferredRule) && !syncUsed_ && near && (genBacklog_ < 2 || headConfirmed_ || lockstep))
     {
         if (!curAnchored_)
         {
             anchorOnUnconfirmed_ = !headConfirmed_;
+            anchorFromStart_ = startSync;
         }
         curVf_ = curAnchored_ ? std::min(curVf_, t0) : t0;
         curAnchored_ = true;
@@ -684,6 +693,11 @@ void ShmRingMixSource::countFailure(int64_t t0, int64_t t1, int64_t w, int64_t g
     // 只有一个写头采样,判不出写方是在推进还是冻着,等下一块再比。本代还没在当前窗里读到过数据
     // (primed 之前)的失败这里不计 —— 空环 / 起播瞬间 / 宿主先渲染 Output / 换代交接中(ADR-002);
     // [A-6] 唯一的例外是同一段失败持续超过宽限(H3,见本函数末尾与头注「持续读不到」)。
+    if (startWindow_)
+    {
+        handoverLossCount_.fetch_add(1, std::memory_order_relaxed); // 不计,也不给窗口之后留痕迹,见 setStartWindow
+        return;
+    }
     const u64 wu = static_cast<u64>(w);
     const bool lapped = w > t0 && (w - t0 > ring || w + guard - t0 > ring);
     const bool producerAdvancing = sawFail_ && wu != lastFailWriteHead_;
@@ -918,6 +932,13 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
     {
         sameGeneration(w, flux, jumped, skipped, prevN, ring);
     }
+    if (startWindow_ && !startWindowSawGen_)
+    {
+        // 这次起播写方还没写过(被旁路了,或者排在 Output 后面)。环里只有停走带时留下的东西,不读。见 setStartWindow。
+        handoverLossCount_.fetch_add(1, std::memory_order_relaxed);
+        framesSinceGen_ += n;
+        return false;
+    }
     if (!flux && w > 0)
     {
         tryAnchor(t0, w, n, hostBlockEnd > t1 ? hostBlockEnd - t1 : 0, ring);
@@ -1000,11 +1021,11 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n, u64 readerEpoch, int6
         return false;
     }
 
-    if (c.curLen > 0)
+    if (c.curLen > 0 && !startWindow_)
     {
         primed_ = true; // 本代已在当前窗里确有可读数据,此后当前窗里的失败即真缺口
     }
-    if (c.curLen == n)
+    if (c.curLen == n && !startWindow_)
     {
         // 整块都在当前窗里:量一次「写头相对读方」的提前量(同步规则 / 锁步判别的尺子)。
         const int64_t ahead = w - t0;

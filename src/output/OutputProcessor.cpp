@@ -845,6 +845,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 
     trackPodEpoch(haveT0, t0, total, playing);
+    session_.noteBlockTransport(playing, haveT0 ? t0 : -1);
     readerBlockEnd_ = t0 + total; // [A-5] 超长块按段读时,读环要知道这一宿主块写方写到哪(IMixSource::read)
     publishPlayhead(pos, haveT0, playing, /*bypassed=*/false);
 
@@ -955,7 +956,7 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
     const bool offline = isNonRealtime();
     const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
-    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.realtimeInjectMask();
     const scvb::u32 inject = eligible & enabled;
 
     // [SL-488] 释放中 = 上一段真混进过、这一段已不在 inject、fade 还没落到 0 的轨。
@@ -1132,6 +1133,9 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
         injectHasData = injectHasData || ((inject & (1u << ch)) != 0 && hasData[static_cast<std::size_t>(ch)]);
     }
     const bool allStalled = inject != 0 && (inject & ~session_.stalledMask()) == 0 && !injectHasData;
+    // 起播判定带进来的轨一条都还没读到时,先不往混音走:混音是空的,Input 全在静音,走过去什么也得不到;
+    // 总线上要是有原声(没接 Input 的声源),这段交叉还会把它的句首吃掉。读到第一块再走。
+    const bool startNoData = (inject & ~session_.startOnlyMask()) == 0 && !injectHasData;
     if (!allStalled)
     {
         stalledRawLatched_ = false;
@@ -1147,7 +1151,8 @@ void ScvbOutputAudioProcessor::renderSpan(juce::AudioBuffer<float>& buffer, int 
     // 离线下一条注入轨都没读到数据时同样回直通:Input 这一块没写(被旁路、宿主没调它),它的声音还在总线输入上。
     const float* mix[2] = {accumL_.data(), accumR_.data()};
     renderBus(out, in, mix, n,
-              /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_) && !(offline && !injectHasData));
+              /*targetMix=*/inject != 0 && !(allStalled && stalledRawLatched_) && !(offline && !injectHasData) &&
+                  !startNoData);
 
     // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
     publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
@@ -1171,7 +1176,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
     const bool offline = isNonRealtime();
     const scvb::u32 enabled = enabledMask_.load(std::memory_order_acquire);
-    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.injectMask();
+    const scvb::u32 eligible = offline ? session_.offlineInjectMask() : session_.realtimeInjectMask();
     const scvb::u32 inject = eligible & enabled;
     if (inject == 0)
     {
@@ -1301,6 +1306,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
     }
     // 旁路也要发布播放头:不发的话快照冻在旁路前那一刻,停走带之后打印器还以为在跑,gesture 一直开着。
     trackPodEpoch(haveTime, t0, total, playing);
+    session_.noteBlockTransport(playing, haveTime ? t0 : -1);
     publishPlayhead(pos, haveTime, playing, /*bypassed=*/true);
     if (!haveTime || t0 < 0)
     {
@@ -1368,6 +1374,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     if (playheadShot_.read(playhead))
     {
         session_.setTransportPlaying((playhead.flags & scvb::engine::kPlayheadIsPlaying) != 0);
+        session_.setTransportPosition(playhead.timeSamples);
     }
     session_.tick(now);
     reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)

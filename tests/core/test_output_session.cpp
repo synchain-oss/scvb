@@ -1918,7 +1918,7 @@ TEST_CASE("SL-254:非实时下首次上线即注入(跳过 200ms 墙钟闸)", "[
     out.bumpBlockCounter(); // Output 跑过了,见下一条
 
     // ★ 与上面那条 [J32] 用例**同一时序**(单次 tick、无 muted 位、0 < 200ms):
-    //   实时下 injectMask 必为 0,非实时下必须**当拍**置位 —— 同块交接的 Output 半边。
+    //   实时下 injectMask 必为 0,非实时下必须**当拍**置位 —— 离线不走墙钟闸。
     out.tick(1300);
     REQUIRE((out.injectMask() & (1u << 2)) != 0); // 实时形态在这里红(injectMask == 0)
 }
@@ -4285,4 +4285,385 @@ TEST_CASE("[A-8] watchdog hold wins: a lane frozen while the Output is not calle
     CHECK((last.stalled & (e2Bit(0) | e2Bit(2))) == 0u);
     WARN("A-8 e2e hold: trip +" << (tripMs - kStall) << " ms, rejoin +" << (rejoin[0] - kResume) << " / +"
                                 << (rejoin[1] - kResume) << " / +" << (rejoin[2] - kResume) << " ms");
+}
+
+// ---- 起播判定:走带刚起的第一块,[M] 还没看到走带在跑(OutputSession::noteBlockTransport)----
+// 每条都从同一个样子出发:两条 Input 在线、都确认了静音,走带停满 500 ms,injectMask 已经清了。
+
+namespace
+{
+struct PlayStartFixture
+{
+    static constexpr u32 kBits = (1u << 0) | (1u << 2); // channel 1、3
+
+    scvb::SegmentBackendInProcess backend;
+    std::unique_ptr<InputSession> a;
+    std::unique_ptr<InputSession> b;
+    std::unique_ptr<OutputSession> out;
+    std::uint64_t now = 1000;
+    std::uint64_t head = 0;
+
+    PlayStartFixture()
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        a = std::make_unique<InputSession>(backend, 1001);
+        b = std::make_unique<InputSession>(backend, 1002);
+        out = std::make_unique<OutputSession>(backend, 2001);
+        a->setChannelId(1);
+        b->setChannelId(3);
+        REQUIRE(a->prepare(48000, 512, 1, now) == InputClaimState::kActive);
+        REQUIRE(b->prepare(48000, 512, 1, now) == InputClaimState::kActive);
+        a->setMuted(true);
+        b->setMuted(true);
+        advanceHeads();
+        REQUIRE(out->prepare(48000, 512, now) == OutputClaimState::kActive);
+        tick();
+        REQUIRE(out->injectMask() == kBits);
+        out->setTransportPlaying(false);
+        out->setTransportPosition(0); // 写头 16,正好领先 Output 停的位置不到一块
+        now += 600;
+        tick();
+        REQUIRE(out->injectMask() == 0);
+    }
+
+    void advanceHeads()
+    {
+        float buf[16] = {};
+        scvb::AudioRing::write(a->audioRing().acquire(), head, buf, 16);
+        scvb::AudioRing::write(b->audioRing().acquire(), head, buf, 16);
+        head += 16;
+    }
+
+    // 一拍 [M]。块计数跟着走:这里测的不是看门狗。
+    void tick()
+    {
+        now += 40;
+        a->heartbeat(now);
+        b->heartbeat(now);
+        out->bumpBlockCounter();
+        out->tick(now);
+    }
+};
+} // namespace
+
+// 起播的位置和 Input 停着时重写的位置对不上,读方放宽下锚就可能读到环槽里的旧内容:这几种都不接。
+// 反向 = 判定不看位置 / 不看 stoppedAtMask_ ⇒ 对应的 SECTION 红。
+TEST_CASE("起播判定:Input 不是从这里起写的 → 不接,照旧等 [M]", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    SECTION("Output 起播的位置不是它停着的位置(起播时间戳怪癖)")
+    {
+        f.out->noteBlockTransport(true, 4096);
+    }
+    SECTION("Output 停在这里,Input 的写头不在这里(被旁路,或者这里宿主不调用它)")
+    {
+        f.out->setTransportPosition(100000);
+        f.tick();
+        f.out->noteBlockTransport(true, 100000);
+    }
+    SECTION("只有一条 Input 的写头在这里")
+    {
+        float buf[16] = {};
+        f.out->setTransportPosition(100000);
+        scvb::AudioRing::write(f.a->audioRing().acquire(), 100000, buf, 16);
+        f.tick();
+        f.out->noteBlockTransport(true, 100000);
+    }
+    SECTION("这一块没有时间线")
+    {
+        f.out->noteBlockTransport(true, -1);
+    }
+    SECTION("[M] 看到的位置没有时间线")
+    {
+        f.out->setTransportPosition(-1);
+        f.tick();
+        f.out->noteBlockTransport(true, -1);
+    }
+    SECTION("上一拍走带在跑(停了又播,[M] 还没看到停)")
+    {
+        f.out->setTransportPlaying(true);
+        f.tick();
+        f.out->noteBlockTransport(true, 0);
+    }
+    CHECK(f.out->startOnlyMask() == 0);
+    CHECK_FALSE(f.out->mixSource(1).startWindow());
+}
+
+// REAPER 主轨上的 Output 比各轨晚 8–10 ms 才算第一块,[M] 可能在这中间跑一拍:写方已经从停着的位置起播先走了,
+// Output 自己还停着。这一拍不能把停着时的证据清掉;位置变了、上一拍本来就没有证据的,照旧不认。
+// 反向 = 只认「写头正好在这里」⇒ 第一条 SECTION 红;不看上一拍的位置 / 写头是不是往前走了 / 上一拍的证据 ⇒ 后三条红。
+TEST_CASE("起播判定:按下播放到 Output 第一块之间跑了一拍 [M] → 停着时的证据还算", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    float buf[2048] = {};
+    const auto runAhead = [&](std::uint64_t from) {
+        scvb::AudioRing::write(f.a->audioRing().acquire(), from, buf, 2048);
+        scvb::AudioRing::write(f.b->audioRing().acquire(), from, buf, 2048);
+    };
+    SECTION("写方从停着的位置先走了")
+    {
+        runAhead(0);
+        f.tick();
+        f.out->noteBlockTransport(true, 0);
+        // 这一拍 [M] 已经放行了注入(写头在动、Input 静音),要看的是读方的起播窗口开没开。
+        CHECK(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+        CHECK(f.out->mixSource(1).startWindow());
+        CHECK(f.out->mixSource(3).startWindow());
+    }
+    SECTION("Output 停着时换了位置,写方从新位置先走了")
+    {
+        f.out->setTransportPosition(100000);
+        runAhead(100000);
+        f.tick();
+        f.out->noteBlockTransport(true, 100000);
+        CHECK_FALSE(f.out->mixSource(1).startWindow());
+        CHECK_FALSE(f.out->mixSource(3).startWindow());
+    }
+    SECTION("写头回到了停着的位置前面(Input 重新 prepare 之类)")
+    {
+        f.out->setTransportPosition(4096);
+        scvb::AudioRing::write(f.a->audioRing().acquire(), 4096, buf, 16);
+        scvb::AudioRing::write(f.b->audioRing().acquire(), 4096, buf, 16);
+        f.tick();
+        runAhead(0);
+        f.tick();
+        f.out->noteBlockTransport(true, 4096);
+        CHECK_FALSE(f.out->mixSource(1).startWindow());
+        CHECK_FALSE(f.out->mixSource(3).startWindow());
+    }
+    SECTION("上一拍写头就不在这里")
+    {
+        f.out->setTransportPosition(100000);
+        f.tick();
+        runAhead(100000);
+        f.tick();
+        f.out->noteBlockTransport(true, 100000);
+        CHECK_FALSE(f.out->mixSource(1).startWindow());
+        CHECK_FALSE(f.out->mixSource(3).startWindow());
+    }
+}
+
+// 判定是逐块核的那份 reachable 兜不住这一格:[M] 判可达,但还没放行注入(Input 的 muted 这一拍清了,不满 200 ms)。
+// 这时 Input 已回直通,Output 再读就是两路叠加。
+// 反向 = 交还之后 startMask_ 留着 ⇒ 这里红。
+TEST_CASE("起播判定:[M] 判可达但没放行注入 → 这一轨退出读取", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(true, 0);
+    REQUIRE(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+
+    f.b->setMuted(false);
+    f.advanceHeads();
+    f.out->setTransportPlaying(true);
+    f.tick();
+    constexpr u32 kB = 1u << 2;
+    REQUIRE((f.out->injectMask() & kB) == 0);
+    f.out->noteBlockTransport(true, 512);
+    CHECK((f.out->realtimeInjectMask() & kB) == 0);
+    CHECK((f.out->startOnlyMask() & kB) == 0);
+}
+
+// 离线的交接归 offlineInjectMask。只在 ProcessData 里报离线、不重新 prepare 的宿主,实时留下的判定还在。
+// 反向 = noteBlockTransport 不看 nonRealtime ⇒ 窗口开了,这一轨读失败就不计。
+TEST_CASE("起播判定:离线时不开窗口,已开的也关", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    SECTION("上升沿已经是离线")
+    {
+        f.out->setNonRealtime(true);
+        f.out->noteBlockTransport(true, 0);
+    }
+    SECTION("窗口开着时切离线")
+    {
+        f.out->noteBlockTransport(true, 0);
+        REQUIRE(f.out->mixSource(1).startWindow());
+        f.out->setNonRealtime(true);
+        f.out->noteBlockTransport(true, 0);
+    }
+    CHECK_FALSE(f.out->mixSource(1).startWindow());
+    CHECK(f.out->startOnlyMask() == 0);
+}
+
+// 反向 = noteBlockTransport 不判 ⇒ 第二条 CHECK 红;不交还 ⇒ 下一条用例对 startWindow() 的断言红。
+TEST_CASE("起播判定:全部确认静音 → 第一块就读,[M] 看到走带在跑后交还", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(false, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+    CHECK(f.out->startOnlyMask() == PlayStartFixture::kBits);
+    f.out->noteBlockTransport(true, 0); // [M] 一拍都没跑:接着读
+    CHECK(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+
+    // [M] 看到走带在跑,这一拍 a 的心跳断了:以 injectMask 为准,起播判定不能把它留在读取集里。
+    f.advanceHeads();
+    f.out->setTransportPlaying(true);
+    f.now += 3000;
+    f.b->heartbeat(f.now);
+    f.out->bumpBlockCounter();
+    f.out->tick(f.now);
+    REQUIRE(f.out->injectMask() == (1u << 2));
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == (1u << 2));
+    CHECK(f.out->startOnlyMask() == 0);
+}
+
+// 反向 = 不给读方开窗口 ⇒ 第一条红;窗口不跟着判定关 ⇒ 后面红。
+TEST_CASE("起播判定:只给判定通过的轨开读方的起播窗口,交还时关", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->mixSource(1).startWindow());
+    CHECK_FALSE(f.out->mixSource(2).startWindow());
+    CHECK(f.out->mixSource(3).startWindow());
+
+    f.advanceHeads();
+    f.out->setTransportPlaying(true);
+    f.tick();
+    f.out->noteBlockTransport(true, 0);
+    CHECK_FALSE(f.out->mixSource(1).startWindow());
+    CHECK_FALSE(f.out->mixSource(3).startWindow());
+}
+
+TEST_CASE("起播判定:走带又停了 → 立刻不读,窗口关", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(true, 0);
+    REQUIRE(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+    f.out->noteBlockTransport(false, 0); // [M] 还没看到起播,就又停了
+    CHECK(f.out->realtimeInjectMask() == 0);
+    CHECK_FALSE(f.out->mixSource(1).startWindow());
+}
+
+// 反向 = realtimeStartVerdict 跳过没确认的轨 ⇒ 这里是 channel 1 的位,不是 0。
+TEST_CASE("起播判定:有一条没确认静音 → 全部不读", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.b->setMuted(false);
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+    CHECK_FALSE(f.out->mixSource(1).startWindow());
+}
+
+// 判定是全有或全无:一条不可达,别的轨也不读。心跳断了、新上线的那两格另外被 stoppedAtMask_ 挡着;采样率不符那一格
+// 写头就在这里,只有逐位的 reachable 挡得住。forceClearMask 那格靠 startReachable 的掩码。
+// 反向 = 判定不看逐位的 reachable ⇒ 采样率不符那一格读了另一条轨,这条的声音没了。
+TEST_CASE("起播判定:[M] 上一拍判不可达的轨在 → 全部不读", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    SECTION("采样率不符,写头在这里")
+    {
+        float buf[16] = {};
+        REQUIRE(f.b->prepare(44100, 512, 1, f.now) == InputClaimState::kActive);
+        f.b->setMuted(true);
+        scvb::AudioRing::write(f.b->audioRing().acquire(), 0, buf, 16);
+        f.tick();
+    }
+    SECTION("心跳断了")
+    {
+        f.now += 3000;
+        f.b->heartbeat(f.now);
+        f.out->bumpBlockCounter();
+        f.out->tick(f.now);
+    }
+    SECTION("新上线的 Input,[M] 还没判过")
+    {
+        InputSession c(f.backend, 1003);
+        c.setChannelId(5);
+        REQUIRE(c.prepare(48000, 512, 1, f.now) == InputClaimState::kActive);
+        c.setMuted(true);
+        f.out->noteBlockTransport(true, 0);
+        CHECK(f.out->realtimeInjectMask() == 0);
+    }
+    SECTION("看门狗清位(forceClearMask)")
+    {
+        f.out->forceClearMask();
+    }
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+}
+
+// 走带在跑时 stoppedAtMask_ 也是 0,所以这条不单独钉 kClearMask 分支对 reachableMask_ 的清零,那一处是多一层防护。
+TEST_CASE("起播判定:看门狗跳闸之后 → 全部不读", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->setTransportPlaying(true);
+    bool tripped = false;
+    for (int i = 0; i < 40 && !tripped; ++i) // Output 没被调用(块计数不动),写头还在走
+    {
+        f.advanceHeads();
+        f.now += 100;
+        f.a->heartbeat(f.now);
+        f.b->heartbeat(f.now);
+        const bool wasInjecting = f.out->injectMask() != 0;
+        f.out->tick(f.now);
+        tripped = wasInjecting && f.out->injectMask() == 0;
+    }
+    REQUIRE(tripped);
+    f.out->noteBlockTransport(false, 0);
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+}
+
+// 改组之前算的判定不能打到新组的环上。反向 = changeGroup 不清 reachableMask_ ⇒ 这里还带着旧组的位。
+TEST_CASE("起播判定:起播窗口里改组 → 当块失效,新组 [M] 判过才算", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(true, 0);
+    REQUIRE(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+
+    InputSession other(f.backend, 1004);
+    other.setGroupId(2);
+    other.setChannelId(1);
+    REQUIRE(other.prepare(48000, 512, 1, f.now) == InputClaimState::kActive);
+    other.setMuted(true);
+    other.heartbeat(f.now);
+    REQUIRE(f.out->changeGroup(2, 48000, 512, f.now) == OutputClaimState::kActive);
+
+    CHECK(f.out->realtimeInjectMask() == 0); // 还没到下一块
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+    f.out->noteBlockTransport(false, 0);
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == 0);
+}
+
+// 没停走带就重新 prepare。反向 = prepare 不清这两个 ⇒ 第一条红 / 第二段判不出上升沿。
+TEST_CASE("起播判定:重新 prepare 之后 [M] 判过才算", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.out->noteBlockTransport(true, 0);
+    REQUIRE(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+
+    f.now += 40;
+    REQUIRE(f.out->prepare(48000, 512, f.now) == OutputClaimState::kActive);
+    CHECK(f.out->realtimeInjectMask() == 0);
+
+    f.tick();
+    f.out->noteBlockTransport(true, 0); // 走带一直报在跑:prepare 之后这一块算新的上升沿
+    CHECK(f.out->realtimeInjectMask() == PlayStartFixture::kBits);
+}
+
+// 轨没了(Input 删掉)不挡别的轨:判定只看此刻活跃的槽。
+TEST_CASE("起播判定:已释放的轨不算在内", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    f.a->release(f.now);
+    f.out->noteBlockTransport(true, 0);
+    CHECK(f.out->realtimeInjectMask() == (1u << 2));
+}
+
+TEST_CASE("起播判定:observer 判定恒为 0(冒烟,host 那条才钉总线)", "[output][session][playstart]")
+{
+    PlayStartFixture f;
+    OutputSession observer(f.backend, 2002);
+    REQUIRE(observer.prepare(48000, 512, f.now) == OutputClaimState::kObserver);
+    f.now += 40;
+    f.a->heartbeat(f.now);
+    f.b->heartbeat(f.now);
+    observer.tick(f.now);
+    observer.noteBlockTransport(true, 0);
+    CHECK(observer.realtimeInjectMask() == 0);
 }
