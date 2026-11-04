@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-09-29
+> Last updated: 2026-11-03
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -226,6 +226,76 @@ What to do instead:
 
 The Input's first-run guide covers this too (it appears the first time you open an Input; click the "?" at the bottom right of the Input window to see it again at any time). The full entry is KI-4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
+## Nesting: two levels of SCVB
+
+To balance several groups of vocals against each other, route each group's bus into a level above it. Each group is balanced on its own bus first, then the upper level treats every group bus as one track.
+
+This has only been tested in REAPER 7.82, and only with two levels. Other DAWs and deeper nesting are untested. The full results are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) §2.2.
+
+### Wiring
+
+| Track | Plugin chain | Sends to |
+|---|---|---|
+| Vocal track | Last slot: SCVB Input, group A (or B) | Group bus |
+| Group bus | First slot: SCVB Output, group A (or B). Last slot: SCVB Input, the upper group (H, for example) | Upper bus |
+| Upper bus | First slot: SCVB Output, group H | Main output |
+
+- Every Input in a group uses its own channel. The Input on a group bus takes a channel in the upper group.
+- Put a group's effects between its Output and its Input. An effect before the Output is not heard, because the Output replaces the whole bus. An effect after the Input is not heard either, because only silence comes out of the Input.
+- The upper Output can also sit on the master track. The export is bit-identical, and the stretch at the start in real time is a little longer (see "Export and real time" below).
+
+### Order of analysis
+
+1. Lower level first: capture and analyze groups A and B, then turn on their outputs.
+2. Then the upper level: play once so group H captures what the group buses send up, then analyze group H and turn on its output.
+
+Group buses take part in automatic pan by default, like any other track. Group H places each group as a whole, and the voices in the group move with it.
+
+To keep a group where the lower level put it, switch off "participate in auto pan" for that group bus on group H's Tracks page **before group H's first analysis**. If group H has already been analyzed, turning it off and analyzing again does not put the group back: it stays where it was, and you have to move it back with a manual touch-up.
+
+### The DAW's faders, mute, solo and bypass
+
+The Input on a group bus takes the audio before the fader, so:
+
+| Action | Export | Real time |
+|---|---|---|
+| Group bus fader or host pan | No effect | No effect |
+| Upper bus fader | Works | Works |
+| Mute a group bus | That group is gone | That group is gone |
+| Mute a vocal track | That track is gone | That track is gone |
+| Mute the upper bus | Everything is gone | Everything is gone |
+| Solo a group bus | Only that group | No effect |
+| Solo a vocal track | Only that track | No effect |
+| Solo the upper bus | Same as no solo | Same as no solo |
+| Bypass an Output at either level | That level's pan and level stop applying; the audio stays | Same |
+| Bypass the Input on a group bus | That group is gone | That group is gone |
+| Bypass the Input on a vocal track | That track is gone | That track is gone |
+
+> ⚠️ **Check for an active solo before you export.** You can't hear a solo in real time, but it applies to the export, so the file will contain only that group or track.
+
+### Export and real time
+
+- An export of a two-level project is bit-identical to a one-level project with the same positions, whether you start it from the REAPER window or the command line, change the block size, or render a time selection or several regions. With a different render sample rate, the difference stays below -132 dB.
+- When you render in real time from the REAPER window, the first 0.5–0.6 seconds of the file differ from the offline export, and everything after that is bit-identical. In a one-level project this stretch is about 0.4 seconds, and with the upper Output on the master track about 0.8 seconds. KI-21 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) explains it.
+- When a plugin that reports latency sits before an Input or before the upper Output, less than one block at the very start of the export is dry, in a one-level project too. See KI-24.
+- A send on a group bus only has sound for a short stretch at the start, and after that it doesn't receive the group's audio. See KI-23. To add an effect to a group, insert it between the group's Output and Input.
+
+### What wrong wiring does
+
+Most of these give no error, or a warning that doesn't point at the real cause (KI-25). If a group has no sound, check this table first:
+
+| Wiring | Export | Real time |
+|---|---|---|
+| On a group bus, the Input comes before the Output | That group is gone | That group is gone |
+| An extra Input of the same group on the group bus, after that group's Output | Same as correct wiring | That group is gone, the "ROUTE MISMATCH" warning appears |
+| On the upper bus, an Input of the same group after the Output | Same as correct wiring | The whole bus is silent |
+| A group bus goes to the main output instead of the upper bus | That group drops out briefly near the start (about 85 ms in this test), then plays normally | That group is gone |
+| The Inputs on two group buses use the same channel | The later one's group is gone (its own window shows the conflict) | Same |
+| The upper bus's Output is set to a lower group | Group B is gone | Same |
+| Two Outputs in the upper group | No effect; the second is a read-only observer | No effect |
+
+A loop like this doesn't howl, and doesn't produce loud bursts or invalid values.
+
 ## Pan curve editor
 
 The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and is used to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
@@ -279,7 +349,7 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 | **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough: the vocals are silent for about 5.5 s and then play as the raw, unbalanced image for as long as the host keeps the Output idle. Once the host calls the Output again, tracks that had already fallen back rejoin one at a time (about 0.2 s apart, by channel; a track not yet reached stays silent until its turn), tracks idle for less than about 5.5 s rejoin at once, and the first ~80 ms after recovery is a fade-out of the pre-stall mix. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **One vocal track is silent** | That track's Input is connected to the Output of **another group** (wrong group: that Output takes the voice and plays it on its own bus); or the track's "ON" switch is off on the Output's Tracks page; or the Output is connected to it but cannot read its data (see the "Route mismatch" row below). No channel selected or a channel conflict does not silence the track: the Input passes it through, and you hear the raw, unbalanced voice | Check that Input's group and channel; on the Output's Tracks page, check that the track is online and its "ON" switch is on |
 | **Installing Input left the whole track with no sound** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If that track really has no sound, collect the output of "Copy diagnostics" in Settings and open an issue |
-| **Muting or soloing a vocal track in the DAW, or moving its fader, does not change that voice in SCVB's output** | By design: Input sits in the last slot of the track's plugin chain (before the fader) and hands the track's audio to the Output there; the DAW's mute, solo and fader act after that point | Do it in SCVB: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page; to change its level, change it in SCVB. Details in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) (KI-8) |
+| **Muting or soloing a vocal track in the DAW, or moving its fader, does not change that voice in SCVB's output** | By design: Input sits in the last slot of the track's plugin chain (before the fader) and hands the track's audio to the Output there; the DAW's mute, solo and fader act after that point. REAPER differs: mute removes the track, and solo applies when exporting | Do it in SCVB: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page; to change its level, change it in SCVB. Details in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) (KI-8) |
 | **A "Route mismatch" banner appears, or a connected vocal track is silent and the banner is lit** | Besides a changed route: **the vocal track is not routed into the bus that hosts the Output**, or the host processes the bus before the vocal track (common with Aux-style positions that have no delay compensation). The Output is connected to that track's Input but keeps failing to read its data | Check that the track's output goes to the bus with the Output, then look at the Output's Tracks page. The banner stays lit until the Output reads that track's data again. How soon it lights depends on how far ahead the host processes the track: usually within about 0.5 s, later the further ahead the host runs (roughly twice the lead). It does not warn for a track whose host calls were simply paused (see next row) |
 | **A track shows "No data (suspended)" on the Output's Tracks page while the transport is running** | The host paused calling that Input (a silent passage or a region-less stretch; Cubase's "suspend VST3 processing when no signal" can do this). Suspended is not disconnected: the track stays online and its "Connected" state does not change | Normally nothing: when the host resumes calling it, the track is back in the same block. If it never leaves "suspended" for a track that should be playing, check whether the track is deactivated, frozen, or bypassed in the host. Details in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) (KI-11) |
 | **"Channel conflict" warning** | Two Inputs in the same group claim the same channel (also shown when a project opens and its channel is already taken) | Change the channel id on one of them, or move it to another group. Once the other Input releases the channel (track deleted or renumbered), the waiting one takes it over by itself within about a second |
@@ -325,7 +395,7 @@ The full list is in `docs/KNOWN_ISSUES.md`. The main points:
 - the Output reports no additional latency (by design, not a limitation);
 - up to 40 ms at the tail of an old run may be missed when runs switch; replaying restores it;
 - Input adjusts neither pan nor volume; both happen only on the Output (panning on the Input would double up with the Output's dual-pan);
-- **the DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
+- **the DAW's faders have no effect on SCVB's output, and mute and solo depend on the host**: in Cubase neither has any effect; in REAPER, mute removes the track, and solo has no effect in real time but applies when exporting. To take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page. Details in `docs/KNOWN_ISSUES.md` (KI-8);
 - **on the waveform page, making a selection, selecting a segment and editing segments (dragging, splitting or removing a boundary) need a mouse or touchpad for now**; a keyboard way to do them is planned before v1.0.0. Details in `docs/KNOWN_ISSUES.md` (KI-10);
 - **macOS is a beta**: Apple Silicon only, unsigned, no host verified yet (Logic: beta / not tested in Logic). Details in `docs/KNOWN_ISSUES.md` (KI-12 onward);
 - v2 directions: a precise-mode VAD (Silero), and more platforms.
