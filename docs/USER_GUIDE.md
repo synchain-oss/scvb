@@ -277,6 +277,7 @@ The Input on a group bus takes the audio before the fader, so:
 
 - An export of a two-level project is bit-identical to a one-level project with the same positions, whether you start it from the REAPER window or the command line, change the block size, or render a time selection or several regions. With a different render sample rate, the difference stays below -132 dB.
 - When you render in real time from the REAPER window, the first 0.5–0.6 seconds of the file differ from the offline export, and everything after that is bit-identical. In a one-level project this stretch is about 0.4 seconds, and with the upper Output on the master track about 0.8 seconds. KI-21 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) explains it.
+- An offline export from the REAPER window can occasionally come out completely silent: once in 68 tries in testing, with a one-level project. The cause hasn't been found yet; see KI-27. Look at the waveform after exporting, and export again if it's silent.
 - When a plugin that reports latency sits before an Input or before the upper Output, less than one block at the very start of the export is dry, in a one-level project too. See KI-24.
 - A send on a group bus only has sound for a short stretch at the start, and after that it doesn't receive the group's audio. See KI-23. To add an effect to a group, insert it between the group's Output and Input.
 
