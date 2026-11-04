@@ -9,8 +9,9 @@
 #include <type_traits>
 #include <utility>
 
-// [SL-271] 品红探针。开成 1 后 HostWebView::paint 铺品红而不是占位渐变 —— 真机上一眼
-// 能分出「白闪没了是因为我们这层 paint 真的在跑」还是「WebView2 这次恰好起得快」。
+// [SL-271] 品红探针。开成 1 后两层 paint 的占位(都经 WebViewHost::paintPlaceholder)铺品红
+// 而不是占位渐变 —— 真机上一眼能分出「白闪没了是因为我们这层 paint 真的在跑」还是
+// 「WebView2 这次恰好起得快」。
 // 默认关,只经 -DSCVB_PROBE_MAGENTA=1 临时开;交付构建里它必须是 0。
 #ifndef SCVB_PROBE_MAGENTA
 #define SCVB_PROBE_MAGENTA 0
@@ -266,10 +267,12 @@ public:
     //   [SL-402] 起与成品外壳渐变同形;SL-370 当时是单色中点)当占位;
     //   SL-370 当时是三条放行路(前端 __scvb__firstFrame / pageFinishedLoading / 3s 超时)
     //   谁先到算谁。判定收在 WebViewRevealGate.h(纯逻辑、有单测),**为什么是「挪走」而不是
-    //   setVisible(false) 或零尺寸、为什么必须等到导航开始**,只写在那份头注一处,别在这里复述。
+    //   setVisible(false) 或零尺寸、什么时候开始挪**,只写在那份头注一处,别在这里复述。
     //   ⇒ 目标序列:「白(宿主容器)→ 浅色占位 → 内容」。
     //   ⚠ 仍然只有真机能判:①-b 之前(控制器建好那一瞬)那几帧不在闸门覆盖范围内 ——
-    //   闸门要等 NavigationStarting 才动,而那之前 WebView2 已经建好控制器。这一段是否还看得见
+    //   闸门要等 NavigationStarting 才动,而那之前 WebView2 已经建好控制器。(⚠ 这个口子后来
+    //   在 Cubase 上看见了(同一套后端与闸门),已改成导航发出前就挡,见下面【导航发出前就挡住 + 圆角占位】;
+    //   这里保留当时的推理。)这一段是否还看得见
     //   白,20 次开关的真机验收说了算;真看得见,下一步只能往「控制器建好之前先零尺寸」走,
     //   而那条路会拆掉 SL-271 的重试泵(风险见下面【评估过、本卡没做的那条】)。
     //
@@ -310,10 +313,29 @@ public:
     //   (第五代只换占位**画什么**,不换占位**什么时候让位**)。
     // -------------------------------------------------------------------------
     //
+    // -------------------------------------------------------------------------
+    // 【导航发出前就挡住 + 圆角占位】Cubase 里实测(同一套 JUCE WebView2 后端与闸门):
+    //   开窗时「占位之后又闪一下白,然后才是内容」。
+    //   上面 [SL-370] 那条 ⚠ 留的口子就是它:JUCE 8.0.8 的 WebView2 后端在控制器建好的完成回调里
+    //   先按组件**此刻**的 bounds 摆好宿主窗口(put_Bounds),**再** Navigate;而闸门当时要等
+    //   NavigationStarting 回来才挪 ⇒ 中间那一段宿主窗口已经在屏上、却还没有内容。
+    //   修法:beginLoadAttempt 在 goToURL **之前**就把 WebView 挪出可视区(holdBeforeNavigation),
+    //   挡住期间闸门不起算 3s、不认首帧信号,导航开始时只落 3s 的起点。挪走之后 JUCE 不再画
+    //   本组件 ⇒ paint 尾巴上那个重试泵没人调了,改由 timerCallback 每个 tick 调
+    //   pumpControllerCreation()(画进 1×1 软件图的**同一个基类 paint**,不复刻 JUCE 私有实现;
+    //   上面 ⚠ 段否掉的「复刻一份泵」与「setVisible(false) 拆泵」两条都没走)。
+    //   只在 WebView2 上武装(PlatformWebView::revealGateEnabled()),系统 WebKit 照旧。
+    //   占位同批升成与成品外壳同形的**圆角**(外圈色 + 圆角渐变,PlatformWebView.h 的
+    //   paintShellPlaceholder),两处 C++ paint 收进 WebViewHost::paintPlaceholder 一个出口。
+    //   判定与理由的唯一出处 = WebViewRevealGate.h 头注【为什么从加载尝试一开头就挪,不等导航开始】,
+    //   这里不复述;「这一段还看不看得见白」仍然只有真机能判。
+    // -------------------------------------------------------------------------
+    //
     // 【SL-355 评估过、当时没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」。
     // ⚠ [SL-370] 这一段仍然成立、且**仍然是被否掉的那个方案** —— 本卡做的不是它:
-    //   本卡挪的是 **bounds**(可见性一字未动、`owner.isShowing()` 恒真),而且要等
-    //   **导航开始之后**才挪(那时控制器已建好,泵本来就是空调用)。下面这三条针对的是
+    //   本卡挪的是 **bounds**(可见性一字未动、`owner.isShowing()` 恒真),而且(SL-370 当时)要等
+    //   **导航开始之后**才挪(那时控制器已建好,泵本来就是空调用)。现在改成导航发出前就挪,
+    //   挡住期间泵由定时器代驱动,见上面【导航发出前就挡住 + 圆角占位】。下面这三条针对的是
     //   「隐藏 / 提前隐藏」,不要读成对本卡实现的描述;逐条对照见 WebViewRevealGate.h 头注。
     //   • 机制上不是死路:checkWindowAssociation 末尾那句
     //     `if (! hasBrowserBeenCreated()) createBrowser();` 不看 isShowing,
@@ -339,17 +361,24 @@ public:
         // 这一句**必须在前**:它画的白由下面整块盖掉,而泵要的是「每帧都被调到」。
         juce::WebBrowserComponent::paint(g);
 
-        // [SL-402] 盖上去的是**占位渐变**(不再是一块单色):与成品外壳 .sc-shell 的
-        // --page-gradient 同一组色标、同一角度的线性渐变(几何复刻在 shellBackdropGradient
-        // 的头注),开窗那几帧「占位 → 内容」不再有明暗跳变。坐标系 = 本组件的本地 bounds,
-        // 与 .sc-shell 铺满设计盒时的几何同形。
-#if SCVB_PROBE_MAGENTA
-        g.fillAll(juce::Colours::magenta); // 真机探针:见文件顶部宏注释,交付构建里不会走到
-#else
-        const auto area = getLocalBounds().toFloat();
-        g.setFillType(juce::FillType(scvb::webview::shellBackdropGradient(area)));
-        g.fillRect(area);
-#endif
+        // 盖上去的是与宿主组件**同一份**占位:外圈色 + 与成品外壳 .sc-shell 同几何的圆角渐变
+        // ([SL-402] 的色标与角度不变,几何与圆角见 PlatformWebView.h 的 paintShellPlaceholder)。
+        // 本组件与宿主组件同尺寸,坐标系同形。
+        // WebView2 上遮挡闸从加载尝试一开头就把本组件挪出可视区(见 WebViewRevealGate.h 头注
+        // 【为什么从加载尝试一开头就挪,不等导航开始】),这一层在开窗路上不再上屏;它仍管着闸门不武装的平台
+        // (系统 WebKit)与将来闸门被关掉的情形。
+        owner_.paintPlaceholder(g, getLocalBounds().toFloat());
+    }
+
+    // 挡住期间(本组件在可视区之外,JUCE 不再画它)代驱动上面那一句基类 paint:画进一张
+    // 1×1 的临时小图,屏上什么都不变,基类尾部那句
+    // `if (! hasBrowserBeenCreated()) checkWindowAssociation();` 照样每个定时 tick 被调到一次。
+    // 调的是**同一个基类函数**,不是复刻件 —— 不复刻的理由见上面 paint 头注的 ⚠ 段。
+    // 小图走软件渲染,免得每个 tick 建一次 GPU 绘制上下文;只建一次,挡住期间每个 tick 复用。
+    void pumpControllerCreation()
+    {
+        juce::Graphics g(pumpScratch_);
+        juce::WebBrowserComponent::paint(g);
     }
 
     bool pageAboutToLoad(const juce::String& url) override
@@ -416,6 +445,8 @@ public:
 
 private:
     WebViewHost& owner_;
+    // pumpControllerCreation 画进去的 1×1 软件图:只建一次,挡住期间每个 tick 复用。
+    juce::Image pumpScratch_{juce::Image::RGB, 1, 1, false, juce::SoftwareImageType()};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostWebView)
 };
@@ -426,7 +457,8 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
 {
     // 声明本组件完全不透明:JUCE 因此不会去画它下面的东西(宿主给的编辑器容器)。
     // [SL-271] 更正 SL-253 时的说法 —— 这一句挡不住开窗白闪,白闪那一段本 paint 根本不执行;
-    // 见 HostWebView::paint 的注释。它管的是兜底面板路径下这块底。
+    // 见 HostWebView::paint 的注释。本组件的 paint 每次都铺满(外圈色 + 圆角占位),遮挡期与
+    // 兜底面板路径下露出来的都是它,声明不透明是成立的。
     setOpaque(true);
 
     // UDF 必须在装 Options 之前定好,并当场探一次可写性:WebView2 自己碰这个目录时的失败被
@@ -459,7 +491,7 @@ void WebViewHost::beginLoadAttempt()
     navDetail_ = {};
     bootError_ = {};
     navBudgetApplied_ = false;
-    revealGate_.beginLoadAttempt(); // [SL-370] 重新武装:下一次导航开始时再挪一次
+    revealGate_.beginLoadAttempt(); // [SL-370] 重新武装;WebView2 上下面 goToURL 之前就再挪一次
     revealLogged_ = false;
     startMs_ = juce::Time::getMillisecondCounter(); // 先落起点:兜底面板的「已等待」也从这里算
     runtime_ = PlatformWebView::runtimeInfo();
@@ -488,6 +520,16 @@ void WebViewHost::beginLoadAttempt()
             PlatformWebView::userDataFolderDisplay(userDataFolder_));
 
     logBackgroundColourSupport();
+
+    // 发起导航**之前**先挪出可视区:控制器建好时 JUCE 按组件此刻的 bounds 摆 WebView2 的宿主
+    // 窗口、然后才发导航,等导航开始再挪就晚了这一段(理由与代价见 WebViewRevealGate.h 头注
+    // 【为什么从加载尝试一开头就挪,不等导航开始】)。挡住期间控制器创建的重试泵由 timerCallback 代驱动。
+    // 只在 WebView2 上:系统 WebKit 上闸门不武装,理由见 onNavigationStarted。
+    if (PlatformWebView::revealGateEnabled())
+    {
+        revealGate_.holdBeforeNavigation();
+        applyRevealGate();
+    }
 
     // 必须在任何 emit 之前完成首个 goToURL(前端脚本随后加载并注册监听)。
     webView_->setVisible(true);
@@ -520,6 +562,10 @@ juce::String WebViewHost::entryUrl() const
 WebViewHost::~WebViewHost()
 {
     stopTimer();
+    // 关窗诊断行:开到关用了多久、关的时候停在哪一档(行的拼装与各档含义见 WebViewRevealGate.h
+    // 的 windowClosedLine)。
+    logDiag(windowClosedLine(juce::Time::getMillisecondCounter(), startMs_, revealGate_,
+                             PlatformWebView::revealGateEnabled(), fallback_ != nullptr));
     releaseReadyBridge(); // 编辑器关闭 -> 本实例不再为「热启动」判定背书
 }
 
@@ -545,18 +591,34 @@ void WebViewHost::paint(juce::Graphics& g)
     // 剔掉),控制器建好之前那一段由 HostWebView::paint 接住。本函数真正会画的有两条路:
     //   • 兜底面板路径 —— 那时 webView_ 被 setVisible(false);
     //   • [SL-370] 遮挡期 —— webView_ 被挪到可视区之外(见 WebViewRevealGate.h),
-    //     整个窗口这时露的就是这一层。**它就是用户在「内容出来之前」看到的那块占位底**,
+    //     整个窗口这时露的就是这一层。**它就是用户在「内容出来之前」看到的那块占位**;
+    //     WebView2 上遮挡期从加载尝试一开头(goToURL 之前)就开始。
     //     [SL-402] 起画的是与成品外壳渐变(.sc-shell 的 --page-gradient)同一组色标的
-    //     占位渐变(SL-370 当时是单色中点),所以从占位切到内容不跳阶、明暗走向也一致。
-    const auto area = getLocalBounds().toFloat();
-    g.setFillType(juce::FillType(scvb::webview::shellBackdropGradient(area)));
+    //     占位渐变(SL-370 当时是单色中点),现在再加上外壳的圆角与外圈色(见 paintPlaceholder),
+    //     所以从占位切到内容轮廓、明暗都不跳。
+    paintPlaceholder(g, getLocalBounds().toFloat());
+}
+
+// 两层 paint(本组件与 HostWebView)共用的占位:先铺外圈色,再按页面外壳的几何画圆角渐变
+// (色标、角度与外壳同一组,圆角按页面同一条缩放公式)。几何与色标在 PlatformWebView.h,
+// 与样式表的对拍在 smoke-embedded-resources 的 ⑥d。
+// 设计盒取 100% 档的窗口尺寸:页面按「窗口 / 设计盒」缩放外壳,这里用同一个比值。
+void WebViewHost::paintPlaceholder(juce::Graphics& g, juce::Rectangle<float> area) const
+{
+#if SCVB_PROBE_MAGENTA
+    // 真机探针:见文件顶部宏注释,交付构建里不会走到。铺的就是传进来的这块,不用 fillAll。
+    g.setColour(juce::Colours::magenta);
     g.fillRect(area);
+#else
+    const auto design = bridge::designBoxWindowSize(config_.role, 1.0f);
+    paintShellPlaceholder(g, area, static_cast<float>(design.width), static_cast<float>(design.height));
+#endif
 }
 
 void WebViewHost::resized()
 {
     // [SL-370] WebView 的落点由遮挡闸决定:遮挡期间整块挪到可视区之外(尺寸不变),
-    // 那块地方由上面的 paint 铺占位渐变([SL-402] 起;SL-370 当时是单色)当占位。
+    // 那块地方由上面的 paint 铺占位(外圈色 + 圆角渐变;[SL-402] 起渐变,SL-370 当时是单色)。
     // 几何与理由见 WebViewRevealGate.h。
     // [B 线 M07] 系统 WebKit(mac)上闸门从不武装(见 onNavigationStarted),恒走原位分支。
     if (webView_ != nullptr)
@@ -593,9 +655,11 @@ void WebViewHost::logBackgroundColourSupport() const
 //     `firstFrame` = 正常路;`timeout` = 首帧信号没来、3s 兜底;`fallback` = 遮挡期内被兜底
 //     面板顶掉(RevealGate::onFallbackShown)。**`fallback` 不是「放行」**,是被面板顶掉;
 //     真机数表时把它单独归一类,别塞进放行路里。
-//     ⚠ `fallback` **实际只由前端 boot 失败那一条路打得出来**(它能在 3s 之内到)——
-//     看门狗那条路上预算恒大于 kRevealFallbackMs,闸门早已自己记了 `timeout`;
-//     运行时缺失那条路上闸门从未 parked。逐条见 showFallback() 处的注释。
+//     ⚠ `fallback` **实际只由两条路打得出来**:前端 boot 失败(它能在 3s 之内到),以及
+//     导航一次都没开始就到了看门狗预算(`envNotStarted`:WebView2 上闸门在 goToURL 之前
+//     就挡着,导航开始之前不起算 3s)。导航开始之后的看门狗预算恒大于 kRevealFallbackMs,
+//     闸门早已自己记了 `timeout`;运行时缺失那条路上闸门从未 parked。逐条见 showFallback()
+//     处的注释。
 //     所以**表里没有 `fallback` 是正常的**,别据此去查接线。
 //   · [SL-376] `timeout` 这条**必须当异常读**:正常开窗一次都不该出现它。所以它自带后缀
 //     `no first-frame signal before the 3s deadline (navFinished seen|not seen)` ——
@@ -730,13 +794,16 @@ void WebViewHost::showFallback(FallbackReason reason)
     // 而 noteRevealed() 的头注仍把 fallback 列成读表的人会看到的三种 reason 之一。
     // 这里也本来就是更自然的落点:面板一切,就该当场记下闸门是被谁顶掉的。
     //
-    // ⚠ **但它真正打得出来的只有一条路**(#247 复审第 2 轮:三个调用点各走一遍状态):
-    //   · missing / tooOld —— 在 beginLoadAttempt 里,还没导航 ⇒ 闸门从未 parked,
-    //     reveal() 因 `!parked_` 提前返回、reason 留空 ⇒ **不打**(也不该打);
-    //   · LoadTimeout —— 看门狗预算(热 5s / 冷 15s,导航后还按 kAfterNavBudgetMs=5s 顺延)
-    //     **恒大于** 闸门的 kRevealFallbackMs=3s,所以闸门早就自己按 timeout 放行并写过行了
-    //     ⇒ revealLogged_ 为真,**不打**(那次开窗的表里是一行 timeout,信息没丢);
-    //   · BootError —— 前端 boot 挂了,可以在 3s 之内到 ⇒ **只有这一条打得出 fallback**。
+    // ⚠ **但它真正打得出来的只有两条路**(#247 复审第 2 轮:三个调用点各走一遍状态;
+    //   导航发出前就挡住之后多了第二条):
+    //   · missing / tooOld —— 在 beginLoadAttempt 里,早于 holdBeforeNavigation ⇒ 闸门从未
+    //     parked,reveal() 因 `!parked_` 提前返回、reason 留空 ⇒ **不打**(也不该打);
+    //   · LoadTimeout 且导航**已经开始** —— 看门狗预算(热 5s / 冷 15s,导航后还按
+    //     kAfterNavBudgetMs=5s 顺延)**恒大于** 闸门的 kRevealFallbackMs=3s,所以闸门早就自己按
+    //     timeout 放行并写过行了 ⇒ revealLogged_ 为真,**不打**(那次开窗的表里是一行 timeout);
+    //   · LoadTimeout 且导航**一次都没开始**(envNotStarted)—— WebView2 上闸门从 goToURL 之前
+    //     一直挡着、挡住期间不起算 3s ⇒ **打 fallback**;
+    //   · BootError —— 前端 boot 挂了,可以在 3s 之内到 ⇒ **打 fallback**。
     //   读表的人据此就不会因为「看不到 fallback」去查接线。
     revealGate_.onFallbackShown();
     noteRevealed();
@@ -839,8 +906,11 @@ void WebViewHost::onNavigationStarted(const juce::String& url)
             deadlineMs_ = extended;
     }
 
-    // [SL-370] 导航开始 = WebView2 控制器已建好 ⇒ SL-271 那个挂在 paint 上的重试泵已是空调用,
-    // 此刻才可以把 WebView 挪出可视区(挪走之后 JUCE 就不再画它,泵也就不再被驱动)。
+    // [SL-370] 导航开始 = WebView2 控制器已建好 ⇒ SL-271 那个重试泵已是空调用。
+    // WebView2 上 WebView 早在加载尝试开头(beginLoadAttempt,goToURL 之前)就挪出了可视区,
+    // 这里不再挪,只把闸门 3s 兜底的起点落在此刻;timerCallback 代驱动的那个泵也随之停下
+    // (holdingBeforeNavigation() 翻假)。下面那句 applyRevealGate() 在这条路上是原位重设,
+    // 留着是为了「闸门状态一变就落地」只有一个出口。
     // [B 线 M07] 挪窗只在 WebView2 上启用(PlatformWebView::revealGateEnabled(),与 Bridge 的
     // WebViewRevealGate.h【SL-386 与 SCVB 的口径差】同口径):系统 WebKit 上不武装闸门 ⇒ parked() 恒 false,
     // resized() 恒走原位、timerCallback 的放行段与 noteRevealed() 都是空调用。不这样做的话,WKWebView 上
@@ -1036,6 +1106,10 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 void WebViewHost::handleRequestInitialState(const juce::Array<juce::var>&, WBC::NativeFunctionCompletion complete)
 {
     bridgeReady_ = true; // 前端确认就绪 -> 此后 timer 才允许 emit(机制 8)
+    // 看门狗从这里起就不管了;闸门如果还挡在导航之前(导航开始事件没来),按导航开始补记,
+    // 3s 兜底照常生效 —— 否则闸门会永远挡着(理由见 RevealGate::onBridgeReady)。
+    if (revealGate_.onBridgeReady(juce::Time::getMillisecondCounter()))
+        logDiag("bridge ready while still held before navigation; reveal deadline starts now");
     // 本实例的桥活着 -> 共享的 WebView2 进程组必在跑 -> 其它编辑器可按热预算起看门狗。
     // requestInitialState 可能被同一页面多次调用(页面重载后要重来一次),故用标志防重复计数。
     if (!countedAsReady_)
@@ -1091,8 +1165,13 @@ void WebViewHost::timerCallback()
     //     那会是一块彻底不动的粉色板,比白闪坏得多。
     // 正因为**放行现在只可能发生在这个 tick 上**,这个 if 是唯一会把闸门从 parked 翻过来的
     // 地方(fallback 那条除外);别把它读成「只是超时兜底」。
+    // 导航开始之前那一段(holdingBeforeNavigation)闸门不起算 3s,这里只代驱动控制器创建的
+    // 重试泵:WebView 在可视区之外,JUCE 不再画它,泵要靠这一句才有人调(理由见
+    // WebViewRevealGate.h 头注【为什么从加载尝试一开头就挪,不等导航开始】)。
     if (revealGate_.parked())
     {
+        if (revealGate_.holdingBeforeNavigation())
+            webView_->pumpControllerCreation();
         revealGate_.onTick(juce::Time::getMillisecondCounter());
         if (!revealGate_.parked())
         {
