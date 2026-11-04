@@ -17,13 +17,13 @@ REAPER 用 7.82,上面的结果都是这个版本测的。
 ```powershell
 $harness = "<harness 的 clone>"
 $n = "<本仓>/tests/reaper/nested"
-$args = @{ CfgDir = "<私有配置目录>"; PluginDir = "<放 .vst3 的目录>"; ResultDir = "<结果目录>" }
+$common = @{ CfgDir = "<私有配置目录>"; PluginDir = "<放 .vst3 的目录>"; ResultDir = "<结果目录>" }
 
 # 先跑 setup:设好每个实例、做两层分析,把工程存进 states/(不进仓库)
-pwsh $harness/run.ps1 -Config $n/setup.json @args -NoNegative -KeepWork
+pwsh $harness/run.ps1 -Config $n/setup.json @common -NoNegative -KeepWork
 
 # 再跑矩阵
-pwsh $harness/run.ps1 -Config $n/nested.json @args -NoNegative -KeepWork
+pwsh $harness/run.ps1 -Config $n/nested.json @common -NoNegative -KeepWork
 ```
 
 - 全程约 50 分钟。这段时间不要在本机编译或跑别的重活,实时渲染的结果对时序敏感。
