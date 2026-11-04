@@ -155,7 +155,9 @@ inline juce::ColourGradient shellBackdropGradient(juce::Rectangle<float> area)
 // 占位切到内容时四个角不跳。两个值与 tokens.css 同值(--r-shell、--page-backdrop),C++ 侧以这里为准,
 // smoke-embedded-resources 的 ⑥d 逐项对拍。外圈色与占位色标是两个角色,取值不同(见文件头 [SL-377])。
 // 半径是设计盒坐标(缩放前的 CSS px),画的时候乘外壳缩放,见 paintShellPlaceholder。
-// 外壳那条 1px 白边(--shell-border)不画:占位只要外圈色加圆角渐变。
+// 外壳那条 1px 白边(--shell-border)不画:占位只要外圈色加圆角渐变。外壳的 box-shadow
+// (--shell-shadow)也不画,页面四个角上的外圈色还叠着它的外投影,占位切到内容时四角会略暗一点。
+// 暗色外圈上叠暗色投影,差别很小,这里不为它多画一层。
 inline constexpr float kShellCornerRadiusPx = 20.0f;
 inline constexpr juce::uint32 kShellRimRgb = 0x191820;
 

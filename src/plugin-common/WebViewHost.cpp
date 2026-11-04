@@ -922,7 +922,8 @@ void WebViewHost::onNavigationStarted(const juce::String& url)
         applyRevealGate();
     }
 
-    logDiag("navigation started: " + url);
+    logDiag("navigation started: " + url + " (after " +
+            juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms)");
 }
 
 void WebViewHost::onNavigationFinished(const juce::String& url)

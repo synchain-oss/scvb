@@ -32,6 +32,7 @@
 //   ⑥d 开窗占位与成品外壳**同形**(圆角):C++ 的外壳圆角半径 kShellCornerRadiusPx 与外圈色
 //      kShellRimRgb == tokens.css 的 --r-shell、--page-backdrop;而且这两个 token 真是外壳与外圈
 //      在用的那两个(base.css 的 .sc-shell 圆角、独立 body 规则的底色)。
+//   ⑥e JUCE 版本绊线还在、版本号 == .juce-version;`navigation started` 诊断行带毫秒数。
 //   ⑦ [SL-370 / SL-429 / SL-437] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
 //      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
 //      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
@@ -783,6 +784,55 @@ function cssBlock(text, selector) {
 }
 
 /**
+ * C++ 源码去掉注释之后的文本:注释里提到的同名写法不能冒充真代码。
+ */
+function cppCode(rel) {
+    return readFileSync(join(ROOT, rel), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/[^\n]*/g, "");
+}
+
+/**
+ * ⑥e JUCE 版本绊线。
+ *
+ * 导航发出前就挡住押在 JUCE WebView2 后端的私有实现上(理由见 PlatformWebView.cpp 那条 static_assert
+ * 的注释),升级 JUCE 时必须先重读后端。所以:
+ *   (a) static_assert 还在 —— 删掉它,这一格红;
+ *   (b) 它的版本号 == .juce-version —— 只改任一边,这一格红。
+ *   (c) `navigation started` 诊断行带从 startMs_ 算起的毫秒数,挡住那一段有多长才读得出来。
+ * 只跑一次(与角色无关)。
+ */
+function checkJuceTripwire() {
+    console.log("\n--- JUCE 版本绊线(⑥e)---");
+
+    const wire =
+        /static_assert\s*\(\s*JUCE_MAJOR_VERSION\s*==\s*(\d+)\s*&&\s*JUCE_MINOR_VERSION\s*==\s*(\d+)\s*&&\s*JUCE_BUILDNUMBER\s*==\s*(\d+)/.exec(
+            cppCode("src/plugin-common/PlatformWebView.cpp"),
+        );
+    const pinned = readFileSync(join(ROOT, ".juce-version"), "utf8").trim();
+    if (!wire)
+        bad(
+            "PlatformWebView.cpp 里找不到 JUCE 版本的 static_assert —— 导航前挡住依赖 WebView2 后端的私有实现,升级时没人提醒",
+        );
+    else if (`${wire[1]}.${wire[2]}.${wire[3]}` !== pinned)
+        bad(
+            `JUCE 绊线写的是 ${wire[1]}.${wire[2]}.${wire[3]},.juce-version 是 ${pinned} —— 先重读 WebView2 后端,核对后两边一起改`,
+        );
+
+    const nav = /logDiag\(\s*"navigation started: "[^;]*;/.exec(
+        cppCode("src/plugin-common/WebViewHost.cpp"),
+    );
+    if (!nav)
+        bad("WebViewHost.cpp 里找不到 `navigation started` 诊断行");
+    else if (!/\(after /.test(nav[0]) || !/startMs_/.test(nav[0]))
+        bad(
+            "`navigation started` 诊断行要带从 startMs_ 算起的 `(after N ms)` —— 不带就读不出挡住那一段有多长",
+        );
+
+    if (wire && nav) console.log(`  绊线版本 ${pinned},诊断行带毫秒数`);
+}
+
+/**
  * ⑥d 开窗占位与成品外壳同形。
  *
  * 占位(PlatformWebView.h 的 paintShellPlaceholder)画成与 .sc-shell 同几何的圆角:圆角之外铺外圈色,
@@ -1241,6 +1291,7 @@ checkRole("monitor");
 checkTokensBackdrop(); // ⑥b 与角色无关,只跑一次
 checkBackdropMatchesShell(); // ⑥c 同上
 checkShellGeometry(); // ⑥d 同上
+checkJuceTripwire(); // ⑥e 同上
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

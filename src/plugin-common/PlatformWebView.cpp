@@ -11,6 +11,19 @@ extern "C" unsigned long __stdcall GetCurrentProcessId();
 #include <unistd.h> // getpid
 #endif
 
+#if JUCE_WINDOWS
+// JUCE 升级绊线。导航发出前就挡住(WebViewRevealGate.h 的 holdBeforeNavigation)押在 JUCE WebView2
+// 后端的两处私有实现上,都不是公开契约:
+//   ① 控制器建好的回调里,先按组件此刻的 bounds 摆好宿主窗口,再发导航;
+//   ② 基类 paint 尾部的 `if (! hasBrowserBeenCreated()) checkWindowAssociation();`。
+//      WebView 被挪出可视区后,HostWebView::pumpControllerCreation 靠它接着建控制器。
+// 这两处一变,后果可能是每次开窗都等满看门狗、掉进兜底面板,而编译和测试照样是绿的。所以版本一变
+// 就让 Windows 编译红:先重读 juce_WebBrowserComponent_windows.cpp,核对这两处还成立,再改这里。
+// 这里的版本号与 .juce-version 由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥e 对拍。
+static_assert(JUCE_MAJOR_VERSION == 8 && JUCE_MINOR_VERSION == 0 && JUCE_BUILDNUMBER == 8,
+              "JUCE 版本变了:先重读 WebView2 后端,核对导航前挡住依赖的两处私有实现,再改这里");
+#endif
+
 namespace scvb::webview
 {
 
