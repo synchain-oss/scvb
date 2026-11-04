@@ -151,11 +151,12 @@ namespace scvb::webview
 //   下面的 kRevealFallbackMs 从 onNavigationStarted(parkedAtMs_)起算,页内那 2500 ms 从
 //   **那段内联脚本执行**起算,中间隔着「导航开始 → 文档送达 → <head> 解析」。真实余量是
 //   `500ms − 那一段`;那一段够长时保险反而跑输,放行原因照样掉成 timeout。而且**这件事
-//   从抓取包里看不出来**(`navigation started` 那行不带时间戳)⇒ SL-430,与 SL-426
+//   当时从抓取包里看不出来**(`navigation started` 那行不带时间戳)⇒ SL-430,与 SL-426
 //   (日志里读不出插件版本号)同族。**SL-430 的前半已随本卡落地**:首帧信号的载荷现在带
 //   `paintDeltaMs`,`first-frame signal` 那行尾部会打 `(signal-firstPaint +N ms)` 或
 //   `(no paint record)`(见 WebViewHost::handleFirstFrame)⇒ 用户机上的余量**可以直接读了**,
-//   不用再像上面那张表一样从 A/B 差值反推;`navigation started` 补时间戳那**后半仍封存**。
+//   不用再像上面那张表一样从 A/B 差值反推。后半也落地了:`navigation started` 那行带 `(after N ms)`,
+//   与 `first-frame signal` 那行相减,就是「导航开始 → 信号发出」,是上面那一段的上界。
 //   ⚠ 那条保险要成立,**三件事缺一不可**(本卡为它连栽三轮,每一轮都是上一轮补丁的副作用):
 //     · 回调**直接发信号、不绕两层 rAF** —— 保险存在的唯一理由就是「paint 记录不来」,
 //       而那一档最可能的成因正是上面点名的 BeginFrame 停摆,停了 rAF 也不回调;
