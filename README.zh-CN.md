@@ -69,7 +69,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
+| REAPER | 7 | **Tier 2(部分验证)** | 成品插件在 REAPER 7.82 上实测过路由(实时/离线)、存工程重开,窗口开着时写入自动化通过;只有这一轮,没有长期真机使用;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
 | Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通 |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 | LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 尚未真机测试;首个 macOS beta 发布前计划做一次真机验收。设计上预期(未实测):自动化用 Latch,LUNA 没有 Write;Output 不能放在 Folder 轨上;Input 不能放进 Record FX 槽;用 Apollo 时请切到 Core Audio 模式或关闭 ARM;用 Power 硬停用 Output 会无声约 5.5 秒(KI-6) |

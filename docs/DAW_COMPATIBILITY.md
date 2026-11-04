@@ -1,5 +1,5 @@
 > 状态: 演进中
-> 最后更新: 2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
+> 最后更新: 2026-11-03(REAPER 成品实测,两层 SCVB);2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
 > 真源: 本文件
 
 # SCVB DAW 兼容矩阵与支持等级表
@@ -8,17 +8,17 @@
 
 > **口径说明(务必先读)**:
 > - 证据分两层。**spike 层**:**S1 路由可靠性 spike(T02)** 2026-08-16/17 的真机实测(Cubase 14 / 15,REAPER 7 兜底;证据见 [S1-daw-checklist.md](spikes/S1-daw-checklist.md) 完成列与 [S1-routing.md](spikes/S1-routing.md) §6 收口报告)。**成品层**:**T37 成品测试包**(Input / Output / Monitor 成品插件)在 **Cubase 15 Pro** 上的多轮真机实测,2026-08 下旬的 v5.6 测试包起,到 2026-09-28 的 v5.6.19 测试包(测试包编号是内部轮次号,不是发布版本号)。
-> - **自动化 Write 录制**列:**S2 自动化写入 spike(T03)** 的逐宿主落点回填**没有做**([S2-automation.md](spikes/S2-automation.md) §6、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格仍空);**Cubase 这一格的证据来自成品测试包**(见矩阵脚注 7),其余宿主仍为「未验证」,并标注已知风险(RD-04/RD-02)。
-> - **成品层只覆盖 Cubase 15。** REAPER 只有 spike 层证据;Ableton Live 与 Studio One 两层都没有(U27)。spike 结论是架构级验证,不替代成品复测。
+> - **自动化 Write 录制**列:**S2 自动化写入 spike(T03)** 的逐宿主落点回填**没有做**([S2-automation.md](spikes/S2-automation.md) §6、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格仍空);**Cubase 这一格的证据来自成品测试包**(见矩阵脚注 7),**REAPER 这一格来自成品矩阵**(见矩阵脚注 9),其余宿主仍为「未验证」,并标注已知风险(RD-04/RD-02)。
+> - **成品层只覆盖 Cubase 15 和 REAPER 7.82。** REAPER 那一轮是 2026-11-03 的自动化矩阵(见矩阵脚注 9);Ableton Live 与 Studio One 两层都没有(U27)。spike 结论是架构级验证,不替代成品复测。
 > - **macOS(Apple Silicon,beta)的两个宿主 LUNA、Logic Pro 都还没有上机**,下面 §2.5、§2.6 里每一条宿主说法都是「设计上预期 / 未实测」,不是实测结论;验收之后由统筹逐条回填。
-> - 状态图例:✅ 已验证 / ⚠️ 未验证(原因见单元格)/ ➖ 不适用。
+> - 状态图例:✅ 已验证 / ⚠️ 未验证或部分验证(原因见单元格)/ ➖ 不适用。
 
 ## 1. 总矩阵
 
 | DAW | 版本 | 路由(实时) | 路由(离线渲染) | 自动化 Write 录制 | state 往返 | 验证日期/SCVB 版本 |
 |---|---|---|---|---|---|---|
 | **Cubase(主测)** | 14 / 15 | ✅ 已验证 | ✅ 已验证 | ✅ 已验证(Cubase 15 成品;见脚注 7) | ✅ 已验证 | 2026-08-16/17(S1 spike v8/v10);2026-08 下旬 – 2026-09-28(Cubase 15 Pro 成品测试包 v5.6 – v5.6.19) |
-| **REAPER** | 7 | ✅ 已验证(anticipative 三档 + dedicated process) | ✅ 已验证 | ⚠️ 未验证(S2 待上机;RD-04 已知风险) | ⚠️ 未验证(S1 未单跑 state 往返) | 2026-08-16(S1 spike v8) |
+| **REAPER** | 7 | ✅ 已验证(anticipative 三档 + dedicated process;成品见脚注 9) | ✅ 已验证(成品见脚注 9) | ⚠️ 部分验证(成品插件窗口开着时写入通过,见脚注 9;关 GUI 的 RD-04 未复验) | ✅ 已验证(成品见脚注 9) | 2026-08-16(S1 spike v8);2026-11-03(REAPER 7.82,0.11.0 候选构建) |
 | **Ableton Live** | 12 | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(U27:S1 跳过) | ⚠️ 未验证(S2 可选未做;RD-02 已知风险) | ⚠️ 未验证(未上机) | — |
 | **Studio One** | 6 | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(U27:仅作可选对照,未做) | ⚠️ 未验证(S2 可选未做) | ⚠️ 未验证(未上机) | — |
 | **LUNA**(macOS,Apple Silicon) | — | ⚠️ 未验证(真机验收待做) | ⚠️ 未验证(同左) | ⚠️ 未验证(LUNA 没有 Write,见 §2.5) | ⚠️ 未验证(未上机) | — |
@@ -28,12 +28,13 @@
 
 1. **Cubase「路由(实时/离线)」** :S1 的 C-3(Real-Time / Export Mixdown 双 null)、C-4(ASIO-Guard)、C-5(实时全曲)、C-6(loop×100)、C-7(定位×20)、C-8(buffer 四档)、C-9(采样率切换)、C-10(solo/mute)全部 ✅;上游高延迟插件(PDC)下 rt/offline 零错位(offset 0)。
 2. **Cubase「state 往返」** :C-12(强杀宿主重开工程自动重连)+ G-3(存工程关 DAW 重开时间线锚定恒等)实测通过;成品层:v5.6.19 测试包 A1–A7(各项设置存工程、完全关掉 Cubase 重开后保留)通过。
-3. **REAPER「路由(实时)」** :R-2/R-3/R-4(anticipative FX 开/最大/关)+ R-12(插件 Run as dedicated process)实测通过;基础实时播放并入 Cubase C-5 口径,未在 REAPER 单独重跑。
-4. **REAPER「路由(离线渲染)」** :R-5(File→Render 1× 与 Full-speed Offline 各一次,与 ref_A null)实测通过。
+3. **REAPER「路由(实时)」** :R-2/R-3/R-4(anticipative FX 开/最大/关)+ R-12(插件 Run as dedicated process)实测通过;基础实时播放当时并入 Cubase C-5 口径,未在 REAPER 单独重跑;成品层见脚注 9。
+4. **REAPER「路由(离线渲染)」** :R-5(File→Render 1× 与 Full-speed Offline 各一次,与 ref_A null)实测通过;成品层见脚注 9。
 5. **版本口径** :Studio One 6 为 U9(用户 2026-08-11 决定)的权威版本;S1/S2 的 spike 清单曾把 Studio One 标为「7(可选对照)」且未执行,以 U9 的「6」为准。
 6. **Live / Studio One 的「未验证」原因** :U27(用户 2026-08-14 决定)S1 跳过 Live、Studio One 仅作可选对照;此后的成品测试包也只在 Cubase 15 上跑。Live 的设备停用行为(L-5)是按设计推出来的,没有在 Live 上实测过。
 7. **Cubase「自动化 Write 录制」** :成品层证据,Cubase 15 Pro。① 2026-08 下旬 v5.6 测试包的完整功能测试清单第 32–34 条通过(宿主自动化 Read 档优先;开 Write → 播放 → 车道真被写入、冻结维度写成平直线;打印密度/平滑合理、关掉 write 后手绘车道可覆盖),此后各版全量清单把这三条归入「已过存档」;② v5.6.19 测试包 B51(写自动化中停用 Output、再启用后照常写自动化)通过。**RD-01**(Cubase 录不进插件自发的参数变化)在 Cubase 15 上**没有复现**;Cubase 14 没有用成品复测过。
 8. **Cubase「路由(离线渲染)」成品层** :v5.6.19 测试包 B53,同一工程的实时导出与离线导出逐样本对齐(互相关最小在 lag 0),两份都没有断音;差异只在开头与段切换处的过渡段。
+9. **REAPER 成品层** :2026-11-03,REAPER 7.82(Windows),0.11.0 候选构建,配置与生成器在 `tests/reaper/nested/`,148 行全部通过(3 行第一次被授权提醒等挡住,重跑通过)。覆盖:一层和两层工程的离线、1×、实时渲染;块大小 32–2048,44.1 / 48 kHz;anticipative FX 关;从窗口和命令行导出;选区和 region;推子、静音、独奏、旁路;接错的后果;报告延迟的插件。**state 往返**:三次存盘重开,FX state 不变。**自动化写入**:插件窗口开着,Write 模式跑一遍,三个 Output 都写进车道;写过和没写过的工程导出逐位相同。没测:关 GUI 时写不写(RD-04),三层以上。结果见 §2.2「两层 SCVB」。
 
 ## 2. 每 DAW 一节
 
@@ -110,13 +111,46 @@ REAPER 的 FX chain 无 pre/post 分隔线概念;「最后一格」= FX chain �
 
 File → Render 正确;S1 R-5 已验 1× 与 **Full-speed Offline** 两档 null 通过。单轨 Freeze / Render in Place 会得到静音文件。
 
+成品插件实测(REAPER 7.82,脚注 9):
+
+- **离线导出**(Full-speed Offline 和 1×):主输出从第一个样本起就和不插插件的混音一致(差别在 -150 dB),两次导出逐位相同,重开工程也相同。44.1 / 48 kHz、块大小 64 / 1024 都一样。
+- **从窗口实时渲染**:开头约 0.4 秒和离线不同,之后逐位相同(KI-21)。
+- **Input 轨的 stem、接在 Input 之后的发送**:开头有 1–3 块原声,之后是静音,两次导出的这几块可能不同(KI-23)。
+- **报告延迟的插件**排在 Input 或 Output 之前时,离线导出开头不足一块是原声(KI-24)。
+- **选中一条人声轨用 Selected tracks via master 导出**,得到的是整条总线,不是这一条。没有 SCVB 的工程同样操作只有这一条。
+
 #### 已知坑
 
 - **RD-04 · 关 GUI 不写自动化**:见上文「录自动化」的宿主端解法与界面提示。出处:masterPlan 11-risks RD-04、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) R-1..R-4。
 - **anticipative FX**:S1 R-2/R-3/R-4 三档(开/最大/关)均 gapCount 0;render-ahead 实测上限 5000ms 下环有余量。工程里有的轨被预先处理、有的轨(例如开着录音预备或输入监听的)按实时处理时,被预先处理的轨可能出现:从静音段恢复时句首少约 21 毫秒、「路由失准」亮得更晚(提前量越大越晚,约为提前量的 2 倍);循环 / 回跳之后不再整圈无声。这些数字来自模拟宿主,REAPER 上没有逐项实测;见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) KI-11。
 - **播放中宿主暂停调用 Input**(静音段、没有 region):走带在跑时该轨保持在线,面板显示「暂无数据(挂起)」,不再当成掉线(挂起 ≠ 掉线);这一行为的验证同样只在模拟宿主上。
+- **静音和独奏**:静音这条轨会从输出里消失;独奏实时不起作用,导出时生效(KI-8)。**导出之前看一眼有没有开着独奏。**
+- **Write 写出的车道**:开头约 0.3 秒不准,不影响输出开着时的声音(KI-26)。
 - **Run as dedicated process**:R-12 已验跨进程共享内存仍工作。
 - **同机双工程/双 tab 抢 channel**:v1 明示同机同时只支持一个使用 SCVB 的工程。
+
+#### 两层 SCVB(嵌套)
+
+每组先在自己的总线上平衡,上一层再把每条组总线当成一条轨来平衡。接法和分析顺序见[用户手册](USER_GUIDE.zh-CN.md)「嵌套:两层 SCVB」。只测过 REAPER 7.82,只测过两层。下面的「一层」是同样位置、不嵌套的工程。
+
+| 项 | 结果 |
+|---|---|
+| 离线导出 vs 一层 | 逐位相同:Full-speed Offline、1×、窗口和命令行、块大小 32 / 2048、44.1 kHz、选区、多个 region |
+| 改渲染采样率 | 差别在 -132 dB 以下 |
+| 实时渲染 vs 离线 | 开头约 0.5–0.6 秒不同,之后逐位相同。一层约 0.4 秒;上层 Output 放主轨约 0.8 秒 |
+| 上层 Output 放主轨 | 导出逐位相同 |
+| 组总线的推子、宿主 pan | 不起作用 |
+| 上层总线的推子 | 起作用 |
+| 静音组总线、人声轨 | 这组、这条没了 |
+| 独奏组总线、人声轨 | 导出只剩这组、这条;实时不起作用 |
+| 旁路某一层的 Output | 这一层的声像和电平不再生效,声音还在 |
+| 旁路组总线、人声轨上的 Input | 这组、这条没了 |
+| 组总线上的 send | 导出只有第一块有声;实时约 0.4 秒有声,之后收不到这组(KI-23) |
+| 报告延迟的插件 | 排在 Input 或上层 Output 之前时,导出开头不足一块是原声,一层也一样(KI-24) |
+| 存盘重开 | 三次,FX state 不变 |
+| 接错 | 大多不报错;自环不啸叫,没有爆音或非法值(KI-25) |
+
+没测:三层以上、其他 DAW、macOS、关 GUI 时写自动化。
 
 ### 2.3 Ableton Live
 
@@ -272,7 +306,7 @@ A 线(宿主调度加固)留下的残余(提前处理的轨恢复时句首少约
 | DAW | 版本 | 支持等级 | 状态与已知限制 |
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1(主测)** | 路由(实时/离线)、存工程重开、自动化写入已用成品插件真机实测通过(Cubase 15 Pro);Cubase 14 在路由 spike 阶段验过路由;自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
-| REAPER | 7 | **Tier 2(部分验证)** | 只在路由 spike 阶段验过路由(实时/离线);成品插件与自动化写入尚未在 REAPER 上测过;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
+| REAPER | 7 | **Tier 2(部分验证)** | 成品插件在 REAPER 7.82 上实测过路由(实时/离线)、存工程重开,窗口开着时写入自动化通过;只有这一轮,没有长期真机使用;关 GUI 可能不写自动化(需 process all notifications;插件界面会提示保持窗口打开);同机单工程限制 |
 | Ableton Live | 12 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:128 参数上限(本插件占 124,余 4);Re-Enable Automation 需点击(写入结束时插件界面会提示);停用 Output 设备后约 5.5 秒无声,之后人声转直通(重新调用后逐轨接回,见 KI-6) |
 | Studio One | 6 | **Tier 3(未验证)** | 尚未真机测试。设计上已知:自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 会改变 block size |
 | LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 尚未真机测试;首个 macOS beta 发布前计划做一次真机验收。设计上预期(未实测):自动化用 Latch,LUNA 没有 Write;Output 不能放在 Folder 轨上;Input 不能放进 Record FX 槽;用 Apollo 时请切到 Core Audio 模式或关闭 ARM;用 Power 硬停用 Output 会无声约 5.5 秒(KI-6) |

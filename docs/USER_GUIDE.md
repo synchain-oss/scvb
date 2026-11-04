@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-09-29
+> Last updated: 2026-11-03
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -225,6 +225,76 @@ What to do instead:
 - if in doubt, back up the project and its audio first.
 
 The Input's first-run guide covers this too (it appears the first time you open an Input; click the "?" at the bottom right of the Input window to see it again at any time). The full entry is KI-4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
+## Nesting: two levels of SCVB
+
+To balance several groups of vocals against each other, route each group's bus into a level above it. Each group is balanced on its own bus first, then the upper level treats every group bus as one track.
+
+This has only been tested in REAPER 7.82, and only with two levels. Other DAWs and deeper nesting are untested. The full results are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) §2.2.
+
+### Wiring
+
+| Track | Plugin chain | Sends to |
+|---|---|---|
+| Vocal track | Last slot: SCVB Input, group A (or B) | Group bus |
+| Group bus | First slot: SCVB Output, group A (or B). Last slot: SCVB Input, the upper group (H, for example) | Upper bus |
+| Upper bus | First slot: SCVB Output, group H | Main output |
+
+- Every Input in a group uses its own channel. The Input on a group bus takes a channel in the upper group.
+- Put a group's effects between its Output and its Input. An effect before the Output is not heard, because the Output replaces the whole bus. An effect after the Input is not heard either, because only silence comes out of the Input.
+- The upper Output can also sit on the master track. The export is bit-identical, and the stretch at the start in real time is a little longer (see "Export and real time" below).
+
+### Order of analysis
+
+1. Lower level first: capture and analyze groups A and B, then turn on their outputs.
+2. Then the upper level: play once so group H captures what the group buses send up, then analyze group H and turn on its output.
+
+Group buses take part in automatic pan by default, like any other track. Group H places each group as a whole, and the voices in the group move with it.
+
+To keep a group where the lower level put it, switch off "participate in auto pan" for that group bus on group H's Tracks page **before group H's first analysis**. If group H has already been analyzed, turning it off and analyzing again does not put the group back: it stays where it was, and you have to move it back with a manual touch-up.
+
+### The DAW's faders, mute, solo and bypass
+
+The Input on a group bus takes the audio before the fader, so:
+
+| Action | Export | Real time |
+|---|---|---|
+| Group bus fader or host pan | No effect | No effect |
+| Upper bus fader | Works | Works |
+| Mute a group bus | That group is gone | That group is gone |
+| Mute a vocal track | That track is gone | That track is gone |
+| Mute the upper bus | Everything is gone | Everything is gone |
+| Solo a group bus | Only that group | No effect |
+| Solo a vocal track | Only that track | No effect |
+| Solo the upper bus | Same as no solo | Same as no solo |
+| Bypass an Output at either level | That level's pan and level stop applying; the audio stays | Same |
+| Bypass the Input on a group bus | That group is gone | That group is gone |
+| Bypass the Input on a vocal track | That track is gone | That track is gone |
+
+> ⚠️ **Check for an active solo before you export.** You can't hear a solo in real time, but it applies to the export, so the file will contain only that group or track.
+
+### Export and real time
+
+- An export of a two-level project is bit-identical to a one-level project with the same positions, whether you start it from the REAPER window or the command line, change the block size, or render a time selection or several regions. With a different render sample rate, the difference stays below -132 dB.
+- When you render in real time from the REAPER window, the first 0.5–0.6 seconds of the file differ from the offline export, and everything after that is bit-identical. In a one-level project this stretch is about 0.4 seconds, and with the upper Output on the master track about 0.8 seconds. KI-21 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) explains it.
+- When a plugin that reports latency sits before an Input or before the upper Output, less than one block at the very start of the export is dry, in a one-level project too. See KI-24.
+- A send on a group bus only has sound for a short stretch at the start, and after that it doesn't receive the group's audio. See KI-23. To add an effect to a group, insert it between the group's Output and Input.
+
+### What wrong wiring does
+
+Most of these give no error, or a warning that doesn't point at the real cause (KI-25). If a group has no sound, check this table first:
+
+| Wiring | Export | Real time |
+|---|---|---|
+| On a group bus, the Input comes before the Output | That group is gone | That group is gone |
+| An extra Input of the same group on the group bus, after that group's Output | Same as correct wiring | That group is gone, the "ROUTE MISMATCH" warning appears |
+| On the upper bus, an Input of the same group after the Output | Same as correct wiring | The whole bus is silent |
+| A group bus goes to the main output instead of the upper bus | That group drops out briefly near the start (about 85 ms in this test), then plays normally | That group is gone |
+| The Inputs on two group buses use the same channel | The later one's group is gone (its own window shows the conflict) | Same |
+| The upper bus's Output is set to a lower group | Group B is gone | Same |
+| Two Outputs in the upper group | No effect; the second is a read-only observer | No effect |
+
+A loop like this doesn't howl, and doesn't produce loud bursts or invalid values.
 
 ## Pan curve editor
 
