@@ -43,7 +43,8 @@ namespace scvb::webview
 //   「每次开窗多按住 3 秒占位」—— 屏上仍然是「粉底 → 内容」,不会白也不会卡,但
 //   **「等到首帧已绘再放」这条保证没了**,而这件事**没有任何一格判据会红**。
 //   探针有两行,**必须一起读**:`WebViewHost::handleFirstFrame()` 的
-//   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**),
+//   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**;
+//   还挡在导航之前时这一档写 `ignored, held before navigation`,信号不算数),
 //   与 `noteRevealed()` 的 `webview revealed (<reason>) after <n> ms`(**谁**放的行)。
 //   只看后者会把「信号来晚了」误读成「信号没来」—— 而这两者的处置完全不同。
 //   真机验收的硬指标是**前者的条数**:开 N 次窗就该有 N 行 `first-frame signal`;

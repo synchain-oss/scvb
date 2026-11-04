@@ -562,8 +562,8 @@ juce::String WebViewHost::entryUrl() const
 WebViewHost::~WebViewHost()
 {
     stopTimer();
-    // 关窗诊断行:开到关用了多久、关的时候停在哪一档(行的拼装与各档含义见 WebViewRevealGate.h
-    // 的 windowClosedLine)。
+    // 关窗诊断行:本次加载尝试的起点(startMs_,点过兜底面板的「重试」就是最近那一次)到关窗用了多久、
+    // 关的时候停在哪一档(行的拼装与各档含义见 WebViewRevealGate.h 的 windowClosedLine)。
     logDiag(windowClosedLine(juce::Time::getMillisecondCounter(), startMs_, revealGate_,
                              PlatformWebView::revealGateEnabled(), fallback_ != nullptr));
     releaseReadyBridge(); // 编辑器关闭 -> 本实例不再为「热启动」判定背书
@@ -1034,9 +1034,12 @@ void WebViewHost::handleFirstFrame(const juce::var& payload)
     // 真机验收数的就是这一行与下面那行放行行的**条数比**。
     // [B 线 M07] 闸门没启用的平台(系统 WebKit)上 parked() 恒 false,写「already revealed」会让人以为
     // 闸门放过一次行;那里写 `(reveal gate off)`。Windows 上两种措辞逐字不变。
+    // 还挡在导航之前时,这条信号被 onFirstFrame 丢掉、不武装放行,此时 parked() 同样为真,
+    // 写 `(still parked)` 会与后面那行 `timeout` 对不上,所以单写一档。
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
-            (revealGate_.parked()                   ? " (still parked)"
+            (revealGate_.holdingBeforeNavigation()  ? " (ignored, held before navigation)"
+             : revealGate_.parked()                 ? " (still parked)"
              : PlatformWebView::revealGateEnabled() ? " (already revealed)"
                                                     : " (reveal gate off)") +
             paintNote);
