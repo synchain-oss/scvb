@@ -172,7 +172,6 @@ LAYOUTS = {
     "nest-ga-pan": nest(gaExtra={"pan": -1.0}),
     "nest-ga-mute": nest(gaExtra={"mute": True}),
     "nest-ga-sends": nest(gaExtra={"sends": [{"to": "AUX", "mode": "post"}, {"to": "AUX", "mode": "pre"}, {"to": "AUX", "mode": "prefx"}]}, extra=[AUX]),
-    "nest-top-vol": nest(),
     # N7: Input H bypassed on GA
     "nest-hbyp": nest(ga=[OA, fx("input", "h1", bypass=True)]),
     "ref-a-only": ref(sig=(True, True, False)),

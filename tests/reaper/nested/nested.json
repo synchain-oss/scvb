@@ -1519,96 +1519,6 @@
         }
       ]
     },
-    "nest-top-vol": {
-      "tracks": [
-        {
-          "name": "TOP",
-          "source": false,
-          "folder": true,
-          "fx": [
-            {
-              "plugin": "output",
-              "state": "h"
-            }
-          ],
-          "volume": 0.5
-        },
-        {
-          "name": "GA",
-          "source": false,
-          "folder": true,
-          "parent": "TOP",
-          "fx": [
-            {
-              "plugin": "output",
-              "state": "a"
-            },
-            {
-              "plugin": "input",
-              "state": "h1"
-            }
-          ]
-        },
-        {
-          "name": "VA1",
-          "source": true,
-          "parent": "GA",
-          "signal": {
-            "seed": 11
-          },
-          "fx": [
-            {
-              "plugin": "input",
-              "state": "a1"
-            }
-          ]
-        },
-        {
-          "name": "VA2",
-          "source": true,
-          "parent": "GA",
-          "signal": {
-            "seed": 12
-          },
-          "fx": [
-            {
-              "plugin": "input",
-              "state": "a2"
-            }
-          ]
-        },
-        {
-          "name": "GB",
-          "source": false,
-          "folder": true,
-          "fx": [
-            {
-              "plugin": "output",
-              "state": "b"
-            },
-            {
-              "plugin": "input",
-              "state": "h2"
-            }
-          ],
-          "parent": "TOP"
-        },
-        {
-          "name": "VB1",
-          "source": true,
-          "parent": "GB",
-          "signal": {
-            "seed": 13
-          },
-          "fx": [
-            {
-              "plugin": "input",
-              "state": "b1"
-            }
-          ]
-        }
-      ]
-    },
     "nest-hbyp": {
       "tracks": [
         {
@@ -4384,6 +4294,96 @@
             {
               "plugin": "input",
               "state": "b1-auto"
+            }
+          ]
+        }
+      ]
+    },
+    "nest-top-vol": {
+      "tracks": [
+        {
+          "name": "TOP",
+          "source": false,
+          "folder": true,
+          "fx": [
+            {
+              "plugin": "output",
+              "state": "h"
+            }
+          ],
+          "volume": 0.5
+        },
+        {
+          "name": "GA",
+          "source": false,
+          "folder": true,
+          "parent": "TOP",
+          "fx": [
+            {
+              "plugin": "output",
+              "state": "a"
+            },
+            {
+              "plugin": "input",
+              "state": "h1"
+            }
+          ]
+        },
+        {
+          "name": "VA1",
+          "source": true,
+          "parent": "GA",
+          "signal": {
+            "seed": 11
+          },
+          "fx": [
+            {
+              "plugin": "input",
+              "state": "a1"
+            }
+          ]
+        },
+        {
+          "name": "VA2",
+          "source": true,
+          "parent": "GA",
+          "signal": {
+            "seed": 12
+          },
+          "fx": [
+            {
+              "plugin": "input",
+              "state": "a2"
+            }
+          ]
+        },
+        {
+          "name": "GB",
+          "source": false,
+          "folder": true,
+          "fx": [
+            {
+              "plugin": "output",
+              "state": "b"
+            },
+            {
+              "plugin": "input",
+              "state": "h2"
+            }
+          ],
+          "parent": "TOP"
+        },
+        {
+          "name": "VB1",
+          "source": true,
+          "parent": "GB",
+          "signal": {
+            "seed": 13
+          },
+          "fx": [
+            {
+              "plugin": "input",
+              "state": "b1"
             }
           ]
         }

@@ -155,7 +155,7 @@ macOS (Apple Silicon): see [docs/build-macos.md](docs/build-macos.md) for buildi
 These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md) describe what you will see, why, and how to work around it.
 
 - **Do not render a vocal track with SCVB Input on it by itself**: rendering one vocal track in place (Render in Place), freezing it (Freeze) or exporting it alone gives you a silent file, and choosing "replace the original audio" swaps your source recording for that silence. Export the vocal bus as a whole (KI-4).
-- **The DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
+- **The DAW's faders have no effect on SCVB's output, and mute and solo depend on the host**: in Cubase neither has any effect; in REAPER, mute removes the track, and solo has no effect in real time but applies when exporting. To take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
 - **One project using SCVB open at a time on the same computer**; if you really need two open, give them different groups (KI-5).
 - **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then play as the raw, unbalanced image until the host calls the Output again; the tracks then rejoin one at a time, so a track not yet reached stays silent for a moment (KI-6).
 - **Balance estimates are off in unison / doubled passages**: when several tracks sing the same line with very similar sound, they usually add up louder than the analysis expects (KI-9).

@@ -61,8 +61,26 @@ function rmsDb(ch, from, to) {
 }
 
 // onset: the first sample that differs by more than onsetDb. settled: the sample after the last one that does.
+// Two renders of different length, rate or channel count are not a match, however well the part they share lines up:
+// mismatch says why and the caller fails the row. tailFrames is 0 when the render is too short to have a tail.
 export function compareWav(a, b, { onsetDb = -60, tailSkipSec = 2 } = {}) {
-    const frames = Math.min(a.frames, b.frames);
+    const mismatch = [];
+    if (a.rate !== b.rate) mismatch.push(`rate ${a.rate}/${b.rate}`);
+    if (a.channels.length !== b.channels.length)
+        mismatch.push(`channels ${a.channels.length}/${b.channels.length}`);
+    if (a.frames !== b.frames) mismatch.push(`frames ${a.frames}/${b.frames}`);
+    if (mismatch.length)
+        return {
+            mismatch,
+            frames: `${a.frames}/${b.frames}`,
+            maxDb: Infinity,
+            tailDb: Infinity,
+            tailFrames: 0,
+            onsetSec: null,
+            settledSec: 0,
+            rmsChangeDb: [],
+        };
+    const frames = a.frames;
     const limit = 10 ** (onsetDb / 20);
     const tailFrom = Math.min(frames, Math.round(tailSkipSec * a.rate));
     let max = 0;
@@ -81,9 +99,11 @@ export function compareWav(a, b, { onsetDb = -60, tailSkipSec = 2 } = {}) {
         }
     }
     return {
+        mismatch,
         frames: `${a.frames}/${b.frames}`,
         maxDb: toDb(max),
         tailDb: toDb(tail),
+        tailFrames: frames - tailFrom,
         onsetSec: onset < 0 ? null : onset / a.rate,
         settledSec: settled / a.rate,
         rmsChangeDb: a.channels.map(
@@ -95,6 +115,7 @@ export function compareWav(a, b, { onsetDb = -60, tailSkipSec = 2 } = {}) {
 }
 
 export function describe(c) {
+    if (c.mismatch.length) return `not comparable: ${c.mismatch.join(", ")}`;
     const when =
         c.onsetSec === null
             ? "no difference over -60"

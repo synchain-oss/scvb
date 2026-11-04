@@ -175,10 +175,20 @@ const positions = (table) =>
         t.segments.map((s) => [s.pan, Number(s.volDb.toFixed(1))]),
     );
 
+// Numbers within 0.2, so a tenth of a dB from another machine or analysis build doesn't fail the row.
+const same = (got, want) =>
+    Array.isArray(want)
+        ? Array.isArray(got) &&
+          got.length === want.length &&
+          got.every((g, i) => same(g, want[i]))
+        : typeof want === "number"
+          ? typeof got === "number" && Math.abs(got - want) <= 0.2
+          : got === want;
+
 function judge(out) {
     const problems = [];
     const expect = (name, got, want) => {
-        if (JSON.stringify(got) !== JSON.stringify(want))
+        if (!same(got, want))
             problems.push(
                 `${name}: ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
             );

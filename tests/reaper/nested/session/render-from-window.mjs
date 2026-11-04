@@ -4,6 +4,8 @@
 // barely run; here the project has been open and idle first. In REAPER's window the transport also takes part: --play
 // listens for that many milliseconds first, as a user does before exporting.
 //
+//   --settle <ms>          how long the project stays open and idle first (default 3000)
+//   --play <ms>            listen for this long before rendering
 //   --ops op:arg:arg,...   REAPER ops to run before the render (setsolo, setmute, setbypass, renderset, ...)
 //   --regions n:t0:t1,...  render these project regions, one file each; --compare then names the other run's files
 //   --compare <name>       a render of an earlier scenario in this run, without .wav
@@ -32,6 +34,10 @@ function verdict(wav, compare) {
     if (compare) {
         const c = compareWav(wav, readWav(join(args.work, `${compare}.wav`)));
         detail += ` vs ${compare}: ${describe(c)}`;
+        if (c.mismatch.length)
+            problems.push(`not comparable: ${c.mismatch.join(", ")}`);
+        else if (args["max-tail-db"] !== undefined && c.tailFrames === 0)
+            problems.push("too short for the tail check");
         if (
             args["max-diff-db"] !== undefined &&
             c.maxDb > Number(args["max-diff-db"])
