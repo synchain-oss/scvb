@@ -248,6 +248,26 @@ struct Rig
         return c.slotState == scvb::kSlotActive && c.heartbeatAgeMs <= 2000;
     }
 
+    // 等到 Output 真的读到了这一轨:outBuf 每块先清零,有电平只可能来自读环。
+    //
+    // `waitUntilInjected` 只管控制面,[J32] 的注入延迟走完之前 Output 还没开始读,定长跑块等不稳:
+    // 本机少于 40 块就读不到,macOS runner 上 40、60 块都偶发不够。读没读到过有后果:饿读只在读到过
+    // 之后才记(ShmRingMixSource 的 primed_),没读到过就断流,挂起永远亮不起来。
+    //
+    // 只等不断言,调用方自己 REQUIRE。
+    bool waitUntilOutputReads(float amplitude = 0.25f, int maxRounds = 200)
+    {
+        for (int i = 0; i < maxRounds; ++i)
+        {
+            runBlocks(4, amplitude);
+            if (outBuf.getMagnitude(0, outBuf.getNumSamples()) > 0.0f)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // [SL-222] 等到**音频真的在流**(本轨电平量得到东西)。
     //
     // `waitUntilInjected` 只保证**控制面**通了:slot claim + 心跳新鲜。它不保证
@@ -1561,6 +1581,7 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
     Rig r;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.waitUntilOutputReads());
     r.runBlocks(40);
     REQUIRE(r.out.misalignCount(kTestChannel) == 0);
 
@@ -2124,6 +2145,7 @@ TEST_CASE("HOST P1-5:关掉的轨不进混音", "[host][t37][v4][enabled]")
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     r.out.setOutputEnabled(true);
+    REQUIRE(r.waitUntilOutputReads(0.5f));
     r.runBlocks(60, 0.5f);
 
     // 启用时:总线有声。
