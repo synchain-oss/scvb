@@ -2,6 +2,7 @@
 // Sets group and channel on every SCVB instance through its real bridge, one window at a time, and saves the project.
 // The saved project is the template the nested configuration takes its per-instance states from.
 import { dirname, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
     closeFx,
@@ -19,6 +20,8 @@ const port = args.port;
 const states = resolve(dirname(fileURLToPath(import.meta.url)), "..", "states");
 const raw = resolve(states, "template-raw.rpp");
 const save = resolve(states, "template.rpp");
+// states/ is not in git: a fresh clone has no folder for REAPER to save into.
+mkdirSync(states, { recursive: true });
 
 // track index, FX index, group (1..8 = A..H), channel (undefined for an Output, "observe" for a Monitor)
 const PLAN = [
