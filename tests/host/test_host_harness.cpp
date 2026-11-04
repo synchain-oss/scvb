@@ -251,7 +251,7 @@ struct Rig
     // 等到 Output 真的读到了这一轨:outBuf 每块先清零,有电平只可能来自读环。
     //
     // `waitUntilInjected` 只管控制面,[J32] 的注入延迟走完之前 Output 还没开始读,定长跑块等不稳:
-    // 本机少于 40 块就读不到,macOS runner 上 40、60 块都偶发不够。读没读到过有后果:饿读只在读到过
+    // 本机少于 40 块就读不到,macOS runner 上这两条用例偶发红。读没读到过有后果:饿读只在读到过
     // 之后才记(ShmRingMixSource 的 primed_),没读到过就断流,挂起永远亮不起来。
     //
     // 只等不断言,调用方自己 REQUIRE。
