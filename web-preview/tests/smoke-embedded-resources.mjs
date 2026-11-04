@@ -822,8 +822,7 @@ function checkJuceTripwire() {
     const nav = /logDiag\(\s*"navigation started: "[^;]*;/.exec(
         cppCode("src/plugin-common/WebViewHost.cpp"),
     );
-    if (!nav)
-        bad("WebViewHost.cpp 里找不到 `navigation started` 诊断行");
+    if (!nav) bad("WebViewHost.cpp 里找不到 `navigation started` 诊断行");
     else if (!/\(after /.test(nav[0]) || !/startMs_/.test(nav[0]))
         bad(
             "`navigation started` 诊断行要带从 startMs_ 算起的 `(after N ms)` —— 不带就读不出挡住那一段有多长",
