@@ -785,6 +785,7 @@ function cssBlock(text, selector) {
 
 /**
  * C++ 源码去掉注释之后的文本:注释里提到的同名写法不能冒充真代码。
+ * 不认字符串字面量,字符串里的 `//` 和 `/*` 也会被当成注释,所以被匹配的代码行里别写这种字面量。
  */
 function cppCode(rel) {
     return readFileSync(join(ROOT, rel), "utf8")
