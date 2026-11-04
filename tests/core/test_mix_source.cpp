@@ -3488,3 +3488,296 @@ TEST_CASE("SL442-MIX-4 曲线是叠加层:施加的增益只取决于 P_eff,和�
         REQUIRE(monoAppliedDb(30.0f, 100.0f, curve, vol) == Catch::Approx(-9.0).margin(0.05));
     }
 }
+
+// ---- 实时起播窗口(setStartWindow)----
+// 形状来自 REAPER 7.82
+// 的实测:走带停着时读写都在同一块上静止重写、重读,读方量到的提前量就是一块;按下播放后写方一口气领先
+// 二十多块,或者先写一块、下一次再跳几千帧。
+
+namespace
+{
+constexpr int kStartBlock = 512;
+
+struct StoppedThenPlay
+{
+    RingFixture f{1u << 19, 2};
+    ShmRingMixSource src;
+    std::vector<float> out = std::vector<float>(static_cast<std::size_t>(kStartBlock) * 2, -1.0f);
+    u64 readerEpoch = 1;
+    int64_t stoppedAt;
+
+    explicit StoppedThenPlay(int64_t stopped = 0) : stoppedAt(stopped)
+    {
+        f.header.epoch.store(1, std::memory_order_release);
+        src.bind(&f.header, f.data.data());
+        writePositions(f, stoppedAt, kStartBlock);
+        for (int i = 0; i < 4; ++i)
+        {
+            REQUIRE(read(stoppedAt));
+        }
+    }
+
+    bool read(int64_t t0) { return src.read(t0, out.data(), kStartBlock, readerEpoch); }
+    void writerJumps() { f.header.epoch.fetch_add(1, std::memory_order_acq_rel); }
+    void writerWrites(int64_t from, int blocks) { writePositions(f, from, blocks * kStartBlock); }
+    bool holdsTimeline(int64_t t0) const { return out[0] == static_cast<float>(t0); }
+};
+} // namespace
+
+TEST_CASE("起播窗口:写方领先二十多块,读方第一块就接上,一路读下去", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    s.writerJumps();
+    s.writerWrites(0, 23);
+    ++s.readerEpoch;
+
+    SECTION("窗口开着")
+    {
+        s.src.setStartWindow(true);
+        for (int b = 0; b < 23; ++b)
+        {
+            const int64_t t0 = static_cast<int64_t>(b) * kStartBlock;
+            INFO("第 " << b << " 块");
+            REQUIRE(s.read(t0));
+            CHECK(s.holdsTimeline(t0));
+        }
+        CHECK(s.src.gapCount() == 0u);
+    }
+    SECTION("对照:窗口关着,第一块读不到(这就是开头那段全零)")
+    {
+        CHECK_FALSE(s.read(0));
+    }
+}
+
+TEST_CASE("起播窗口:写方先写一块、再一下跳几千帧,锚不撤,窗口关了也不撤", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    s.writerJumps();
+    s.writerWrites(0, 1);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE(s.read(0));
+
+    SECTION("写头第一次动在窗口里")
+    {
+        s.writerWrites(kStartBlock, 7); // 写头 4096
+        REQUIRE(s.read(kStartBlock));
+        CHECK(s.holdsTimeline(kStartBlock));
+    }
+    SECTION("写头第一次动在窗口关了之后")
+    {
+        s.src.setStartWindow(false);
+        s.writerWrites(kStartBlock, 7);
+        REQUIRE(s.read(kStartBlock));
+        CHECK(s.holdsTimeline(kStartBlock));
+    }
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 对照 [a6]:窗口外同样的形状会计缺口。起播这几块是比原来多读的,读不到不能把轨踢出去。
+TEST_CASE("起播窗口:读失败不计,窗口关了之后这一代按新接上算", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    s.writerJumps();
+    s.writerWrites(0, 1);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE(s.read(0));
+
+    // 读方又跑到了写头前面,写方还在推进:读到过数据之后,窗口外这是真缺口。
+    int64_t t0 = kStartBlock * 4;
+    int64_t w = kStartBlock;
+    for (int b = 0; b < 40; ++b)
+    {
+        CHECK_FALSE(s.read(t0));
+        s.writerWrites(w, 1);
+        w += kStartBlock;
+        t0 += kStartBlock;
+    }
+    CHECK(s.src.gapCount() == 0u);
+    CHECK(s.src.persistentFailCount() == 0u);
+
+    // 窗口里那几块不算 primed:窗口一关,读失败走交接宽限,不是第二次就踢。反向 = 窗口里也置 primed_ ⇒ 这里 gap 1。
+    s.src.setStartWindow(false);
+    CHECK_FALSE(s.read(t0));
+    t0 += kStartBlock;
+    s.writerWrites(w, 1);
+    w += kStartBlock;
+    CHECK_FALSE(s.read(t0));
+    CHECK(s.src.gapCount() == 0u);
+
+    // 窗口外真读到过之后,口径和原来一样。
+    t0 = w - kStartBlock;
+    REQUIRE(s.read(t0));
+    t0 = w + kStartBlock * 2;
+    CHECK_FALSE(s.read(t0)); // 第一次失败不表态
+    t0 += kStartBlock;
+    s.writerWrites(w, 1);
+    CHECK_FALSE(s.read(t0));
+    CHECK(s.src.gapCount() == 1u);
+}
+
+// 窗口里量到的是起播那一下的突发(写头领先二十多块),不是写方的常态。带进下一代会把提前量那道门放宽一代。
+// 反向 = 窗口里也量提前量 ⇒ 下一代这里锚上了。
+TEST_CASE("起播窗口:突发的提前量不带进下一代", "[mix][ring][playstart]")
+{
+    constexpr int64_t kSeek = 100000;
+    StoppedThenPlay s;
+    s.writerJumps();
+    s.writerWrites(0, 23);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE(s.read(0));
+    REQUIRE(s.read(kStartBlock));
+    s.src.setStartWindow(false);
+
+    s.writerJumps();
+    s.writerWrites(kSeek, 23);
+    ++s.readerEpoch;
+    CHECK_FALSE(s.read(kSeek));
+}
+
+// 步长同理:起播那一下写头一步跳了七块,带进下一代,锁步判别的尺子就放宽到七块。之后写方单独换代、从读方前面写起
+// (预先处理的写方重新 prepare 之类),读方会被当成锁步、锚在自己脚下,[旧写头, 新一代起点) 里是一圈之前的旧环槽。
+// 写头换代后第一次动只用来确认,不量步长,所以这里让它在窗口里动两次。
+// 反向 = 窗口里也量步长 ⇒ 读成功,读出来的是没写过的环槽。
+TEST_CASE("起播窗口:突发的步长不带进锁步判别", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    s.writerJumps();
+    s.writerWrites(0, 1);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE(s.read(0));
+    s.writerWrites(kStartBlock, 1); // 写头第一次动:确认
+    REQUIRE(s.read(kStartBlock));
+    s.writerWrites(kStartBlock * 2, 7); // 一步七块,写头 4608
+    REQUIRE(s.read(kStartBlock * 2));
+    s.src.setStartWindow(false);
+    // 读方追上停住的写头:提前量最多领先六块,最后一块正好停在块尾。
+    for (int64_t t0 = kStartBlock * 3; t0 < kStartBlock * 9; t0 += kStartBlock)
+    {
+        REQUIRE(s.read(t0));
+    }
+    // 写方单独换代,从读方前面两块写起。
+    s.writerJumps();
+    s.writerWrites(kStartBlock * 11, 1);
+    CHECK_FALSE(s.read(kStartBlock * 9));
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 中间隔了一代,写方可能先写了别处(R3:Input 侧起播怪癖连报好几个位置),写方的起点不一定在读方这里。
+// 真宿主上隔代只出现在「定位后不满一拍就按播放」:定位让写头动,[M] 下一拍就把轨放回注入集,读方会先看到那一代。
+// Input 走带一起从别处写起时 epoch 一次加 2,也落到这一条。
+// 反向 = 放宽时不看积压 ⇒ 第一个 SECTION 红;同步规则的积压条件也放宽 ⇒ 第二个 SECTION 也红。
+TEST_CASE("起播窗口:隔了两代不放宽", "[mix][ring][playstart]")
+{
+    constexpr int64_t kSeek = 100000;
+    StoppedThenPlay s;
+    SECTION("上一代锁步") {}
+    SECTION("上一代写方领先,不算锁步")
+    {
+        s.writerJumps();
+        s.writerWrites(0, 8);
+        ++s.readerEpoch;
+        s.src.setStartWindow(true);
+        REQUIRE(s.read(0));
+        REQUIRE(s.read(kStartBlock));
+        s.src.setStartWindow(false);
+    }
+    s.writerJumps();
+    s.writerWrites(kSeek, 1);
+    s.writerJumps();
+    s.writerWrites(kSeek, 23);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    CHECK_FALSE(s.read(kSeek));
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 窗口打开之后写方没换代:环里只有停走带时留下的东西。Input 被旁路时就是这样,读了等于拿旧块替换总线上的原声。
+// 反向 = 不看「窗口打开之后换过代」⇒ 这几条都读成功;窗口再打开时不清「换过代」⇒ 第三条读成功。
+TEST_CASE("起播窗口:写方没换代就不读", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    SECTION("停着的那一块")
+    {
+        CHECK_FALSE(s.read(0));
+    }
+    SECTION("这一代开头的同步标记是旧的,读方又跳了一次")
+    {
+        s.writerJumps();
+        s.writerWrites(0, 23);
+        s.src.setStartWindow(false);
+        ++s.readerEpoch;
+        REQUIRE_FALSE(s.read(0)); // 窗口关着,提前量只有一块,锚不上
+        ++s.readerEpoch;
+        s.src.setStartWindow(true);
+        CHECK_FALSE(s.read(kStartBlock));
+    }
+    SECTION("上一次起播写方换过代,这一次没有(两次播放之间 Input 被旁路了)")
+    {
+        s.writerJumps();
+        s.writerWrites(0, 23);
+        REQUIRE(s.read(0));
+        REQUIRE(s.read(kStartBlock));
+        s.src.setStartWindow(false);
+        REQUIRE(s.read(kStartBlock * 2));
+        // 停走带。Input 被旁路,不再写;环里还是上一次播放写的。从停住的位置再按一次播放。
+        ++s.readerEpoch;
+        s.src.setStartWindow(true);
+        CHECK_FALSE(s.read(kStartBlock * 2));
+    }
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 写方排在读方后面的宿主:第一块读不到,下一块换代了,但那是读方单独跳变之后的事,按原来的规则走。
+TEST_CASE("起播窗口:写方排在后面时第一块不读,接着按原来的规则", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s;
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    CHECK_FALSE(s.read(0));
+    s.writerJumps();
+    s.writerWrites(0, 2);
+    CHECK(s.read(kStartBlock));
+    CHECK(s.holdsTimeline(kStartBlock));
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 读方跳了,写方还没换代(写方排在读方后面的宿主,或者没接到这条总线):写头是旧的,这里不该读出别处的数据。
+TEST_CASE("起播窗口:写方没换代时读不到别处的数据", "[mix][ring][playstart]")
+{
+    StoppedThenPlay s(100000);
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    CHECK_FALSE(s.read(0));
+    CHECK(s.src.gapCount() == 0u);
+}
+
+// 写方单独换代、读方之后才跳(写方排在后面,Output 起播头几块的时间戳又跳了一下):这一代不是从读方跳到的位置
+// 起写的,首次下锚照旧受实测提前量限制,不放宽。这里的写方是旧版 Input:从停住的位置后面起播也只加 1,
+// 起播窗口不放宽靠的就是「两方在同一块跳」这一条(新版 Input 这时加 2,隔代本来就不放宽)。
+// 反向 = 推迟锚定在窗口里也放宽 ⇒ 锚落在读方跳到的位置,读出这一代没写过的环槽。
+TEST_CASE("起播窗口:写方单独换代之后读方才跳,首次下锚不放宽", "[mix][ring][playstart]")
+{
+    constexpr int64_t kWriterFrom = 48000;
+    constexpr int64_t kReaderTo = 4096;
+    StoppedThenPlay s;
+    ++s.readerEpoch;
+    s.src.setStartWindow(true);
+    REQUIRE_FALSE(s.read(0)); // 写方还没写:不读
+    s.writerJumps();
+    s.writerWrites(kWriterFrom, 1);
+    CHECK_FALSE(s.read(kStartBlock)); // 读方没跳,这一代的头在 kWriterFrom 之后,读方这里没有本代数据
+    s.writerWrites(kWriterFrom + kStartBlock, 1);
+    ++s.readerEpoch;
+    CHECK_FALSE(s.read(kReaderTo));
+    s.writerWrites(kWriterFrom + 2 * kStartBlock, 1);
+    CHECK_FALSE(s.read(kReaderTo + kStartBlock));
+    s.src.setStartWindow(false);
+    s.writerWrites(kWriterFrom + 3 * kStartBlock, 1);
+    CHECK_FALSE(s.read(kReaderTo + 2 * kStartBlock));
+}

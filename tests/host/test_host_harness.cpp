@@ -10437,7 +10437,7 @@ TEST_CASE("HOST SL-247:采集 ON 那一刻,引擎侧确实是横幅 ⑨ 判据�
 }
 
 // ===========================================================================
-// [SL-254 / J95①] 离线(非实时)渲染的同块交接。
+// [SL-254 / J95①] 离线(非实时)渲染的交接。
 //
 // 立卡:用户 v5.6.3 实测 #48「离线导出前约 10 秒完全静音」,而实时渲染反相可完美抵消。
 // 定谳:J32 的注入握手全程按**墙钟**闸控(`steadyNowMs` + [M] 25Hz),与音频时间线解耦 ——
@@ -10569,7 +10569,8 @@ TEST_CASE("HOST SL-254:非实时下注入不得早于 Input 静音(防双路叠�
     REQUIRE(p.firstInputSilent >= 0); // 前置:确实交接过(否则两条断言都是空的)
     REQUIRE(p.firstInject >= 0);
     INFO("Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject);
-    // ★ 同块交接:Input 的静音最多晚一块。
+    // ★ 这个台子是锁步的:Output 读到之后,Input 自己处理的下一块就静音,最多晚一块。
+    //   宿主让写方提前跑一段时,按时间线看还要再晚这一段(IPC_CONTRACT §4),这里不覆盖。
     CHECK(p.firstInputSilent - p.firstInject <= 1);
     CHECK(r.out.misalignCount(kTestChannel) == 0); // [A-6] 零误报
 }
@@ -10663,7 +10664,7 @@ RoutedBusProbe runRoutedBus(Rig& r, int blocksPerPump, int totalBlocks)
 constexpr float kBusTransparentTolerance = 5e-6f;
 } // namespace
 
-// ⑥ 防坑:同块交接要两侧都同块。Input 硬切而 Output 还走 80ms ramp 时,交接点上的声音从零淡入。
+// ⑥ 防坑:总线要同块到位。Input 硬切而 Output 还走 80ms ramp 时,交接点上的声音从零淡入。
 //    反向 = 去掉 `renderBus` 的 snapTo 或逐轨 fade 的同块到位 ⇒ 差值接近信号幅度,本条红。
 TEST_CASE("HOST SL-254:非实时交接前后,总线上的信号逐样本不变", "[host][SL254]")
 {
@@ -11793,7 +11794,7 @@ TEST_CASE("HOST SL-254:实时路径重新 prepare 后仍从直通起步", "[host
     r.ph.timeSamples = 0;
     r.ph.playing = true;
 
-    // Input 的输出不接:实时下它还在 J12 的滞回里按静音走,接上量到的是 0,分不出 Output 走了哪条路。
+    // Input 的输出不接:总线上放一个已知的数,才分得出 Output 有没有替换总线。
     constexpr float kBusLevel = 0.3f;
     float maxDiff = 0.0f;
     const auto blocks = [&](int count) {
@@ -11812,6 +11813,458 @@ TEST_CASE("HOST SL-254:实时路径重新 prepare 后仍从直通起步", "[host
     MonoMultiRig::pump(60);
     blocks(96);
     CHECK(maxDiff <= kBusTransparentTolerance);
+}
+
+// ---- 起播:按下播放时宿主一口气先算掉前几十块(REAPER 的预先处理实测 0.5 ms 内跑完前 0.2 s),[M] 一拍都来不及跑。
+// 停走带不满约 5.5 s 时 Input 还在滞回里静音,Output 这时不接上就是全零。
+
+// 放过一段、停满 500 ms:各轨已掉线,Input 还在静音,总线全零。settleForExport 按固定时长等,mac runner 上 [M] 的节拍
+// 不够细(tests/CMakeLists.txt 记的 p90 179 ms),所以这里轮询到总线真的空了,掉线时的淡出也走完。
+ExportLevel stopUntilDropped(MonoMultiRig& r, juce::AudioBuffer<float>& bus)
+{
+    const ExportLevel level = settleForExport(r);
+    bool dropped = false;
+    for (int tries = 0; tries < 300 && !dropped; ++tries)
+    {
+        exportBlock(r, bus, /*callOutput=*/true);
+        r.ph.timeSamples -= kBlock;
+        dropped = bus.getMagnitude(0, 0, kBlock) == 0.0f && bus.getMagnitude(1, 0, kBlock) == 0.0f;
+        if (!dropped)
+        {
+            MonoMultiRig::pump(20);
+        }
+    }
+    REQUIRE(dropped);
+    return level;
+}
+
+// Input 一块、Output 一块,先量 Input 的输出再过 Output。返回 Input 的输出幅度。
+float startBlock(MonoMultiRig& r, juce::AudioBuffer<float>& bus)
+{
+    exportBlock(r, bus, /*callOutput=*/false);
+    const float inputs = bus.getMagnitude(0, 0, kBlock);
+    r.ph.timeSamples -= kBlock;
+    r.out.processBlock(bus, r.midi);
+    r.ph.timeSamples += kBlock;
+    return inputs;
+}
+
+// [M] 看到走带在跑、把 connected 位置回来为止,这期间声音不能断。
+void waitHandedBack(MonoMultiRig& r, juce::AudioBuffer<float>& bus, const ExportLevel& level)
+{
+    bool healthy = false;
+    for (int tries = 0; tries < 300 && !healthy; ++tries)
+    {
+        MonoMultiRig::pump(20);
+        healthy = true;
+        for (auto& in : r.ins)
+        {
+            healthy = healthy && in->bridgeTickSnapshot().healthy;
+        }
+        CHECK(startBlock(r, bus) == 0.0f);
+        CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+    }
+    REQUIRE(healthy);
+}
+
+// 反向 = renderSpan 不读 realtimeInjectMask ⇒ 第一块全零。把淡入改成硬切、拖长,或中途读断,都会红。
+TEST_CASE("HOST:停走带不满 5 秒再播放,第一块就接上", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    const ExportLevel level = stopUntilDropped(r, bus);
+
+    r.ph.playing = true;
+    // 不 pump。第一块有声音,但还在淡入里;80 ms 之后是完整的混音。Input 全程静音,不会和 Output 叠在一起。
+    CHECK(startBlock(r, bus) == 0.0f);
+    CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+    CHECK(bus.getMagnitude(1, 0, kBlock) > 0.0f);
+    CHECK(std::abs(bus.getReadPointer(0)[kBlock - 1]) < std::abs(level[0]));
+    for (int b = 1; b < 32; ++b)
+    {
+        CHECK(startBlock(r, bus) == 0.0f);
+        CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+        if (b >= 9) // 80 ms = 3840 样本,第 8 块里走完
+        {
+            CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+        }
+    }
+    waitHandedBack(r, bus, level);
+}
+
+// REAPER 实测的形状:Input 先跑到前面二十多块,Output 才算第一块。上一代的提前量是停走带时量的,只有一块。
+// 反向 = 不开读方的起播窗口 ⇒ 第一次写头动之前一直读不到,读不到的长度还会把这一轨踢出去。
+TEST_CASE("HOST:起播时 Input 领先很多块,Output 也从第一块接上,不报失准", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    const ExportLevel level = stopUntilDropped(r, bus);
+
+    constexpr int kLead = 23;
+    constexpr int kBlocks = 64;
+    const std::int64_t stoppedAt = r.ph.timeSamples;
+    r.ph.playing = true;
+    int inputBlocks = 0;
+    const auto runInputs = [&](int upTo) {
+        for (; inputBlocks < upTo; ++inputBlocks)
+        {
+            r.ph.timeSamples = stoppedAt + static_cast<std::int64_t>(inputBlocks) * kBlock;
+            exportBlock(r, bus, /*callOutput=*/false);
+            CHECK(bus.getMagnitude(0, 0, kBlock) == 0.0f);
+        }
+    };
+    const auto runOutput = [&](int block) {
+        bus.clear();
+        r.ph.timeSamples = stoppedAt + static_cast<std::int64_t>(block) * kBlock;
+        r.out.processBlock(bus, r.midi);
+    };
+    runInputs(kLead);
+    runOutput(0);
+    CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+    for (int b = 1; b < kBlocks; ++b)
+    {
+        runInputs(b + kLead);
+        runOutput(b);
+        if (b >= 9)
+        {
+            CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+        }
+    }
+    bool healthy = false;
+    for (int tries = 0; tries < 300 && !healthy; ++tries)
+    {
+        MonoMultiRig::pump(20);
+        runInputs(kBlocks + tries + kLead);
+        runOutput(kBlocks + tries);
+        CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+        healthy = true;
+        for (auto& in : r.ins)
+        {
+            healthy = healthy && in->bridgeTickSnapshot().healthy;
+        }
+    }
+    REQUIRE(healthy);
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        INFO("channel " << ch);
+        CHECK(r.out.misalignCount(ch) == 0u);
+        CHECK(r.out.gapCount(ch) == 0u);
+    }
+}
+
+// REAPER 主轨上的 Output 比各轨晚 8–10 ms 才算第一块,[M] 约五分之一的机会在这中间跑一拍:写头已经离开停着的位置,
+// Output 自己还停着。它看到写头在动,把各轨连回来、放行注入,但停着时的证据不能跟着清掉,不然读方没有起播窗口,
+// 停走带时量的一块提前量追不上领先的写方,读不到的长度还会把这一轨踢出去约 1 秒。
+// [M] 的节拍在 mac runner 上不细,这里最多等 300 ms(Output 一块不算,再久会碰到 0.5 s 的看门狗);等不到也照样往下
+// 测,那时测的是没有这一拍的形状。
+// 反向 = evaluateChannels 只认「写头正好在这里」⇒ 第一块全零。
+TEST_CASE("HOST:起播时 Input 先跑出去、Output 第一块之前 [M] 跑了一拍,也从第一块接上", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    const ExportLevel level = stopUntilDropped(r, bus);
+
+    constexpr int kLead = 23;
+    constexpr int kBlocks = 64;
+    const std::int64_t stoppedAt = r.ph.timeSamples;
+    r.ph.playing = true;
+    int inputBlocks = 0;
+    const auto runInputs = [&](int upTo) {
+        for (; inputBlocks < upTo; ++inputBlocks)
+        {
+            r.ph.timeSamples = stoppedAt + static_cast<std::int64_t>(inputBlocks) * kBlock;
+            exportBlock(r, bus, /*callOutput=*/false);
+            CHECK(bus.getMagnitude(0, 0, kBlock) == 0.0f);
+        }
+    };
+    const auto runOutput = [&](int block) {
+        bus.clear();
+        r.ph.timeSamples = stoppedAt + static_cast<std::int64_t>(block) * kBlock;
+        r.out.processBlock(bus, r.midi);
+    };
+    runInputs(kLead);
+    bool reconnected = false;
+    for (int tries = 0; tries < 15 && !reconnected; ++tries)
+    {
+        MonoMultiRig::pump(20);
+        reconnected = true;
+        for (auto& in : r.ins)
+        {
+            reconnected = reconnected && in->bridgeTickSnapshot().healthy;
+        }
+    }
+    runOutput(0);
+    CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+    for (int b = 1; b < kBlocks; ++b)
+    {
+        runInputs(b + kLead);
+        runOutput(b);
+        CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+        if (b >= 9)
+        {
+            CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+        }
+    }
+    bool healthy = false;
+    for (int tries = 0; tries < 300 && !healthy; ++tries)
+    {
+        MonoMultiRig::pump(20);
+        runInputs(kBlocks + tries + kLead);
+        runOutput(kBlocks + tries);
+        CHECK(blockDiff(bus, level) <= kBusTransparentTolerance);
+        healthy = true;
+        for (auto& in : r.ins)
+        {
+            healthy = healthy && in->bridgeTickSnapshot().healthy;
+        }
+    }
+    REQUIRE(healthy);
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        INFO("channel " << ch);
+        CHECK(r.out.misalignCount(ch) == 0u);
+        CHECK(r.out.gapCount(ch) == 0u);
+    }
+}
+
+// 旁路的 Output 走另一条渲染路径(renderBypassedUnity),起播这段一样不能空。
+// 反向 = renderBypassedUnity 不读 realtimeInjectMask ⇒ 这一串全零。
+TEST_CASE("HOST:Output 被旁路时,停走带不满 5 秒再播放也是第一块就接上", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    stopUntilDropped(r, bus);
+    const auto block = [&]() {
+        exportBlock(r, bus, /*callOutput=*/false);
+        const float inputs = bus.getMagnitude(0, 0, kBlock);
+        r.ph.timeSamples -= kBlock;
+        r.out.processBlockBypassed(bus, r.midi);
+        r.ph.timeSamples += kBlock;
+        return inputs;
+    };
+    r.ph.playing = true;
+    CHECK(block() == 0.0f);
+    CHECK(bus.getMagnitude(0, 0, kBlock) > 0.0f);
+    for (int b = 1; b < 32; ++b)
+    {
+        CHECK(block() == 0.0f);
+    }
+    // 旁路 = 三条轨等权相加。
+    CHECK(blockDiff(bus, {kExportDry, kExportDry}) <= kBusTransparentTolerance);
+}
+
+// 全有或全无。Output 一读就整条替换总线,这时还在直通的那条 Input 的声音会没。
+// 反向 = realtimeStartVerdict 跳过没确认静音的轨 ⇒ 总线被替换成另外两条。
+TEST_CASE("HOST:起播时有一条 Input 没确认静音,Output 照旧等 [M]", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    stopUntilDropped(r, bus);
+
+    // 第 0 条 Input 重新 prepare:回直通,静音确认位也清了。[M] 不跑就一直这样。
+    r.ins[0]->releaseResources();
+    r.ins[0]->prepareToPlay(kSr, kBlock);
+    r.ph.playing = true;
+    for (int b = 0; b < 32; ++b)
+    {
+        exportBlock(r, bus, /*callOutput=*/true);
+    }
+    // 总线上是这一条的原声(另外两条还在静音),Output 没有替换。
+    CHECK(blockDiff(bus, {kExportLevels[0], kExportLevels[0]}) <= kBusTransparentTolerance);
+}
+
+// Input 停着时全被宿主旁路:写头冻在 Output 停的位置后面一块,原声留在总线上(JUCE 默认的 processBlockBypassed)。
+// Input 的 [M] 照跑,静音确认位也在,所以起播判定会通过。环里只有旁路之前写下的那一块,读了就是拿旧块替换原声。
+// 反向 = 读方不看「窗口打开之后换过代」⇒ 第一块被替换;renderSpan 不看 startNoData ⇒ 总线往空混音走,等 [M] 才回来。
+TEST_CASE("HOST:起播时 Input 全被旁路,原声一块都不动", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    stopUntilDropped(r, bus);
+
+    bool outputBypassed = false;
+    SECTION("Output 在跑")
+    {
+        outputBypassed = false;
+    }
+    SECTION("Output 也被旁路")
+    {
+        outputBypassed = true;
+    }
+    r.ph.playing = true;
+    for (int b = 0; b < 32; ++b)
+    {
+        fillConstant(bus, kExportDry);
+        if (outputBypassed)
+        {
+            r.out.processBlockBypassed(bus, r.midi);
+        }
+        else
+        {
+            r.out.processBlock(bus, r.midi);
+        }
+        r.ph.timeSamples += kBlock;
+        INFO("第 " << b << " 块");
+        CHECK(blockDiff(bus, {kExportDry, kExportDry}) <= kBusTransparentTolerance);
+    }
+}
+
+// 同上,但起播的位置不是 Input 写头停的位置:判定不通过,总线一直是原声。
+TEST_CASE("HOST:起播时 Input 全被旁路且位置对不上,一块也不读", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    stopUntilDropped(r, bus);
+
+    r.ph.timeSamples = 480000;
+    r.ph.playing = true;
+    for (int b = 0; b < 32; ++b)
+    {
+        fillConstant(bus, kExportDry);
+        r.out.processBlock(bus, r.midi);
+        r.ph.timeSamples += kBlock;
+        INFO("第 " << b << " 块");
+        CHECK(blockDiff(bus, {kExportDry, kExportDry}) <= kBusTransparentTolerance);
+    }
+}
+
+// 只读观察实例不接管总线。它走 renderBypassedUnity 时没有 renderSpan 那样的早退,全靠掩码为 0。
+TEST_CASE("HOST:起播时被旁路的只读观察实例不动总线", "[host][playstart]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    stopUntilDropped(r, bus);
+
+    auto second = std::make_unique<ScvbOutputAudioProcessor>();
+    second->setGroupId(r.out.groupId());
+    second->setPlayHead(&r.ph);
+    second->prepareToPlay(kSr, kBlock);
+    MonoMultiRig::pump(100);
+    REQUIRE(second->isReadOnly());
+
+    r.ph.playing = true;
+    constexpr float kBusLevel = 0.3f;
+    for (int b = 0; b < 16; ++b)
+    {
+        exportBlock(r, bus, /*callOutput=*/true);
+        r.ph.timeSamples -= kBlock;
+        fillConstant(bus, kBusLevel);
+        second->processBlockBypassed(bus, r.midi);
+        r.ph.timeSamples += kBlock;
+        CHECK(blockDiff(bus, {kBusLevel, kBusLevel}) <= kBusTransparentTolerance);
+    }
+    second->releaseResources();
+}
+
+// 写方每次换代加几(契约 §2「实时起播」):走带运行中定位加 1;停着之后从停住的位置或它前面起播加 1,从它后面起播加 2。
+// Input 停着时重新 prepare,也记得停在哪:之后第一块就是播放块时,照同一条规则判。
+// 反向 = 走带中定位也加 2 ⇒「走带中定位」红;不记停住的位置 ⇒「从停住的位置起播」两节红;
+// prepare 清掉「上一块停着」⇒「重新 prepare 之后从后面起播」红;从前面起播也加 2 ⇒「从停住的位置前面起播」红。
+TEST_CASE("HOST:Input 换代 —— 走带中定位加 1,停着之后从后面起播加 2", "[host][playstart]")
+{
+    MonoMultiRig r;
+    settleForExport(r); // 放过一段、走带停着:Input 在停住的位置上反复重写
+    const std::int64_t stoppedAt = r.ph.timeSamples;
+
+    scvb::PlatformSegmentBackend backend;
+    scvb::SegmentView view;
+    REQUIRE(backend.openExisting(scvb::segmentAudioName(MonoMultiRig::kGroup, 1), view) == scvb::InitResult::kOk);
+    const auto* ring = static_cast<const scvb::AudioRingHeader*>(view.base);
+    // 只调第一条 Input、不 pump:这里看的是写方自己怎么换代。
+    const auto inputBlock = [&r] {
+        fillConstant(r.inBuf, kExportLevels[0]);
+        r.ins[0]->processBlock(r.inBuf, r.midi);
+    };
+    const auto reprepare = [&r] {
+        r.ins[0]->releaseResources();
+        r.ins[0]->prepareToPlay(kSr, kBlock);
+        MonoMultiRig::pump(200); // 等 [M] 重新接好段:宿主停着时可以不调 Input
+    };
+
+    std::int64_t from = stoppedAt;
+    scvb::u64 step = 1;
+    SECTION("从停住的位置起播") {}
+    SECTION("从停住的位置后面起播")
+    {
+        from = stoppedAt + 48000;
+        step = 2;
+    }
+    SECTION("从停住的位置前面起播")
+    {
+        REQUIRE(stoppedAt >= 4 * kBlock);
+        from = stoppedAt - 4 * kBlock;
+    }
+    SECTION("走带中定位")
+    {
+        r.ph.playing = true;
+        for (int b = 0; b < 4; ++b)
+        {
+            inputBlock();
+            r.ph.timeSamples += kBlock;
+        }
+        from = r.ph.timeSamples + 480000;
+    }
+    SECTION("停着时重新 prepare,再从停住的位置起播")
+    {
+        reprepare();
+    }
+    SECTION("停着时重新 prepare,再从后面起播")
+    {
+        reprepare();
+        from = stoppedAt + 48000;
+        step = 2;
+    }
+    const scvb::u64 before = ring->epoch.load(std::memory_order_acquire);
+    r.ph.timeSamples = from;
+    r.ph.playing = true;
+    inputBlock();
+    REQUIRE(static_cast<std::int64_t>(ring->write_head_samples.load(std::memory_order_acquire)) == from + kBlock);
+    CHECK(ring->epoch.load(std::memory_order_acquire) - before == step);
+    backend.unmap(view);
+}
+
+// 实时重新 prepare 之后 [M] 还没跑,Input 要回直通,不能留在上一轮的静音:Output 这时还没接上,两边都不出声,开头就没了。
+// REAPER 从窗口开始实时渲染时主线程会忙上几百毫秒,实测开头 0.25 s 全零。
+// 反向 = releaseResources 不写 c18Stage_ ⇒ 这里一直是 0。
+TEST_CASE("HOST:实时重新 prepare 后 [M] 还没跑,Input 不留在上一轮的静音", "[host][SL254]")
+{
+    MonoMultiRig r;
+    juce::AudioBuffer<float> bus(2, kBlock);
+    settleForExport(r);
+    constexpr float kLevel = 0.5f;
+    const auto inputPeak = [&]() {
+        float peak = 0.0f;
+        for (auto& in : r.ins)
+        {
+            fillConstant(r.inBuf, kLevel);
+            in->processBlock(r.inBuf, r.midi);
+            peak = std::max(peak, r.inBuf.getMagnitude(0, kBlock));
+        }
+        return peak;
+    };
+    REQUIRE(inputPeak() == 0.0f); // 前提:Input 在静音(已掉线,还在滞回里)
+
+    r.out.releaseResources();
+    for (auto& in : r.ins)
+    {
+        in->releaseResources();
+    }
+    r.out.prepareToPlay(kSr, kBlock);
+    for (auto& in : r.ins)
+    {
+        in->prepareToPlay(kSr, kBlock);
+    }
+    r.ph.timeSamples = 0;
+    r.ph.playing = true;
+
+    // 不 pump:[M] 一拍都不跑。80 ms 的 ramp 走完之后是原声。
+    float last = 0.0f;
+    for (int b = 0; b < 12; ++b)
+    {
+        last = inputPeak();
+        r.ph.timeSamples += kBlock;
+    }
+    CHECK(last == Catch::Approx(kLevel));
 }
 
 // 实时的重新 prepare 不动环:清写头只属于离线的这一轮(旧音频不进导出)。实时下读方还在读,prepare 不该让它看到写头回零。

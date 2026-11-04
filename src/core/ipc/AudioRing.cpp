@@ -68,11 +68,11 @@ void AudioRing::write(const AudioRingBinding* b, int64_t t0, const float* interl
     b->header->write_head_samples.store(static_cast<u64>(t0 + n), std::memory_order_release);
 }
 
-void AudioRing::bumpEpoch(const AudioRingBinding* b) noexcept
+void AudioRing::bumpEpoch(const AudioRingBinding* b, u64 by) noexcept
 {
     if (b != nullptr && b->bound)
     {
-        b->header->epoch.fetch_add(1, std::memory_order_release);
+        b->header->epoch.fetch_add(by, std::memory_order_release);
         // [B 线 M04] 换代之后、写新一代数据之前的 release fence。调用方(InputProcessor 音频线程)
         // 紧接着就在同一线程里 write() 新一代样本;release RMW 只约束它**之前**的访问,挡不住这些
         // 样本写被提到 epoch+1 之前可见 —— arm64 上读方可能前后两次都读到旧 epoch(e1 == e2),

@@ -39,6 +39,9 @@ OutputClaimState OutputSession::prepare(u32 sampleRate, u32 maxBlock, u64 nowMs)
     maxBlock_ = maxBlock;
     blockCounterAtPrepare_ = blockCounter_.load(std::memory_order_relaxed);
     offlineReadyMask_.store(0, std::memory_order_release);
+    reachableMask_.store(0, std::memory_order_release);
+    blockWasPlaying_.store(false, std::memory_order_relaxed);
+    startMask_.store(0, std::memory_order_relaxed);
     preparedAtMs_.store(nowMs, std::memory_order_release);
     preparedSampleRate_.store(sampleRate, std::memory_order_release);
     const OutputClaimState st = openAndClaim(nowMs);
@@ -348,6 +351,11 @@ void OutputSession::evaluateChannels(u64 nowMs)
     u32 inject = 0;
     u32 stalled = 0;
     u32 ready = 0;
+    u32 reachableNow = 0;
+    u32 stoppedAtNow = 0;
+    const u64 stoppedAtPrevPacked = stoppedAt_.load(std::memory_order_relaxed);
+    const u32 stoppedAtPrev = stoppedAtMask(stoppedAtPrevPacked);
+    const int64_t stoppedAtPosPrev = stoppedAtPos(stoppedAtPrevPacked);
     u32 withdraw = 0;
     const bool offline = nonRealtime();
     // 这次 prepare 之后 Output 还没跑过:离线判定留给 [A] 的第一块。这之间的一拍可能落在 Input 重新 prepare 之前,
@@ -376,6 +384,21 @@ void OutputSession::evaluateChannels(u64 nowMs)
         if (hbFresh && bound)
         {
             const u64 wh = sources_[idx].writeHead();
+            if (!transportPlaying_ && transportPosition_ >= 0)
+            {
+                const u64 pos = static_cast<u64>(transportPosition_);
+                // 宿主按下播放之后、Output 跑到第一块播放块之前,写方已经从这里先算出去一段:REAPER 主轨上的 Output
+                // 实测比各轨晚 8–10 ms,这一拍约五分之一的机会落在中间。这时写头离开了停着的位置,Output 却还停着,
+                // 上一拍的证据说的仍是这次起播之前,位置没变、写头往前走了,就留着。从别处起播的那一块 Output 的位置
+                // 对不上,起播判定照样不接。
+                const bool atPos = wh > pos && wh - pos <= maxBlock_;
+                const bool ranAhead = wh > pos + maxBlock_ && stoppedAtPosPrev == transportPosition_ &&
+                                      (stoppedAtPrev & (1u << (ch - 1))) != 0;
+                if (atPos || ranAhead)
+                {
+                    stoppedAtNow |= (1u << (ch - 1));
+                }
+            }
             if (wh != lastWriteHead_[idx])
             {
                 lastWriteHead_[idx] = wh;
@@ -476,6 +499,10 @@ void OutputSession::evaluateChannels(u64 nowMs)
         const bool keepThroughStall = transportPlaying_ || offline;
         // 离线下失准的轨不退出读取:能不能回来看读方下一块读不读得到,读不到它的 Input 就一直直通(下面清位)。
         const bool reachable = slotActive && !hbGone && srMatch && bound && !held && (offline || !misaligned);
+        if (reachable)
+        {
+            reachableNow |= (1u << (ch - 1));
+        }
         const bool online = reachable && (!suspended || keepThroughStall);
         if (online)
         {
@@ -505,7 +532,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // 时间线跑在墙钟前面 N 倍,同一个窗口会吃掉 N 倍样本(实测 122x 下前段静音 4.69s)。
             // 非实时下这一轨从第一块起就读,Input 在 Output 读到它之后的下一块静音(offlineConfirmInjected)。
             // Output 整块替换总线,所以既不静音也不叠加;只有接在 Input 之后的发送能听到这几块原声。
-            // 实时路径逐字不动(200ms / muted 确认位 / 80ms ramp 全保留)。
+            // 实时路径不走这条(200ms / muted 确认位 / 80ms ramp 全保留;走带刚起的那几块见 noteBlockTransport)。
             //
             // 这里定下的 inject 在离线路径上只给诊断与 [A-6] 的在场判定用:音频线程读的是 offlineInjectMask(),
             // 交接不等这一拍,见它的实现注释。
@@ -531,6 +558,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
     }
     stalledMask_.store(stalled, std::memory_order_release);
     injectMask_.store(inject, std::memory_order_release);
+    stoppedAt_.store(packStoppedAt(transportPosition_, stoppedAtNow), std::memory_order_relaxed);
+    reachableMask_.store(kOfflineJudged | reachableNow, std::memory_order_release);
+    tickSawPlaying_.store(transportPlaying_ ? 1u : 0u, std::memory_order_release); // 排在 injectMask_ 之后
     if (!outputNotRunYet)
     {
         offlineReadyMask_.store(kOfflineJudged | ready, std::memory_order_release);
@@ -543,6 +573,79 @@ void OutputSession::evaluateChannels(u64 nowMs)
             registry_.clearConnectedMaskBit(ch);
         }
     }
+}
+
+void OutputSession::noteBlockTransport(bool playing, int64_t t0) noexcept
+{
+    // 宿主按下播放时可以一口气先算掉几十块:REAPER 的预先处理实测 0.5 ms 内跑完前 0.2 s。[M] 最快下一拍才看到走带在跑,
+    // 而停走带不满 5 s 时 Input 还在滞回里静音,这段就成了全零:按一次播放开头少约 0.27 s,一层、两层工程都一样。
+    // J32 要的确认已经在段里了(Input 的 muted 位),缺的只是有人早点看它。所以走带刚起的第一块,[A] 自己看一眼;
+    // [M] 看到走带在跑之后交还给 injectMask_,它的判据不变。
+    // muted 只在上升沿看一次。Input 恰好在这几十毫秒里走到 5 秒滞回的终点切回直通时,下一拍 [M] 才交还,这期间混音和原声
+    // 有不到一拍的重叠,总线交叉正把原声往下带,和 evaluateChannels 那段残留同一量级。
+    // 离线不走这里:交接归 offlineInjectMask,实时路径留下的判定不能带进来。
+    u32 start = startMask_.load(std::memory_order_relaxed);
+    if (nonRealtime_.load(std::memory_order_relaxed))
+    {
+        start = 0;
+    }
+    else if (playing && !blockWasPlaying_.load(std::memory_order_relaxed))
+    {
+        start = realtimeStartVerdict(t0);
+    }
+    else if (!playing || tickSawPlaying_.load(std::memory_order_acquire) != 0)
+    {
+        start = 0;
+    }
+    startMask_.store(start, std::memory_order_relaxed);
+    blockWasPlaying_.store(playing, std::memory_order_relaxed);
+    // 读方的起播窗口跟着开关:判定通过的轨才开,交还给 [M] 就关。
+    if ((start != 0) != startWindowOpen_)
+    {
+        startWindowOpen_ = start != 0;
+        for (u32 i = 0; i < kMaxChannels; ++i)
+        {
+            sources_[i].setStartWindow((start & (1u << i)) != 0);
+        }
+    }
+}
+
+u32 OutputSession::realtimeStartVerdict(int64_t t0) const noexcept
+{
+    // 全有或全无。Output 一读就整条替换总线,这时还直通的 Input 的声音会没了,判不了的轨也一样:
+    // 这种情况照旧等 [M]。可达性是 [M] 上一拍判的(心跳要时钟,音频线程取不到);还没判过就不接。
+    // 读方这时要放宽下锚,段里又没有写方这一代的起点,所以另外要两条证据,确认 Input 就是从这里起写的:Output 从它停着的
+    // 位置起播;每条 Input 停着时都在重写这个位置。缺一条就可能把环槽里的旧内容当数据读出来(起播时间戳不一致、
+    // Input 被旁路、这个位置宿主不调用它),这几种情况照旧等 [M]。刚定位还不到一拍就按播放也走这条路。
+    const InputSlot* inputs = claimedInputSlots_.load(std::memory_order_acquire);
+    if (inputs == nullptr || claimedSlot_.load(std::memory_order_acquire) == nullptr)
+    {
+        return 0;
+    }
+    // 位置和停着时的证据一次读出,是 [M] 同一拍的。可达性可能比它们早一拍([M] 刚好在两次读之间跑完下一拍):
+    // 两拍的可达判定都是真的判定,不是旧位置的证据;交出去之后每块还要和 [M] 最新的可达判定再求交(startReachable)。
+    const u32 reachable = reachableMask_.load(std::memory_order_acquire);
+    const u64 stoppedAtPacked = stoppedAt_.load(std::memory_order_relaxed);
+    if ((reachable & kOfflineJudged) == 0 || t0 < 0 || t0 != stoppedAtPos(stoppedAtPacked))
+    {
+        return 0;
+    }
+    const u32 stoppedAt = stoppedAtMask(stoppedAtPacked);
+    u32 verdict = 0;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        const InputSlot& slot = inputs[i];
+        if (slot.state.load(std::memory_order_acquire) != kSlotActive)
+        {
+            continue;
+        }
+        if ((reachable & stoppedAt & (1u << i)) == 0 || (slot.flags.load(std::memory_order_acquire) & kFlagMuted) == 0)
+        {
+            return 0;
+        }
+        verdict |= (1u << i);
+    }
+    return verdict;
 }
 
 void OutputSession::noteClaimedForOffline() noexcept
@@ -741,6 +844,7 @@ void OutputSession::tick(u64 nowMs)
     {
         // 先发布、后清位,同 evaluateChannels。
         offlineReadyMask_.store(kOfflineJudged, std::memory_order_release);
+        reachableMask_.store(kOfflineJudged, std::memory_order_release);
         registry_.clearConnectedMask();
         stalledMask_.store(0, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
@@ -759,6 +863,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     claimedSlot_.store(nullptr, std::memory_order_release);
     claimedInputSlots_.store(nullptr, std::memory_order_release);
     offlineReadyMask_.store(0, std::memory_order_release); // 这张判定是旧组的
+    reachableMask_.store(0, std::memory_order_release);
     preparedAtMs_.store(nowMs, std::memory_order_release);
     preparedSampleRate_.store(sampleRate, std::memory_order_release);
     releaseSlot();
@@ -788,6 +893,7 @@ void OutputSession::release(u64 nowMs)
 {
     claimedSlot_.store(nullptr, std::memory_order_release);
     claimedInputSlots_.store(nullptr, std::memory_order_release);
+    reachableMask_.store(0, std::memory_order_release);
     releaseSlot();
     releaseSegments();
     resetChannelTracking();
@@ -969,6 +1075,7 @@ u64 OutputSession::epoch(u32 channel) const
 void OutputSession::forceClearMask() noexcept
 {
     offlineReadyMask_.store(kOfflineJudged, std::memory_order_release); // 先发布、后清位,同 evaluateChannels
+    reachableMask_.store(kOfflineJudged, std::memory_order_release);
     registry_.clearConnectedMask();
     stalledMask_.store(0, std::memory_order_release);
     injectMask_.store(0, std::memory_order_release);

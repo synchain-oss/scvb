@@ -105,6 +105,8 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
 
     lastT0_ = std::numeric_limits<int64_t>::lowest();
     expectedNext_ = std::numeric_limits<int64_t>::lowest();
+    // stoppedLastBlock_ / stoppedT0_ 不清:停着时重新 prepare(宿主改设置,或者按下播放时才 prepare),之后第一块就是
+    // 播放块时,还要知道停着时在重写哪里,才分得出是不是从别处起播(epoch 加 2,见 processBlock)。
     prepared_ = true;
     startTimerHz(25); // [M] 25Hz:健康判定 + 心跳(4Hz 折半在 timerCallback 内)
 }
@@ -114,6 +116,10 @@ void ScvbInputAudioProcessor::releaseResources()
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
     stageMachine_.forcePassthrough();
+    // 模式字跟状态机一起回直通。不跟的话 [A] 读到的还是上一轮的静音,要等 [M] 下一拍才改:
+    // 宿主重新 prepare 之后主线程可能很久不空(REAPER 从窗口开始实时渲染时),这段时间 Input 静音、Output
+    // 还没接上,开头就没声音。
+    c18Stage_.store(static_cast<scvb::u32>(scvb::input::OutputStageMode::kPassthrough), std::memory_order_release);
     prepared_ = false;
 }
 
@@ -297,7 +303,13 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     {
         if (playing || t0 != lastT0_)
         {
-            scvb::AudioRing::bumpEpoch(block.audio);
+            // 停着时在重写
+            // stoppedT0_,走带一起却从它后面写起(这个位置宿主不调用、起播时间戳怪癖)。读方的起播窗口从停住的
+            // 位置起读,当成「写方从这里起写」,就会把 [stoppedT0_, t0) 环槽里的旧内容读出来。一次加 2:读方看到的和「中间
+            // 有一代没见过」一样,不放宽(ShmRingMixSource 的 R3)。从前面写起不加:[stoppedT0_, 写头) 本来就是这一代写的,
+            // 而多加的那一代会让预取的写方在起播第一块读不到(R3 要先等写头确认)。
+            const bool startedElsewhere = playing && stoppedLastBlock_ && t0 > stoppedT0_;
+            scvb::AudioRing::bumpEpoch(block.audio, startedElsewhere ? 2u : 1u);
             session_.featRing().startRun(t0); // run 切换:biquad 预热(T08/04 §3.2)
             startedRun = true;
         }
@@ -314,6 +326,11 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     featBoundPrev_ = featBound;
     lastT0_ = t0;
     expectedNext_ = t0 + nRender;
+    stoppedLastBlock_ = !playing;
+    if (!playing)
+    {
+        stoppedT0_ = t0;
+    }
 
     // 4) 写音频环:时间线寻址,frame index = pos & (ring_frames-1);stereo interleaved LR。
     //    [SL-523] 按段写整块:第 k 段写 [t0 + off, t0 + off + m)。每段 write 都把 write_head 发布到
@@ -352,7 +369,7 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     // 6) 输出级仲裁(ADR-002 v1/J12+J32):读 C18 模式字经 RampSwitcher 渲染。
     scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
 
-    // [SL-254 / J95①] **非实时(离线渲染)走同块交接** —— 不等 [M],不走 ramp。
+    // [SL-254 / J95①] **非实时(离线渲染)的交接不走墙钟** —— 不等 [M],不走 ramp。
     //
     // 病:J32 那套「Output 置 mask → Input 下一拍 [M] 静音 → Output 等 muted 确认位或 200ms 再注入」
     // 全是**墙钟**量,而离线渲染的音频时间线跑在墙钟前面 N 倍。于是「Input 已静音、Output 未注入」
@@ -421,7 +438,7 @@ void ScvbInputAudioProcessor::timerCallback()
     // 精确的「ramp 完成」时点由 [A] 经 RampSwitcher 判定;此处 [M] 以目标档近似,
     // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
     // ⚠ 非实时下该位不再代表 [A] 的实际档位:[A] 走逐块 mask/健康位硬切,[M] 这里取的是 stageMachine
-    // 的目标档,两者可差一拍。当前 Output 在非实时下忽略该确认位(直接同块注入),故无害;
+    // 的目标档,两者可差一拍。当前 Output 在非实时下忽略该确认位(按自己的判定注入),故无害;
     // 若日后非实时要重新消费 C19,必须先把它改成由 [A] 发布,否则语义对不上。
     session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
 
