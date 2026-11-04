@@ -297,7 +297,8 @@ TEST_CASE("[SL-370] RevealGate parks on navigation start and reveals on the firs
 {
     scvb::webview::RevealGate gate;
     gate.beginLoadAttempt();
-    CHECK_FALSE(gate.parked()); // 控制器建好之前必须留在原位:SL-271 的重试泵挂在 paint 上
+    // beginLoadAttempt 本身不挪;WebView2 上 WebViewHost 紧接着调 holdBeforeNavigation(见下面那组)。
+    CHECK_FALSE(gate.parked());
 
     gate.onNavigationStarted(1000);
     CHECK(gate.parked());
@@ -535,6 +536,285 @@ TEST_CASE("[SL-370] parkedBounds keeps the size and lands outside the visible re
     // 宽度为 0(还没 resizeToDesignBox)时也必须挪得动,否则原地不动 = 遮挡完全失效。
     const juce::Rectangle<int> empty{0, 0, 0, 40};
     CHECK(scvb::webview::parkedBounds(empty).getX() > empty.getX());
+}
+
+// -----------------------------------------------------------------------------
+// 导航发出前就挡住(holdBeforeNavigation)。
+//
+// JUCE 8.0.8 的 WebView2 后端在控制器建好的完成回调里先按组件此刻的 bounds 摆宿主窗口、再 Navigate,
+// 所以闸门改成在 goToURL 之前就挡(WebViewHost::beginLoadAttempt)。挡住期间:不起算 3s 兜底、不认
+// 首帧信号;导航开始只落 3s 的起点;桥就绪而导航开始没来时按导航开始补记;兜底面板照常顶掉。
+// 判定理由见 WebViewRevealGate.h 头注【为什么从加载尝试一开头就挪,不等导航开始】。
+// 接线那一半(beginLoadAttempt 里先挡、timerCallback 里代驱动泵)由下面 [M07][source] 那格读源码钉。
+// -----------------------------------------------------------------------------
+TEST_CASE("RevealGate holding before navigation parks at once and never times out on its own")
+{
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.holdBeforeNavigation();
+    CHECK(gate.parked());
+    CHECK(gate.holdingBeforeNavigation());
+
+    // 导航开始之前没有 3s 兜底:多久都不放行,这一段归看门狗管(到点切兜底面板)。
+    gate.onTick(0);
+    gate.onTick(static_cast<std::uint32_t>(RevealGate::kRevealFallbackMs) * 10u);
+    CHECK(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()).isEmpty());
+}
+
+TEST_CASE("RevealGate navigation start after a hold keeps the park and starts the deadline there")
+{
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    gate.onNavigationStarted(5000);
+    CHECK(gate.parked());
+    CHECK_FALSE(gate.holdingBeforeNavigation());
+
+    gate.onTick(5000 + RevealGate::kRevealFallbackMs - 1);
+    CHECK(gate.parked());
+    gate.onTick(5000 + RevealGate::kRevealFallbackMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "timeout");
+}
+
+TEST_CASE("RevealGate a second navigation start does not move the deadline")
+{
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    gate.onNavigationStarted(1000);
+    gate.onNavigationStarted(2500); // 页面自己再导航一次:3s 仍从第一次起算
+    gate.onTick(1000 + RevealGate::kRevealFallbackMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "timeout");
+}
+
+TEST_CASE("RevealGate bridge ready while still held starts the deadline like a navigation start")
+{
+    // 纵深防御:导航开始没送到、桥却就绪了。闸门不能永远挪在外面(看门狗在桥就绪之后就不管了),
+    // 补记之后照常走 3s 兜底。
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    CHECK(gate.onBridgeReady(4000));
+    CHECK(gate.parked());
+    CHECK_FALSE(gate.holdingBeforeNavigation());
+
+    gate.onTick(4000 + RevealGate::kRevealFallbackMs - 1);
+    CHECK(gate.parked());
+    gate.onTick(4000 + RevealGate::kRevealFallbackMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "timeout");
+}
+
+TEST_CASE("RevealGate bridge ready after a navigation start changes nothing")
+{
+    using scvb::webview::RevealGate;
+    // 正常顺序:导航开始先到。桥就绪不补记,3s 仍从导航开始起算。
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    gate.onNavigationStarted(1000);
+    CHECK_FALSE(gate.onBridgeReady(2500));
+    gate.onTick(1000 + RevealGate::kRevealFallbackMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "timeout");
+
+    // 已经放行之后也不补记,不会再挪走。
+    CHECK_FALSE(gate.onBridgeReady(9000));
+    CHECK_FALSE(gate.parked());
+
+    // 从没挡住过(系统 WebKit 上闸门不武装)。
+    RevealGate idle;
+    CHECK_FALSE(idle.onBridgeReady(100));
+    CHECK_FALSE(idle.parked());
+}
+
+TEST_CASE("RevealGate ignores a first-frame signal during the hold")
+{
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    gate.onFirstFrame(100); // 这一次加载还没有文档,信号不属于它
+    gate.onTick(1000);
+    CHECK(gate.parked());
+
+    gate.onNavigationStarted(2000);
+    gate.onTick(2000 + RevealGate::kRevealSettleMs + 10);
+    CHECK(gate.parked()); // 被忽略的信号没有武装放行
+
+    gate.onFirstFrame(2100);
+    gate.onTick(2100 + RevealGate::kRevealSettleMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
+}
+
+TEST_CASE("RevealGate fallback panel releases a hold that never saw a navigation")
+{
+    using scvb::webview::RevealGate;
+    RevealGate gate;
+    gate.holdBeforeNavigation();
+    gate.onFallbackShown();
+    CHECK_FALSE(gate.parked());
+    CHECK_FALSE(gate.holdingBeforeNavigation());
+    CHECK(juce::String(gate.lastRevealReason()) == "fallback");
+
+    // 放行过就不再挡:迟到的导航开始不会把面板后面的 WebView 再挪走。
+    gate.onNavigationStarted(100);
+    CHECK_FALSE(gate.parked());
+}
+
+TEST_CASE("RevealGate hold is a no-op once parked or released, and beginLoadAttempt clears it")
+{
+    using scvb::webview::RevealGate;
+    RevealGate parkedByNav;
+    parkedByNav.onNavigationStarted(1000);
+    parkedByNav.holdBeforeNavigation();
+    CHECK_FALSE(parkedByNav.holdingBeforeNavigation()); // 已经按导航挡住的,不改回「导航之前」
+    parkedByNav.onTick(1000 + RevealGate::kRevealFallbackMs);
+    CHECK(juce::String(parkedByNav.lastRevealReason()) == "timeout"); // 3s 照常
+
+    RevealGate released;
+    released.onNavigationStarted(0);
+    released.onFirstFrame(0);
+    released.onTick(100);
+    REQUIRE_FALSE(released.parked());
+    released.holdBeforeNavigation();
+    CHECK_FALSE(released.parked());
+
+    RevealGate retry;
+    retry.holdBeforeNavigation();
+    retry.beginLoadAttempt();
+    CHECK_FALSE(retry.parked());
+    CHECK_FALSE(retry.holdingBeforeNavigation());
+    retry.holdBeforeNavigation(); // 重试的加载尝试照样能再挡一次
+    CHECK(retry.holdingBeforeNavigation());
+}
+
+TEST_CASE("windowClosedLine names the gate state and the elapsed time")
+{
+    using scvb::webview::RevealGate;
+    using scvb::webview::windowClosedLine;
+    RevealGate gate;
+    CHECK(windowClosedLine(1500, 1000, gate, true, false) == "window closed after 500 ms (revealed)");
+
+    gate.holdBeforeNavigation();
+    CHECK(windowClosedLine(1500, 1000, gate, true, false) == "window closed after 500 ms (parked before navigation)");
+    gate.onNavigationStarted(1200);
+    CHECK(windowClosedLine(1500, 1000, gate, true, false) == "window closed after 500 ms (parked)");
+
+    // 兜底面板在场时先报面板;闸门不启用的平台报 gate off,不管闸门对象里记着什么。
+    CHECK(windowClosedLine(1500, 1000, gate, true, true) == "window closed after 500 ms (fallback)");
+    CHECK(windowClosedLine(1500, 1000, gate, false, false) == "window closed after 500 ms (reveal gate off)");
+
+    gate.onFirstFrame(1300);
+    gate.onTick(1300 + RevealGate::kRevealSettleMs);
+    REQUIRE_FALSE(gate.parked());
+    CHECK(windowClosedLine(1500, 1000, gate, true, false) == "window closed after 500 ms (revealed)");
+
+    // 毫秒计数回绕:起点在回绕前、关窗在回绕后,用时仍是正的小数。
+    CHECK(windowClosedLine(100u, 0xFFFFFF00u, gate, true, false) == "window closed after 356 ms (revealed)");
+}
+
+// -----------------------------------------------------------------------------
+// 开窗占位的几何(PlatformWebView.h 的 kShellCornerRadiusPx / kShellRimRgb / shellFitZoom /
+// shellPlaceholderBounds / paintShellPlaceholder)。占位与成品外壳 .sc-shell 同形:圆角之外铺外圈色,
+// 圆角之内铺占位渐变,缩放公式与 web/shared/shell-fit.js 的 fitFactor 同一条。
+// 两个常量与 tokens.css 的对拍在 smoke-embedded-resources 的 ⑥d,这里钉 C++ 侧的值与画法。
+// -----------------------------------------------------------------------------
+TEST_CASE("shell geometry constants are the agreed values")
+{
+    CHECK(scvb::webview::kShellCornerRadiusPx == 20.0f); // tokens.css --r-shell
+    CHECK(scvb::webview::kShellRimRgb == 0x191820u); // tokens.css --page-backdrop
+}
+
+TEST_CASE("shellFitZoom is the page formula")
+{
+    using scvb::webview::shellFitZoom;
+    CHECK(shellFitZoom(460.0f, 560.0f, 460.0f, 560.0f) == 1.0f);
+    CHECK(shellFitZoom(575.0f, 700.0f, 460.0f, 560.0f) == 1.25f);
+    // 取两维里小的那个。
+    CHECK(shellFitZoom(1600.0f, 780.0f, 1180.0f, 780.0f) == 1.0f);
+    CHECK(shellFitZoom(460.0f, 1120.0f, 460.0f, 560.0f) == 1.0f);
+    // 向下量化到 1e-4:不会因为四舍五入把外壳放大出窗口。
+    const float z = shellFitZoom(1000.0f, 1000.0f, 3000.0f, 3000.0f);
+    CHECK(z <= 1.0f / 3.0f);
+    CHECK(std::abs(z - 0.3333f) < 1e-6f);
+    // 第五位小数 ≥ 5 时才分得出「向下」与「四舍五入」(1/3 两种都是 0.3333,2/3 一个 0.6666 一个 0.6667)。
+    const float z2 = shellFitZoom(2000.0f, 2000.0f, 3000.0f, 3000.0f);
+    CHECK(z2 <= 2.0f / 3.0f);
+    CHECK(std::abs(z2 - 0.6666f) < 1e-6f);
+    // 任一维不是正数(或不是数)回落 1。
+    CHECK(shellFitZoom(0.0f, 560.0f, 460.0f, 560.0f) == 1.0f);
+    CHECK(shellFitZoom(460.0f, -1.0f, 460.0f, 560.0f) == 1.0f);
+    CHECK(shellFitZoom(460.0f, 560.0f, 0.0f, 560.0f) == 1.0f);
+    CHECK(shellFitZoom(460.0f, 560.0f, 460.0f, std::nanf("")) == 1.0f);
+}
+
+TEST_CASE("shellPlaceholderBounds is the design box times the zoom, centred")
+{
+    const auto exact = scvb::webview::shellPlaceholderBounds({0.0f, 0.0f, 575.0f, 700.0f}, 460.0f, 560.0f);
+    CHECK(std::abs(exact.getWidth() - 575.0f) < 0.01f);
+    CHECK(std::abs(exact.getHeight() - 700.0f) < 0.01f);
+    CHECK(std::abs(exact.getCentreX() - 287.5f) < 0.01f);
+    CHECK(std::abs(exact.getCentreY() - 350.0f) < 0.01f);
+
+    // 窗口比设计盒宽:外壳按高缩放,左右留出外圈色。
+    const auto wide = scvb::webview::shellPlaceholderBounds({0.0f, 0.0f, 1000.0f, 560.0f}, 460.0f, 560.0f);
+    CHECK(std::abs(wide.getWidth() - 460.0f) < 0.01f);
+    CHECK(std::abs(wide.getX() - 270.0f) < 0.01f);
+    CHECK(std::abs(wide.getY() - 0.0f) < 0.01f);
+}
+
+TEST_CASE("paintShellPlaceholder paints the rim outside the rounded corner and the gradient inside")
+{
+    // 100% 档的 Input 窗口:外壳铺满,圆角半径 20 像素。
+    const int w = 460, h = 560;
+    juce::Image img(juce::Image::RGB, w, h, true, juce::SoftwareImageType());
+    {
+        juce::Graphics g(img);
+        scvb::webview::paintShellPlaceholder(g, {0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)}, 460.0f,
+                                             560.0f);
+    }
+    const auto rim = juce::Colour(0xff000000u | scvb::webview::kShellRimRgb);
+    // 四个角上的像素在圆角之外:外圈色。
+    CHECK(img.getPixelAt(0, 0) == rim);
+    CHECK(img.getPixelAt(w - 1, 0) == rim);
+    CHECK(img.getPixelAt(0, h - 1) == rim);
+    CHECK(img.getPixelAt(w - 1, h - 1) == rim);
+    // 离角 3 像素的对角线点仍在 20 像素圆角之外(圆角在对角线上离角约 5.9 像素才开始)。
+    CHECK(img.getPixelAt(3, 3) == rim);
+    // 边的中点与对角线上离角 8 像素处已在圆角之内:不是外圈色,是浅色渐变。
+    for (const auto p : {juce::Point<int>(w / 2, 0), juce::Point<int>(0, h / 2), juce::Point<int>(8, 8),
+                         juce::Point<int>(w / 2, h / 2)})
+    {
+        INFO("pixel " << p.x << "," << p.y);
+        const auto c = img.getPixelAt(p.x, p.y);
+        CHECK(c != rim);
+        CHECK(c.getBrightness() > 0.7f);
+    }
+    // 中心就是渐变沿轴 50% 的点。
+    const auto centre = img.getPixelAt(w / 2, h / 2);
+    const auto mid = scvb::webview::shellBackdropMid();
+    CHECK(std::abs(static_cast<int>(centre.getRed()) - static_cast<int>(mid.getRed())) <= 3);
+    CHECK(std::abs(static_cast<int>(centre.getGreen()) - static_cast<int>(mid.getGreen())) <= 3);
+    CHECK(std::abs(static_cast<int>(centre.getBlue()) - static_cast<int>(mid.getBlue())) <= 3);
+}
+
+TEST_CASE("paintShellPlaceholder radius follows the zoom")
+{
+    // 200% 档:半径 40 像素。离角 8 像素的对角线点在 20 像素圆角里会是渐变,在 40 像素圆角里仍是外圈色。
+    const int w = 920, h = 1120;
+    juce::Image img(juce::Image::RGB, w, h, true, juce::SoftwareImageType());
+    {
+        juce::Graphics g(img);
+        scvb::webview::paintShellPlaceholder(g, {0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)}, 460.0f,
+                                             560.0f);
+    }
+    const auto rim = juce::Colour(0xff000000u | scvb::webview::kShellRimRgb);
+    CHECK(img.getPixelAt(8, 8) == rim);
+    CHECK(img.getPixelAt(16, 16) != rim);
 }
 
 TEST_CASE("majorVersionOf parses the WebView2 runtime version string")
@@ -1126,6 +1406,31 @@ TEST_CASE("[M07] WebViewHost.cpp routes platform text and the reveal gate throug
     CHECK(nav.find("if(PlatformWebView::revealGateEnabled()){revealGate_.onNavigationStarted(juce::Time::"
                    "getMillisecondCounter());applyRevealGate();}") != std::string::npos);
     CHECK(countOf(src.code, "revealGate_.onNavigationStarted(") == 1);
+
+    // ②b 导航发出前就挡:beginLoadAttempt 里先挡(同一个 revealGateEnabled() 条件)、再 goToURL;
+    //    挡住期间 timerCallback 代驱动控制器创建的重试泵;桥就绪时把还挡在导航之前的闸门补记成导航开始。
+    //    删掉其中任一句,上面那几格纯逻辑照样全绿,只有这里会红。
+    const auto beginBody = methodBody(src.code, "voidWebViewHost::beginLoadAttempt(", "WebViewHost::");
+    const auto hold = beginBody.find(
+        "if(PlatformWebView::revealGateEnabled()){revealGate_.holdBeforeNavigation();applyRevealGate();}");
+    const auto go = beginBody.find("webView_->goToURL(entryUrl());");
+    CHECK(hold != std::string::npos);
+    CHECK(go != std::string::npos);
+    CHECK(hold < go);
+    CHECK(countOf(src.code, "revealGate_.holdBeforeNavigation(") == 1);
+    const auto tick = methodBody(src.code, "voidWebViewHost::timerCallback(", "WebViewHost::");
+    CHECK(tick.find("if(revealGate_.parked()){if(revealGate_.holdingBeforeNavigation())webView_->"
+                    "pumpControllerCreation();") != std::string::npos);
+    CHECK(src.code.find("voidpumpControllerCreation(){juce::Graphicsg(pumpScratch_);juce::WebBrowserComponent::"
+                        "paint(g);}") != std::string::npos);
+    const auto ready = methodBody(src.code, "voidWebViewHost::handleRequestInitialState(", "WebViewHost::");
+    CHECK(ready.find("if(revealGate_.onBridgeReady(juce::Time::getMillisecondCounter()))") != std::string::npos);
+
+    // ②c 两层 paint 都只经 paintPlaceholder 画占位,占位按本角色的设计盒取几何。
+    CHECK(countOf(src.code, "paintPlaceholder(g,getLocalBounds().toFloat());") == 2);
+    const auto placeholder = methodBody(src.code, "voidWebViewHost::paintPlaceholder(", "WebViewHost::");
+    CHECK(placeholder.find("bridge::designBoxWindowSize(config_.role,1.0f)") != std::string::npos);
+    CHECK(placeholder.find("paintShellPlaceholder(g,area,") != std::string::npos);
 
     // ③ 兜底面板:三条提到运行时的文案 + install 按钮的平台条件。
     const auto fallback = methodBody(src.code, "voidWebViewHost::showFallback(", "WebViewHost::");
