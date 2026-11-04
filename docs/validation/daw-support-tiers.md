@@ -1,7 +1,7 @@
 # DAW 支持等级登记
 
 > 状态:演进中
-> 最后更新:2026-10-11
+> 最后更新:2026-11-04
 > 来源:masterPlan 10 §3.4(判定规则)、J124(Live / Studio One 标未验证,U14 修订)
 
 ## 0. 这份文件和 DAW_COMPATIBILITY 的关系
@@ -27,7 +27,7 @@
 | DAW | 版本 | 等级 | 依据 | 上调 / 维持的条件 |
 | --- | --- | --- | --- | --- |
 | Cubase | 14 / 15 | **Tier 1(主测)** | S1 路由 spike 的 C-1..C-14 全过(`docs/spikes/S1-daw-checklist.md` §3);成品测试包 v5.6 – v5.6.19 在 Cubase 15 Pro 上多轮实测(自动化写入、存工程重开、离线导出);已知限制有规避(自动化在 Ins 隐藏车道、Input 须在 pre-fader 区最后一格) | **维持**要两件事:① RC 包在 [daw-matrix.md](daw-matrix.md) v0.9.0-rc.1 一节的 Cubase 行全绿;② MUTE 的限制写进文档(发版清单 H3,目前没写) |
-| REAPER | 7 | **Tier 2(部分验证)** | 只有 S1 spike 层:R-2 / R-3 / R-4 / R-5 / R-12 与并入 C 系列的场景通过;成品插件与自动化写入没在 REAPER 上测过;RD-04(关 GUI 不写自动化)有宿主端规避 | 成品在 REAPER 上跑完矩阵(见下面「待统筹核」) |
+| REAPER | 7 | **Tier 2(部分验证)** | S1 spike 层:R-2 / R-3 / R-4 / R-5 / R-12 与并入 C 系列的场景通过。成品层:2026-11-03 在 REAPER 7.82 上跑完 `tests/reaper/` 的 148 行矩阵(一层与两层工程的路由、离线与实时导出、存盘重开、窗口开着时写自动化),全部通过,结果见 DAW_COMPATIBILITY 脚注 9。RD-04(关 GUI 不写自动化)没有复验,有宿主端规避 | RD-04 复验通过,并按下面「待统筹核」定口径 |
 | Ableton Live | 12 | **Tier 3(未验证)** | 两层都没有上机(U27 让 S1 跳过 Live;J124 首发标未验证) | 真机跑完矩阵;L-5(设备停用)必测 |
 | Studio One | 6 | **Tier 3(未验证)** | 两层都没有上机(U27 仅作可选对照、未执行;J124 首发标未验证);版本按 U9 为 6 | 真机跑完矩阵;Dropout Protection 异 block size 必测 |
 | LUNA(macOS,Apple Silicon) | — | **Tier 3(beta,待验证)** | 没有上机。macOS beta 的第一台目标宿主,真机验收清单见 [luna-acceptance.md](luna-acceptance.md);验收前一律「设计上预期 / 未实测」 | LUNA 轻验收 P0(T1–T6)全过后由统筹回填并按 §0 四处同改上调;T1 / T2 / T3 / T6 任一不过,保持 Tier 3 并挡 beta 发版 |
@@ -47,5 +47,6 @@
 
 | 日期 | 变化 | 依据 |
 | --- | --- | --- |
+| 2026-11-04 | REAPER 的依据补上成品矩阵的结果,等级不变(Tier 2) | v0.11.0-beta.1 发版清单 F2 |
 | 2026-10-11 | 新增 LUNA(macOS,Apple Silicon)Tier 3(beta,待验证)与 Logic Pro(macOS)Tier 3(beta / 未在 Logic 实测)两行;四处同改:DAW_COMPATIBILITY §1 / §2.5 / §2.6 / §4、`README.md`、`README.zh-CN.md`、本文件 | M17(macOS beta 用户文档) |
 | 2026-09-28 | Cubase 维持 Tier 1;REAPER 定为 Tier 2(部分验证);Ableton Live 12 与 Studio One 6 定为 Tier 3(未验证) | #298(DAW_COMPATIBILITY 按真机实测收正)、J124 |

@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+## [0.11.0-beta.1] - 2026-11-04
+
+本版 GitHub Release 只放 Windows x64。
+
 ### ⚠️ 契约变更
 
 - **pan 曲线只在播放时叠加,不再进分析**:分析不再把 pan 曲线算进左右平衡,写进宿主的 `V1/V2 Txx Pan/Vol` 车道也就不再随曲线变;
@@ -1247,6 +1251,7 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 
 - 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。直接提交,无 PR:[`ae61f5f`](https://github.com/synchain-oss/scvb/commit/ae61f5f)
 
-[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.10.0-beta.1...HEAD
+[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.11.0-beta.1...HEAD
+[0.11.0-beta.1]: https://github.com/synchain-oss/scvb/compare/v0.10.0-beta.1...v0.11.0-beta.1
 [0.10.0-beta.1]: https://github.com/synchain-oss/scvb/compare/v0.9.0-rc.1...v0.10.0-beta.1
 [0.9.0-rc.1]: https://github.com/synchain-oss/scvb/compare/ae61f5f...v0.9.0-rc.1

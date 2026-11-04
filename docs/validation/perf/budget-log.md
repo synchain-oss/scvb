@@ -1,7 +1,7 @@
 # 性能预算日志(budget-log)
 
 > 状态:v0.9.0-rc.1 建基线(首发,没有上一版可比)
-> 最后更新:2026-09-30
+> 最后更新:2026-11-04
 > 口径:预算与判档见 masterPlan `plan/10-validation.md` §5(本文件是它 §0.4 冻结的落盘路径);发版清单 [release-checklist-v0.9.0-rc.1.md](../release-checklist-v0.9.0-rc.1.md) 的 E1 / E2 / E3
 > 预算是**相对量**(占 block 期限的百分比),换机后仍可比,绝对值要重测(10 §5.0)。
 
@@ -153,6 +153,12 @@ MEM-5 / MEM-7 与「5 分钟稳态无泄漏」要上机量,rc.1 按 J175 不跑;
 | MEM-1 音频环 | 30 MB(15 × `1<<19` × 4 B,stereo 环按与 mono 同尺寸预算) | 60 MiB(15 × 4 MiB:每个音频段恒按 stereo 容量 `1<<19` 帧 × 2 个 float 创建) | IPC 几何纪律要求声道切换不扩容段(见上 MEM-1 一段);MEM-1 原备注写明上调到 60 MB 时在此重新裁定 |
 | MEM-3 Output FrameStore(20 分钟 × 15 轨) | ≤ 3 MB | 约 8.8 MiB(每轨 30 页 × 20 480 B;另加 `std::map` 节点与覆盖区间表) | 原预算出自 04 §3.1 的一处算术错误:8 页按同句的 5 B/hop 是 160 KiB,不是 40 KB |
 
+## v0.11.0-beta.1(发版清单 E1):没有重跑
+
+`scvb_bench` 编进去、调用到的代码,`v0.10.0-beta.1` 到本版一行没变:`git diff v0.10.0-beta.1 HEAD` 对 `tests/tools/scvb_bench.cpp`、`tests/tools/CMakeLists.txt`、`src/core/analysis/FeatureExtractor.*`、`src/core/dsp/`、`src/core/engine/CurveEvaluator.*`,以及根 `CMakeLists.txt`、`cmake/`、`src/core/CMakeLists.txt` 都是空的(2026-11-04 核)。两版量的是同一份代码、同一套编译选项,A/B 只会量到计时噪声,所以本版没有编两版对比,上面的基线照旧有效。
+
+本版改了的实时路径代码 `--dsp` 都不量:`src/core/output/OutputSession.*`、`ShmRingMixSource.*`、`BusXfade.h`、`src/core/input/InputSession.*`、`src/core/ipc/AudioRing.*`(离线交接、实时起播,多是每块一次的判定;`MixMath.h` 只改了注释)。它们的耗时没有基准覆盖,这是已知缺口,和上面「这把尺子量的是什么」是同一件事。
+
 ## 修订记录
 
 | 日期 | 内容 |
@@ -160,3 +166,4 @@ MEM-5 / MEM-7 与「5 分钟稳态无泄漏」要上机量,rc.1 按 J175 不跑;
 | 2026-09-29 | 建本文件:基线机器、两档 `scvb_bench` 各 4 次(非安静条件)、PERF-1..4 与 MEM-1..4 的判定(SL-575,#345) |
 | 2026-09-29 | MEM-1 / MEM-3 的预算按 J178③ 修订(见「预算修订」);PERF-2 的 96k/128 一档按 J178④ 打 tag 前重跑(SL-575,#345) |
 | 2026-09-30 | PERF-2 的 96k/128 一档按 J178④ 在安静条件下重跑三次(2026-09-29 晚),都在预算内;记录见「PERF-2 安静重跑」,发版清单 E2 勾上(SL-581) |
+| 2026-11-04 | v0.11.0-beta.1 的 E1:基准量的代码与上一版相同,不重跑,理由见「v0.11.0-beta.1(发版清单 E1)」 |
