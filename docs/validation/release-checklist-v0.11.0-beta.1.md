@@ -31,7 +31,7 @@
   - 证据:(PR 分支)`CMakeLists.txt` 为 `project(SCVB VERSION 0.11.0)`。tag 那一跑:______
   - 状态:⏳ CI
 
-- [ ] **A2 CHANGELOG 已更新**
+- [x] **A2 CHANGELOG 已更新**
   - 怎么查:`## [Unreleased]` 已归入 `## [0.11.0-beta.1] - <日期>`,底部对比链接补齐;`node scripts/check-changelog-drafts.mjs` 退出 0;契约变更条目各有 `docs/contract-changes/` 文档、每条带 PR 号。
   - 证据:(PR 分支)`## [Unreleased]` 已归入 `## [0.11.0-beta.1] - 2026-11-04`,上面留一个空的 `[Unreleased]`;底部补了两条对比链接(tag 推上去之前 404,临时放行见 L2)。`node scripts/check-changelog-drafts.mjs` 退出 0。本节 17 条每条带 PR 号;三条契约变更各有变更文档(见 A3)。发版日期如果不是 11-04,打 tag 前改标题。
   - 状态:✅ 已核
@@ -59,10 +59,10 @@
   - 证据:______
   - 状态:⏳ CI
 
-- [ ] **B3 本地全量 `pwsh scripts/gates.ps1`(含真机 GUI pluginval)全绿**
+- [x] **B3 本地全量 `pwsh scripts/gates.ps1`(含真机 GUI pluginval)全绿**
   - 怎么查:发版清单第 4 步。对 `staging` dispatch `build-vst3` 这一步本版省去(所有者 2026-11-01 裁定)。
-  - 证据:__B3__
-  - 状态:⏳ 统筹
+  - 证据:2026-11-04 在 PR 分支 `00f7f09` 上跑 `pwsh scripts/gates.ps1`(全量,含 gate 8),本机 MSVC 14.44、JUCE 8.0.8、pluginval 1.0.4:gate 1–8 与各子档全部 PASS,没有 SKIP / FLAKY-SKIP;gate 5 构建 0 条 `warning C`;gate 6 的 9 个 ctest 目标全部通过;gate 7 / 8 三个插件在 strictness 5 下都过(gate 8 含 GUI)。同一 PR 上之后只改了文档。
+  - 状态:✅ 已核
 
 - [ ] **B4 mac job 在 tag 那一跑的结果**
   - 本版只发 Windows,mac job 红不挡发布,但结果要如实记下。macOS 的宿主用例有几条计时敏感,偶发红过(`modeAt(2.0) == Armed`、`blockDiff(bus, level)`、`writerJumpedAtRerender`);P0-2 / P1-5 两条已由 #439 修掉。
@@ -80,24 +80,24 @@
 
 - [x] **D1 导出 null test**
   - 怎么查:`audio/nulltest-log.md` 追加本版一条。
-  - 证据:REAPER 7.82 成品矩阵:两层工程的离线导出(窗口 / 命令行、Full-speed Offline / 1×、块大小 32 / 2048、44.1 kHz、选区、多 region)和同样位置的一层工程逐位相同;一层工程的离线导出和不插插件的混音差在 -150 dB;改渲染采样率时差别在 -132 dB 以下;存盘重开三次 FX state 不变;实时渲染开头约 0.5–0.6 秒和离线不同、之后逐位相同(KI-21)。比较用的是 reaper-harness 自带的对比和 `tests/reaper/nested/session/wav.mjs`,不是 `scvb_nulltest`。记录见 D3。
+  - 证据:`scripts/nulltest.ps1` 分声道比对(2026-11-04,模式 A,`-PanLawDb 0 -Align`):REAPER 7.82 上一层工程的 Full-speed Offline 与 1× 导出各对不插插件的同一工程,样本偏移 0,残差峰值 L / R 都是 −150.5 dBFS,RMS −168.5 / −168.6 dBFS,判据是峰值 < −120 dBFS;文件是 2026-11-03 矩阵 `n0-ref` 那一行导出的。同一份矩阵里还有:两层工程的离线导出(窗口 / 命令行、Full-speed Offline / 1×、块大小 32 / 2048、44.1 kHz、选区、多 region)和同样位置的一层工程逐位相同;一层工程的离线导出和不插插件的混音差在 −150 dB;改渲染采样率时差别在 -132 dB 以下;存盘重开三次 FX state 不变;实时渲染开头约 0.5–0.6 秒和离线不同、之后逐位相同(KI-21)。这部分比较用的是 reaper-harness 自带的对比和 `tests/reaper/nested/session/wav.mjs`。记录见 D3。
   - 状态:✅ 已核
 
 - [ ] **D2 PANLAW-1..5 绿**
   - 怎么查:`ctest` 里对应用例(含在 B1 / B3 的 `100% tests passed` 内)。
-  - 证据:______
-  - 状态:⏳ CI
+  - 证据:PANLAW 用例(`tests/core/test_panlaw.cpp`)在 `scvb_tests` 里,含在 B3 那次 gate 6 的 ctest 全部通过之内;本 PR 的 CI `build-and-validate` 也绿。tag 那一跑再回读一次。
+  - 状态:⏳ CI(本地与 PR 上已绿)
 
 - [x] **D3 结果追加到 `audio/nulltest-log.md`**
-  - 证据:本 PR 在 §2 汇总表追加 2026-11-03 一行(REAPER 7.82 成品矩阵,模式 A)和一段说明。harness 只报两声道合并的峰值,所以这一行没有分声道、没有 RMS,§3 也没有原始记录,说明里写明了。
+  - 证据:本 PR 在 §2 汇总表追加两行(REAPER 7.82,模式 A,Full-speed Offline 与 1×)和一段说明,§3 追加 `scripts/nulltest.ps1` 的两节原始记录(2026-11-04 03:25:26 / 03:25:28)。
   - 状态:✅ 已核
 
 ### E. 性能
 
-- [ ] **E1 `scvb_bench --dsp` 对比上一版无 >10% 退化**
+- [x] **E1 `scvb_bench --dsp` 对比上一版无 >10% 退化**
   - 怎么查:`perf/budget-log.md`。本版动了离线交接、实时起播与分析,按模板要重跑:在同一台机器、同一套工具链上编 `v0.10.0-beta.1` 和本版,各跑两档。
-  - 证据:基准编进去、调用到的代码(`scvb_bench.cpp`、FeatureExtractor、KWeighting、PanMath、CurveEvaluator)和构建脚本,`v0.10.0-beta.1` 到本版 `git diff` 为空(2026-11-04 核),两版量的是同一份代码,A/B 只会量到噪声,所以没重跑。本版改的离线交接、实时起播代码(OutputSession、ShmRingMixSource、InputSession 等)`--dsp` 不量,没有基准覆盖。记录见 `perf/budget-log.md`「v0.11.0-beta.1(发版清单 E1)」。
-  - 状态:✅ 已核(基准量的代码没变;改了的路径不在基准里)
+  - 证据:2026-11-04 在同一台机器、同一套工具链上编 `v0.10.0-beta.1` 和本版的 `scvb_bench`,两档交替各跑 6 次。两份 exe 逐字节比只差构建时间戳,`checksum` 两版相同;基准编进去、调用到的代码 `git diff` 为空。Output 48k/512 的中位数本版高约 15%,但同一份旧版自己 6 次之间就差 17%,两份又是同一份机器码,判为计时噪声;其余三格中位数差约 2% 以内。本版改的离线交接、实时起播代码(OutputSession、ShmRingMixSource、InputSession 等)`--dsp` 不量,没有基准覆盖。数与条件见 `perf/budget-log.md`「v0.11.0-beta.1(发版清单 E1)」。这台不是 U16 参考机,数不和基线比。
+  - 状态:✅ 已核
 
 ### F. DAW 矩阵
 
@@ -116,7 +116,7 @@
 
 ### G. 文档
 
-- [ ] **G1 文档对等与红字真源**
+- [x] **G1 文档对等与红字真源**
   - 怎么查:`pwsh scripts/check-readme-parity.ps1`、`node scripts/gen-hard-rules.mjs --check` 退出 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 为 `reviewed`。
   - 证据:2026-11-04 在 PR 分支上:`check-readme-parity.ps1` 两组双语文档结构一致;`gen-hard-rules.mjs --check` 6 个落地面与真源逐字节一致;`frReview.status` 为 `reviewed`。
   - 状态:✅ 已核
@@ -161,9 +161,9 @@
   - 证据:______
   - 状态:⏳ 用户
 
-- [ ] **J5 tag 保护生效(`v*`)**
-  - 证据:______
-  - 状态:⏳ 统筹
+- [x] **J5 tag 保护生效(`v*`)**
+  - 证据:2026-11-04 回读:tag 规则集 `protect-release-tags-v`(`refs/tags/v*`,creation / update / deletion / non_fast_forward)状态 active。
+  - 状态:✅ 已核
 
 - [x] **J6 干净 Windows 11 上解压安装**
   - N/A(本版):同 v0.10.0-beta.1,v1.0.0 前再议。
@@ -188,10 +188,20 @@
   - 状态:⏳ 统筹
 
 - [ ] **L3 官网**
-  - 怎么查:Release 发布之后按 release-kit 的 `release-scvb` 手册更新下载页的版本号与 SHA-256,加曲线语义的 FAQ,REAPER 的说法按成品矩阵改。
+  - 怎么查:Release 发布之后按 release-kit 的 `release-scvb` 手册更新下载页的版本号与 SHA-256,加曲线语义的 FAQ,REAPER 的说法按成品矩阵改。只更新到官网的 `dev`,不推 `prod`:官网的 `prod` 由用户定期集中推(用户 2026-11-04 裁定)。
   - 证据:______
   - 状态:⏳ 统筹
 
 ## 3. 汇总
 
-__SUMMARY__
+截至 2026-11-04(PR 分支,打 tag 前):共 31 项。「证据」留空的格子表示还没核,不是通过。
+
+| 状态 | 项数 |
+| --- | --- |
+| ✅ 已核 | 12(A2、A3、A4、B3、D1、D3、E1、F1、F2、G1、G2、J5) |
+| N/A | 2(F3、J6) |
+| ⏳ CI | 9(A1、B1、B2、B4、C1、D2、H1、H2、J1) |
+| ⏳ 统筹 | 5(J2、J3、K1、L2、L3) |
+| ⏳ 用户 | 3(G3、J4、L1) |
+
+(合计 31:12 + 2 + 9 + 5 + 3。)

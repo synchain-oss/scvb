@@ -52,10 +52,10 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-09-30 | `518ab466`(rc.1 第三个测试包,CI run 36653086798;不是 tag 提交) | Cubase 15 | B(engine vs follow,D2) | 用户自有多轨人声(不入库);24-bit PCM、48 kHz 立体声、1,401,962 帧(约 29.2 s);engine_C `b1a61736…` / follow_D `23a52437…` | 工程原设置(未回报;两份相同,模式 B 不补偿) | 0 | 0 | −72.5 / −75.6 | −99.0 / −102.7 | 逐声道 RMS < −40 dBFS | **过**(余量约 59 dB);前提见下 | 2026-09-30 00:57:04 -04:00 |
 | 2026-09-30 | 同上 | Cubase 15 | A(透明性,D1) | 同一组人声;32-bit float、48 kHz 立体声、1,401,962 帧;ref_A(完整、不装 SCVB)`4beea6d7…` / test_B(第三轮)`583af831…` | Equal Power | 0(`-PanLawDb 0`,J178①) | 0 | −168.6 / −168.6 | −192.1 / −192.1 | 偏移 0、峰值 < −120 dBFS | **过**(浮点舍入量级,非逐位相同);口径见下 | 2026-09-30 00:57:29 -04:00 |
+| 2026-11-03 | `647a725`(候选构建,不是 tag 提交) | REAPER 7.82 | A(透明性,D1) | reaper-harness 生成的三条噪声源(VA1 / VA2 / VB1,种子 11 / 12 / 13,每条 L / R 互不相关),分成两组、各一个 Output;32-bit float、48 kHz 立体声、384,000 帧(8 s) | 工程默认(没单独核) | 0(`-PanLawDb 0`) | 0 | −150.5 / −150.5 | −168.5 / −168.6 | 偏移 0、峰值 < −120 dBFS | **过**(浮点舍入量级,非逐位相同);Full-speed Offline,见下 | 2026-11-04 03:25:26 -05:00 |
+| 2026-11-03 | 同上 | REAPER 7.82 | A(透明性,D1) | 同上,1× 离线导出 | 同上 | 0(`-PanLawDb 0`) | 0 | −150.5 / −150.5 | −168.5 / −168.6 | 偏移 0、峰值 < −120 dBFS | **过**;同上 | 2026-11-04 03:25:28 -05:00 |
 
-| 2026-11-03 | `647a725`(候选构建,不是 tag 提交) | REAPER 7.82 | A(透明性,D1) | reaper-harness 生成的三条噪声源(VA1 / VA2 / VB1,种子 11 / 12 / 13,每条 L / R 互不相关),分成两组、各一个 Output;32-bit float、48 kHz 立体声、384,000 帧(8 s) | 工程默认(没单独核) | 0 | 0 | 合并 −150.5(分声道没记) | 没记 | 偏移 0、峰值 < −120 dBFS | **过**;只有合并峰值,见下 | 见下 |
-
-**2026-11-03 一条记录(REAPER 成品矩阵)的说明**。比对不是 `scripts/nulltest.ps1` 做的,是 reaper-harness 自带的逐样本对比(`tests/reaper/` 的 `n0-ref`:一层工程对不插插件的同一工程)。harness 只报两声道合并的峰值,没有分声道、也没有 RMS,不满足 §1.5「必须分声道报」;§3 也就没有原始记录,结果文件在本机,不入库。同一份矩阵里:离线导出(Full-speed Offline 与 1×)两次逐位相同;两层工程和同样位置的一层工程逐位相同;存盘重开三次,FX state 不变;实时渲染开头约 0.5–0.6 秒和离线不同、之后逐位相同(KI-21)。本版 Cubase 不复测(用户 2026-11-04 裁定)。
+**2026-11-03 两条记录(REAPER 成品矩阵)的说明**。两条比的四份文件都来自 `tests/reaper/` 矩阵的 `n0-ref` 一行:一层工程(两组,各一个 Output)对 reaper-harness 导出的同一工程去掉插件的版本(`dry`),2026-11-03 导出,2026-11-04 统筹用 `scripts/nulltest.ps1`(带 `-Align`)补做分声道比对,wav 按角色名传入(`D1-dry_*` 是不插插件的,`D1-scvb_*` 是装了 SCVB 的),完整 sha256 在 §3 的原始记录里,文件在本机,不入库。harness 在矩阵里自己的比对只报两声道合并的峰值(同为 −150.5 dB)。同一份矩阵里:同一种方式导出两次,逐位相同;两层工程和同样位置的一层工程逐位相同;存盘重开三次,FX state 不变;实时渲染开头约 0.5–0.6 秒和离线不同、之后逐位相同(KI-21)。本版 Cubase 不复测(用户 2026-11-04 裁定)。
 
 **2026-09-30 两条记录(rc.1 第三包)的说明**。两条由统筹用 `scripts/nulltest.ps1`(带 `-Align`)比对,wav 按角色名传入,完整 sha256 在 §3 的原始记录里。区间起止、buffer 与 Realtime Export 没有回报;两份文件帧数相同、样本偏移 0。
 
@@ -112,3 +112,43 @@
     residual_rms_db:  merged -192.073, per-channel [-192.073, -192.073]
     first_over_threshold (>= -120.000 dBFS): 无
     bit_exact:        false
+## 2026-11-04 03:25:26 -05:00
+
+- ref: D1-dry_offline.wav (sha256 8644d52954a7d38c4e8b58aada59e72efd53c076567f843b0b54083f59e9955d)
+- test: D1-scvb_offline.wav (sha256 4500c6f2e1f9de4e35d89fcb271fac2523d45b8f6aca1d3860ed70917b09793e)
+- 宿主 pan law: 0 dB(补偿 --gain-db 0;对齐: True)
+
+结果:
+    ref:              D1-dry_offline.wav
+    test:             D1-scvb_offline.wav
+    channels:         2
+    sample_rate:      48000
+    frames:           384000 (ref) / 384000 (test)
+    frames_compared:  384000
+    sample_offset:    0 (aligned)
+    gain_db:          0.000
+    residual_peak_db: merged -150.515, per-channel [-150.515, -150.515]
+    residual_rms_db:  merged -168.550, per-channel [-168.537, -168.564]
+    first_over_threshold (>= -120.000 dBFS): 无
+    bit_exact:        false
+
+## 2026-11-04 03:25:28 -05:00
+
+- ref: D1-dry_1x.wav (sha256 75b1cd6e892dca4be86be1d87ef0eaacba8d090475145a826404504e0e4a8227)
+- test: D1-scvb_1x.wav (sha256 fd026d45bf805d0c1516d64122b170414d259d12680a4b54b5513633a99ed85f)
+- 宿主 pan law: 0 dB(补偿 --gain-db 0;对齐: True)
+
+结果:
+    ref:              D1-dry_1x.wav
+    test:             D1-scvb_1x.wav
+    channels:         2
+    sample_rate:      48000
+    frames:           384000 (ref) / 384000 (test)
+    frames_compared:  384000
+    sample_offset:    0 (aligned)
+    gain_db:          0.000
+    residual_peak_db: merged -150.515, per-channel [-150.515, -150.515]
+    residual_rms_db:  merged -168.550, per-channel [-168.537, -168.564]
+    first_over_threshold (>= -120.000 dBFS): 无
+    bit_exact:        false
+
