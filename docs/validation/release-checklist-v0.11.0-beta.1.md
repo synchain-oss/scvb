@@ -33,7 +33,7 @@
 
 - [x] **A2 CHANGELOG 已更新**
   - 怎么查:`## [Unreleased]` 已归入 `## [0.11.0-beta.1] - <日期>`,底部对比链接补齐;`node scripts/check-changelog-drafts.mjs` 退出 0;契约变更条目各有 `docs/contract-changes/` 文档、每条带 PR 号。
-  - 证据:(PR 分支)`## [Unreleased]` 已归入 `## [0.11.0-beta.1] - 2026-11-04`,上面留一个空的 `[Unreleased]`;底部补了两条对比链接(tag 推上去之前 404,临时放行见 L2)。`node scripts/check-changelog-drafts.mjs` 退出 0。本节 17 条每条带 PR 号;三条契约变更各有变更文档(见 A3)。发版日期如果不是 11-04,打 tag 前改标题。
+  - 证据:(PR 分支)`## [Unreleased]` 已归入 `## [0.11.0-beta.1] - 2026-11-05`,上面留一个空的 `[Unreleased]`;底部补了两条对比链接(tag 推上去之前 404,临时放行见 L2)。`node scripts/check-changelog-drafts.mjs` 退出 0。本节 17 条每条带 PR 号;三条契约变更各有变更文档(见 A3)。发版日期从 11-04 改成 11-05(打 tag 前改的)。
   - 状态:✅ 已核
 
 - [x] **A3 带 `status/frozen-contract` 标签的 PR 均经用户显式批准**
