@@ -53,6 +53,7 @@
 //   R2 读方自己跳变的那一块(同步规则 / 推迟锚定)默认「宿主给读写两方的跳变目标是同一个位置」;
 //      目标不一致(起播时间戳怪癖)时靠「写头相对读方的位置不超过实测提前量上界」挡:读方目标
 //      早于写方目标的偏差小于提前量锯齿宽度时挡不住。
+//      实时起播窗口(setStartWindow)里提前量这道门是关的,换成「两方都从停着的位置起」这条证据,见那里。
 //   R3 读方跳变之前写方已经换了 ≥2 代(例:Input 侧起播怪癖连续好几块报错位置)时,推迟到写头
 //      确认是新一代的之后再按同一判据锚定;写方最后一次跳变恰好就在读方眼前时仍可能锚早。
 //   R4 写方单独换代、读方没跳时,读方不知道写方新一代从哪一帧写起,只能锚在论证得了的写头上(不错音、不报警):
@@ -73,9 +74,9 @@
 //      不低于「此时的写头 − 上一代量到过的最小步长」:新一代到这时至少发布了一笔,一笔按不短于最小步长估,新一代起点
 //      就在它之下;那个头真是新一代的头时锚点不动。剩下的:新一代到写头第一次动时总共写了不到一个最小步长、又恰好往前跳,
 //      [旧头, 新一代起点)(不到一个最小步长)会被当成本代数据。同样只在 R1 窗口里出现。
-//   R6 读方自己的跳变只看 podEpoch_(规则 1),而 OutputProcessor 在跨零点的块与 bypass 路径上不更新它
-//      (它的口径归打印器 / playhead,本卡不动):这两处读方那一次跳变读环看不到。同步宿主上由锁步规则接住
-//      (SL-523 跨零点用例);写方领先时退到保守规则,那一圈 / 那一次定位多丢至多一个写方块。
+//   R6 读方自己的跳变只看 podEpoch_(规则 1),而 OutputProcessor 在跨零点的块上不更新它
+//      (它的口径归打印器 / playhead,本卡不动):那一块读方的跳变读环看不到。同步宿主上由锁步规则接住
+//      (SL-523 跨零点用例);写方领先时退到保守规则,那一圈多丢至多一个写方块。bypass 路径 #431 起也更新,读方当块就换代。
 //
 // ## [A-6] 持续读不到 → 失准(E1b;设计依据 A 线设计稿 §3.4,判据 = A-4 LS-14 / N2b)
 //
@@ -213,6 +214,36 @@ public:
     // 它为真(正向在场)。读方在计缺口的同一处清掉、读成功时置上 —— 精确到块,不受 [M] 拍粒度影响:缺口之后同一拍里
     // 紧接着读到的那一块也算(普通的瞬时失准撤下时机与修前相同)。
     bool readOkSinceLastGap() const noexcept { return readOkSinceGap_.load(std::memory_order_relaxed); }
+    // 离线导出里写方可以一口气领先任意多块(REAPER 的预渲染线程实测成串地跑),量到的提前量不是上界:按上界用它,
+    // 首块锚好之后写头第一次动就会被判成「远超提前量」、撤锚重来,白丢几块,而 Input 那边已经静音了。
+    // 打开后下锚和撤锚不看量到的提前量(退回环长那一档,见 anchorLeadRef)。上一代窗和宽限照旧用量到的值:那里要的是
+    // 「新一代最多写了多少」的估计,退回环长等于换代时上一代的尾段一律读不了。[M] 写,[A] 读。
+    void setLeadUnbounded(bool on) noexcept { leadUnbounded_.store(on, std::memory_order_relaxed); }
+    bool leadUnbounded() const noexcept { return leadUnbounded_.load(std::memory_order_relaxed); }
+    // 实时起播:走带刚起、[M] 还没看到的这几块由 [A] 自己接上(OutputSession::noteBlockTransport)。宿主这时可能把写方
+    // 一口气推到很前面(REAPER 的预先处理实测 0.5 ms 内跑完前 0.2 s),而量到的提前量来自停走带时那一代,只有一块:
+    // 按上界用它就锚不上,或者写头一动就撤锚。打开期间:
+    //  · 窗口打开之后写方还没换代就不读。环里只有停走带时留下的东西(Input 被旁路时尤其如此)。
+    //  · 读写两方在同一块跳变、中间没有隔代时,下锚不看提前量;这样下的锚,写头往前走多远都不撤,只有往回走才撤。这是
+    //    R2 的例外,提前量那道门在这里关了。靠的是两方都从停着的位置起:OutputSession 的判定保证 Output 从它停的位置
+    //    起播、每条 Input 停着时都在重写这个位置;Input 走带一起从别处写起时 epoch 一次加 2(InputProcessor),落到
+    //    隔代这一条。所以这样下的锚就是写方这一代的第一帧,[锚, 写头) 都是写方这一代写的。
+    //  · 隔了代(R3)、读方单独跳变,都不放宽:那时写方的起点不一定在读方这里。
+    //  · 读失败一律不计,读到了也不算 primed,不量提前量和步长:这几块是比原来多读的,读得早不能把轨踢出去 1 秒
+    //    (kMisalignRecoverMs),起播那一下的突发也不是写方的常态。窗口一关,这一代按新接上算,给交接宽限。
+    // 只有音频线程读写。
+    void setStartWindow(bool on) noexcept
+    {
+        if (on && !startWindow_)
+        {
+            startWindowSawGen_ = false;
+        }
+        startWindow_ = on;
+    }
+    bool startWindow() const noexcept { return startWindow_; }
+    // 绑定快照与段头布局还对得上(按值比对、不寻址):Input 在 Output 之后重新 prepare 并改了布局时要等 [M] 换绑。
+    // 采样率不算:读方不按它寻址,它只影响宽限长短。音频线程可调。
+    bool layoutCurrent() const noexcept;
 
     // [A-16] 预拷贝的进程内计数(只计数,不报警)。[A] 写(relaxed),任意线程读。
     // privateRead / privateFrame:从私有副本交出过帧的块数 / 帧数(成功的块才算)。
@@ -298,6 +329,7 @@ private:
     // [A-6] (a) 类持续读不到的宽限(样本):max(kUnreadGraceMs 读方时间线, 2·实测提前量上界 + 本块长)。
     int64_t unreadGrace(int64_t n, u32 sampleRate) const noexcept;
     int64_t leadHiRef() const noexcept; // 实测提前量上界(没量到过 → -1)
+    int64_t anchorLeadRef() const noexcept; // 下锚 / 撤锚用的提前量上界,见 setLeadUnbounded
     // 新一代在被首次观测前可能已写的跨度上界(prevN = 上一次 read() 的块长)。
     int64_t spanBound(int64_t prevN, int64_t ring) const noexcept;
     int64_t inflightGuard() const noexcept { return stepMaxPrev_ > stepMaxCur_ ? stepMaxPrev_ : stepMaxCur_; }
@@ -405,6 +437,10 @@ private:
     std::atomic<u32> persistentFailCount_{0};
     std::atomic<u32> readAttemptCount_{0};
     std::atomic<bool> readOkSinceGap_{false}; // [A] 写(relaxed),[M] 读;见 readOkSinceLastGap()
+    std::atomic<bool> leadUnbounded_{false}; // 见 setLeadUnbounded()
+    bool startWindow_ = false; // 见 setStartWindow()
+    bool startWindowSawGen_ = false; // 窗口打开之后写方换过代
+    bool anchorFromStart_ = false; // 当前窗的锚是起播窗口里按同步规则下的
     static_assert(decltype(readOkSinceGap_)::is_always_lock_free, "readOkSinceGap_ must be lock-free (audio thread)");
     std::atomic<u32> privateReadCount_{0};
     std::atomic<u64> privateFrameCount_{0};

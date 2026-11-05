@@ -42,14 +42,14 @@ public:
     ~WebViewHost() override;
 
     void resized() override;
-    // 铺满占位渐变([SL-402] 起 = 与成品外壳渐变同组色标的 shellBackdropGradient;
-    // SL-253→SL-377 期间是单色 shellBackdrop)。[SL-271] 更正 SL-253 时的说法:本函数
-    // **挡不住**开窗白闪。
+    // 铺满占位:外圈色 + 与页面外壳同几何的圆角渐变(paintPlaceholder;[SL-402] 起渐变色标
+    // 与成品外壳同组,SL-253→SL-377 期间是单色 shellBackdrop)。[SL-271] 更正 SL-253 时的说法:
+    // 本函数**挡不住**开窗白闪。
     // webView_ 落在本组件里时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的
     // 裁剪区里剔掉,本 paint 净效果为 0(那一段由 HostWebView::paint 管,见 .cpp)。
     // 它会真的画出来的有两条路:兜底面板路径(webView_ 被 setVisible(false)),以及
-    // [SL-370] 遮挡期(webView_ 被挪到可视区之外)—— 后者正是用户在内容出来之前看到的
-    // 那块占位底色,机理见 WebViewRevealGate.h。
+    // [SL-370] 遮挡期(webView_ 被挪到可视区之外;WebView2 上从加载尝试一开头就是)——
+    // 后者正是用户在内容出来之前看到的那块占位,机理见 WebViewRevealGate.h。
     void paint(juce::Graphics& g) override;
 
     // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
@@ -185,6 +185,8 @@ private:
     // 这两个函数只负责把判定落到组件几何上并写诊断行。
     void applyRevealGate(); // 把 revealGate_.parked() 落到 webView_ 的 bounds 上
     void noteRevealed(); // 放行时写一行诊断(reason + 用时)
+    // 两层 paint(本组件与 HostWebView)共用的占位。品红探针也只在这里分叉。
+    void paintPlaceholder(juce::Graphics& g, juce::Rectangle<float> area) const;
 
     // [SL-376/SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行(每次加载尝试一条)。
     void logBackgroundColourSupport() const;

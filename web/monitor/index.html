@@ -243,8 +243,8 @@
                 // 「导航开始 → 文档送达 → <head> 解析」。真实余量是
                 // `500ms − (导航开始 → 本脚本执行)`,**不是 500ms**;那一段一旦超过 500ms
                 // (冷起、机器吃紧),保险就跑输 C++ 兜底,放行原因还是掉成 timeout。
-                // 而且**这件事从抓取包里看不出来**(`navigation started` 那行不带时间戳)——
-                // 那是 SL-430 的后半,仍封存。
+                // 抓取包里能读到这一段的上界:`navigation started` 那行带 `(after N ms)`,
+                // 与 `first-frame signal` 那行相减(SL-430 后半)。
                 // 回调只写一句 signal():**不绕 arm() 的两层 rAF**,理由同上(BeginFrame 停了
                 // rAF 也不回调,绕过去等于这条保险不存在)。去重与撤网都在 signal() 里。
                 guard = setTimeout(function () {

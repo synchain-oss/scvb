@@ -69,7 +69,7 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 | DAW | Version | Support tier | Status and known limits |
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1 (primary test host)** | Routing (realtime / offline), project save and reopen, and automation write verified on real hardware with the finished plugins (Cubase 15 Pro); routing also verified on Cubase 14 during the routing spike; automation hides in the Ins hidden lane; Input must sit in the last slot of the pre-fader section |
-| REAPER | 7 | **Tier 2 (partly verified)** | Routing (realtime / offline) verified during the routing spike only; the finished plugins and automation write have not been tested in REAPER; may not write automation with the GUI closed (needs "process all notifications"; the plugin UI reminds you to keep the window open); one project per machine |
+| REAPER | 7 | **Tier 2 (partly verified)** | The finished plugins were tested on REAPER 7.82 for routing (realtime / offline) and saving and reopening a project, and automation write passed with the plugin window open; that is one test round, not long-term use; may not write automation with the GUI closed (needs "process all notifications"; the plugin UI reminds you to keep the window open); one project per machine |
 | Ableton Live | 12 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: 128-parameter ceiling (124 used here, 4 spare); Re-Enable Automation has to be clicked (the plugin UI reminds you when writing ends); deactivating the Output device gives about 5.5 s of silence before the vocals fall back to passthrough |
 | Studio One | 6 | **Tier 3 (untested)** | Not yet tested on real hardware. Known from the design: automation mode must be set to Write/Latch inside the plugin window; Dropout Protection changes the block size |
 | LUNA (macOS, Apple Silicon) | — | **Tier 3 (beta, pending verification)** | Not yet tested on real hardware; a hands-on acceptance run is planned before the first macOS beta. Expected from the design (not tested): use Latch, LUNA has no Write; the Output cannot sit on a Folder track; the Input cannot go in a Record FX slot; with an Apollo, use Core Audio mode or switch ARM off; hard-disabling the Output with Power gives about 5.5 s of silence (KI-6) |
@@ -155,12 +155,12 @@ macOS (Apple Silicon): see [docs/build-macos.md](docs/build-macos.md) for buildi
 These are accepted v1 limitations; the matching entries in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md) describe what you will see, why, and how to work around it.
 
 - **Do not render a vocal track with SCVB Input on it by itself**: rendering one vocal track in place (Render in Place), freezing it (Freeze) or exporting it alone gives you a silent file, and choosing "replace the original audio" swaps your source recording for that silence. Export the vocal bus as a whole (KI-4).
-- **The DAW's mute, solo and faders have no effect on SCVB's output**: to take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
+- **The DAW's faders have no effect on SCVB's output, and mute and solo depend on the host**: in Cubase neither has any effect; in REAPER, mute removes the track, and solo has no effect in real time but applies when exporting. To take a track out of SCVB's output, turn off that track's "ON" switch on the Output's Tracks page (KI-8).
 - **One project using SCVB open at a time on the same computer**; if you really need two open, give them different groups (KI-5).
 - **When the host stops calling the Output** (a deactivated device in Ableton Live, FL Studio's smart disable, and similar), the vocals go silent for about 5.5 seconds and then play as the raw, unbalanced image until the host calls the Output again; the tracks then rejoin one at a time, so a track not yet reached stays silent for a moment (KI-6).
 - **Balance estimates are off in unison / doubled passages**: when several tracks sing the same line with very similar sound, they usually add up louder than the analysis expects (KI-9).
 - **SCVB Output reports no latency to the DAW**; alignment is done by timeline addressing, so do not try to "fix" it with latency compensation (PDC) (hard rule 8).
-- **Input only adjusts its own track's level, never its pan**; panning is handled entirely by the Output.
+- **Input adjusts neither pan nor volume**; both happen only on the Output.
 - **Every track takes part in automatic pan by default, stereo tracks included**; to keep a stereo track's own image, switch off "participate in auto pan" for that track on the Output's Tracks page (hard rule 7).
 
 ## Documentation

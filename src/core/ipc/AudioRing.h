@@ -73,8 +73,8 @@ public:
 
     // 静态写(以绑定快照为参,不回读成员)。b 可为 nullptr(静默不写)。调用方保证 t0>=0。
     static void write(const AudioRingBinding* b, int64_t t0, const float* interleaved, int n) noexcept;
-    // epoch 跳变(transport 定位/loop 回跳)时 +1(契约 §2)。
-    static void bumpEpoch(const AudioRingBinding* b) noexcept;
+    // epoch 跳变(transport 定位/loop 回跳)时 +1(契约 §2)。by = 2 见 InputProcessor 的 epoch 跳变检测。
+    static void bumpEpoch(const AudioRingBinding* b, u64 by = 1) noexcept;
     // 直接发布 write_head(供跨零点尾段写入等场景)。
     static void publishWriteHead(const AudioRingBinding* b, int64_t pos) noexcept;
 

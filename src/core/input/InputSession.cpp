@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "input/InputSession.h"
 
+#include <cstring>
+
 #include "ipc/GroupProbe.h"
 
 namespace scvb::input
@@ -120,6 +122,23 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
     }
     state_ = InputClaimState::kActive;
     return state_;
+}
+
+void InputSession::resetRingForOfflinePass() noexcept
+{
+    const AudioRingBinding* b = audioRing_.acquire();
+    if (b == nullptr || !b->bound || b->header == nullptr)
+    {
+        return;
+    }
+    b->header->write_head_samples.store(0, std::memory_order_release);
+    AudioRing::bumpEpoch(b);
+    // 环体也清掉:这条 Input 这一轮要是从后面才开始写(宿主跳过了开头几块),读方按时间线认下的起点之前读到的是
+    // 静音,不是上一次播放留下的声音。在 prepare 里做,4 MB 一次,不在音频线程上。
+    if (b->data != nullptr)
+    {
+        std::memset(b->data, 0, static_cast<std::size_t>(b->geo.ringFrames) * 2u * sizeof(float));
+    }
 }
 
 void InputSession::heartbeat(u64 nowMs)
