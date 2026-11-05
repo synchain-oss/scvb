@@ -13,6 +13,10 @@
       "pattern": "^mailto:"
     },
     {
+      "comment": "发版临时放行:CHANGELOG 的这两个对比链接要等 tag v0.11.0-beta.1 推上去才有,之前 GitHub 回 404。tag 推上去之后删掉这一条(发版清单 L2)。",
+      "pattern": "^https://github\\.com/synchain-oss/scvb/compare/(v0\\.11\\.0-beta\\.1\\.\\.\\.HEAD|v0\\.10\\.0-beta\\.1\\.\\.\\.v0\\.11\\.0-beta\\.1)$"
+    },
+    {
       "comment": "本地开发服务器地址(web-preview/README.md 与 docs/CONTRIBUTOR_ONBOARDING.md 的 127.0.0.1:8823),按设计在 CI 上不可达。",
       "pattern": "^https?://(localhost|127\\.0\\.0\\.1)"
     }
