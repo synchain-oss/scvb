@@ -8,7 +8,7 @@
 
 ## [Unreleased]
 
-## [0.11.0-beta.1] - 2026-11-04
+## [0.11.0-beta.1] - 2026-11-05
 
 本版 GitHub Release 只放 Windows x64。
 
