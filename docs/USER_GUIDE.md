@@ -226,6 +226,8 @@ What to do instead:
 
 The Input's first-run guide covers this too (it appears the first time you open an Input; click the "?" at the bottom right of the Input window to see it again at any time). The full entry is KI-4 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
+An offline export from the REAPER window can occasionally come out completely silent: once in 68 tries in testing, with a one-level project. The cause hasn't been found yet; see KI-27 in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). Look at the waveform after exporting, and export again if it's silent.
+
 ## Nesting: two levels of SCVB
 
 To balance several groups of vocals against each other, route each group's bus into a level above it. Each group is balanced on its own bus first, then the upper level treats every group bus as one track.
