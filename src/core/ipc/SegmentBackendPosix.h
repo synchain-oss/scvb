@@ -22,10 +22,11 @@
 //     "Library/Application Support/Synchain/SCVB/ipc"。不放 Caches(会被系统清理),也**不放 TMPDIR**
 //     (M01 实测:进程外的 AUHostingService 里 TMPDIR 是服务专属子目录,与宿主进程看到的不是同一处)。
 //   · 测试钩子:静态入口 setLockDirOverrideForTests(path) 覆盖锁目录(构造后端时读一次)。**锁目录不受
-//     环境变量 SCVB_IPC_LOCK_DIR 影响**(默认锁目录只在 getpwuid 失败时才退回读 HOME):发布版插件里没有调用测试入口的地方,
+//     环境变量 SCVB_IPC_LOCK_DIR 影响**(默认锁目录只在 getpwuid 失败时才退回读
+//     HOME):发布版插件里没有调用测试入口的地方,
 //     所以用户机器上的该环境变量改不了锁目录。测试二进制自己读该变量再调这个入口(tests/support/lock_dir_env.h)。
-//     Catch2 用例里由 TempLockDir 直接调,父子进程继承环境的隔离方式不变。**同一组段的所有进程必须看到同一个值** —— 只有一边设了它,
-//     两边的锁就不是同一把,后来的创建者会把对方的活段当残段清掉。为了让这种错配在日志里看得见,
+//     Catch2 用例里由 TempLockDir 直接调,父子进程继承环境的隔离方式不变。**同一组段的所有进程必须看到同一个值** ——
+//     只有一边设了它,两边的锁就不是同一把,后来的创建者会把对方的活段当残段清掉。为了让这种错配在日志里看得见,
 //     用到覆盖的后端实例在第一次打开段时经 IpcDiag 上报一次 kLockDirOverride(带覆盖路径)。
 //   · **所有生命周期转换**(建、附着、离开)都在全局 <锁目录>/lifecycle.lock 的 flock(LOCK_EX) 下做:
 //     BSD flock 的升降级不是原子的(先放旧锁再上新锁),只有在这把全局锁下,「EX 探测 → 降为 SH」与
