@@ -1,9 +1,9 @@
 # LUNA 轻验收包(macOS beta,约 1 小时)
 
 > 状态:演进中(验收前的模板;结果由统筹脱敏后另存为 `docs/validation/luna-acceptance-<日期>.md`)
-> 最后更新:2026-10-11
+> 最后更新:2026-11-07
 > 适用:SCVB macOS beta(Apple Silicon、arm64、VST3 + Audio Unit,最低 macOS 11)在 LUNA 里的一次真机验收。
-> 口径:本文里所有关于 LUNA 行为的话都是**设计上的预期**,验收之前没有一条是实测结论。Logic Pro 不在本次验收范围内(beta / 未在 Logic 实测,Tier 3)。
+> 口径:本文里所有关于 LUNA 行为的话都是**设计上的预期**,验收之前没有一条是实测结论。唯一的例外是第 3 步里「LUNA 只在系统目录找 VST3」那一句:那是用户 2026-11-07 用 Synchain 的另一个插件实测的,不是 SCVB 的实测。Logic Pro 不在本次验收范围内(beta / 未在 Logic 实测,Tier 3)。
 
 ## 0. 这份包是什么、不是什么
 
@@ -55,7 +55,7 @@ auval -v aufx Scvo Snch | tail -3
 auval -v aufx Scvm Snch | tail -3
 ```
 
-**3. 让 LUNA 扫描**:打开 LUNA,Plug-In Manager,Scan New(或 Rescan All)。三个 SCVB Audio Unit 的状态应是 **scanned**,不是 rejected。LUNA 在 macOS 上默认启用 AU、默认不启用 VST3;本次验收**用 AU**,所以不用动 VST3 的开关。
+**3. 让 LUNA 扫描**:打开 LUNA,Plug-In Manager,Scan New(或 Rescan All)。三个 SCVB Audio Unit 的状态应是 **scanned**,不是 rejected。LUNA 在 macOS 上默认启用 AU、默认不启用 VST3;本次验收**用 AU**,所以不用动 VST3 的开关。另外 LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,上面第 1 步装到 `~/Library` 的 `.vst3` 它本来就扫不出来(用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件实测);AU 装在 `~/Library` 没问题。
 
 **4. 可选(约 5 分钟,若随包提供)**:`scvb_auhost --oop` 探针。它在系统的 AUHostingService 上检查进程外共享内存,不需要 Logic。用它之前同样要对它执行 `xattr -dr com.apple.quarantine`。是否随包提供、命令的最终形态由统筹之后回填;没有随包就跳过这一步,不算失败。
 
