@@ -8,7 +8,7 @@ name: Build macOS (reusable)
 #     即「release 档」:构建与全部验证门照跑,最后按 tag 的版本号正式打一次包,传成 artifact
 #     SCVB-macos-arm64-release-<tag>,由 release.yml 的 `release-macos` 取走传到 Windows 建好的草稿 Release 上。
 #   所以一次 tag push 里本文件恰好跑一次(build-mac 那一路)。
-# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16 → M12b(只动 ctest 那一步:want 清单加 scvb_host_tests / scvb_host_sched_tests + 用例数下限)→ Z1(加 pageZoom 探针与它的判决两步)。
+# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16 → M12b(只动 ctest 那一步:want 清单加 scvb_host_tests / scvb_host_sched_tests + 用例数下限)→ Z1(加 pageZoom 探针与它的判决两步、11i 原生缩放接线门,并给 11g 加 id)。
 # 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
 # org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
@@ -30,6 +30,8 @@ name: Build macOS (reusable)
 # 上传 artifact,并经 workflow_call 的 outputs 把 artifact 名 / zip 名 / sha256 交给 release.yml。
 # [Z1] 真 WebKit 探针(tests/macos/pagezoom-probe,在构建之前,自带负对照):WKWebView.pageZoom 下的视口、rect、
 # elementFromPoint 与真点击坐标系一致;失败不打断后面的门,由 job 末尾的判决步骤把 job 判红。
+# [Z1] 原生缩放接线门(步骤 11i):带 GUI 的 pluginval 开过 Output 编辑器后,output.log 里必须有
+# `native page zoom <档位>`、不许有 `no WKWebView under the browser component` —— 插件真的找到了 WKWebView。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -732,7 +734,8 @@ jobs:
       # 11) [M08] mac 验证门。M06b 的 auval 冒烟(信息项)在这里升级为门,并补上 `auval -a` 唯一性、
       #     pluginval ×6(3 个 .vst3 + 3 个 .component,非 GUI)与共享内存残段检查。顺序:
       #       11a 残段基线 → 11b 装 AU → 11c auval 门 → 11d auval -a 唯一性 → 11e pluginval 门
-      #       → 11f 残段门 → 11g 带 GUI 的 pluginval(记录项)
+      #       → 11f 残段门 → 11g 带 GUI 的 pluginval(记录项)→ 11h 平台日志(记录项)
+      #       → 11i [Z1] 原生缩放接线门(读 11g 写下的 output.log)
       #     各步只要求「编出来了 / 装上了」,不要求前一道门绿:auval 红的那一轮,唯一性、pluginval 与残段
       #     照样跑完,一次往返看到全部结论(job 结论仍是红)。
       #     共同纪律(照 bridge ci.yml):工具输出先落文件或变量再匹配 —— 不写 `auval -a | grep -q`
@@ -1013,6 +1016,7 @@ jobs:
       #      headless runner 上编辑器测试可能挂住,所以 8 分钟封顶。跑完再只读探一次残段,同样只记录
       #      (残段的门 11f 已在它之前判过)。
       - name: pluginval with GUI - SCVB Output.vst3 (record only, not a gate)
+        id: pluginval_gui
         if: ${{ !cancelled() && steps.pluginval.outcome != 'skipped' && env.PLUGINVAL_EXE != '' }}
         continue-on-error: true
         timeout-minutes: 8
@@ -1090,6 +1094,50 @@ jobs:
           done
           if [ "$found" = "0" ]; then echo "- directory exists, no *.log files" >> "$GITHUB_STEP_SUMMARY"; fi
           exit 0
+
+      # 11i) [Z1] 原生缩放接线的端到端门(是门,红了 job 红)。11g 里 pluginval 真开 SCVB Output 的编辑器,每开一次
+      #      WebViewHost 就走一遍 resizeToDesignBox → applyNativeZoom,往 output.log 写一行:找到 WKWebView、设了
+      #      pageZoom 写 `native page zoom <档位>`;找不到写 `native page zoom: no WKWebView under the browser
+      #      component, …`(页面那时退回 [M09])。1b 的探针只证明系统 WebKit 的 pageZoom 语义,证明不了插件里那条
+      #      接线(dynamic_cast 到 NSViewComponent → getView → isKindOfClass:WKWebView)在 JUCE 真的
+      #      WebBrowserComponent 下找得到 WKWebView —— 那只能看插件自己写的日志。
+      #      判据:至少一行 `native page zoom <数字>`,且零行 `no WKWebView under the browser component`。
+      #      接线在 plugin-common,三个插件同一条路;11g 只开 Output,所以只读 output.log。
+      #      11g 是记录项:它的 stdout 里没有 `Starting tests in: pluginval / Editor`(没走到开编辑器那组)时,
+      #      编辑器一次都没开过,本门无从判 —— 记 ::warning:: 与 summary「未判」,不判红;走到了就必须满足上面两条。
+      - name: Native page zoom wiring gate (output.log after GUI pluginval)
+        if: ${{ !cancelled() && steps.pluginval_gui.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=$(awk -F'"' '$1 ~ /^[[:space:]]*PRODUCT_NAME[[:space:]]+$/ { print $2; exit }' src/output/CMakeLists.txt)
+          gui="pluginval-logs/stdout-gui-$name.vst3.log"
+          f="$HOME/Library/Logs/Synchain/SCVB/output.log"
+          echo "### Native page zoom wiring (output.log after GUI pluginval)" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f "$gui" ] || ! grep -q 'Starting tests in: pluginval / Editor' "$gui"; then
+            echo "::warning::GUI pluginval never reached its Editor tests ($gui); native page zoom wiring not checked on this run"
+            echo "- not checked: GUI pluginval did not reach its Editor tests" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ ! -f "$f" ]; then
+            echo "::error::GUI pluginval opened the $name editor but $f does not exist"
+            exit 1
+          fi
+          ok=$(grep -c ': native page zoom [0-9]' "$f" || true)
+          bad=$(grep -c 'no WKWebView under the browser component' "$f" || true)
+          zooms=$(grep -o ': native page zoom [0-9.]*' "$f" | sed 's/^: native page zoom //' | sort | uniq -c \
+            | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }' || true)
+          echo "output.log: $ok 'native page zoom <scale>' lines (${zooms:-none}); $bad 'no WKWebView under the browser component' lines"
+          echo "- \`output.log\`: $ok \`native page zoom <scale>\` lines (${zooms:-none}); $bad \`no WKWebView under the browser component\` lines" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$bad" != "0" ]; then
+            grep -n 'no WKWebView under the browser component' "$f" | sed -n '1,20p'
+            echo "::error::output.log has $bad 'no WKWebView under the browser component' line(s): the plugin did not find the WKWebView, so the page fell back to [M09]"
+            exit 1
+          fi
+          if [ "$ok" = "0" ]; then
+            echo "::error::GUI pluginval opened the $name editor but output.log has no 'native page zoom <scale>' line"
+            exit 1
+          fi
 
       # 12) [M10] 发行打包冒烟:scripts/package-macos.sh 是 mac 发行打包的唯一真源(release 档的正式出包,步骤 13,
       #     调的是同一个脚本),这里用本 run 编出的 6 个 bundle 实跑它。输入先 ditto 到 package-smoke/ 下的独立目录,

@@ -707,7 +707,8 @@ void WebViewHost::applyNativeZoom(float scale)
     {
         if (webView_ == nullptr)
             return;
-        // 找不到就只留一行诊断:页面的 fitFactor 会算出档位本身,退回 CSS zoom,窗口里不至于裁切。
+        // 找不到就只留一行诊断:页面量到视口偏离设计盒,自己退回 [M09](旧语义下锁 100% 并请回 1),
+        // 窗口里不至于裁切。mac CI 的 11i 步读的就是这两行(build-macos.yml)。
         logDiag(PlatformWebView::applyNativePageZoom(*webView_, scale)
                     ? "native page zoom " + juce::String(scale, 2)
                     : juce::String("native page zoom: no WKWebView under the browser component, page falls back to "

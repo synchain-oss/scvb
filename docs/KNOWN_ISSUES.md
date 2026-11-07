@@ -137,8 +137,8 @@
 - **原因**:插件界面用系统 WebKit(WKWebView)绘制,以前用 CSS zoom 缩放。旧语义下,CSS zoom 之后元素位置按未缩放的坐标报,鼠标坐标却是缩放后的,点击和拖拽会落偏;为了不落偏,前端在旧语义下锁在 100%。
 - **现在的做法**:mac 上缩放改走 WKWebView 的原生页面缩放(`pageZoom`),页面里的 CSS zoom 恒为 1。元素位置和鼠标坐标落在同一个坐标系里,不分新旧语义都对得上,所以三个插件的档位全部开放;Output 在 mac 上新开时默认 80%(全局默认档位与工程里存的档位仍然优先)。档位高于 100% 时,Output 母带页 / 波形页的画布和 Monitor 的轨迹图按档位提高分辨率;Output 曲线编辑器和引导页的画布只按屏幕像素比,档位高于 100% 时略软(Windows 上一直如此)。
 - **验证到哪一步**:CI 上的真 WebKit 探针(`tests/macos/pagezoom-probe`,在 macOS 15.8.2、Safari 27.2、旧语义、1x 屏幕上跑)跑的是产品自己的页面脚本,对七个档位逐档核对视口大小、元素位置、`elementFromPoint` 和真实鼠标点击,点击全部落在该落的元素上;实测 pageZoom 不改 `devicePixelRatio`,重新导航后 pageZoom 也还在。**还没在 LUNA 或其它真实宿主里确认**,也没有在 Retina 屏上量过,由 [LUNA 验收](validation/luna-acceptance.md) 的 UI 一项核对。
-- **影响**:如果某个宿主里原生缩放没生效,`~/Library/Logs/Synchain/SCVB/` 下对应插件的日志里会有一行 `native page zoom: no WKWebView under the browser component, page falls back to CSS zoom`,界面退回 CSS zoom:窗口和内容仍按档位缩放、不裁切,但旧语义下非 100% 档位的点击会落偏。
-- **缓解**:遇到点击落偏,先把档位改回 100%,并把上面那个日志文件夹带回来。
+- **影响**:如果某个宿主里原生缩放没生效,页面会量到视口跟着窗口变了,自己退回改前的做法:WebKit 是旧语义时锁在 100%,只剩 100% 一档,窗口改回 100%,并显示那条说明,点击不会落偏;是新语义时照旧用 CSS zoom 按档位缩放。插件找不到 WKWebView 时,`~/Library/Logs/Synchain/SCVB/` 下对应插件的日志里还会有一行 `native page zoom: no WKWebView under the browser component, page falls back to CSS zoom`。mac CI 在带界面的 pluginval 开过 Output 之后检查它的日志:必须有 `native page zoom <档位>`,不能有这一行。
+- **缓解**:遇到档位只剩 100%,或者点击落偏,把上面那个日志文件夹带回来;点击落偏时先把档位改回 100%。
 - **彻底修复方向**:LUNA 真机确认之后,按结果关闭或改写本条。
 
 ## KI-17:macOS 上编辑器有键盘焦点时,空格是否漏给宿主走带(未实测)

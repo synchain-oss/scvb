@@ -156,6 +156,8 @@ chmod +x "$PLUGINVAL"
 
 CI 对 3 个 `.vst3` 加 3 个已装 `.component` 共 6 格各跑一遍,每格要求:退出码 0、输出里有单独一行 `SUCCESS`、恰好测到 1 个对应格式的插件(`Testing plugin: VST3-…` / `Testing plugin: AudioUnit-…`)。带 GUI 的 pluginval 在 mac 上只是**记录项**(只对 `SCVB Output.vst3` 跑一次,不作门)。
 
+那一遍跑完,CI 再读 `~/Library/Logs/Synchain/SCVB/output.log`(第 6 节)判一道**门**:至少一行 `native page zoom <档位>`,且没有 `no WKWebView under the browser component` —— 证明插件在 JUCE 的浏览器组件下面真的找到了 WKWebView 并设了 pageZoom(8.1 的探针证明不了这一条)。带 GUI 的那一遍没走到 pluginval 的 Editor 测试时,这道门只警告、不判。本地对一遍:跑一次不带 `--skip-gui-tests` 的 pluginval,再 `grep 'native page zoom' ~/Library/Logs/Synchain/SCVB/output.log`。
+
 ### 共享内存残段检查
 
 auval / pluginval 前后各跑一次(CI 的残段基线门与残段门),验证后不许留下 SCVB 的共享内存段:
@@ -228,7 +230,7 @@ cmake --build build-pagezoom --parallel
 ./build-pagezoom/scvb_pagezoom_probe --web-root web --negative-control   # 必须退 1
 ```
 
-退出码 `0` 判据全过,`1` 判据不过,`2` 没测成(页面没起来,不算通过)。CI 入口是 `build-macos.yml` 的 `WKWebView pageZoom probe (real WebKit)` 步骤;该步骤带 `continue-on-error`,不打断后面的门,由 job 末尾的 `WKWebView pageZoom probe verdict` 判红。
+退出码 `0` 判据全过,`1` 判据不过,`2` 没测成(页面没起来,不算通过)。CI 入口是 `build-macos.yml` 的 `WKWebView pageZoom probe (real WebKit)` 步骤;该步骤带 `continue-on-error`,不打断后面的门,由 job 末尾的 `WKWebView pageZoom probe verdict` 判红。探针只量系统 WebKit;插件里那条接线由第 5 节带 GUI 的 pluginval 之后那道 `output.log` 门(`Native page zoom wiring gate`)兜。
 
 ## 9. CI 里对应的 job(速查)
 
