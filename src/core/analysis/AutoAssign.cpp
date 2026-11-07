@@ -458,6 +458,7 @@ double clampPanD(double p)
 
 // 单轨能量模型系数(02 §6.1):u=0 下 z_L 贡献 = g²·lCoef、z_R 贡献 = g²·rCoef;lever = ρ_i。
 // mono:z_iL=z、z_iR=0;stereo:z_iL/z_iR 为双通道能量,两字段均 0 时等分 z/2(v1 近似,§6.1)。
+// pan 曲线 G 不在这里:它只在播放时叠加,分析和写入都不读(变更文档 20261101-pan-curve-playback-only.md)。
 struct TrackEnergy
 {
     double lCoef = 0.0;
@@ -465,7 +466,7 @@ struct TrackEnergy
     double lever = 0.0;
 };
 
-TrackEnergy buildTrackEnergy(const TrackMeta& t, double pan, const std::vector<PanCurvePoint>& curve)
+TrackEnergy buildTrackEnergy(const TrackMeta& t, double pan)
 {
     TrackEnergy e;
     const auto thetaOf = [](double p) { return (p + 100.0) / 200.0 * kBalancePi / 2.0; };
@@ -478,7 +479,6 @@ TrackEnergy buildTrackEnergy(const TrackMeta& t, double pan, const std::vector<P
         return std::sin(th) * std::sin(th);
     };
     const auto cos2theta = [&](double p) { return std::cos(2.0 * thetaOf(p)); };
-    const auto gain = [&](double p) { return std::pow(10.0, scvb::evalCurve(curve, p) / 20.0); };
 
     if (t.source == SourceChannels::Stereo)
     {
@@ -492,37 +492,31 @@ TrackEnergy buildTrackEnergy(const TrackMeta& t, double pan, const std::vector<P
         }
         const double pL = clampPanD(pan - t.width);
         const double pR = clampPanD(pan + t.width);
-        const double cL = gain(pL);
-        const double cR = gain(pR);
-        const double wL = cL * cL * zL;
-        const double wR = cR * cR * zR;
-        e.lCoef = wL * cos2(pL) + wR * cos2(pR);
-        e.rCoef = wL * sin2(pL) + wR * sin2(pR);
-        const double denom = wL + wR;
-        e.lever = (denom > 0.0) ? (wL * cos2theta(pL) + wR * cos2theta(pR)) / denom : 0.0;
+        e.lCoef = zL * cos2(pL) + zR * cos2(pR);
+        e.rCoef = zL * sin2(pL) + zR * sin2(pR);
+        const double denom = zL + zR;
+        e.lever = (denom > 0.0) ? (zL * cos2theta(pL) + zR * cos2theta(pR)) / denom : 0.0;
     }
     else
     {
-        const double c = gain(pan);
-        const double c2 = c * c;
         const double th = thetaOf(pan);
         const double cs = std::cos(th);
         const double sn = std::sin(th);
-        e.lCoef = c2 * cs * cs * t.z;
-        e.rCoef = c2 * sn * sn * t.z;
+        e.lCoef = cs * cs * t.z;
+        e.rCoef = sn * sn * t.z;
         e.lever = cs * cs - sn * sn; // cos(2θ)
     }
     return e;
 }
 
 // D(u=0) 对给定 pans 的快速计算(§6.4 step 3 二分用)。
-double computeD0(const std::vector<TrackMeta>& tracks, const std::vector<double>& pans, const BalanceConfig& cfg)
+double computeD0(const std::vector<TrackMeta>& tracks, const std::vector<double>& pans)
 {
     double zL = 0.0;
     double zR = 0.0;
     for (std::size_t i = 0; i < tracks.size(); ++i)
     {
-        const TrackEnergy e = buildTrackEnergy(tracks[i], pans[i], cfg.panCurve);
+        const TrackEnergy e = buildTrackEnergy(tracks[i], pans[i]);
         zL += e.lCoef;
         zR += e.rCoef;
     }
@@ -598,7 +592,7 @@ bool applyDeltaShift(const std::vector<TrackMeta>& tracks, const std::vector<dou
         std::vector<double> pp = pans;
         pp[static_cast<std::size_t>(li)] = clampPanD(-r + delta);
         pp[static_cast<std::size_t>(ri)] = clampPanD(r + delta);
-        return computeD0(tracks, pp, cfg);
+        return computeD0(tracks, pp);
     };
 
     const double dLo = Dof(lo);
@@ -657,7 +651,7 @@ BalanceResult solveBalance(const std::vector<TrackMeta>& tracks, const std::vect
         const TrackMeta& t = tracks[static_cast<std::size_t>(i)];
         // [J65] freeze bit1:freeze∈{2,3} → vol 维冻结;[J58] lead_vol_exempt 独立、零联动。
         adjustable[static_cast<std::size_t>(i)] = !((t.freeze == 2 || t.freeze == 3) || t.leadVolExempt);
-        energy[static_cast<std::size_t>(i)] = buildTrackEnergy(t, pans[static_cast<std::size_t>(i)], cfg.panCurve);
+        energy[static_cast<std::size_t>(i)] = buildTrackEnergy(t, pans[static_cast<std::size_t>(i)]);
     }
 
     const auto compute = [&](const std::vector<double>& u, double& zL, double& zR) {

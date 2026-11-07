@@ -972,6 +972,8 @@ const std::vector<Ls1Cell>& ls1Cells()
 // ===========================================================================
 //
 // 放 1 s → 停走带 3 块 → 从 20 s 起播:预取轨在起播那一个周期里一口气渲染 lead + b_out(突发)。
+// 起播点在停住的位置之后,Input 的 epoch 一次加 2(InputProcessor:挡 LS-17 skip-after-stop 那种读出旧内容的形状),
+// 读方按隔了一代处理:预取的写方要先等写头确认(R3),第一帧读不到。live 的写方是锁步的,不受影响。
 struct Ls2Cell
 {
     std::int64_t lead = 0;
@@ -2587,7 +2589,10 @@ TEST_CASE("SCHED LS-2: a start burst of the prefetched lanes neither raises misa
             REQUIRE(before.total >= 40);
             REQUIRE(after.total >= 85);
             CHECK(before.mixPresent == before.total);
-            CHECK(after.mixPresent == after.total); // 起播第一帧起就在场(不是全零)
+            // live 的轨起播第一帧起就在场;预取的轨最多缺第一帧(见上),第二帧起都在(不是全零)。
+            const Tally rest = tally(c.run, lane, start + kF, kBig);
+            CHECK(rest.mixPresent == rest.total);
+            CHECK(after.mixPresent >= after.total - (lane == 0 ? 0 : 1));
             CHECK(after.wrong == 0);
         }
         CHECK(maxMisalignAll(c.run) == 0); // 突发不误报
@@ -3988,6 +3993,137 @@ TEST_CASE("SCHED LS-15: stopping and restarting the transport with leading write
                << m.first << "/" << m.second;
         }
         CHECK(maxMisalignAll(c.run) == 0);
+        WARN(os.str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LS-17(实时起播:停走带过了 500 ms 门限、没过 5 秒回原声门限,再按播放)
+// ---------------------------------------------------------------------------
+//
+// lane 0、1 live,lane 2 预取提前 4096;pace=1(500 ms 是墙钟)。先放一圈之外的位置,让环里 [P, P+1 s) 留着一圈之前的
+// 内容:读到写方这一代没写过的地方,出来的就是相位不对的旧音频,判 Wrong。然后停走带、定位到 P、停 1.2 s(轨退出注入),
+// 从 P 起播。
+//
+// 第一格是产品要的:第一帧起就在,全程不出原声。后面三格是 Input 不是从 P 起写的形状,读方这时如果放宽下锚,就会把
+// 旧内容读出来,所以只钉 Wrong == 0(起播判定或者读方的门应该挡下,退回 [M] 接手):
+//  · input-quirk:Input 头两块报 P-179、P+1868(块长 1024),环里 [P+845, P+1868) 这一代没写过;
+//  · output-quirk:Output 第一块比 Input 早 179 帧,压在淡入上也算错;
+//  · no-region:起播点开始的 4096 帧宿主不调用 lane 0 的 Input,这个位置停着时也不调用。这条轨要约 1.1 s 才回来
+//    (写头冻在别处,报失准之后恢复期 1 s),和没有起播判定时一样,所以这一格多跑 2 s;
+//  · skip-after-stop:停着时照常调用预取的 lane 2,走带一起却跳过起播点开始的 2048 帧。判定看不出来,靠 Input 的
+//    epoch 一次加 2 挡。
+constexpr std::int64_t kLs17Quirk1 = -179;
+constexpr std::int64_t kLs17Quirk2 = 1868;
+
+namespace
+{
+const Run& ls17Run(const std::string& cell)
+{
+    static std::map<std::string, Run> runs;
+    const auto hit = runs.find(cell);
+    if (hit != runs.end())
+    {
+        return hit->second;
+    }
+    sched::SchedCfg cfg = lanesCfg(3, 1.0);
+    makePrefetch(cfg, 2, 4096, cfg.outBlock);
+    Run r = runScenario("LS-17 " + cell, cfg, [cell](SchedRig& rig, Run& run) {
+        const std::int64_t p = alignedSec(3.0);
+        rig.seek(sched::kNow, p + kRing);
+        rig.runFor(sec(1.0));
+        rig.stop();
+        rig.runFor(sec(0.1));
+        if (cell == "no-region")
+        {
+            rig.noRegion(0, p, p + 4096);
+        }
+        rig.seek(sched::kNow, p);
+        sampleInputs(rig, run, 2 * 1024, rig.outCursor() - run.c0 + sec(1.2 + 3.0));
+        rig.runFor(sec(1.2));
+        if (cell == "skip-after-stop")
+        {
+            rig.noRegion(2, p, p + 2048);
+        }
+        if (cell == "input-quirk")
+        {
+            rig.quirk(SchedRig::Target::AllInputs, sched::Quirk::offByOne(p + kLs17Quirk1, p + kLs17Quirk2));
+        }
+        else if (cell == "output-quirk")
+        {
+            sched::Quirk q;
+            q.reported = {p + kLs17Quirk1};
+            rig.quirk(SchedRig::Target::Output, q);
+        }
+        markNow(rig, run, "start");
+        rig.startFrom(p);
+        rig.runFor(sec(cell == "no-region" ? 3.0 : 1.0));
+    });
+    return runs.emplace(cell, std::move(r)).first->second;
+}
+} // namespace
+
+// 前提:起播之前轨确实退出了 connected_mask,Input 还在静音。短停时 [M] 根本没断开,测不到这条路。
+static void requireLs17Dropped(const Run& r, int lane)
+{
+    const std::int64_t start = r.mark.at("start");
+    const std::pair<int, int> m = maskOffSamples(r, lane, start - sec(0.3), start);
+    REQUIRE(m.second > 0);
+    REQUIRE(m.first > 0);
+}
+
+// 反向 = 判定恒为 0 或读方不放宽 ⇒ 第一帧晚 ⇒ 这里红。
+TEST_CASE("SCHED LS-17: pressing play within the raw-return window has every lane present from the first frame",
+          "[.][sched]")
+{
+    const Run& r = ls17Run("normal");
+    REQUIRE(r.settled);
+    const std::int64_t start = r.mark.at("start");
+    std::ostringstream os;
+    os << r.name << ":";
+    for (int lane = 0; lane < 3; ++lane)
+    {
+        INFO("lane " << lane);
+        requireLs17Dropped(r, lane);
+        const std::int64_t head = firstFrame(r, lane, start, kBig, isMix);
+        REQUIRE(head >= 0);
+        const Tally after = tally(r, lane, start, kBig);
+        CHECK((head - start) / kF <= 4); // 第一帧就有声音,还在 80 ms 淡入里:Partial,不是 Absent
+        CHECK(after.absent == 0);
+        CHECK(after.wrong == 0);
+        CHECK(after.rawAny == 0);
+        const Tally settledAfter = tally(r, lane, head + 6 * kF, kBig);
+        CHECK(settledAfter.mixPresent == settledAfter.total);
+        os << " | lane" << lane << " head +" << (head - start) / kF << " frames [" << str(after) << "]";
+    }
+    CHECK(maxMisalignAll(r) == 0);
+    WARN(os.str());
+}
+
+// 反向 = 判定不看起播位置 ⇒ output-quirk 红(压在淡入上算错);Input 不做一次加 2 ⇒ input-quirk、skip-after-stop 红。
+// no-region 那一格不看停着时的轨掩码也挡得住(写头在别处,near 不成立),它钉的是轨一定会回来。
+TEST_CASE("SCHED LS-17: a start the writers did not begin at never reads stale ring contents", "[.][sched]")
+{
+    for (const char* cell : {"input-quirk", "output-quirk", "no-region", "skip-after-stop"})
+    {
+        const Run& r = ls17Run(cell);
+        INFO(r.name);
+        REQUIRE(r.settled);
+        const std::int64_t start = r.mark.at("start");
+        std::ostringstream os;
+        os << r.name << ": misalign " << maxMisalignAll(r);
+        for (int lane = 0; lane < 3; ++lane)
+        {
+            INFO("lane " << lane);
+            requireLs17Dropped(r, lane);
+            const Tally after = tally(r, lane, start, kBig);
+            CHECK(after.wrong == 0);
+            const std::int64_t head = firstFrame(r, lane, start, kBig, isMix);
+            CHECK(head >= 0);
+            const Tally settledAfter = tally(r, lane, head + 12 * kF, kBig);
+            os << " | lane" << lane << " head +" << (head - start) / kF << " frames [" << str(after) << "] settled["
+               << str(settledAfter) << "]";
+        }
         WARN(os.str());
     }
 }

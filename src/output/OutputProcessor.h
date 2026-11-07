@@ -788,7 +788,9 @@ private:
     void timerCallback() override;
 
     // [A] 从 playhead 构造 C8 快照并发布(§5.2 / C8)。
-    void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing);
+    void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing, bool bypassed);
+    // [A] 时间线跳变记账(§5.2 步骤 2):processBlock 与 processBlockBypassed 共用。
+    void trackPodEpoch(bool haveTime, int64_t t0, int total, bool playing) noexcept;
 
     // [M] 按 claim 态裁决 viz 段的建/释放:唯一写方 = 本组 claim 到 OutputSlot 的那一个
     // ([J66] 同组内只读观察)。**每拍都做** —— claim 态会在接管/让位/改组时翻转。
@@ -818,6 +820,8 @@ private:
     //     同一宿主块内两者不变,不会误触发 30ms 切换斜坡;
     //   · 负 t0 按段判:跨过 0 的超长块前几段直通、后几段混音,中间经 busXfade 等功率交叉。
     void renderSpan(juce::AudioBuffer<float>& buffer, int offset, int n, bool haveT0, int64_t t0);
+    // 总线交叉的唯一入口:离线下先同块到位再渲染([J95①],理由见实现处的注释)。
+    void renderBus(float* const* out, const float* const* in, const float* const* mix, int n, bool targetMix) noexcept;
 
     // [A] 本块电平测量并发布(§2.5 数据面)。hasData/nch 为本块读环结果,trackGain 为本块
     // 起点仲裁目标导出的线性增益;busL/busR = 求和后的总线缓冲(nullptr = 本块未混音)。
@@ -946,6 +950,10 @@ private:
     bool printRangeValid_ = false;
     double printRangeStartS_ = 0.0;
     double printRangeEndS_ = 0.0;
+    // 消息线程上次从快照读到的 DAW 循环区(秒)。见 timerCallback。
+    bool lastHostLoopValid_ = false;
+    double lastHostLoopStartS_ = 0.0;
+    double lastHostLoopEndS_ = 0.0;
     // 总线交叉淡变 + per-channel 淡入(§5.2 过渡语义 R2)。
     scvb::output::BusXfade busXfade_;
 
@@ -1106,6 +1114,8 @@ private:
     // §1.15 的 enabled 此前**全 Output 侧零消费**:混音不看它、打印器的车道闸(setTrackEnabled,
     // 已实现且有单测)没有任何生产调用点 —— 开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
     std::atomic<std::uint32_t> enabledMask_{0x7FFFu};
+    void publishEnabledMask() noexcept; // [M] 从 runtime_.channels 算出 enabledMask_
+    void syncNonRealtimeFlag() noexcept; // [A] 块首
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     std::vector<float> accumL_;

@@ -1,7 +1,7 @@
 # DAW 实测矩阵(发版层)
 
 > 状态:演进中(每次发版追加一节,旧节不改)
-> 最后更新:2026-09-28
+> 最后更新:2026-11-04
 > 来源:masterPlan 10 §3.2–§3.3。对外的支持等级与逐 DAW 操作说明以 [DAW_COMPATIBILITY.md](../DAW_COMPATIBILITY.md) 为准;本文件只记发版层的逐格实测。
 
 ## 口径
@@ -36,6 +36,12 @@
 - AUTO:10 §1.2.4 的 S2-P1..P7。
 - STATE:10 §1.4.3 的 S4-P3 / P4 / P5 / P8。
 - UI:10 §1.3.3 的 S3-P1 / P2 / P5 / P7。
+
+## v0.11.0-beta.1 — 2026-11-04
+
+- **REAPER 7.82(Windows)**:2026-11-03 在候选构建(`feature/v1` @ `647a725`)上跑 `tests/reaper/` 的两层矩阵,148 行全部通过(3 行第一次被授权提醒等挡住,重跑通过)。它不是上面场景代号的逐格矩阵,覆盖面与结论见 [DAW_COMPATIBILITY.md](../DAW_COMPATIBILITY.md) 脚注 9 与「两层 SCVB(嵌套)」小节。
+- **Cubase**:本版不复测(用户 2026-11-04 裁定)。上一次实测是 v0.10.0-beta.1 的测试包 `7ae5713`(见 [release-checklist-v0.10.0-beta.1.md](release-checklist-v0.10.0-beta.1.md) §1)。
+- **Ableton Live / Studio One**:没有上机,仍为 Tier 3。
 
 ## v0.9.0-rc.1 — 2026-09-28(待上机)
 
