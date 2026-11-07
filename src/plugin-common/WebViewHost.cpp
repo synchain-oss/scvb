@@ -1092,8 +1092,6 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
          bridge::buildUiSeedPairs({config_.role, config_.version, lang_, uiScale_, config_.channelLimit}))
         options = options.withInitialisationData(seedPair.first, seedPair.second);
     // [Z1] 只进首帧 seed、不进 scvb.state 的那几个键(见 BridgeBase.h)。
-    for (const auto& seedPair : bridge::buildInitOnlySeedPairs(PlatformWebView::kNativePageZoom))
-        options = options.withInitialisationData(seedPair.first, seedPair.second);
 
     // JS -> C++(机制 6):通用缩放/语言/首帧;插件专属函数由 augmentOptions 追加。
     options = options
