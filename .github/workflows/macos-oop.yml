@@ -142,7 +142,7 @@ jobs:
 
       # 4) checkout。dispatch:取 artifact 名里的 sha(= macos-build 实际构建的提交);PR / push:caller 的
       #    默认(PR 是合并提交,与 macos-build 同一个 —— artifact 名里那个是 PR head sha,下一步另核)。
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.locate.outputs.present == 'true' }}
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && steps.locate.outputs.sha || inputs.ref }}

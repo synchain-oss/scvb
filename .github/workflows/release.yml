@@ -47,7 +47,7 @@ jobs:
       kind: ${{ steps.check.outputs.kind }}
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # 两步分开写:pwsh 块只带出最后一条命令的退出码,合在一起的话「自测红、实判绿」会整步变绿。
@@ -91,7 +91,7 @@ jobs:
     steps:
       # 默认浅克隆:package.ps1 只要 HEAD 的提交时间(给 zip 条目定时间戳,保证重跑字节一致)。
       # 不把 token 留在 .git/config:打包步用不到它,建 Release 那步经 GH_TOKEN 单独拿。
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
