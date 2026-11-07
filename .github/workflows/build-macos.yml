@@ -8,7 +8,7 @@ name: Build macOS (reusable)
 #     即「release 档」:构建与全部验证门照跑,最后按 tag 的版本号正式打一次包,传成 artifact
 #     SCVB-macos-arm64-release-<tag>,由 release.yml 的 `release-macos` 取走传到 Windows 建好的草稿 Release 上。
 #   所以一次 tag push 里本文件恰好跑一次(build-mac 那一路)。
-# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16 → M12b(只动 ctest 那一步:want 清单加 scvb_host_tests / scvb_host_sched_tests + 用例数下限)。
+# 写者链(严格串行):M01 → M06a → M06b → M04(只在 ctest 那一步的 want 清单里加 scvb_seqlock_stress)→ M08 → M12a(只动 ctest 那一步:want 清单加 scvb_ipc_tests / scvb_monitor_tests + 用例数下限)→ M10 → M16 → M12b(只动 ctest 那一步:want 清单加 scvb_host_tests / scvb_host_sched_tests + 用例数下限)→ Z1(加 pageZoom 探针与它的判决两步)。
 # 只用 run: 步骤 + build-vst3.yml 已 pin 的 GitHub 官方 action(同一个 40 位 SHA);
 # org 白名单之外的 action 会让整个 run startup_failure。
 # job 名刻意不与任何 required context 同名(`build-and-validate` 才是 required,这里多一个 -macos)。
@@ -28,6 +28,8 @@ name: Build macOS (reusable)
 # [M16] release 档(步骤 13):只在 release.yml 的 build-mac 调用时跑 —— 前面每一步都绿之后,用 tag 的版本号
 # (verify-tag 的输出)再跑一次 package-macos.sh,演练 tag 才加 --allow-missing-license-texts;核对三件产物后
 # 上传 artifact,并经 workflow_call 的 outputs 把 artifact 名 / zip 名 / sha256 交给 release.yml。
+# [Z1] 真 WebKit 探针(tests/macos/pagezoom-probe,在构建之前,自带负对照):WKWebView.pageZoom 下的视口、rect、
+# elementFromPoint 与真点击坐标系一致;失败不打断后面的门,由 job 末尾的判决步骤把 job 判红。
 # gates.ps1 是 Windows 专属,mac 侧的每一道门都在本文件里写成独立步骤。
 
 on:
@@ -1366,6 +1368,20 @@ jobs:
           if-no-files-found: error
           # 与 Windows 的 SCVB-VST3-win64-release-<tag> 同为 7 天:Release 资产才是长期保存的那份。
           retention-days: 7
+
+      # [Z1] 探针那一步 continue-on-error:它红了,后面的构建和验证门照样跑完,一次 run 把账都查清。
+      # 判决放在这里,否则探针红了整个 job 还是绿的。
+      - name: WKWebView pageZoom probe verdict
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          PROBE_OUTCOME: ${{ steps.pagezoom_probe.outcome }}
+        run: |
+          echo "pagezoom probe outcome: $PROBE_OUTCOME"
+          if [ "$PROBE_OUTCOME" = "failure" ]; then
+            echo "::error::WKWebView pageZoom probe failed; see the step log and tests/macos/pagezoom-probe/README.md"
+            exit 1
+          fi
 
       # [M08] 验证门的现场一并带上:auval / -strict 的完整输出、pluginval 每格的 stdout 与它自己的日志、
       # 三次残段探测的输出、两份三元组清单。全部写在工作区里,upload-artifact 按最近公共祖先展开时

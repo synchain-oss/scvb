@@ -41,6 +41,17 @@
 //     (l5)(仅 Output)就在这个 1.5 倍窗口里,按曲线点的真实屏幕位置按下 ⇒ 命中该点
 //          (锁 1 之后两种语义逐字相同,命中按构造正确;不锁的话 zoom=1.5 下必然打偏);
 //     (m1)(仅 Monitor)轨迹图上 Cmd+滚轮 ⇒ 横向缩放档位变大([M09] metaKey 同 Ctrl);
+//   【nativeZoom】[Z1] 旧语义模拟**留着**,再注入 mac 才有的 seed(形状与 JUCE 注入的一样)。Chromium 没有
+//     pageZoom,窗口(iframe)就是视口,所以这一段测的是页面对 seed 的反应,坐标系那一半归
+//     tests/macos/pagezoom-probe(真 WebKit):
+//     (z1) 快照带 1.5 ⇒ 不锁、窗口仍是设计盒 × 1.5(**没有**请回 1);
+//     (z2) 档位一个不少;(z3) 锁定提示 hidden;
+//     (z4) 视口是窗口本身时退回 CSS zoom(回退路:pageZoom 没生效也不裁切);
+//     (z5) 视口比设计盒少 3px ⇒ f 吸附成 1,CSS zoom 恒 1(没有 seed 时这里是 0.99xx);
+//     (z6)(Output / Monitor,Input 没有读这个倍率的画布)档位算进后备存储:backingFitFactor() = 1 × 档位;
+//     (z7)(仅 Output)宿主改到 1.25 ⇒ 页面经 state 回推把新档位报给 shell-fit;
+//     (z8)(仅 Monitor)本页选 125% ⇒ 轨迹图失效一次(pageZoom 变的时候页面里没有别的信号);
+//     (z9)(仅 Output)吸附之后按曲线点的真实位置 ⇒ 命中该点(旧语义模拟下,CSS zoom = 1 才对得上)。
 //   每页零 console.error、零未捕获异常。
 //
 // 删除式(**注入未提交**,逐格实跑过;读数见 PR 描述)——被注入的是产品代码,不是本文件:
@@ -50,7 +61,8 @@
 //   D4 三页不摘提示的 hidden ⇒ 红在 (l3);
 //   D5 trajectory-chart.js 的 `e.ctrlKey || e.metaKey` 改回 `e.ctrlKey` ⇒ 红在 (m1);
 //   D6 hit.js classifyZoomRect 恒返回 standard(探测失效)⇒ 旧语义段 (l1)–(l5) 全红;
-//   D7 [UI-1] scale-select.js pick() 里「选的就是当前档 ⇒ 只收起」那一句删掉 ⇒ 红在 (l6)。
+//   D7 [UI-1] scale-select.js pick() 里「选的就是当前档 ⇒ 只收起」那一句删掉 ⇒ 红在 (l6);
+//   D8–D12 [Z1] 的删除式(seed 不读 / 不吸附 / 档位不算进后备存储 / 页面不报档位)见 PR 描述。
 //
 // 用法:node web-preview/tests/smoke-zoom-legacy-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -422,6 +434,24 @@ const LEGACY_RECT_SCRIPT = `(() => {
         const z = effZoom(this);
         if (z === 1) return r;
         return new DOMRect(r.x / z, r.y / z, r.width / z, r.height / z);
+    };
+})();`;
+
+// ---------------------------------------------------------------- [Z1] mac 才有的 seed
+// 形状照 JUCE:每个 key 的值包成数组。其余几个键是 check_native_interop.js 占位对象的同款空表:
+// `__juce__functions` 为空 ⇒ bridge.js 仍判「不是真宿主」,走 mock 后端。
+const NATIVE_ZOOM_SEED_SCRIPT = `(() => {
+    window.__JUCE__ = {
+        postMessage: function () {},
+        initialisationData: {
+            __juce__platform: [],
+            __juce__functions: [],
+            __juce__registeredGlobalEventIds: [],
+            __juce__sliders: [],
+            __juce__toggles: [],
+            __juce__comboBoxes: [],
+            nativeZoom: [true],
+        },
     };
 })();`;
 
@@ -980,6 +1010,176 @@ try {
             check(
                 factorOf(after) > factorOf(before),
                 `${tag}(m1)Cmd+滚轮 ⇒ 轨迹图横向放大(档位 ${before} → ${after})`,
+            );
+        }
+        assertClean(tag);
+    }
+
+    // =========================================================================
+    log(
+        "=== 【nativeZoom】seed + 旧语义模拟:档位全开、无提示、不请回 1、f 吸附 ===",
+    );
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: NATIVE_ZOOM_SEED_SCRIPT,
+    });
+    const backing = () =>
+        evaluate(
+            IN_ASYNC(`
+            const sf = await w.eval('import("/web/shared/shell-fit.js")');
+            return sf.backingFitFactor();
+        `),
+        );
+    for (const cfg of ROLES) {
+        const { role, box } = cfg;
+        const tag = `原生/${role}`;
+        newBucket(tag);
+        if (!check(await open(cfg, 1.5), `${tag}:以 1.5 档开窗装载完成`)) {
+            continue;
+        }
+        check(
+            await waitFor(
+                IN(
+                    `return ${cfg.shown} === ${JSON.stringify(cfg.shownFor(1.5))};`,
+                ),
+                8000,
+            ),
+            `${tag}(z1)页面读数到 1.5(mock 快照带着开窗档位)`,
+        );
+        await twoFrames();
+        await twoFrames();
+        const s = await evaluate(STATE(cfg));
+        if (!check(s, `${tag}:取到读数`)) continue;
+        eq(
+            s.probe,
+            { rect: 100, offset: 100 },
+            `${tag} 前提:旧语义模拟还在(不是因为新语义才不锁)`,
+        );
+        eq(s.locked, false, `${tag}(z1)zoomLocked() = false`);
+        eq(
+            await frameWidth(),
+            Math.round(box.w * 1.5),
+            `${tag}(z1)窗口仍是设计盒 × 1.5(没有请回 1)`,
+        );
+        const all = box.presets.map(String);
+        for (const e of s.entries) {
+            eq(e.values, all, `${tag}(z2)${e.name}:档位一个不少`);
+        }
+        check(
+            s.hint && s.hint.hidden === true && s.hint.display === "none",
+            `${tag}(z3)锁定提示 hidden 且不占版面(实得 ${JSON.stringify(s.hint)})`,
+        );
+        eq(
+            s.zoom,
+            expectedZoom(box, 1.5),
+            `${tag}(z4)视口就是窗口(pageZoom 没生效的形态)⇒ 退回 CSS zoom`,
+        );
+
+        // (z5) 视口比设计盒少 3px:没有 seed 时倍率是 0.99xx,有 seed 吸成 1。
+        const nearW = box.w - 3;
+        const rawNear = fitFactor(nearW, box.h, box.w, box.h);
+        check(rawNear !== 1, `${tag}(z5)前提:${nearW}px 视口的原始倍率不是 1`);
+        await evaluate(
+            OUT(
+                `f.style.width = ${nearW} + "px"; f.style.height = ${box.h} + "px"; return true;`,
+            ),
+        );
+        check(
+            await waitFor(
+                IN(`return d.documentElement.clientWidth === ${nearW};`),
+            ),
+            `${tag}(z5)窗口改成 ${nearW}×${box.h}`,
+        );
+        await twoFrames();
+        await twoFrames();
+        eq(
+            await evaluate(
+                IN(`return q(${JSON.stringify(cfg.sel)}).style.zoom;`),
+            ),
+            "1",
+            `${tag}(z5)原始倍率 ${rawNear} ⇒ 吸附成 1,CSS zoom 恒 1`,
+        );
+
+        // (z6) 外壳 1 × 档位 1.5:后备存储倍率要带上档位。Input 没有读这个倍率的画布,不接。
+        if (role !== "input") {
+            eq(
+                await backing(),
+                1.5,
+                `${tag}(z6)backingFitFactor() = 1 × 档位 1.5`,
+            );
+        }
+
+        // (z7) state 回推这条路把新档位报给 shell-fit(壳页扮宿主改完档位后,再把视口放回设计盒)。
+        if (role === "output") {
+            check(await hostPush(1.25), `${tag}(z7)壳页扮宿主改到 1.25 档`);
+            check(
+                await waitFor(
+                    IN(
+                        `return ${cfg.shown} === ${JSON.stringify(cfg.shownFor(1.25))};`,
+                    ),
+                    6000,
+                ),
+                `${tag}(z7)页面读数跟到 1.25`,
+            );
+            await evaluate(
+                OUT(
+                    `f.style.width = ${box.w} + "px"; f.style.height = ${box.h} + "px"; return true;`,
+                ),
+            );
+            await twoFrames();
+            await twoFrames();
+            eq(
+                await backing(),
+                1.25,
+                `${tag}(z7)backingFitFactor() 跟到 1 × 1.25`,
+            );
+        }
+
+        // (z8) Monitor:本页选 125%,轨迹图必须失效一次。pageZoom 变的时候视口与 dpr 都不动,
+        // 这是页面里唯一的信号。
+        if (role === "monitor") {
+            const readCount = () =>
+                evaluate(
+                    IN(
+                        `return w.__SCVB_MONITOR__.snapshot().shellFitInvalidations;`,
+                    ),
+                );
+            const before = await readCount();
+            await evaluate(
+                IN(`const t = gb("monitor-scale-trigger");
+                    if (t) t.click();
+                    const o = gb("monitor-scale-panel").querySelector('[data-scale="1.25"]');
+                    if (o) o.click();
+                    return !!o;`),
+            );
+            check(
+                await waitFor(
+                    IN(
+                        `return w.__SCVB_MONITOR__.snapshot().shellFitInvalidations > ${before};`,
+                    ),
+                    4000,
+                ),
+                `${tag}(z8)选 125% ⇒ 轨迹图失效(计数 ${before} 之后涨了)`,
+            );
+            // 倒计时回退会再动一次档位;这里撤掉预览,别把确认框带进收尾。
+            await evaluate(
+                IN(`const r = gb("monitor-scale-confirm-revert");
+                    if (r) r.click();
+                    return true;`),
+            );
+        }
+
+        // (z9) 吸附之后 CSS zoom = 1,旧语义模拟下命中也是对的。
+        if (role === "output") {
+            await evaluate(
+                OUT(
+                    `f.style.width = ${box.w - 3} + "px"; f.style.height = ${box.h} + "px"; return true;`,
+                ),
+            );
+            await twoFrames();
+            await twoFrames();
+            check(
+                await curveHit(tag),
+                `${tag}(z9)吸附之后按曲线点的真实位置 ⇒ 命中该点(进入拖动态)`,
             );
         }
         assertClean(tag);

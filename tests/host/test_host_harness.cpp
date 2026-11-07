@@ -6836,7 +6836,13 @@ TEST_CASE("HOST SL-208:「保持」过的缩放档位换实例仍在(全局默�
     // ① 全局默认:一个实例「保持」125%,下一个**全新实例**构造时就该起在 125%。
     {
         ScvbOutputAudioProcessor a;
-        REQUIRE(a.uiScalePercent() == 100); // 未设置过 → 出厂 100
+        // [Z1] 未设置过 → 出厂档。mac 上 Output 默认 80,其它平台 100;全局默认与工程 state 的优先级见下面 ① ②。
+#if JUCE_MAC
+        STATIC_REQUIRE(ScvbOutputAudioProcessor::kFactoryUiScalePercent == 80);
+#else
+        STATIC_REQUIRE(ScvbOutputAudioProcessor::kFactoryUiScalePercent == 100);
+#endif
+        REQUIRE(a.uiScalePercent() == ScvbOutputAudioProcessor::kFactoryUiScalePercent);
 
         // persistUiScaleAsDefault() 的两件事(editor 侧走 commitUiScale 时的等价动作)。
         a.bridgeSetUiScalePercent(125);
