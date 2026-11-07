@@ -105,6 +105,8 @@ export function eventToLocal(clientX, clientY, rect, zoom = 1) {
 // [Z1] mac 上的插件窗口已经不走这条降级:缩放交给原生 `WKWebView.pageZoom`,CSS zoom 恒为 1,
 // 本探测在那条路上根本不跑(见 shell-fit.js 文件头 [Z1])。本探测与上面的降级留给没有 `nativeZoom`
 // seed 的环境;pageZoom 没生效的回退路上 CSS zoom 会回来,那时的命中偏移也写在 [Z1] 里。
+// 「26.4」只能当 Safari 那边的大致分界:Z1 的真 WebKit 探针在 macOS 15.8.2 / Safari 27.2 的 WKWebView 里
+// 量到的仍是旧语义(原因没查实)。这正是下面只认量到的语义、不读版本号的理由。
 //
 // 判据只认**量到的**语义,不读 UA、不读版本号:一个 zoom:2、宽 100px 的不可见探针,
 //   新语义:rect 宽 = 200(含 zoom),offsetWidth = 100;

@@ -41,7 +41,7 @@
 //      算出来的是档位本身,退回 CSS zoom 至少不裁切(这条回退路上旧语义的命中偏移还在);
 //   ③ |f-1| < 0.01 吸成 1(snapNativeFit):round(1180×0.65)/0.65 这类取整误差会让 f 差一点点,
 //      而旧语义下 f≠1 就会让点击偏;
-//   ④ pageZoom 不改 devicePixelRatio(真 WebKit 探针量过,见 tests/macos/pagezoom-probe),画布要清楚
+//   ④ pageZoom 不改 devicePixelRatio(真 WebKit 探针在 1x 屏上量过,见 tests/macos/pagezoom-probe),画布要清楚
 //      就得把档位算进后备存储倍率:见 backingFitFactor / noteNativeScale。
 // 没有这个 seed(Windows、web-preview)时以上一条都不触发,行为逐字不变。
 // =============================================================================
