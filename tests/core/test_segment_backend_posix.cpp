@@ -736,7 +736,7 @@ TEST_CASE("POSIX backend: an orphaned segment of an old size is rebuilt; readers
 
 TEST_CASE("POSIX backend: after a child dies without cleanup the parent takes the segment over", "[posix][fork]")
 {
-    TempLockDir dir; // 子进程继承 SCVB_IPC_LOCK_DIR 并在入口转成覆盖
+    TempLockDir dir; // fork 子进程直接继承父进程内存里的测试覆盖(不 exec,不经环境变量)
     const auto name = uniqueName("fork");
     const auto posix = toPosix(name);
     UnlinkOnExit guard{posix};
