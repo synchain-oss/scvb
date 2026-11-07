@@ -864,7 +864,7 @@ export const T = {
         // 判据是**量到的** rect 语义(web/shared/hit.js zoomRectMode),不按版本号。[Z1] 起 mac 插件
         // 走原生 pageZoom、不再锁;本条留给没有 nativeZoom seed 的环境。
         // 落笔前已对 web/fonts/*.woff2 核过字形(gate 3h);改字先核字,别重跑 fetch_fonts.py。
-        "scale.lockedLegacy": "WebKit 坐标语义较旧,缩放固定为 100%",
+        "scale.lockedLegacy": "此系统的 WebKit 下,缩放固定为 100%",
 
         // ---- T31 Wave 2 新增(统筹裁定「§E 九处 + Wave 2 增补」;zh 逐字取 05 §2.0/§2.1 正文)----
         // 建议 05 §5 收录;EN/FR 为 T31 自译,已入待审校清单(scratchpad/t31/deviations.md)。
