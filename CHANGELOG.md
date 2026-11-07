@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **macOS:插件窗口的缩放改走 WebKit 原生页面缩放,档位全部开放;SCVB Output 新开时默认 80%**:以前系统 WebKit 是旧坐标语义时,缩放被锁在 100%,笔记本屏幕上 Output 的窗口偏大也改不小。原先以为只有 Safari 低于 26.4 才这样,CI 上 Safari 27.2 的 WKWebView 量到的也是旧语义。现在三个插件的缩放都交给 WKWebView 的 `pageZoom`,页面里的 CSS zoom 恒为 1,点击不会因为缩放落偏。全局默认档位和工程里存的档位仍然优先;Windows 上行为不变。CI 上的真 WebKit 探针逐档核过视口、元素位置和真实鼠标点击,**还没在 LUNA 真机上确认**,见 KI-16。(#450)
+
 ## [0.11.0-beta.1] - 2026-11-05
 
 本版 GitHub Release 只放 Windows x64。
