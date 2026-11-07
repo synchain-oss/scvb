@@ -698,7 +698,6 @@ void WebViewHost::resizeToDesignBox(float scale)
 {
     const auto r = bridge::designBoxWindowSize(config_.role, scale);
     setSize(r.width, r.height);
-    applyNativeZoom(scale);
 }
 
 void WebViewHost::applyNativeZoom(float scale)
