@@ -2,7 +2,7 @@
 // test_segment_backend_posix —— POSIX 共享内存后端(B 线 M05)的单测。只在 Apple 上编进 scvb_tests
 // (tests/CMakeLists.txt 里那个 if(APPLE) 追加块)。
 //
-// 隔离:每个用例用自己的临时锁目录(SCVB_IPC_LOCK_DIR)和带 pid 的段名("Local\SCVBt<pid>.…"),
+// 隔离:每个用例用自己的临时锁目录(测试覆盖入口;SCVB_IPC_LOCK_DIR 只给子进程)和带 pid 的段名,
 // 不碰真实 home 下的锁目录,也**不建**冻结前缀 SynchainSCVB.v1. 下的真实段名 —— 两个测试进程同机并发
 // 时彼此打不坏(tests/support/exclusive_guard.h 的 POSIX 版守卫归 M12a)。用 Registry / CtrlPlane 跑的
 // 「两个后端各跑一遍」用例经一个改名层把冻结前缀换成带 pid 的前缀,真正的 shm / flock 仍由
@@ -239,7 +239,21 @@ private:
     bool hadPrev_ = false;
 };
 
-// 每格自己的锁目录:建临时目录并设 SCVB_IPC_LOCK_DIR(后端在**构造时**读它,所以要先于后端构造)。
+// 测试覆盖的作用域还原:构造时记下当前值,析构时放回去。
+class LockDirOverrideGuard
+{
+public:
+    LockDirOverrideGuard() : prev_(SegmentBackendPosix::lockDirOverrideForTests()) {}
+    ~LockDirOverrideGuard() { SegmentBackendPosix::setLockDirOverrideForTests(prev_); }
+    LockDirOverrideGuard(const LockDirOverrideGuard&) = delete;
+    LockDirOverrideGuard& operator=(const LockDirOverrideGuard&) = delete;
+
+private:
+    std::string prev_;
+};
+
+// 每格自己的锁目录:建临时目录,调测试入口设覆盖(后端在**构造时**读它,所以要先于后端构造),
+// 同时设 SCVB_IPC_LOCK_DIR 让拉起的子进程在它们的入口转成同一个覆盖。
 class TempLockDir
 {
 public:
@@ -251,6 +265,7 @@ public:
         REQUIRE(::mkdtemp(buf.data()) != nullptr);
         path_ = buf.data();
         REQUIRE(::setenv(SegmentBackendPosix::kLockDirEnvVar, path_.c_str(), 1) == 0);
+        SegmentBackendPosix::setLockDirOverrideForTests(path_);
     }
     ~TempLockDir()
     {
@@ -265,6 +280,7 @@ public:
     std::string lockFile(const std::string& posix) const { return path_ + "/" + posix.substr(1) + ".lock"; }
 
 private:
+    LockDirOverrideGuard override_;
     EnvVarGuard env_;
     std::string path_;
 };
@@ -720,7 +736,7 @@ TEST_CASE("POSIX backend: an orphaned segment of an old size is rebuilt; readers
 
 TEST_CASE("POSIX backend: after a child dies without cleanup the parent takes the segment over", "[posix][fork]")
 {
-    TempLockDir dir; // 子进程继承 SCVB_IPC_LOCK_DIR
+    TempLockDir dir; // fork 子进程直接继承父进程内存里的测试覆盖(不 exec,不经环境变量)
     const auto name = uniqueName("fork");
     const auto posix = toPosix(name);
     UnlinkOnExit guard{posix};
@@ -1179,8 +1195,7 @@ TEST_CASE("POSIX backend: a stuck lifecycle.lock holder costs one bounded wait; 
     CHECK_FALSE(shmExists(posix));
 }
 
-TEST_CASE("POSIX backend: the SCVB_IPC_LOCK_DIR override is reported once per backend instance",
-          "[posix][diag][lockdir]")
+TEST_CASE("POSIX backend: the lock-dir test override is reported once per backend instance", "[posix][diag][lockdir]")
 {
     {
         TempLockDir dir;
@@ -1215,7 +1230,9 @@ TEST_CASE("POSIX backend: the SCVB_IPC_LOCK_DIR override is reported once per ba
     {
         // 没设覆盖:不报。只走只读路径:不建目录、不建文件,真实 home 下什么都不留。
         EnvVarGuard env(SegmentBackendPosix::kLockDirEnvVar);
+        LockDirOverrideGuard overrideGuard;
         ::unsetenv(SegmentBackendPosix::kLockDirEnvVar);
+        SegmentBackendPosix::setLockDirOverrideForTests({});
         DiagRecorder diag;
         SegmentBackendPosix backend;
         CHECK_FALSE(backend.lockDirOverridden());
@@ -1224,6 +1241,29 @@ TEST_CASE("POSIX backend: the SCVB_IPC_LOCK_DIR override is reported once per ba
         INFO(diag.dump());
         CHECK(diag.countOf(scvb::IpcDiagOp::kLockDirOverride) == std::size_t{0});
     }
+}
+
+TEST_CASE("POSIX backend: the production path ignores SCVB_IPC_LOCK_DIR; only the test entry changes the lock dir",
+          "[posix][lockdir]")
+{
+    EnvVarGuard env(SegmentBackendPosix::kLockDirEnvVar);
+    LockDirOverrideGuard overrideGuard;
+    SegmentBackendPosix::setLockDirOverrideForTests({}); // 发布版的状态:没人调过测试入口
+    REQUIRE(::setenv(SegmentBackendPosix::kLockDirEnvVar, "/nonexistent/scvb-env-must-be-ignored", 1) == 0);
+
+    DiagRecorder diag;
+    SegmentBackendPosix backend;
+    CHECK_FALSE(backend.lockDirOverridden());
+    CHECK(backend.lockDir() == SegmentBackendPosix::defaultLockDir());
+    SegmentView r;
+    CHECK(backend.openExistingReadOnly(uniqueName("envign"), r) == InitResult::kFailed);
+    CHECK(diag.countOf(scvb::IpcDiagOp::kLockDirOverride) == std::size_t{0});
+
+    // 对照:调了测试入口才生效。
+    SegmentBackendPosix::setLockDirOverrideForTests("/tmp/scvb-explicit-override");
+    SegmentBackendPosix viaEntry;
+    CHECK(viaEntry.lockDirOverridden());
+    CHECK(viaEntry.lockDir() == "/tmp/scvb-explicit-override");
 }
 
 TEST_CASE("IpcDiag: no-op by default, routes to an installed sink, restores the previous one", "[posix][diag]")
@@ -1255,12 +1295,14 @@ TEST_CASE("IpcDiag: no-op by default, routes to an installed sink, restores the 
     }
 }
 
-TEST_CASE("POSIX backend: the lock directory defaults to the real home, not TMPDIR; the env override wins",
+TEST_CASE("POSIX backend: the lock directory defaults to the real home, not TMPDIR; the test override wins",
           "[posix][lockdir]")
 {
     {
         EnvVarGuard env(SegmentBackendPosix::kLockDirEnvVar);
+        LockDirOverrideGuard overrideGuard;
         ::unsetenv(SegmentBackendPosix::kLockDirEnvVar);
+        SegmentBackendPosix::setLockDirOverrideForTests({});
         SegmentBackendPosix backend; // 只读出路径,不建任何东西(建目录只发生在 createOrOpen 里)
 
         const struct passwd* pw = ::getpwuid(::getuid());
@@ -1330,7 +1372,7 @@ private:
 
     std::wstring prefix_;
     std::set<std::string> touched_;
-    SegmentBackendPosix inner_; // 最后声明:构造时 SCVB_IPC_LOCK_DIR 已由外层设好
+    SegmentBackendPosix inner_; // 最后声明:构造时测试覆盖已由外层设好
 };
 
 using Scenario = std::function<void(scvb::ISegmentBackend&)>;

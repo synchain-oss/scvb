@@ -13,6 +13,7 @@
 - **macOS:插件窗口的缩放改走 WebKit 原生页面缩放,档位全部开放;SCVB Output 新开时默认 80%**:以前系统 WebKit 是旧坐标语义时,缩放被锁在 100%,笔记本屏幕上 Output 的窗口偏大也改不小。原先以为只有 Safari 低于 26.4 才这样,CI 上 Safari 27.2 的 WKWebView 量到的也是旧语义。现在三个插件的缩放都交给 WKWebView 的 `pageZoom`,页面里的 CSS zoom 恒为 1,点击不会因为缩放落偏。全局默认档位和工程里存的档位仍然优先;Windows 上行为不变。CI 上的真 WebKit 探针逐档核过视口、元素位置和真实鼠标点击,**还没在 LUNA 真机上确认**,见 KI-16。(#450)
 ### 修复
 
+- **mac 版插件不再受环境变量 `SCVB_IPC_LOCK_DIR` 影响**:这个变量原本只是测试用来隔离共享内存锁目录的开关,但发布版里同样会读它,宿主和进程外的 AU 托管服务只有一边设了它,就可能互相把对方的活段清掉。现在插件的锁目录不再受这个变量影响,一律用默认位置;测试仍能隔离锁目录。段名、布局和 abi 不变。(#448)
 - **macOS 安装说明补上 LUNA 找 VST3 的位置**:LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,按默认步骤装到 `~/Library/Audio/Plug-Ins/VST3` 的 `.vst3` 它扫不出来;AU 装在 `~/Library` 能用(用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件实测)。
   macOS zip 的 `INSTALL.txt`、两份 README、用户手册 FAQ、DAW_COMPATIBILITY 的 LUNA 节与 LUNA 验收包都改成:在 LUNA 里用 AU,一定要用 VST3 就给这台 Mac 的所有用户安装到系统目录,并删掉 `~/Library` 下的旧副本。安装命令本身不变(#447)
 
