@@ -27,6 +27,15 @@ public:
     bool isSettledMix() const noexcept { return targetMix_ && theta_ >= kHalfPi; }
     bool isSettledPassthrough() const noexcept { return !targetMix_ && theta_ <= 0.0; }
 
+    // [J95①] 非实时(离线渲染)专用:同块到位,不走 80ms 交叉。Input 那一侧在离线下是同块硬切
+    // (`RampSwitcher::snapTo`),这边若还在交叉,总线输入已经是零、混音只露出 sin(θ) 那一份 ——
+    // 交接点上就是一个从零淡入的坑。
+    void snapTo(bool targetMix) noexcept
+    {
+        targetMix_ = targetMix;
+        theta_ = targetMix ? kHalfPi : 0.0;
+    }
+
     // 硬置位到直通稳态(首块/重初始化)。
     void resetToPassthrough() noexcept
     {

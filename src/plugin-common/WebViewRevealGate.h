@@ -15,9 +15,11 @@ namespace scvb::webview
 // 是 152.0.4191.66(ICoreWebView2Controller2 / DefaultBackgroundColor 全可用),仍固定看到
 // 「白 → 黑 → 白 → 内容」。也就是说白的那几帧根本不由我方任何一层底色决定 —— WebView2 的
 // 宿主 HWND 一旦上屏,它自己在合成首帧之前画什么,插件侧没有任何 API 管得到。
-// 于是改成**根本不让它上屏**:导航开始到「页面首帧已绘」之间,把 WebView 子窗口挪到宿主
-// 客户区之外,那块地方由 WebViewHost::paint 铺占位([SL-402] 起 = 与成品外壳渐变同组色标的
-// shellBackdropGradient 渐变;SL-370 当时是单色成品外壳中点色)。
+// 于是改成**根本不让它上屏**:加载尝试开始(发起导航之前)到「页面首帧已绘」之间,把 WebView
+// 子窗口挪到宿主客户区之外,那块地方由 WebViewHost::paint 铺占位(外圈色 + 与成品外壳同几何的
+// 圆角渐变,见 PlatformWebView.h 的 paintShellPlaceholder;[SL-402] 起渐变与成品外壳同组色标,
+// SL-370 当时是单色成品外壳中点色)。挡的起点原先是导航开始,为什么提前见下面
+// 【为什么从加载尝试一开头就挪,不等导航开始】。
 //
 // 【为什么挪走而不是 setVisible(false) / 零尺寸】三条,缺一不可:
 //   • `setVisible(false)` 会走 JUCE 的 componentVisibilityChanged → checkWindowAssociation
@@ -41,7 +43,8 @@ namespace scvb::webview
 //   「每次开窗多按住 3 秒占位」—— 屏上仍然是「粉底 → 内容」,不会白也不会卡,但
 //   **「等到首帧已绘再放」这条保证没了**,而这件事**没有任何一格判据会红**。
 //   探针有两行,**必须一起读**:`WebViewHost::handleFirstFrame()` 的
-//   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**),
+//   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**;
+//   还挡在导航之前时这一档写 `ignored, held before navigation`,信号不算数),
 //   与 `noteRevealed()` 的 `webview revealed (<reason>) after <n> ms`(**谁**放的行)。
 //   只看后者会把「信号来晚了」误读成「信号没来」—— 而这两者的处置完全不同。
 //   真机验收的硬指标是**前者的条数**:开 N 次窗就该有 N 行 `first-frame signal`;
@@ -68,14 +71,25 @@ namespace scvb::webview
 //   **不要再退回「navFinished 也放行」**—— 那正是 SL-376 定谳掉的那段白(见下面【只认首帧】)。
 //   那时再立卡,别在这里预先写死结论。
 //
-// 【为什么等到 onNavigationStarted 才挪】SL-271 的重试泵挂在 `HostWebView::paint` 上,而挪出
-// 可视区之后 JUCE 不再画它 ⇒ 泵停。导航开始 = WebView2 控制器已经建好 —— JUCE 在
-// `CreateCoreWebView2Controller` 的完成回调里是先 `addEventHandlers()` + `setWebViewPreferences()`
-// 再 `Navigate`(juce_WebBrowserComponent_windows.cpp 的 createWebView,读实现核过),
-// 而泵的条件正是
-// `if (! hasBrowserBeenCreated())` —— 控制器建好之后它本来就是空调用。所以「控制器建好之前
-// 一直可见」既保住了泵,又没有放过任何一帧白:那一段屏上是我方 paint 铺的占位渐变
-// ([SL-402] 起;SL-370 当时是单色 shellBackdrop)。
+// 【为什么从加载尝试一开头就挪,不等导航开始】(原先是等 onNavigationStarted 才挪,结论已反过来)
+// JUCE 在 `CreateCoreWebView2Controller` 的完成回调里依次做 `addEventHandlers()`、
+// `setWebViewPreferences()`(put_IsVisible)、`componentMovedOrResized()`(put_Bounds,按组件**当前**
+// 边界)、然后才 `Navigate`(juce_WebBrowserComponent_windows.cpp 的 createWebView,读实现核过)。
+// 只在导航开始事件回来时才挪的话,「控制器建好」到「导航开始事件回来」这一段,WebView2 的宿主窗口已经
+// 落在可视区里、可见、还没有任何内容 —— 用户看到的是「占位之后又闪一下白」(宿主的编辑器容器是白或灰时
+// 最明显),机器越忙这一段越长。
+// 所以 beginLoadAttempt 在发起导航之前就挪(holdBeforeNavigation):控制器建好时 JUCE 拿到的已经是
+// 可视区之外的边界,宿主窗口从出生起就不在屏上。
+//   · 这一段**不起算超时**:导航开始之前的时长归看门狗(冷 / 热预算),到点切兜底面板,面板那条路照常放行。
+//     超时起点仍落在导航开始(onNavigationStarted 只落起点、不再挪)。
+//   · 这一段的首帧信号**不记账**:这一次加载还没有文档,信号不属于它。
+//   · 代价落在 SL-271 的重试泵上:它挂在 `HostWebView::paint` 上,挪出可视区后 JUCE 不再画它 ⇒ 泵停。
+//     所以挡住期间由宿主的 25Hz 定时器代调一次**同一个基类绘制**(HostWebView::pumpControllerCreation,
+//     画进一张 1×1 软件小图,屏上什么都不变);泵的条件 `if (! hasBrowserBeenCreated())` 与实现仍一字不动
+//     留在 JUCE 里,不复刻它。导航开始 = 控制器已建好,代驱动随之停下。
+//   · 评估过、没走的路:隐藏到首帧(JUCE 会导航到空白页,且 WebView2 不可见时停帧)、零尺寸(视口压成 0)、
+//     推迟 goToURL(缺口在 JUCE 回调内部,与我方何时调 goToURL 无关)、改 JUCE(不改 JUCE 是硬约束)、
+//     在 WebView 上盖原生占位子窗口(z 序、缩放、DPI 都要自己维护)。
 //
 // 【[SL-376] 只认首帧 —— 放行路从三条减到两条】
 // v5.6.10 真机(用户)是「粉色占位 → **白一瞬** → 内容」:黑没了(SL-370 的颜色那一段生效),
@@ -137,11 +151,12 @@ namespace scvb::webview
 //   下面的 kRevealFallbackMs 从 onNavigationStarted(parkedAtMs_)起算,页内那 2500 ms 从
 //   **那段内联脚本执行**起算,中间隔着「导航开始 → 文档送达 → <head> 解析」。真实余量是
 //   `500ms − 那一段`;那一段够长时保险反而跑输,放行原因照样掉成 timeout。而且**这件事
-//   从抓取包里看不出来**(`navigation started` 那行不带时间戳)⇒ SL-430,与 SL-426
+//   当时从抓取包里看不出来**(`navigation started` 那行不带时间戳)⇒ SL-430,与 SL-426
 //   (日志里读不出插件版本号)同族。**SL-430 的前半已随本卡落地**:首帧信号的载荷现在带
 //   `paintDeltaMs`,`first-frame signal` 那行尾部会打 `(signal-firstPaint +N ms)` 或
 //   `(no paint record)`(见 WebViewHost::handleFirstFrame)⇒ 用户机上的余量**可以直接读了**,
-//   不用再像上面那张表一样从 A/B 差值反推;`navigation started` 补时间戳那**后半仍封存**。
+//   不用再像上面那张表一样从 A/B 差值反推。后半也落地了:`navigation started` 那行带 `(after N ms)`,
+//   与 `first-frame signal` 那行相减,就是「导航开始 → 信号发出」,是上面那一段的上界。
 //   ⚠ 那条保险要成立,**三件事缺一不可**(本卡为它连栽三轮,每一轮都是上一轮补丁的副作用):
 //     · 回调**直接发信号、不绕两层 rAF** —— 保险存在的唯一理由就是「paint 记录不来」,
 //       而那一档最可能的成因正是上面点名的 BeginFrame 停摆,停了 rAF 也不回调;
@@ -247,6 +262,7 @@ public:
     void beginLoadAttempt() noexcept
     {
         parked_ = false;
+        holding_ = false;
         revealed_ = false;
         settling_ = false;
         settleTicksSeen_ = 0;
@@ -255,14 +271,39 @@ public:
         revealReason_ = "";
     }
 
-    // 导航开始(WebView2 控制器已建好)。已经放行过就不再挪 —— 页面自己再导航一次时
-    // 重新黑一下屏比那点白更难看。
-    void onNavigationStarted(std::uint32_t nowMs) noexcept
+    // 发起导航之前先挪走(加载尝试开头、goToURL 之前调)。理由见头注
+    // 【为什么从加载尝试一开头就挪,不等导航开始】。
+    // 这一段不起算超时,超时从导航开始算。
+    void holdBeforeNavigation() noexcept
     {
         if (revealed_ || parked_)
             return;
         parked_ = true;
+        holding_ = true;
+    }
+
+    // 导航开始(WebView2 控制器已建好)。已经放行过就不再挪 —— 页面自己再导航一次时
+    // 重新黑一下屏比那点白更难看。导航之前已经挪走的,位置不动,只把超时的起点落在此刻;
+    // 已经按导航开始挪走的,第二次导航不挪超时起点。
+    void onNavigationStarted(std::uint32_t nowMs) noexcept
+    {
+        if (revealed_ || (parked_ && !holding_))
+            return;
+        parked_ = true;
+        holding_ = false;
         parkedAtMs_ = nowMs;
+    }
+
+    // 前端的桥就绪了(requestInitialState):页面已经在跑,导航必定开始过。按 JUCE 8.0.8 的事件顺序,
+    // 导航开始一定先于桥就绪,这里是纵深防御:万一导航开始没送到、闸门还挡在导航之前,就按导航开始补记一次,
+    // 超时从此刻起算。不补的话闸门会永远挪在外面 —— 挡住期间不起算超时,看门狗又在桥就绪之后就不管了。
+    // 返回是否补记了(调用方据此写一行诊断)。
+    bool onBridgeReady(std::uint32_t nowMs) noexcept
+    {
+        if (!holding_)
+            return false;
+        onNavigationStarted(nowMs);
+        return true;
     }
 
     // 前端「首帧已绘」信号(__scvb__firstFrame)。**这里不放行**,只武装 —— 真正放行在后面的
@@ -287,8 +328,11 @@ public:
     //     不是「等到真的画过一帧再放行」这条本卡想保证的路;2.5s 的保险窗口与 3s 的
     //     兜底窗口余量并不宽(2.5s vs 3s,中间隔着的只是导航开始到本段脚本执行那一小段),
     //     两者谁先谁后没有判据钉着,真机上出现哪一种取决于当时的时序。
+    //   · 导航开始之前到的信号不属于这一次加载(这一次还没有文档),不记账。
     void onFirstFrame(std::uint32_t nowMs) noexcept
     {
+        if (holding_)
+            return;
         if (!parked_)
         {
             revealed_ = true;
@@ -310,9 +354,10 @@ public:
     // 25Hz tick:先结算首帧信号的那一拍,再看超时兜底。差值走 uint32 → int32:
     // getMillisecondCounter 每 ~49 天回绕,直接比大小会在回绕点把「刚挪走」算成
     // 「早该放行」(或反过来永不放行)。
+    // 导航开始之前(holding_)不起算超时:那一段归看门狗,到点切兜底面板。
     void onTick(std::uint32_t nowMs) noexcept
     {
-        if (!parked_)
+        if (!parked_ || holding_)
             return;
         if (settling_)
         {
@@ -333,6 +378,8 @@ public:
     void onFallbackShown() noexcept { reveal("fallback"); }
 
     bool parked() const noexcept { return parked_; }
+    // 挡住了、但导航还没开始:这一段由宿主的定时器代驱动控制器创建的重试泵(见头注)。
+    bool holdingBeforeNavigation() const noexcept { return holding_; }
     // 最近一次放行的原因(诊断行用;从未放行过是空串)。
     const char* lastRevealReason() const noexcept { return revealReason_; }
     // [SL-376] pageFinishedLoading 到过没有。**与放行无关**,只进 timeout 那一行诊断。
@@ -343,6 +390,7 @@ private:
     {
         revealed_ = true;
         settling_ = false;
+        holding_ = false;
         if (!parked_)
             return;
         parked_ = false;
@@ -350,6 +398,7 @@ private:
     }
 
     bool parked_ = false;
+    bool holding_ = false; // 导航开始之前就挪走了(此时 parked_ 同为真)
     bool revealed_ = false;
     bool settling_ = false; // [SL-376] 首帧信号已到、正在压那一拍
     bool navFinishedSeen_ = false;
@@ -384,6 +433,22 @@ inline juce::Rectangle<int> parkedBounds(juce::Rectangle<int> visible) noexcept
 {
     const int step = juce::jmax(1, visible.getWidth());
     return visible.withX(visible.getX() + step * 2);
+}
+
+// 关窗诊断行:本次加载尝试从起点到关窗用了多久,关窗那一刻闸门停在哪一档。放行行只在放行时写,
+// 「内容出来之前就关了窗」或「开窗卡在占位上」在日志里原本一个字都没有,这一行补的就是这一类。
+// 档位:fallback(兜底面板在场)、reveal gate off(闸门不启用的平台,即系统 WebKit)、
+// parked before navigation(挡着、导航还没开始)、parked(挡着、导航已开始、首帧还没放行)、revealed(已放行)。
+// 用时从加载尝试起点(startMs_)算,与其余诊断行同一个起点;差值走 uint32 → int32,理由同 onTick。
+inline juce::String windowClosedLine(std::uint32_t nowMs, std::uint32_t startMs, const RevealGate& gate,
+                                     bool gateEnabled, bool fallbackShown)
+{
+    const char* state = fallbackShown                    ? "fallback"
+                        : !gateEnabled                   ? "reveal gate off"
+                        : gate.holdingBeforeNavigation() ? "parked before navigation"
+                        : gate.parked()                  ? "parked"
+                                                         : "revealed";
+    return "window closed after " + juce::String(static_cast<std::int32_t>(nowMs - startMs)) + " ms (" + state + ")";
 }
 
 } // namespace scvb::webview

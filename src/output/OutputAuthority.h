@@ -84,8 +84,8 @@ public:
 
     // ---- [J157 / SL-447] pan 曲线拖动预览(消息线程;契约 §1.37 `previewPanCurve`)----
     // 预览只换**音频线程用的那张 G 表**:不写 m_panCurvePoints / m_panCurveLut(已提交的那张)、
-    // 不碰 VersionStore、不进撤销栈、不落盘。打印器与 viz 根本不读 G(它们读的是各轨 pan/vol
-    // 曲线),分析读的是 processor 的 crvsData_ —— 三者都只见到已提交的曲线。
+    // 不碰 VersionStore、不进撤销栈、不落盘。打印器、viz 和分析都不读 G(前两者读的是各轨
+    // pan/vol 曲线,分析只算未叠加 G 的左右能量),所以预览只影响听到的声音。
     //
     // 发不发由 pump 决定,三道闸按顺序:
     //   ① 限速:距上一次预览发布 ≥ 当前间隔(≥ 50 ms ⇒ ≤ 20 Hz,J157 约束①);烘表贵时按

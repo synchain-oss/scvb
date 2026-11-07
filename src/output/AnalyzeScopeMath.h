@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "engine/PlayheadShot.h" // scvb::engine::PlayheadPod(纯 C++,本头仍无 JUCE)
 #include "state/StateCodec.h" // scvb::state::kNumTracks(轨数的单一真源;本头仍无 JUCE)
 
 // analyze/previewAnalyze 的「全部」范围推导(§1.5/§1.6 的 "all" 分支)。
@@ -70,6 +71,37 @@ struct CoverageWindow
     double endS = 0.0;
     bool valid() const { return endS > startS; }
 };
+
+// 播放头在不在用户选的范围里:跟随档恒真,其余档按 [startS, endS)。界面的 inRange(契约 §2.6)和打印(§1.3)读同一条。
+inline bool playheadInUserRange(int rangeMode, double rangeStartS, double rangeEndS, double playheadS)
+{
+    return rangeMode == 0 || (playheadS >= rangeStartS && playheadS < rangeEndS);
+}
+
+// 宿主循环区换算成秒。JUCE 的 AudioPlayHead::LoopPoints 只有 ppqStart/ppqEnd,换算必须有 tempo。
+// 宿主给了循环区却没给 bpm(或 bpm<=0)时不猜,空 / 倒置的循环区也不算有效:都返回 false,不动出参。
+// 界面和打印共用:打印不能看 runtime 里那份范围,它只有编辑器开着时才跟着循环区走。
+inline bool hostLoopSeconds(const scvb::engine::PlayheadPod& pod, double& startS, double& endS)
+{
+    if ((pod.flags & scvb::engine::kPlayheadCycleValid) == 0)
+    {
+        return false;
+    }
+    if ((pod.flags & scvb::engine::kPlayheadTempoValid) == 0 || pod.bpm <= 0.0)
+    {
+        return false;
+    }
+    const double secPerBeat = 60.0 / pod.bpm;
+    const double s = pod.loopStartPpq * secPerBeat;
+    const double e = pod.loopEndPpq * secPerBeat;
+    if (!(e > s) || !std::isfinite(s) || !std::isfinite(e))
+    {
+        return false;
+    }
+    startS = s;
+    endS = e;
+    return true;
+}
 
 inline CoverageWindow captureProgressWindow(bool playing, int rangeMode, double rangeStartS, double rangeEndS,
                                             double playheadS, double capturedExtentS)

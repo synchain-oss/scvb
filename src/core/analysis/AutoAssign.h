@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "analysis/PanCurve.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -45,7 +43,8 @@ struct TrackMeta
     bool participateInAutoPan = true; // [J83] 未显式设置一律 true(默认档归 state 层,不按源声道推导)。
     SourceChannels source = SourceChannels::Mono; // 透传(参与/默认值由 participate 布尔承载)。
     double currentPan = 0.0; // 现值(manual / nonpart 轨保持此值,不被改写)。
-    double width = 0.0; // 每轨张开度(stereo 源;点语义 → 不进代价函数,只透传)。
+    // stereo 源的张开度(不进代价函数)。分析管线不填,恒 0:stereo 轨按一个点算,见 docs/ANALYSIS.md §7。
+    double width = 0.0;
     bool hasPrev = false; // 是否携带上一区间解;false → w_cont/w_side 项为 0(首区间)。
     double prevPan = 0.0; // P_i^{t−1}(上一区间名义 pan)。
 };
@@ -103,7 +102,6 @@ struct BalanceConfig
     double volSoftMax = 9.0; // vol_soft_window 上界。
     double uHardMin = -24.0; // 参数硬范围下界(仅文档/截断参照)。
     double uHardMax = 12.0; // 参数硬范围上界。
-    std::vector<PanCurvePoint> panCurve; // 曲线 G(P);空 → G≡0(c≡1)。
     double deltaMax = 15.0; // δ ∈ [−15,+15](§6.4 step 3)。
     double deltaPrecision = 0.1; // δ 步进精度。
     int deltaBinaryIters = 20; // δ 二分 ≤20 次。

@@ -29,6 +29,10 @@
 //   ⑥c [SL-370→SL-402] 占位的 C++ 真源 == tokens.css 的 --page-gradient —— SL-370 当时
 //      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
 //      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
+//   ⑥d 开窗占位与成品外壳**同形**(圆角):C++ 的外壳圆角半径 kShellCornerRadiusPx 与外圈色
+//      kShellRimRgb == tokens.css 的 --r-shell、--page-backdrop;而且这两个 token 真是外壳与外圈
+//      在用的那两个(base.css 的 .sc-shell 圆角、独立 body 规则的底色)。
+//   ⑥e JUCE 版本绊线还在、版本号 == .juce-version;`navigation started` 诊断行带毫秒数。
 //   ⑦ [SL-370 / SL-429 / SL-437] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
 //      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
 //      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
@@ -755,6 +759,197 @@ function checkBackdropMatchesShell() {
 }
 
 /**
+ * PlatformWebView.h 去掉注释后的文本(`//` 行注释与块注释都去掉),供 ⑥d 抽声明用 ——
+ * 被注释掉的旧声明、注释里提到的同名标识符都不能冒充真声明。
+ */
+function platformWebViewCode() {
+    const hdr = readFileSync(
+        join(ROOT, "src/plugin-common/PlatformWebView.h"),
+        "utf8",
+    );
+    return hdr.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+/**
+ * CSS 文本里选择器**恰好**是 selector 的那条规则的正文(选择器独占一行、上一行不以逗号结尾,
+ * 到第一个右花括号为止);找不到是 null。选择器列表(「html,」换行「body {」)里的那一项不算
+ * 单独的规则 —— base.css 里正好有一条 `html,\nbody { … }`,不排除它就会拿错块。
+ */
+function cssBlock(text, selector) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = new RegExp(
+        `(?:^|(?<!,[ \\t]*)\\n)${escaped}\\s*\\{([^}]*)\\}`,
+    ).exec(text);
+    return m ? m[1] : null;
+}
+
+/**
+ * C++ 源码去掉注释之后的文本:注释里提到的同名写法不能冒充真代码。
+ * 不认字符串字面量,字符串里的 `//` 和 `/*` 也会被当成注释,所以被匹配的代码行里别写这种字面量。
+ */
+function cppCode(rel) {
+    return readFileSync(join(ROOT, rel), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/[^\n]*/g, "");
+}
+
+/**
+ * ⑥e JUCE 版本绊线。
+ *
+ * 导航发出前就挡住押在 JUCE WebView2 后端的私有实现上(理由见 PlatformWebView.cpp 那条 static_assert
+ * 的注释),升级 JUCE 时必须先重读后端。所以:
+ *   (a) static_assert 还在 —— 删掉它,这一格红;
+ *   (b) 它的版本号 == .juce-version —— 只改任一边,这一格红。
+ *   (c) `navigation started` 诊断行带从 startMs_ 算起的毫秒数,挡住那一段有多长才读得出来。
+ * 只跑一次(与角色无关)。
+ */
+function checkJuceTripwire() {
+    console.log("\n--- JUCE 版本绊线(⑥e)---");
+
+    const wire =
+        /static_assert\s*\(\s*JUCE_MAJOR_VERSION\s*==\s*(\d+)\s*&&\s*JUCE_MINOR_VERSION\s*==\s*(\d+)\s*&&\s*JUCE_BUILDNUMBER\s*==\s*(\d+)/.exec(
+            cppCode("src/plugin-common/PlatformWebView.cpp"),
+        );
+    const pinned = readFileSync(join(ROOT, ".juce-version"), "utf8").trim();
+    if (!wire)
+        bad(
+            "PlatformWebView.cpp 里找不到 JUCE 版本的 static_assert —— 导航前挡住依赖 WebView2 后端的私有实现,升级时没人提醒",
+        );
+    else if (`${wire[1]}.${wire[2]}.${wire[3]}` !== pinned)
+        bad(
+            `JUCE 绊线写的是 ${wire[1]}.${wire[2]}.${wire[3]},.juce-version 是 ${pinned} —— 先重读 WebView2 后端,核对后两边一起改`,
+        );
+
+    const nav = /logDiag\(\s*"navigation started: "[^;]*;/.exec(
+        cppCode("src/plugin-common/WebViewHost.cpp"),
+    );
+    if (!nav) bad("WebViewHost.cpp 里找不到 `navigation started` 诊断行");
+    else if (!/\(after /.test(nav[0]) || !/startMs_/.test(nav[0]))
+        bad(
+            "`navigation started` 诊断行要带从 startMs_ 算起的 `(after N ms)` —— 不带就读不出挡住那一段有多长",
+        );
+
+    if (wire && nav) console.log(`  绊线版本 ${pinned},诊断行带毫秒数`);
+}
+
+/**
+ * ⑥d 开窗占位与成品外壳同形。
+ *
+ * 占位(PlatformWebView.h 的 paintShellPlaceholder)画成与 .sc-shell 同几何的圆角:圆角之外铺外圈色,
+ * 圆角之内铺占位渐变。半径或外圈色与页面不同值,四个角从占位切到内容时比方形占位还跳 —— 所以:
+ *   (a) C++ 的 kShellCornerRadiusPx == tokens.css 的 --r-shell(px);
+ *   (b) C++ 的 kShellRimRgb == tokens.css 的 --page-backdrop(⑥b 另钉它 == 设计稿、!= 占位那一族);
+ *   (c) 这两个 token 真是页面在用的那两个:base.css 的 .sc-shell 圆角写 var(--r-shell),
+ *       独立的 body 规则底色写 var(--page-backdrop)。
+ * C++ 声明抽不出来、tokens 读不到、base.css 取不到规则,一律判红,不跳过。
+ * 只跑一次(与角色无关)。
+ */
+function checkShellGeometry() {
+    console.log("\n--- 开窗占位 vs 外壳几何(⑥d)---");
+
+    // 解析器自检:选择器列表、伪元素都不能冒充本体规则。
+    const sample =
+        "a {\n}\n.sc-shell {\n    border-radius: var(--r-shell);\n}\n.sc-shell::before {\n    top: 0;\n}\n";
+    if (
+        cssBlock(sample, ".sc-shell")?.trim() !==
+        "border-radius: var(--r-shell);"
+    )
+        bad("⑥d 自检:cssBlock 按选择器取不到规则正文");
+    if (cssBlock(sample, ".sc-glass") !== null)
+        bad("⑥d 自检:cssBlock 对不存在的选择器取到了东西");
+    if (cssBlock(".sc-shell::before { top: 0; }", ".sc-shell") !== null)
+        bad("⑥d 自检:cssBlock 把伪元素规则当成了本体");
+    if (cssBlock("html,\nbody {\n    margin: 0;\n}\n", "body") !== null)
+        bad("⑥d 自检:cssBlock 把选择器列表里的 body 当成了单独的 body 规则");
+
+    const code = platformWebViewCode();
+    const radiusDecls = [
+        ...code.matchAll(
+            /inline\s+constexpr\s+float\s+kShellCornerRadiusPx\s*=\s*(\d+(?:\.\d+)?)f\s*;/g,
+        ),
+    ];
+    const rimDecls = [
+        ...code.matchAll(
+            /inline\s+constexpr\s+juce::uint32\s+kShellRimRgb\s*=\s*0x([0-9a-fA-F]{6})\s*;/g,
+        ),
+    ];
+    if (radiusDecls.length !== 1)
+        bad(
+            `PlatformWebView.h 里 kShellCornerRadiusPx 的 inline constexpr float 定义找到 ${radiusDecls.length} 条(要恰好 1 条;` +
+                "开窗占位圆角半径的 C++ 真源,写成非数字字面量也算找不到)",
+        );
+    if (rimDecls.length !== 1)
+        bad(
+            `PlatformWebView.h 里 kShellRimRgb 的 inline constexpr juce::uint32 定义找到 ${rimDecls.length} 条(要恰好 1 条、` +
+                "六位 0xRRGGBB;开窗占位外圈色的 C++ 真源)",
+        );
+
+    const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
+    const radiusTok = tok.match(/--r-shell:\s*(\d+(?:\.\d+)?)px\s*;/);
+    const rimTok = tok.match(/--page-backdrop:\s*(#[0-9a-fA-F]{6})\s*;/);
+    if (!radiusTok)
+        bad(
+            "web/shared/tokens.css 里读不到 --r-shell 的 px 字面量(外壳圆角半径)",
+        );
+    if (!rimTok)
+        bad(
+            "web/shared/tokens.css 里读不到 --page-backdrop 的 #rrggbb 字面量(外圈色)",
+        );
+
+    let ok = true;
+    if (radiusDecls.length === 1 && radiusTok) {
+        const cpp = parseFloat(radiusDecls[0][1]);
+        const css = parseFloat(radiusTok[1]);
+        if (cpp !== css) {
+            ok = false;
+            bad(
+                `C++ 的 kShellCornerRadiusPx(${cpp})与 tokens.css 的 --r-shell(${css}px)不同 ——` +
+                    " 占位的圆角与成品外壳对不上,开窗那一下四个角会跳",
+            );
+        }
+    } else ok = false;
+    if (rimDecls.length === 1 && rimTok) {
+        const cpp = "#" + rimDecls[0][1].toLowerCase();
+        const css = rimTok[1].toLowerCase();
+        if (cpp !== css) {
+            ok = false;
+            bad(
+                `C++ 的 kShellRimRgb(${cpp})与 tokens.css 的 --page-backdrop(${css})不同 ——` +
+                    " 占位圆角之外那一圈与成品外圈色对不上",
+            );
+        }
+    } else ok = false;
+
+    const baseCss = readFileSync(join(ROOT, "web/shared/base.css"), "utf8");
+    const shellRule = cssBlock(baseCss, ".sc-shell");
+    if (
+        shellRule === null ||
+        !/(?:^|[;\s])border-radius:\s*var\(--r-shell\)\s*;/.test(shellRule)
+    ) {
+        ok = false;
+        bad(
+            "web/shared/base.css 的 .sc-shell 圆角不是 var(--r-shell) —— C++ 占位的半径对拍的是 --r-shell,对不上页面",
+        );
+    }
+    const bodyRule = cssBlock(baseCss, "body");
+    if (
+        bodyRule === null ||
+        !/(?:^|[;\s])background:\s*var\(--page-backdrop\)\s*;/.test(bodyRule)
+    ) {
+        ok = false;
+        bad(
+            "web/shared/base.css 独立的 body 规则底色不是 var(--page-backdrop) —— C++ 占位的外圈色对拍的是" +
+                " --page-backdrop,对不上页面",
+        );
+    }
+    if (ok)
+        console.log(
+            `  kShellCornerRadiusPx = --r-shell(${radiusTok[1]}px),kShellRimRgb = --page-backdrop(${rimTok[1].toLowerCase()});` +
+                " .sc-shell / body 在用这两个 token",
+        );
+}
+
+/**
  * ⑦ [SL-370 / SL-429] 「首帧已绘」上行信号在场且形态正确。
  *
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
@@ -1095,6 +1290,8 @@ checkRole("input");
 checkRole("monitor");
 checkTokensBackdrop(); // ⑥b 与角色无关,只跑一次
 checkBackdropMatchesShell(); // ⑥c 同上
+checkShellGeometry(); // ⑥d 同上
+checkJuceTripwire(); // ⑥e 同上
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

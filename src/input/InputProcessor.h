@@ -195,6 +195,8 @@ private:
     // ⚠ 极性刻意是「已确认死」而不是「在场」:默认 0 ⇒ Output 一置 mask,Input 当块即可静音。
     // 用「在场位」做前提会在上升沿晚一拍 ⇒ Output 已注入而 Input 还直通 = 双路叠加(实测红:
     // 注入@304 早于静音@320)。
+    bool offlineStageNow(const scvb::input::InputSessionBlockView& block,
+                         scvb::input::OutputStageMode& target) const noexcept;
     std::atomic<scvb::u32> outputStale_{0};
     std::atomic<scvb::u32> captureArmed_{0}; // 采集开关(Output ctrl 广播 capture_enabled;ADR-007)
     std::atomic<float> meter_{0.0f};
@@ -243,6 +245,9 @@ private:
     // 时间线定位(§5.1 步骤 3)。
     int64_t lastT0_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNext_ = std::numeric_limits<int64_t>::lowest();
+    // 上一块走带停着,停在 stoppedT0_(实时起播的 epoch 步长用,见 processBlock)。prepare 不清。
+    bool stoppedLastBlock_ = false;
+    int64_t stoppedT0_ = 0;
     // 上一块看到的特征段绑定状态([A] 独占)。绑定边沿要补一次 startRun —— 走带已在跑时
     // 才插上 Output(或改组重建段),否则 nextHop/fpHop 停在 0 而时间线已经走远(见 processBlock)。
     bool featBoundPrev_ = false;

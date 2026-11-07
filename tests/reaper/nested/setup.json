@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "name": "scvb-nested-setup",
+  "notes": "Sets group and channel on every instance through the real bridge and saves the template nested.json reads.",
+  "plugins": {
+    "input": {
+      "bundle": "SCVB Input.vst3"
+    },
+    "output": {
+      "bundle": "SCVB Output.vst3"
+    },
+    "monitor": {
+      "bundle": "SCVB Monitor.vst3"
+    }
+  },
+  "signal": {
+    "seconds": 8
+  },
+  "limits": {
+    "learnTimeoutSec": 240
+  },
+  "layouts": {
+    "nest": {
+      "tracks": [
+        {
+          "name": "TOP",
+          "source": false,
+          "folder": true,
+          "fx": [
+            {
+              "plugin": "output"
+            }
+          ]
+        },
+        {
+          "name": "GA",
+          "source": false,
+          "folder": true,
+          "parent": "TOP",
+          "fx": [
+            {
+              "plugin": "output"
+            },
+            {
+              "plugin": "input"
+            }
+          ]
+        },
+        {
+          "name": "VA1",
+          "source": true,
+          "parent": "GA",
+          "signal": {
+            "seed": 11
+          },
+          "fx": [
+            {
+              "plugin": "input"
+            }
+          ]
+        },
+        {
+          "name": "VA2",
+          "source": true,
+          "parent": "GA",
+          "signal": {
+            "seed": 12
+          },
+          "fx": [
+            {
+              "plugin": "input"
+            }
+          ]
+        },
+        {
+          "name": "GB",
+          "source": false,
+          "folder": true,
+          "parent": "TOP",
+          "fx": [
+            {
+              "plugin": "output"
+            },
+            {
+              "plugin": "input"
+            }
+          ]
+        },
+        {
+          "name": "VB1",
+          "source": true,
+          "parent": "GB",
+          "signal": {
+            "seed": 13
+          },
+          "fx": [
+            {
+              "plugin": "input"
+            }
+          ]
+        },
+        {
+          "name": "SPARE",
+          "source": false,
+          "fx": [
+            {
+              "plugin": "input"
+            },
+            {
+              "plugin": "input"
+            },
+            {
+              "plugin": "monitor"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "make-states",
+      "kind": "scvb-session",
+      "layout": "nest",
+      "script": "make-states.mjs",
+      "timeoutSec": 240
+    },
+    {
+      "id": "analyze-two-level",
+      "kind": "scvb-session",
+      "layout": "nest",
+      "script": "analyze-two-level.mjs",
+      "timeoutSec": 300
+    }
+  ],
+  "extensions": {
+    "modules": ["ext/scvb-nested.psm1"],
+    "lua": ["ext/scvb-nested.lua"]
+  }
+}
