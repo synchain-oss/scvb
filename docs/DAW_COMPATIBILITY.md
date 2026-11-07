@@ -1,5 +1,5 @@
 > 状态: 演进中
-> 最后更新: 2026-11-03(REAPER 成品实测,两层 SCVB);2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
+> 最后更新: 2026-11-07(LUNA 只在系统目录找 VST3);2026-11-03(REAPER 成品实测,两层 SCVB);2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
 > 真源: 本文件
 
 # SCVB DAW 兼容矩阵与支持等级表
@@ -235,6 +235,7 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 #### 装与扫描
 
 - LUNA 默认启用 Audio Unit,macOS 上默认**不**启用 VST3。用 AU:装好后在 Plug-In Manager 里 Scan New(或 Rescan All),三个 SCVB 的状态应是 scanned,不是 rejected;用 VST3:先在 Plug-In Manager 里启用 VST3 再扫描。安装步骤见 macOS zip 里的 `INSTALL.txt`。
+- LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,装在 `~/Library/Audio/Plug-Ins/VST3`(`INSTALL.txt` 第 3–5 步的默认位置)的扫不出来;AU 装在 `~/Library/Audio/Plug-Ins/Components` 能用。这一条是实测:用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件测出,`~/Library` 下的 Synchain VST3 都扫不出,系统目录里的能扫出;SCVB 本身还没在 LUNA 上测过。所以在 LUNA 里用 AU;一定要用 VST3,按 `INSTALL.txt` 的「给这台 Mac 的所有用户安装」装到系统目录。
 - 用 Apollo 接口时,设计上预期要把 Apollo 切到 Core Audio 模式,或关掉 ARM(见 [validation/luna-acceptance.md](validation/luna-acceptance.md) 的「工程设置」);未实测。
 
 #### 放 Input / Output

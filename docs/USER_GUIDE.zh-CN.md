@@ -1,7 +1,7 @@
 [English](USER_GUIDE.md) | **简体中文**
 
 > 状态: 演进中
-> 最后更新: 2026-11-03
+> 最后更新: 2026-11-07
 > 真源: 本文件(`## 硬约束` 小节是九条红字的唯一真源,见下)
 
 # SCVB 用户手册
@@ -378,7 +378,7 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 
 **Mac 上的诊断日志在哪?要怎么处理?** 在 `~/Library/Logs/Synchain/SCVB/`(见「隐私与本机文件」)。报告 macOS 上的问题时,把相关文件附上,附之前先把里面的用户名去掉。
 
-**我的 Mac 宿主为什么不列出 SCVB,或者拒绝加载?** 常见原因按顺序是:没有去掉隔离属性(执行 `INSTALL.txt` 里那两行 `xattr`);Audio Unit 登记表里还留着旧条目(`killall -9 AudioComponentRegistrar`,再重新扫描);宿主在 Rosetta 下运行(插件只有 arm64,请在宿主的「显示简介」里取消勾选「使用 Rosetta 打开」);宿主关掉了 VST3 或 Audio Unit(LUNA 默认不启用 VST3)。macOS 上的已知限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-12 起。
+**我的 Mac 宿主为什么不列出 SCVB,或者拒绝加载?** 常见原因按顺序是:没有去掉隔离属性(执行 `INSTALL.txt` 里那两行 `xattr`);Audio Unit 登记表里还留着旧条目(`killall -9 AudioComponentRegistrar`,再重新扫描);宿主在 Rosetta 下运行(插件只有 arm64,请在宿主的「显示简介」里取消勾选「使用 Rosetta 打开」);宿主关掉了 VST3 或 Audio Unit(LUNA 默认不启用 VST3);宿主不在你装到的那个文件夹里找(LUNA 只在 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,所以在 LUNA 里请用 Audio Unit,或者按 `INSTALL.txt` 的说明给所有用户安装 VST3)。macOS 上的已知限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) 的 KI-12 起。
 
 **分析结果不满意能手改吗?** 能,见"手动微调";改过的段自动重分析不会覆盖。
 
