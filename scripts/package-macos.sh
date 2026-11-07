@@ -326,7 +326,7 @@ Requirements
     plugins contain arm64 code only, so a host running under Rosetta does not list them. In Finder,
     select the host app, choose File > Get Info and untick "Open using Rosetta".
   - macOS 11 Big Sur or later, with the system Safari / WebKit 15.4 or later (the plugin window uses
-    the system WebKit). With a system Safari older than 26.4 the plugin window's zoom stays at 100%.
+    the system WebKit). All window scale presets are available; SCVB Output opens at 80% by default.
   - A VST3 or Audio Unit host. GarageBand is not supported.
   - Logic Pro: beta / not tested in Logic. Logic loads the Audio Unit (.component) only.
 
@@ -403,7 +403,7 @@ Input 与 Output 是一对,共用一个版本号,请从同一个 zip 里一起�
   - 宿主必须以 Apple Silicon 原生方式运行。不支持在 Rosetta 下运行的宿主:插件只含 arm64 代码,
     在 Rosetta 下运行的宿主不会列出它们。在「访达」里选中宿主程序 > 文件 > 显示简介,取消勾选「使用 Rosetta 打开」。
   - macOS 11 Big Sur 或更高版本,且系统 Safari / WebKit 为 15.4 或更高(插件界面用的是系统 WebKit)。
-    系统 Safari 低于 26.4 时,插件界面的缩放固定在 100%。
+    所有窗口缩放档位都可选,SCVB Output 默认 80%。
   - 支持 VST3 或 Audio Unit 的宿主。不支持 GarageBand。
   - Logic Pro:beta / 未在 Logic 实测。Logic 只加载 Audio Unit(.component)。
 

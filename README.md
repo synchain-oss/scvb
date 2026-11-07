@@ -56,7 +56,7 @@ Up to 15 vocal tracks per group, 8 independent groups (A–H), 2 version slots. 
 - A Mac with Apple Silicon (M1 or later), macOS 11 Big Sur or later. Intel Macs are not supported
 - The host must run natively on Apple Silicon: the plugins contain arm64 code only, so a host running under Rosetta does not list them
 - A VST3 or Audio Unit host. GarageBand is not supported. Logic Pro loads Audio Units only
-- The editor UI uses the system WebKit (Safari 15.4 or later); with a system Safari older than 26.4 the plugin window's zoom stays at 100%
+- The editor UI uses the system WebKit (Safari 15.4 or later). All window scale presets are available and SCVB Output opens at 80% by default; scaling uses WebKit's native page zoom and is not yet confirmed in a real host (see [KI-16](docs/KNOWN_ISSUES.md))
 - The macOS build is a **beta** and is **not code-signed or notarized**: after copying the plugins you have to clear the quarantine flag with `xattr` (see Install)
 
 ## Supported DAWs

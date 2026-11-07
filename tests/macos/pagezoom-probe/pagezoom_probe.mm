@@ -34,7 +34,13 @@ const std::vector<double> kPresets = {0.8, 0.5, 0.65, 1.0, 1.25, 1.5, 2.0};
 
 constexpr double kViewportTolerance = 1.5; // clientWidth 是整数,窗口尺寸也取过整
 constexpr double kRectTolerance = 0.51; // 亚像素舍入
-constexpr double kClickTolerance = 1.5; // NSEvent 坐标到 CSS px 的舍入
+// 真点击落点的容差随档位走:WebKit 把事件位置取整到 view point,一个 view point = 1/pageZoom 个 CSS px,
+// clientX/Y 自己再取整一次。所以合法偏差 < 1/zoom + 1(0.65 档实测 (1050, 695) → (1049, 693),正是
+// 682.5 / 451.75 两个 view point 先取整再除 0.65)。比例算错的偏差随坐标增大,右下靶子会差几十 px。
+double clickTolerance(double zoom)
+{
+    return 1.0 + 1.0 / zoom;
+}
 
 struct Target
 {
@@ -585,8 +591,8 @@ int main(int argc, const char* argv[])
                 ++row.clicksDelivered;
                 row.clickPath = click.path;
                 const bool onTarget = click.targetId == t.id;
-                const bool closeX = std::abs(click.clientX - t.cx()) <= kClickTolerance;
-                const bool closeY = std::abs(click.clientY - t.cy()) <= kClickTolerance;
+                const bool closeX = std::abs(click.clientX - t.cx()) < clickTolerance(zoom);
+                const bool closeY = std::abs(click.clientY - t.cy()) < clickTolerance(zoom);
                 if (onTarget && closeX && closeY)
                 {
                     ++totalCorrect;

@@ -28,9 +28,11 @@ Output 的七个档位逐档开窗(窗口 = 设计盒 × 档位):
 | `zoomLocked()` = false,`scalePresets` 七档全在 | 精确 |
 | 三个靶子(左上、中间、右下)的 `getBoundingClientRect` 落在设计盒坐标上 | ±0.51 |
 | `elementFromPoint` 取到各自的靶子 | 精确 |
-| 真 `NSEvent` 点击进了页面时,`event.clientX/Y` 和命中元素都对 | ±1.5 |
+| 真 `NSEvent` 点击进了页面时,命中元素对,`event.clientX/Y` 偏差 < 1/档位 + 1 | 见下 |
 
 靶子分散摆放,是因为比例算错时偏差随坐标增大,右下那个一定露馅。
+
+真点击的容差随档位走:WebKit 把事件位置取整到 view point,一个 view point = 1/档位 个 CSS px,`clientX/Y` 再取整一次。0.65 档实测靶心 (1050, 695) 落在 (1049, 693),正是这两次取整的结果。比例真算错时,右下靶子会差几十 px。
 
 **只记录、不判红**:
 

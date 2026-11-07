@@ -56,7 +56,7 @@ SCVB 正是为了解决这个问题、节约大家的时间而设计:它采集�
 - Apple Silicon(M1 及以后)的 Mac,macOS 11 Big Sur 或更高版本。不支持 Intel Mac
 - 宿主必须以 Apple Silicon 原生方式运行:插件只含 arm64 代码,在 Rosetta 下运行的宿主不会列出它们
 - 支持 VST3 或 Audio Unit 的宿主。不支持 GarageBand。Logic Pro 只加载 Audio Unit
-- 编辑器界面用系统 WebKit(Safari 15.4 或更高);系统 Safari 低于 26.4 时,插件界面的缩放固定在 100%
+- 编辑器界面用系统 WebKit(Safari 15.4 或更高)。所有窗口缩放档位都可选,SCVB Output 默认 80%;缩放走 WebKit 原生页面缩放,尚未在真实宿主里确认(见 [KI-16](docs/KNOWN_ISSUES.md))
 - macOS 版是 **beta**,**没有代码签名、没有公证**:复制完插件后要用 `xattr` 去掉隔离属性(见「安装」)
 
 ## 支持的 DAW
