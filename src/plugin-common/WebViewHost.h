@@ -170,6 +170,7 @@ private:
     void showFallback(FallbackReason reason);
     void retryWebView();
     void resizeToDesignBox(float scale);
+    void applyNativeZoom(float scale); // [Z1] mac:把档位交给 WKWebView.pageZoom;其它平台空操作
 
     // 加载时序(message 线程):由 HostWebView 的页面回调驱动。
     void onNavigationStarted(const juce::String& url);

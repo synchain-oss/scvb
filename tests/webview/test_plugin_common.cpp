@@ -965,6 +965,38 @@ TEST_CASE("buildUiSeedPairs/buildUiSnapshot share Init keys (state pushback §1.
     CHECK(obj->getProperty(scvb::bridge::Init::Version).toString() == "0.1.0");
 }
 
+// [Z1] nativeZoom:mac 上才有,只进首帧 seed。这个键不在桥契约里,所以绝不能漏进 scvb.state 快照;
+// 其它平台一个键都不多。页面那一侧读的键名由 smoke-shell-fit.mjs ⑤f 与本常量对拍。
+TEST_CASE("[Z1] nativeZoom seed: init data only, mac only, never in scvb.state")
+{
+    using namespace scvb::bridge;
+
+    CHECK(buildInitOnlySeedPairs(false).empty());
+
+    const auto on = buildInitOnlySeedPairs(true);
+    REQUIRE(on.size() == 1);
+    CHECK(on[0].first == juce::String("nativeZoom"));
+    CHECK(on[0].first == juce::String(Init::NativeZoom));
+    CHECK(on[0].second.isBool());
+    CHECK(static_cast<bool>(on[0].second));
+
+    UiSeed seed;
+    seed.role = "output";
+    seed.lang = "zh";
+    for (const auto& pair : buildUiSeedPairs(seed))
+        CHECK(pair.first != juce::String(Init::NativeZoom));
+    const auto snap = buildUiSnapshot(seed);
+    auto* obj = snap.getDynamicObject();
+    REQUIRE(obj != nullptr);
+    CHECK_FALSE(obj->hasProperty(Init::NativeZoom));
+
+#if JUCE_MAC
+    STATIC_REQUIRE(scvb::webview::PlatformWebView::kNativePageZoom);
+#else
+    STATIC_REQUIRE_FALSE(scvb::webview::PlatformWebView::kNativePageZoom);
+#endif
+}
+
 TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFolder (§9/#5)")
 {
     using WBC = juce::WebBrowserComponent;
@@ -1453,6 +1485,27 @@ TEST_CASE("[M07] WebViewHost.cpp routes platform text and the reveal gate throug
     const auto log = methodBody(src.code, "voidWebViewHost::logDiag(", "WebViewHost::");
     CHECK(log.find("juce::Logger::writeToLog(message);") != std::string::npos);
     CHECK(log.find("platformlog::write(message);") != std::string::npos);
+}
+
+TEST_CASE("[Z1] WebViewHost applies the native zoom on every resize and seeds nativeZoom", "[Z1][source]")
+{
+    // WebViewHost.cpp 不进任何测试目标,而且 .mm 只在 mac 上编:这两句接线断了,Windows 上一切照常,
+    // mac 上表现成「档位改不动」或「窗口对了内容没缩放」。判据读源码文本(去注释、去空白)。
+    INFO("source-level check on WebViewHost.cpp: the native zoom must be applied wherever the window is resized and "
+         "the init-only seed must reach the options; if only the wording of the code changed, update the snippet");
+    const auto src = lexSource("src/plugin-common/WebViewHost.cpp");
+
+    // 构造、setUiScale、retryWebView 都经 resizeToDesignBox,所以只查这一处。
+    const auto resize = methodBody(src.code, "voidWebViewHost::resizeToDesignBox(", "WebViewHost::");
+    CHECK(resize.find("applyNativeZoom(scale);") != std::string::npos);
+    CHECK(countOf(src.code, "PlatformWebView::applyNativePageZoom(") == 1);
+    CHECK(countOf(src.code, "bridge::buildInitOnlySeedPairs(PlatformWebView::kNativePageZoom)") == 1);
+
+    // .mm 只在 mac 上编,而 CI 上没有一个测试实例化真 WebView:设 pageZoom 那一句删了,mac 上照样全绿,
+    // 只有用户会发现「窗口变了内容没缩放」。所以连同 WKWebView 的类型核对一起钉住。
+    const auto mm = lexSource("src/plugin-common/PlatformWebViewZoom_mac.mm");
+    CHECK(countOf(mm.code, "view.pageZoom=static_cast<CGFloat>(scale);") == 1);
+    CHECK(mm.code.find("isKindOfClass:[WKWebViewclass]") != std::string::npos);
 }
 
 TEST_CASE("[M07] plugin entry points install the platform log before the first processor", "[M07][source]")

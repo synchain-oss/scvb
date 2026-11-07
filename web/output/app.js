@@ -97,6 +97,7 @@ import { suppressBareAltMenu } from "../shared/alt-menu.js";
 import {
     enforceZoomLock,
     installShellFit,
+    noteNativeScale,
     scalePresets,
     zoomLocked,
 } from "../shared/shell-fit.js";
@@ -2037,6 +2038,9 @@ function renderScale() {
     // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1;
     // 没锁时这一句什么都不做。
     enforceZoomLock(f, (one) => call("setUiScale", one));
+    // [Z1] 原生 pageZoom 下档位要算进后备存储倍率。这一句必须在 tab 渲染之前:Tab1 / Tab3 的
+    // render 比对 backingFitFactor() 决定要不要重建画布,而 renderScale 排在它们前面。
+    noteNativeScale(f);
     renderScaleConfirm(); // 切语言后确认框正文跟着换(倒计时进行中也照刷)
     // 右下角与设置页两处下拉同一个当前档(触发钮读数 + 当前档标记 + 三语注记)
     for (const sel of scaleSelects) sel.setValue(f);

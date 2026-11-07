@@ -38,6 +38,9 @@ inline constexpr const char* Lang = "lang";
 inline constexpr const char* UiScale = "uiScale";
 inline constexpr const char* Role = "role"; // "input" | "output" | "monitor"([J75])
 inline constexpr const char* ChannelLimit = "channelLimit"; // [J59] 15
+// [Z1] 缩放由原生 pageZoom 接管(mac 上为 true,其它平台不传)。平台事实,不是状态:只进首帧 seed,
+// 不进 scvb.state 快照,也不属桥契约。读方 = web/shared/shell-fit.js。
+inline constexpr const char* NativeZoom = "nativeZoom";
 } // namespace Init
 
 // --- 缩放 clamp 边界(setUiScale 的硬边界;可选档位真源 = DesignBox.h 的 presets)-------
@@ -112,6 +115,10 @@ std::vector<std::pair<juce::String, juce::var>> buildUiSeedPairs(const UiSeed& s
 // 由 seed 构造 scvb.state 快照基础(机制 8 的 requestInitialState 回执;setLang/setUiScale 写入后
 // 经本快照回推实际生效值,§1.30/§1.28)。
 juce::var buildUiSnapshot(const UiSeed& seed);
+
+// [Z1] 只进首帧 seed 的键(不经 buildUiSeedPairs,所以到不了 scvb.state 快照)。
+// nativeZoom = false 时返回空:其它平台一个键都不多,页面看到的初始化数据与改前逐字相同。
+std::vector<std::pair<juce::String, juce::var>> buildInitOnlySeedPairs(bool nativeZoom);
 
 // setLang 归一化(§1.30):仅 {zh,en,fr},未知 code 回退 "zh"。
 juce::String normalizeLang(const juce::String& code);

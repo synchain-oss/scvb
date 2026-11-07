@@ -91,7 +91,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     session_.setOutputEnabled(outputEnabled_);
 
     // 缩放的系统级全局默认(§1.29「保持」落盘的那一档);工程 state 若带 CFGS 会在
-    // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
+    // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用出厂档(kFactoryUiScalePercent)。
     // 构造期读一次本地小文件(几百字节 XML)是刻意的:此值必须在宿主取首个编辑器尺寸
     // 之前就位,而构造发生在宿主的加载线程、不在音频线程,毛刺风险已评估为可接受。
     if (const int defaultScale = scvb::uidefaults::uiScalePercent(); defaultScale > 0)
