@@ -1842,7 +1842,7 @@ export const T = {
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
         "scale.overflow": "Exceeds current screen",
-        "scale.lockedLegacy": "Older WebKit coordinates: zoom fixed at 100%",
+        "scale.lockedLegacy": "Zoom fixed at 100% with this system's WebKit",
 
         // ---- T31 Wave 2 新增(EN 自译,待人工审校)----
         "banner.misaligned":
@@ -2719,7 +2719,7 @@ export const T = {
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
         "scale.overflow": "Dépasse l'écran actuel",
-        "scale.lockedLegacy": "Ancien modèle WebKit : zoom fixé à 100 %",
+        "scale.lockedLegacy": "Zoom fixé à 100 % avec le WebKit du système",
 
         // ---- T31 Wave 2 新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "banner.misaligned":

@@ -37,8 +37,10 @@
 // withInitialisationData 给,mac 上才有)。pageZoom 下布局视口 = 窗口 / 档位,rect 与事件坐标
 // 落在同一个坐标系,新旧 WebKit 都对,所以:
 //   ① 上面 [M09] 的锁一条都不触发(不量语义、不锁、档位全开、不请回 1、不显示提示);
-//   ② 仍然走 fitFactor,窗口 = 设计盒 × 档位时算出来就是 1,CSS zoom 恒为 1。万一 pageZoom 没生效,
-//      算出来的是档位本身,退回 CSS zoom 至少不裁切(这条回退路上旧语义的命中偏移还在);
+//   ② 仍然走 fitFactor,窗口 = 设计盒 × 档位时算出来就是 1,CSS zoom 恒为 1。万一 pageZoom 没生效
+//      (原生找不到 WKWebView),视口 = 窗口,算出来的是档位本身:安装那一帧当场、之后视口偏离持续
+//      NATIVE_SETTLE_MS 才判,退回 [M09](旧语义锁 1 并请回 1,新语义照常 CSS zoom)。seed 是编译期
+//      常量,pageZoom 到底有没有设上只有页面看得出来;
 //   ③ |f-1| < 0.01 吸成 1(snapNativeFit):round(1180×0.65)/0.65 这类取整误差会让 f 差一点点,
 //      而旧语义下 f≠1 就会让点击偏;
 //   ④ pageZoom 不改 devicePixelRatio(真 WebKit 探针在 1x 屏上量过,见 tests/macos/pagezoom-probe),画布要清楚
@@ -152,6 +154,14 @@ let nativeScale = 1;
 let nativeScaleListener = null;
 
 /**
+ * [Z1] 视口偏离设计盒(吸附后倍率仍 ≠ 1)要持续多久,才判 pageZoom 没生效、退回 [M09]。
+ * 安装那一帧不等:原生在导航之前就设好了 pageZoom,首帧偏离就是没生效。之后要等,是因为
+ * 换档时原生先 setSize 再设 pageZoom,WebKit 未必在同一帧把两样都交给页面,中间那一帧的视口
+ * 是「新窗口 / 旧档位」—— 拿它判就会在 pageZoom 好好的时候把用户的档位请回 1。
+ */
+export const NATIVE_SETTLE_MS = 500;
+
+/**
  * [Z1] 页面拿到新档位时调用(state 回推 / 本页预览)。pageZoom 变的时候页面里没有任何东西会动:
  * 视口还是设计盒,dpr 不变,ResizeObserver 不响,只能靠这一下让画布按新 k 重建。
  * 没有 seed 时什么都不做。
@@ -259,6 +269,7 @@ export function installShellFit(o) {
     let last = 0;
     let raf = 0;
     let rafIsTimeout = false; // raf 里存的是 timeout id 还是 rAF id(destroy 按类型取消)
+    let settle = 0; // [Z1] 等「视口偏离设计盒」稳定下来的那个 timeout id
 
     function viewport() {
         const de = win.document && win.document.documentElement;
@@ -269,10 +280,47 @@ export function installShellFit(o) {
         };
     }
 
+    // [Z1] pageZoom 生效时视口就是设计盒(倍率吸附后 = 1)。视口量不到(首帧 / 隐藏)不算偏离。
+    function offBox(v) {
+        return (
+            v.w > 0 &&
+            v.h > 0 &&
+            snapNativeFit(fitFactor(v.w, v.h, box.w, box.h)) !== 1
+        );
+    }
+
+    // [Z1] pageZoom 没生效(原生找不到 WKWebView,日志写 `falls back to CSS zoom`):seed 是编译期常量,
+    // 只有页面看得出来。这时退回 [M09] 那一套 —— 量语义,旧语义就锁 1、档位只留 1 档、请回 1;
+    // 新语义照常走 CSS zoom。档位已经在窗口尺寸里了,后备存储不再另乘档位。
+    function fallBack() {
+        nativeZoom = false;
+        nativeScale = 1;
+        nativeScaleListener = null;
+        locked = zoomRectMode(win.document) === ZOOM_RECT_LEGACY;
+        lockRequestedFrom = null;
+    }
+
+    function settleCheck() {
+        settle = 0;
+        if (!nativeZoom || !offBox(viewport())) return; // 过渡帧,已经回到设计盒
+        fallBack();
+        last = 0; // 强制落一次并回调:倍率与后备存储倍率都变了
+        apply(false);
+    }
+
     // silent = 安装时那一次:只落样式,不回调(理由见 onChange 的参数注释)。
     function apply(silent) {
         raf = 0;
         const v = viewport();
+        if (nativeZoom && offBox(v)) {
+            // 首帧当场判;之后等它稳定(理由见 NATIVE_SETTLE_MS)。等的这段照常走 CSS zoom,不裁切。
+            if (silent === true) fallBack();
+            else if (!settle)
+                settle = win.setTimeout(settleCheck, NATIVE_SETTLE_MS);
+        } else if (settle) {
+            win.clearTimeout(settle);
+            settle = 0;
+        }
         // [M09] 降级而不是换算:旧 rect 语义下画面倍率恒为 1,不随视口变。
         const fit = locked ? 1 : fitFactor(v.w, v.h, box.w, box.h);
         const f = nativeZoom ? snapNativeFit(fit) : fit;
@@ -331,6 +379,8 @@ export function installShellFit(o) {
                     win.cancelAnimationFrame(raf);
             }
             raf = 0;
+            if (settle) win.clearTimeout(settle);
+            settle = 0;
             // 「拆完等于没装过」:模块级 current 是给后备存储读的,留着上一个文档的
             // 倍率会让热重挂之后的第一批画布按僵值分配。
             current = 1;

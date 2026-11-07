@@ -623,6 +623,11 @@ log("\n=== ⑤f [Z1] nativeZoom:原生 pageZoom 接管缩放(node 侧)===");
 const nativeSeed = (scale) => ({
     initialisationData: { nativeZoom: [true], uiScale: [scale] },
 });
+// 还没跑、也没被取消的 setTimeout(fakeEnv 只记账不执行;这几格不给 rAF,refresh() 直接 apply)。
+const pendingTimeouts = (env) =>
+    env.timers.filter(
+        (t) => t.kind === "timeout" && !env.clearedTimeouts.includes(t.id),
+    );
 
 // 键名跨了 C++ 与 JS 两侧,打错一个字母的表现是「mac 上静默退回旧锁」,任何别的判据都不红。
 {
@@ -685,14 +690,15 @@ const nativeSeed = (scale) => ({
     }
     eq(backingFitFactor(), 1.25, "非法档位没有改动后备存储倍率");
 
-    // 回退路:pageZoom 没生效 ⇒ 视口就是窗口(设计盒 × 档位),退回 CSS zoom,窗口里不裁切。
+    // 装好之后视口偏离设计盒:先照常走 CSS zoom(不裁切),等 NATIVE_SETTLE_MS 再判(见下面的回退格)。
     env.setViewport(Math.round(BOX.w * 0.65), Math.round(BOX.h * 0.65));
     h.refresh();
     eq(
-        [env.el.style.zoom, shellFitFactor()],
-        ["0.65", 0.65],
-        "pageZoom 没生效 ⇒ 退回 CSS zoom(0.65)",
+        [env.el.style.zoom, shellFitFactor(), zoomLocked()],
+        ["0.65", 0.65, false],
+        "装好之后视口偏离 ⇒ 等稳定期的这段照常走 CSS zoom(0.65),还没退回",
     );
+    eq(pendingTimeouts(env).length, 1, "偏离 ⇒ 挂了一个稳定期定时器");
     eq(
         [snapNativeFit(0.99), snapNativeFit(0.9901), snapNativeFit(1.0099)],
         [0.99, 1, 1],
@@ -700,9 +706,139 @@ const nativeSeed = (scale) => ({
     );
 
     h.destroy();
+    eq(pendingTimeouts(env).length, 0, "destroy() 取消了待跑的稳定期定时器");
     eq(backingFitFactor(), 1, "destroy() 后后备存储倍率回 1");
     eq(noteNativeScale(1.5), false, "destroy() 后 noteNativeScale 不再动作");
     eq(backingFitFactor(), 1, "destroy() 后档位不再算进去");
+}
+
+// ---- 回退:pageZoom 没生效(原生找不到 WKWebView)⇒ 视口 = 窗口 = 设计盒 × 档位 ⇒ 退回 [M09] ----
+// seed 是编译期常量,不看原生到底设没设上;只有页面看得出来。退回后与没有 seed 的旧语义页逐字同形。
+{
+    const BOX = DESIGN.output;
+    const doc = probeDoc(100); // 旧语义
+    const env = fakeEnv({
+        vw: Math.round(BOX.w * 0.8),
+        vh: Math.round(BOX.h * 0.8),
+        doc,
+    });
+    env.win.__JUCE__ = nativeSeed(0.8);
+    const changes = [];
+    const h = installShellFit({
+        el: env.el,
+        box: BOX,
+        win: env.win,
+        onChange: (f) => changes.push(f),
+    });
+    eq(
+        zoomLocked(),
+        true,
+        "首帧视口 = 设计盒 × 0.8 + 旧语义 ⇒ 当场退回 [M09],锁 1",
+    );
+    check(doc.made.length > 0, "退回时量了 rect 语义");
+    eq(scalePresets(BOX.presets), [1], "退回后档位只剩 1 档");
+    const calls = [];
+    eq(
+        enforceZoomLock(0.8, (f) => calls.push(f)),
+        true,
+        "退回后宿主按 0.8 开的窗 ⇒ enforceZoomLock 动作",
+    );
+    eq(calls, [1], "退回后经 setUiScale 请回 1");
+    eq(
+        [env.el.style.zoom, shellFitFactor()],
+        ["1", 1],
+        "退回后画面倍率 1(两种语义下 zoom=1 逐字相同,点得准)",
+    );
+    eq(backingFitFactor(), 1, "退回后后备存储不再乘档位");
+    eq(noteNativeScale(1.25), false, "退回后 noteNativeScale 不动作");
+    eq(changes, [], "首帧当场判,不回调");
+    eq(pendingTimeouts(env).length, 0, "首帧当场判,不挂定时器");
+    h.destroy();
+}
+{
+    // 新语义 + pageZoom 没生效:退回后不锁,照常 CSS zoom;后备存储 = 外壳倍率,不再另乘档位(否则 0.64)。
+    const BOX = DESIGN.output;
+    const vw = Math.round(BOX.w * 0.8);
+    const vh = Math.round(BOX.h * 0.8);
+    const env = fakeEnv({ vw, vh, doc: probeDoc(200) });
+    env.win.__JUCE__ = nativeSeed(0.8);
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    const fit = fitFactor(vw, vh, BOX.w, BOX.h);
+    eq(
+        [zoomLocked(), env.el.style.zoom],
+        [false, String(fit)],
+        `新语义 + pageZoom 没生效 ⇒ 不锁,CSS zoom ${fit}`,
+    );
+    eq(
+        backingFitFactor(),
+        Math.round(fit * 100) / 100,
+        "新语义 + pageZoom 没生效 ⇒ 后备存储 = 外壳倍率(档位不重复计)",
+    );
+    h.destroy();
+}
+{
+    // 装好时 pageZoom 正常(或档位就是 1,看不出来),之后换档才露馅:Input / Monitor 默认 100%
+    // 开窗就是这条路。偏离持续到稳定期定时器跑完 ⇒ 退回;旧语义锁 1 并回调。
+    const BOX = DESIGN.input;
+    const doc = probeDoc(100);
+    const env = fakeEnv({ vw: BOX.w, vh: BOX.h, doc });
+    env.win.__JUCE__ = nativeSeed(1);
+    const changes = [];
+    const h = installShellFit({
+        el: env.el,
+        box: BOX,
+        win: env.win,
+        onChange: (f) => changes.push(f),
+    });
+    eq(zoomLocked(), false, "1 档开窗 ⇒ 看不出 pageZoom 有没有生效,不退回");
+    env.setViewport(Math.round(BOX.w * 1.25), Math.round(BOX.h * 1.25));
+    h.refresh();
+    eq(zoomLocked(), false, "换到 1.25 后的那一帧还不判(可能是过渡帧)");
+    const t = pendingTimeouts(env);
+    eq(t.length, 1, "挂了一个稳定期定时器");
+    t[0].fn(); // 稳定期过去,视口还偏离
+    eq(zoomLocked(), true, "偏离持续过稳定期 ⇒ 退回 [M09],锁 1");
+    eq([env.el.style.zoom, shellFitFactor()], ["1", 1], "退回后画面倍率 1");
+    eq(changes[changes.length - 1], 1, "退回时回调了一次(画布按新倍率重建)");
+    const calls = [];
+    enforceZoomLock(1.25, (f) => calls.push(f));
+    eq(calls, [1], "退回后页面下一次 enforceZoomLock 请回 1");
+    h.destroy();
+}
+{
+    // 反例:换档的过渡帧(视口先变、pageZoom 后到)不能被当成「没生效」。
+    const BOX = DESIGN.monitor;
+    const env = fakeEnv({ vw: BOX.w, vh: BOX.h, doc: probeDoc(100) });
+    env.win.__JUCE__ = nativeSeed(1);
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    env.setViewport(Math.round(BOX.w * 1.25), Math.round(BOX.h * 1.25));
+    h.refresh();
+    const t = pendingTimeouts(env);
+    eq(t.length, 1, "过渡帧 ⇒ 挂了稳定期定时器");
+    env.setViewport(BOX.w, BOX.h); // pageZoom 到了,视口回到设计盒
+    h.refresh();
+    eq(pendingTimeouts(env).length, 0, "视口回到设计盒 ⇒ 定时器取消");
+    t[0].fn(); // 就算它晚到了一次也要再量一遍
+    eq(
+        [zoomLocked(), env.el.style.zoom],
+        [false, "1"],
+        "过渡帧之后视口回到设计盒 ⇒ 不退回、不锁,CSS zoom 1",
+    );
+    eq(noteNativeScale(1.25), true, "没退回 ⇒ 档位通知照常生效");
+    h.destroy();
+}
+{
+    // 反例:首帧视口量不到(页面隐藏 / 还没布局)不算偏离。
+    const BOX = DESIGN.output;
+    const env = fakeEnv({ vw: 0, vh: 0, doc: probeDoc(100) });
+    env.win.__JUCE__ = nativeSeed(0.8);
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(
+        [zoomLocked(), pendingTimeouts(env).length],
+        [false, 0],
+        "首帧视口 0×0 ⇒ 不退回、不挂定时器",
+    );
+    h.destroy();
 }
 
 // 全部角色全部档位:窗口 = round(设计盒 × 档位),视口再少 1px(WebKit 把 clientWidth 舍成整数,
