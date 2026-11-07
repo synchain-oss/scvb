@@ -368,6 +368,20 @@ public:
     // 诊断行里 user-data 目录那一段。系统 WebKit 不用这个目录(userDataFolderRoot() 为空),
     // 显示 `(not used)` 而不是一个空路径;非空时原样是完整路径(Windows 逐字不变)。
     static juce::String userDataFolderDisplay(const juce::File& folder);
+
+    // [Z1] 缩放交给原生 WKWebView.pageZoom(macOS 11+,与最低系统一致):pageZoom 下布局视口 = 窗口 / 档位,
+    // rect 与事件坐标在同一个坐标系,新旧 WebKit 都对(tests/macos/pagezoom-probe 在真 WebKit 上量)。
+    // 页面经 seed Init::NativeZoom 知道这件事,CSS zoom 留在 1(web/shared/shell-fit.js 文件头 [Z1])。
+    // 只看 macOS,不按 Engine 分:WebKitGTK 没有这个属性。
+#if JUCE_MAC
+    static constexpr bool kNativePageZoom = true;
+    // 把 browser 子树里那个 WKWebView 的 pageZoom 设成 scale。找不到 WKWebView 时返回 false,不崩;
+    // 每个编辑器只碰自己的 WebView。实现在 PlatformWebViewZoom_mac.mm。
+    static bool applyNativePageZoom(juce::WebBrowserComponent& browser, float scale);
+#else
+    static constexpr bool kNativePageZoom = false;
+    static bool applyNativePageZoom(juce::WebBrowserComponent&, float) { return false; }
+#endif
 };
 
 } // namespace scvb::webview

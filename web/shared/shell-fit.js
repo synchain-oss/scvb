@@ -24,7 +24,7 @@
 // (web/output/canvas/hidpi.js)全套按 CSS zoom 的语义写的,换成 transform 会让
 // getBoundingClientRect 与布局坐标脱钩。
 //
-// [M09] **旧 rect 语义下缩放锁 1**(WebKit 26.4 之前的系统 WKWebView;判据与理由见
+// [M09] **旧 rect 语义下缩放锁 1**(量到旧语义的系统 WKWebView,不按版本号;判据与理由见
 // hit.js 的 zoomRectMode 头注):安装时量一次语义,判出旧语义就
 //   ① 画面倍率恒为 1,不再从视口反算 —— zoom=1 时两种语义逐字相同,命中按构造正确;
 //   ② 档位只留 1 档(`scalePresets`),宿主带着别的档位开窗时请回 1(`enforceZoomLock`,
@@ -32,6 +32,18 @@
 //      后照旧生效);
 //   ③ 页面显示一行提示(词条 `scale.lockedLegacy`,各页自己摘 hidden)。
 // 新语义(以及量不出来的 unknown)下以上三条**一条都不触发**,行为与改前逐字相同。
+//
+// [Z1] **mac 上缩放交给原生 `WKWebView.pageZoom`**(seed `nativeZoom`,WebViewHost 经
+// withInitialisationData 给,mac 上才有)。pageZoom 下布局视口 = 窗口 / 档位,rect 与事件坐标
+// 落在同一个坐标系,新旧 WebKit 都对,所以:
+//   ① 上面 [M09] 的锁一条都不触发(不量语义、不锁、档位全开、不请回 1、不显示提示);
+//   ② 仍然走 fitFactor,窗口 = 设计盒 × 档位时算出来就是 1,CSS zoom 恒为 1。万一 pageZoom 没生效,
+//      算出来的是档位本身,退回 CSS zoom 至少不裁切(这条回退路上旧语义的命中偏移还在);
+//   ③ |f-1| < 0.01 吸成 1(snapNativeFit):round(1180×0.65)/0.65 这类取整误差会让 f 差一点点,
+//      而旧语义下 f≠1 就会让点击偏;
+//   ④ pageZoom 不改 devicePixelRatio(真 WebKit 探针在 1x 屏上量过,见 tests/macos/pagezoom-probe),画布要清楚
+//      就得把档位算进后备存储倍率:见 backingFitFactor / noteNativeScale。
+// 没有这个 seed(Windows、web-preview)时以上一条都不触发,行为逐字不变。
 // =============================================================================
 
 import { ZOOM_RECT_LEGACY, zoomRectMode } from "./hit.js";
@@ -39,6 +51,24 @@ import { ZOOM_RECT_LEGACY, zoomRectMode } from "./hit.js";
 /** 有限数才用,否则回落 d(视口在首帧/隐藏时会读到 0 或 NaN)。 */
 function num(v, d) {
     return typeof v === "number" && Number.isFinite(v) ? v : d;
+}
+
+/**
+ * [Z1] 读 JUCE 的首帧 seed。JUCE 把每个 key 的值包成数组(`withInitialisationData` 可对同一个 key
+ * 调多次,juce_WebBrowserComponent.cpp 的 getUserScriptsForInitialisationData),所以取第一项。
+ */
+function initSeed(win, key) {
+    const data = win && win.__JUCE__ && win.__JUCE__.initialisationData;
+    const v = data && data[key];
+    return Array.isArray(v) ? v[0] : undefined;
+}
+
+/**
+ * [Z1] 原生 pageZoom 接管缩放时的取整吸附(纯函数):离 1 不到 0.01 就是 1。
+ * 只在 nativeZoom 下用;没有 seed 时倍率一个字都不动。
+ */
+export function snapNativeFit(f) {
+    return Math.abs(f - 1) < 0.01 ? 1 : f;
 }
 
 /**
@@ -97,9 +127,13 @@ export function shellFitFactor() {
  * 重建」的判据 = 每帧把 15 条泳道的 canvas 全部重新分配一次。
  *
  * 量化到 0.01:1% 的后备存储误差在屏幕上看不出来,而拖拽整程只会跨过有限几档。
+ *
+ * [Z1] nativeZoom 下画面的实际倍率 = 外壳缩放 × 原生档位(nativeScale),一起算进去。全部读方都只拿它
+ * 定后备存储(canvas 的 k)或判「k 变没变」,不拿它做几何,所以这里改不影响任何坐标;没有 seed 时
+ * nativeScale 恒 1,结果逐字不变。
  */
 export function backingFitFactor() {
-    return Math.round(current * 100) / 100;
+    return Math.round(current * nativeScale * 100) / 100;
 }
 
 /**
@@ -109,6 +143,32 @@ export function backingFitFactor() {
 let locked = false;
 /** `enforceZoomLock` 这一趟离开 1 档时已经为哪个档位值请求过回 1(回推回到 1 时清空)。 */
 let lockRequestedFrom = null;
+
+/** [Z1] 本文档的缩放是否由原生 pageZoom 接管(安装时读 seed;见文件头 [Z1] 一段)。 */
+let nativeZoom = false;
+/** [Z1] 原生档位(pageZoom 的值)。没有 seed 时恒 1。 */
+let nativeScale = 1;
+/** [Z1] 档位变了要叫谁:就是 installShellFit 的 onChange。 */
+let nativeScaleListener = null;
+
+/**
+ * [Z1] 页面拿到新档位时调用(state 回推 / 本页预览)。pageZoom 变的时候页面里没有任何东西会动:
+ * 视口还是设计盒,dpr 不变,ResizeObserver 不响,只能靠这一下让画布按新 k 重建。
+ * 没有 seed 时什么都不做。
+ *
+ * @param {number} scale 档位
+ * @returns {boolean} 档位是否真的变了
+ */
+export function noteNativeScale(scale) {
+    if (!nativeZoom) return false;
+    if (typeof scale !== "number" || !Number.isFinite(scale) || !(scale > 0)) {
+        return false;
+    }
+    if (scale === nativeScale) return false;
+    nativeScale = scale;
+    if (nativeScaleListener) nativeScaleListener(current);
+    return true;
+}
 
 /** 旧 rect 语义 ⇒ true:缩放锁在 1,档位只剩 1 档,页面该显示那行提示。 */
 export function zoomLocked() {
@@ -186,8 +246,14 @@ export function installShellFit(o) {
         return { factor: () => 1, refresh: () => {}, destroy: () => {} };
     }
 
+    // [Z1] 原生 pageZoom 接管时不量语义、不锁;首帧的后备存储按 seed 里的开窗档位算,
+    // 不用等第一帧 state(等的话画布先按 k=dpr 建一次,紧接着又重建一次)。
+    nativeZoom = initSeed(win, "nativeZoom") === true;
+    nativeScale = nativeZoom ? num(initSeed(win, "uiScale"), 1) : 1;
+    nativeScaleListener = nativeZoom ? onChange : null;
+
     // [M09] 语义只量这一次(hit.js 按文档缓存)。unknown 按新语义处理:不锁。
-    locked = zoomRectMode(win.document) === ZOOM_RECT_LEGACY;
+    locked = !nativeZoom && zoomRectMode(win.document) === ZOOM_RECT_LEGACY;
     lockRequestedFrom = null;
 
     let last = 0;
@@ -208,7 +274,8 @@ export function installShellFit(o) {
         raf = 0;
         const v = viewport();
         // [M09] 降级而不是换算:旧 rect 语义下画面倍率恒为 1,不随视口变。
-        const f = locked ? 1 : fitFactor(v.w, v.h, box.w, box.h);
+        const fit = locked ? 1 : fitFactor(v.w, v.h, box.w, box.h);
+        const f = nativeZoom ? snapNativeFit(fit) : fit;
         if (f === last) return;
         last = f;
         current = f;
@@ -270,6 +337,9 @@ export function installShellFit(o) {
             last = 0;
             locked = false;
             lockRequestedFrom = null;
+            nativeZoom = false;
+            nativeScale = 1;
+            nativeScaleListener = null;
         },
     };
 }

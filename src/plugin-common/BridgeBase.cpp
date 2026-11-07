@@ -31,6 +31,14 @@ juce::var buildUiSnapshot(const UiSeed& seed)
     return juce::var(obj);
 }
 
+std::vector<std::pair<juce::String, juce::var>> buildInitOnlySeedPairs(bool nativeZoom)
+{
+    std::vector<std::pair<juce::String, juce::var>> pairs;
+    if (nativeZoom)
+        pairs.emplace_back(juce::String(Init::NativeZoom), juce::var(true));
+    return pairs;
+}
+
 juce::String normalizeLang(const juce::String& code)
 {
     if (code == "en" || code == "fr")

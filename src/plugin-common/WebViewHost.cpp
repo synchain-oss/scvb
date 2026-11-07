@@ -691,11 +691,32 @@ void WebViewHost::noteRevealed()
 
 // -----------------------------------------------------------------------------
 // 缩放(机制 9):固定设计盒 × CSS zoom + setSize 同步
+// [Z1] mac 上「CSS zoom」这一半换成 WKWebView.pageZoom(理由见 PlatformWebView.h)。
+// 三条路都经本函数:构造(WebView 已建好)、setUiScale、retryWebView 回到 WebView。
 // -----------------------------------------------------------------------------
 void WebViewHost::resizeToDesignBox(float scale)
 {
     const auto r = bridge::designBoxWindowSize(config_.role, scale);
     setSize(r.width, r.height);
+    applyNativeZoom(scale);
+}
+
+void WebViewHost::applyNativeZoom(float scale)
+{
+    if constexpr (PlatformWebView::kNativePageZoom)
+    {
+        if (webView_ == nullptr)
+            return;
+        // 找不到就只留一行诊断:页面的 fitFactor 会算出档位本身,退回 CSS zoom,窗口里不至于裁切。
+        logDiag(PlatformWebView::applyNativePageZoom(*webView_, scale)
+                    ? "native page zoom " + juce::String(scale, 2)
+                    : juce::String("native page zoom: no WKWebView under the browser component, page falls back to "
+                                   "CSS zoom"));
+    }
+    else
+    {
+        juce::ignoreUnused(scale);
+    }
 }
 
 void WebViewHost::setUiScale(float scale)
@@ -1069,6 +1090,9 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
     // 首帧同步 seed(机制 5):version / 角色 / channel 上限 / lang / uiScale(键值对与 buildSnapshot 同源)。
     for (const auto& seedPair :
          bridge::buildUiSeedPairs({config_.role, config_.version, lang_, uiScale_, config_.channelLimit}))
+        options = options.withInitialisationData(seedPair.first, seedPair.second);
+    // [Z1] 只进首帧 seed、不进 scvb.state 的那几个键(见 BridgeBase.h)。
+    for (const auto& seedPair : bridge::buildInitOnlySeedPairs(PlatformWebView::kNativePageZoom))
         options = options.withInitialisationData(seedPair.first, seedPair.second);
 
     // JS -> C++(机制 6):通用缩放/语言/首帧;插件专属函数由 augmentOptions 追加。

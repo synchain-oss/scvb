@@ -217,6 +217,19 @@ cmake --build build-auhost --parallel
 - 渲染在独立线程上按**墙钟实时**推进(SCVB 有 500 ms 停滞这类墙钟门限),LS-1 约 6 s、LS-4 约 10 s 的真实时间;跑的时候机器别同时做别的重活。
 - CI 入口是 `macos-oop.yml` 的 `scvb-auhost` job(由 `build-vst3.yml` 的 `macos-oop` caller 调用,测的是同一个 run 里 `macos-build` 上传的 bundle)。`macos-26` runner 只在 `workflow_dispatch` 时加入矩阵,PR 与 push 只跑 `macos-15`。
 
+### 8.1 `scvb_pagezoom_probe`:真 WebKit 上量 pageZoom
+
+mac 上缩放走 `WKWebView.pageZoom`,靠的是「rect 和事件坐标同一个坐标系」,这一条只有系统 WKWebView 答得了。`tests/macos/pagezoom-probe/` 同样是独立工程,不需要 JUCE、不需要先构建插件,页面里跑的是仓库 `web/shared/` 下的产品代码。判据、退出码与局限见它自己的 [README](../tests/macos/pagezoom-probe/README.md)。
+
+```bash
+cmake -S tests/macos/pagezoom-probe -B build-pagezoom -DCMAKE_BUILD_TYPE=Release
+cmake --build build-pagezoom --parallel
+./build-pagezoom/scvb_pagezoom_probe --web-root web
+./build-pagezoom/scvb_pagezoom_probe --web-root web --negative-control   # 必须退 1
+```
+
+退出码 `0` 判据全过,`1` 判据不过,`2` 没测成(页面没起来,不算通过)。CI 入口是 `build-macos.yml` 的 `WKWebView pageZoom probe (real WebKit)` 步骤;该步骤带 `continue-on-error`,不打断后面的门,由 job 末尾的 `WKWebView pageZoom probe verdict` 判红。
+
 ## 9. CI 里对应的 job(速查)
 
 | job | 在哪 | 什么时候跑 |

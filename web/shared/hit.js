@@ -92,15 +92,21 @@ export function eventToLocal(clientX, clientY, rect, zoom = 1) {
 // 上面的 eventToLocal,以及全仓「rect 折回设计坐标」的那一族命中测试(曲线编辑器的
 // logicalFromEvent、轨迹图的 stageX、泳道坐标……)都按**新语义**写:rect 是缩放后
 // 的视觉尺寸,left/top 是视口坐标,与事件的 clientX/Y 同一坐标系。Chromium 128+
-// (WebView2 Evergreen)与 WebKit 26.4+ 如此。
+// (WebView2 Evergreen)如此。
 //
-// WebKit 26.4 之前(macOS 的系统 WKWebView;Sonoma 以下的系统拿不到 26.4)是
-// **旧语义**:rect 按元素的有效 zoom 除回去,宽高与位置都不含缩放 —— 而事件坐标仍是
-// 视口坐标,于是 zoom≠1 时命中整体偏。
+// 系统 WKWebView 可能是**旧语义**:rect 按元素的有效 zoom 除回去,宽高与位置都不含缩放 ——
+// 而事件坐标仍是视口坐标,于是 zoom≠1 时命中整体偏。哪个 WebKit 起是新语义,没有可靠的版本分界:
+// 原先按 Safari 的说法记成「26.4 起」,但 Z1 的真 WebKit 探针(tests/macos/pagezoom-probe)在
+// macOS 15.8.2 / Safari 27.2(WebKit 20621.3.11.11.3)上,嵌在应用里的 WKWebView 量到的仍是旧语义
+// (原因没查实)。嵌在宿主里的 WKWebView 用哪种语义,以实测为准。
 //
 // 旧语义下**降级、不换算**(design-lineB §3.5):外壳缩放锁在 1(见 shell-fit.js)。
 // zoom=1 时两种语义逐字相同,命中测试按构造就是对的。不做换算的理由:旧 WebKit 下
 // 事件坐标与 rect 的确切关系在 CI 上验证不了,盲做换算没法保证对。
+//
+// [Z1] mac 上的插件窗口已经不走这条降级:缩放交给原生 `WKWebView.pageZoom`,CSS zoom 恒为 1,
+// 本探测在那条路上根本不跑(见 shell-fit.js 文件头 [Z1])。本探测与上面的降级留给没有 `nativeZoom`
+// seed 的环境;pageZoom 没生效的回退路上 CSS zoom 会回来,那时的命中偏移也写在 [Z1] 里。
 //
 // 判据只认**量到的**语义,不读 UA、不读版本号:一个 zoom:2、宽 100px 的不可见探针,
 //   新语义:rect 宽 = 200(含 zoom),offsetWidth = 100;
@@ -109,9 +115,9 @@ export function eventToLocal(clientX, clientY, rect, zoom = 1) {
 // offsetWidth 100),所以「rect 宽 ÷ offsetWidth」≈ 探针 zoom 即新语义、≈ 1 即旧语义。
 // =============================================================================
 
-/** rect 含 zoom(新语义;Chromium 128+ / WebKit 26.4+)。 */
+/** rect 含 zoom(新语义;Chromium 128+)。 */
 export const ZOOM_RECT_STANDARD = "standard";
-/** rect 不含 zoom(旧语义;WebKit 26.4 之前)。 */
+/** rect 不含 zoom(旧语义;系统 WKWebView 上实测过,见上)。 */
 export const ZOOM_RECT_LEGACY = "legacy";
 /** 量不出来(没有 DOM / 探针没布局出尺寸)。调用方按**新语义**处理:不改任何行为。 */
 export const ZOOM_RECT_UNKNOWN = "unknown";

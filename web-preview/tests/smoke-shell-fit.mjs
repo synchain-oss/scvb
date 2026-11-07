@@ -12,9 +12,12 @@
 //      本卡的病根就是「档位数字」与「实际倍率」两个真源分家 —— Input/Monitor 各写一次
 //      zoom、Output 一次都不写。判据钉的是「只有一个写方」这个**状态**,而不是某一行
 //      长什么样:谁再加第二处写方,这里立刻红。
-//   ⑤ [M09] 旧 rect 语义(WebKit 26.4 之前)下的降级:hit.js 的语义判定与探针、
+//   ⑤ [M09] 旧 rect 语义(量到的,不按版本号)下的降级:hit.js 的语义判定与探针、
 //      shell-fit 的锁 1 / 档位过滤 / 请回 1 的记账,以及三页的接线。页面级那套
 //      (smoke-zoom-legacy-page.mjs)缺浏览器会 SKIP,这里是**恒执行**的那一半。
+//   ⑤f [Z1] mac 上缩放交给原生 pageZoom(seed `nativeZoom`):不锁、档位原样、不请回 1、
+//      f 吸附、档位算进后备存储;没有 seed 时逐字不变。真 WebKit 那一半在
+//      tests/macos/pagezoom-probe,页面接线那一半在 smoke-zoom-legacy-page.mjs。
 //
 // 反向注入记录见 PR 描述的「删除式实得」。
 //
@@ -60,6 +63,8 @@ const {
     zoomLocked,
     scalePresets,
     enforceZoomLock,
+    noteNativeScale,
+    snapNativeFit,
 } = await import(url("web/shared/shell-fit.js"));
 const HIT = await import(url("web/shared/hit.js"));
 const { DESIGN } = await import(url("web/shared/design-box.js"));
@@ -610,6 +615,152 @@ function probeDoc(rectW, offsetW = 100) {
             `${w.role}:${w.html} 有提示节点(data-t=scale.lockedLegacy,默认 hidden)`,
         );
     }
+}
+
+log("\n=== ⑤f [Z1] nativeZoom:原生 pageZoom 接管缩放(node 侧)===");
+// JUCE 注入的形状:每个 key 的值包成数组(juce_WebBrowserComponent.cpp 的
+// getUserScriptsForInitialisationData)。
+const nativeSeed = (scale) => ({
+    initialisationData: { nativeZoom: [true], uiScale: [scale] },
+});
+
+// 键名跨了 C++ 与 JS 两侧,打错一个字母的表现是「mac 上静默退回旧锁」,任何别的判据都不红。
+{
+    const base = stripComments(src("src/plugin-common/BridgeBase.h"));
+    const sf = stripComments(src("web/shared/shell-fit.js"));
+    check(
+        /NativeZoom\s*=\s*"nativeZoom"/.test(base) &&
+            /initSeed\(win,\s*"nativeZoom"\)/.test(sf),
+        'seed 键名两侧一致("nativeZoom":BridgeBase.h 与 shell-fit.js)',
+    );
+    check(
+        /UiScale\s*=\s*"uiScale"/.test(base) &&
+            /initSeed\(win,\s*"uiScale"\)/.test(sf),
+        'seed 键名两侧一致("uiScale":BridgeBase.h 与 shell-fit.js)',
+    );
+}
+
+// 旧语义文档 + seed:没有 seed 时这份文档必锁(⑤c),有 seed 一条都不触发。
+{
+    const BOX = DESIGN.output;
+    const doc = probeDoc(100);
+    const env = fakeEnv({ vw: BOX.w - 2, vh: BOX.h, doc });
+    env.win.__JUCE__ = nativeSeed(0.8);
+    const changes = [];
+    const h = installShellFit({
+        el: env.el,
+        box: BOX,
+        win: env.win,
+        onChange: (f) => changes.push(f),
+    });
+    eq(zoomLocked(), false, "seed ⇒ zoomLocked() = false(旧语义文档也不锁)");
+    eq(doc.made.length, 0, "seed ⇒ 不量 rect 语义(探针一个都没建)");
+    check(
+        scalePresets(BOX.presets) === BOX.presets,
+        "seed ⇒ scalePresets 原样返回同一个数组",
+    );
+    const calls = [];
+    eq(
+        enforceZoomLock(1.5, (f) => calls.push(f)),
+        false,
+        "seed ⇒ enforceZoomLock 不动作",
+    );
+    eq(calls, [], "seed ⇒ 一次 setUiScale 都没发");
+
+    eq(
+        [env.el.style.zoom, shellFitFactor()],
+        ["1", 1],
+        "视口差 2px(取整误差)⇒ f 吸附成 1,CSS zoom 恒 1",
+    );
+    eq(changes, [], "安装那一次不回调");
+
+    eq(backingFitFactor(), 0.8, "首帧后备存储按 seed 里的开窗档位算(0.8)");
+    eq(noteNativeScale(1.25), true, "档位变了 ⇒ noteNativeScale 回 true");
+    eq(backingFitFactor(), 1.25, "后备存储倍率跟到新档位(1 × 1.25)");
+    eq(changes, [1], "档位变了 ⇒ onChange 回调一次(画布靠它重建)");
+    eq(noteNativeScale(1.25), false, "同一档位 ⇒ 不回调");
+    eq(changes, [1], "同一档位没有多回调");
+    for (const bad of [NaN, 0, -1, "1.5", undefined]) {
+        eq(noteNativeScale(bad), false, `非法档位 ${String(bad)} 不算数`);
+    }
+    eq(backingFitFactor(), 1.25, "非法档位没有改动后备存储倍率");
+
+    // 回退路:pageZoom 没生效 ⇒ 视口就是窗口(设计盒 × 档位),退回 CSS zoom,窗口里不裁切。
+    env.setViewport(Math.round(BOX.w * 0.65), Math.round(BOX.h * 0.65));
+    h.refresh();
+    eq(
+        [env.el.style.zoom, shellFitFactor()],
+        ["0.65", 0.65],
+        "pageZoom 没生效 ⇒ 退回 CSS zoom(0.65)",
+    );
+    eq(
+        [snapNativeFit(0.99), snapNativeFit(0.9901), snapNativeFit(1.0099)],
+        [0.99, 1, 1],
+        "吸附边界:离 1 不到 0.01 才吸",
+    );
+
+    h.destroy();
+    eq(backingFitFactor(), 1, "destroy() 后后备存储倍率回 1");
+    eq(noteNativeScale(1.5), false, "destroy() 后 noteNativeScale 不再动作");
+    eq(backingFitFactor(), 1, "destroy() 后档位不再算进去");
+}
+
+// 全部角色全部档位:窗口 = round(设计盒 × 档位),视口再少 1px(WebKit 把 clientWidth 舍成整数,
+// 浮点档位还可能差一点),吸附之后都必须是 1。CSS zoom 一旦不是 1,旧语义下点击就偏。
+for (const [role, box] of Object.entries(DESIGN)) {
+    for (const p of box.presets) {
+        const vw = Math.floor(Math.round(box.w * p) / p) - 1;
+        const vh = Math.floor(Math.round(box.h * p) / p) - 1;
+        const f = snapNativeFit(fitFactor(vw, vh, box.w, box.h));
+        eq(f, 1, `${role} ${p} 档:视口 ${vw}x${vh} ⇒ 吸附成 1`);
+    }
+}
+
+// seed 的形状不对、或没有 seed:逐字是改前的行为。
+for (const [name, juce] of [
+    ["没有 __JUCE__", undefined],
+    ["占位对象(check_native_interop.js)", { initialisationData: {} }],
+    ["值不是数组", { initialisationData: { nativeZoom: true } }],
+    ["[false]", { initialisationData: { nativeZoom: [false] } }],
+]) {
+    const BOX = DESIGN.output;
+    const env = fakeEnv({ vw: BOX.w - 2, vh: BOX.h, doc: probeDoc(100) });
+    if (juce) env.win.__JUCE__ = juce;
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(zoomLocked(), true, `${name}:旧语义文档照旧锁`);
+    eq(noteNativeScale(1.25), false, `${name}:noteNativeScale 不动作`);
+    eq(backingFitFactor(), 1, `${name}:后备存储倍率不带档位`);
+    h.destroy();
+
+    const env2 = fakeEnv({ vw: BOX.w - 2, vh: BOX.h, doc: probeDoc(200) });
+    if (juce) env2.win.__JUCE__ = juce;
+    const h2 = installShellFit({ el: env2.el, box: BOX, win: env2.win });
+    eq(
+        env2.el.style.zoom,
+        String(fitFactor(BOX.w - 2, BOX.h, BOX.w, BOX.h)),
+        `${name}:新语义文档不吸附(倍率逐字不变)`,
+    );
+    h2.destroy();
+}
+
+// 接线:有画布读 backingFitFactor 的两页,档位都要报给 noteNativeScale。
+for (const rel of ["web/output/app.js", "web/monitor/app.js"]) {
+    check(
+        /noteNativeScale\(/.test(stripComments(src(rel))),
+        `${rel}:拿到档位时调 noteNativeScale`,
+    );
+}
+// Output:noteNativeScale 在 renderScale 里,renderScale 必须排在 tab 渲染之前,
+// 否则这一帧的 tab 读到的还是旧 k,要等下一次渲染才重建画布。
+{
+    const body = stripComments(src("web/output/app.js"));
+    const start = body.indexOf("function render()");
+    const iScale = body.indexOf("renderScale();", start);
+    const iTab = body.indexOf("tabMaster.render();", start);
+    check(
+        start >= 0 && iScale > start && iTab > iScale,
+        "Output:render() 里 renderScale 排在 tab 渲染之前",
+    );
 }
 
 log("");

@@ -302,6 +302,14 @@ public:
     bool captureEnabled() const { return captureEnabled_; }
     bool outputEnabled() const { return outputEnabled_; }
     double sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); } // 原子读(PR#55 第9轮)
+    // [Z1] 新实例的出厂档位(百分比)。mac 上 Output 默认 80:100% 的 1180×780 在笔记本屏幕上太大。
+    // 优先级不变:工程 state > 全局默认(uidefaults)> 本常量。Windows 仍是 100。
+    // OutputStateCodec 的默认值不跟着改:那是「解不出来时」的默认,golden 依赖它。
+#if JUCE_MAC
+    static constexpr int kFactoryUiScalePercent = 80;
+#else
+    static constexpr int kFactoryUiScalePercent = 100;
+#endif
     int uiScalePercent() const { return uiScale_; }
     juce::String uiLanguage() const { return uiLanguage_; }
     // [J75] T43:写 state ui.master_chart_mode(随工程持久化);"trajectory" 以外一律回落 "distribution"。
@@ -975,7 +983,7 @@ private:
     // 构造函数里按本成员同步一次。
     bool outputEnabled_ = false;
     int versionActive_ = 1;
-    int uiScale_ = 100;
+    int uiScale_ = kFactoryUiScalePercent;
     juce::String uiLanguage_ = "en";
     juce::String masterChartMode_ = "distribution"; // [J75] T43(ui.master_chart_mode)
     // [SL-215] 会话 GUID:构造时生成一次,setStateInformation 读到工程里存过的合法值就改用那个。
