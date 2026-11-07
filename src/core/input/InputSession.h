@@ -104,6 +104,9 @@ public:
 
     // [M] 4Hz 心跳(kActive 才写)。
     void heartbeat(u64 nowMs);
+    // 离线导出开始:写头归零并换代,环里上一次播放留下的数据不再读得到。这次导出里没被宿主调用的 Input(被旁路、
+    // 轨不参与)写头就一直是 0,Output 读不到它,而不是把旧音频混进文件。写方这一实例此刻没有在写(prepare 里调)。
+    void resetRingForOfflinePass() noexcept;
 
     // [M] muted 确认位(C19,J32):静音 ramp 完成置位、切直通前清位(fetch_or/fetch_and,[J48])。
     void setMuted(bool muted);

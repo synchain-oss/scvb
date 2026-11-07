@@ -1,12 +1,12 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-10-16
+> 最后更新:2026-11-04
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
 
-**发版门禁**:每个版本在 `docs/validation/` 下建一份 `release-checklist-vX.Y.Z.md`(10 §6),逐项打勾,**任何一项未勾不得发布**;当前一份是 [v0.9.0-rc.1](validation/release-checklist-v0.9.0-rc.1.md)。
+**发版门禁**:每个版本在 `docs/validation/` 下建一份 `release-checklist-vX.Y.Z.md`(10 §6),逐项打勾,**任何一项未勾不得发布**;当前一份是 [v0.11.0-beta.1](validation/release-checklist-v0.11.0-beta.1.md)。
 
 ## 版本号的唯一真源
 
@@ -16,7 +16,7 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 README 的配图(`docs/images/readme/`)同样不带版本号:它们是用官网复刻界面加演示数据渲染的示意图,不是插件实机截图,版本号变了不用重出;**界面有看得见的改动**(tab、表格列、页脚文案之类)时才要重出,由维护者用官网的复刻界面出图后整组替换。
 
-下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag;官网下载页上线后再加上它的常量。
+下游镜像(发版时必须同步):`CHANGELOG.md`、Release tag、官网下载页(版本号与 SHA-256)。官网怎么改不在本仓:步骤在 `synchain-oss/release-kit` 的 `release-scvb` 手册里(私有仓库),Release 发布之后照着做。
 
 **三个插件(Input / Output / Monitor)共用同一个版本号、同一次发布、同一个 zip。** Input 与 Output 必须配对,分开编号的直接后果是用户装出不匹配的组合:IPC 协议版本不同的两侧会拒绝互连;协议相同时虽然连得上,混装也不受支持 —— 新 Output 配旧 Input 做离线渲染,人声可能被双路叠加(SL-260,发布说明模板「升级须知」第一条就是它)。Monitor 是可选的只读观察窗,可以不装,但版本号与另两个相同、在同一个 zip 里发布。
 
@@ -123,7 +123,7 @@ mac 这一路(`build-mac` / `release-macos`,表格见上)和 Windows 平行、�
 6. **合进 `dev` → `staging` → `prod`,在 `prod` 上打 tag 并推送**:先按下方「里程碑合并:`feature/v1` → `dev`」把第 1–5 步所在的主支线提交压成一个提交合进 `dev`(J170 / J171),等 push→`dev` 触发的那次 `build-vst3` 全绿;再按下方「`staging` 与 `prod` 两个分支」里的「每次发布的顺序」:开 `dev` → `staging` 的 PR 并合并,对 `staging` dispatch 一次 `build-vst3` 全绿,开 `staging` → `prod` 的 PR 并合并,回读之后在 `prod` 的这个合并提交上打 tag(预发布用 `vX.Y.Z-rc.N` 或 `vX.Y.Z-beta.N`)。`release.yml` 随之触发,`verify-tag` 先卡版本号。**rc 与正式版走同一条链**(J184:`v0.9.0-rc.1` 那一次按 J180 先前移 `staging` / `prod` 再打 tag 的顺序,从此是常规;不同的是两个分支都改为经 PR 前移)。
 7. **核对产物**(草稿 Release 的资产):zip 里两个必装 bundle `SCVB Input.vst3` / `SCVB Output.vst3` 加可选的 `SCVB Monitor.vst3`,三个完整 bundle 都要在 —— Monitor 对用户是可选安装,但 zip 里少了它同样不能发(`package.ps1` 断言恰好三个);合规文件组齐全(见下),`INSTALL.txt` 里的源码链接指向本 tag;`.sha256` 与 zip 实际哈希一致(`sha256sum -c` 或 `Get-FileHash`)。
 8. **填发布说明**:用下面的模板改写草稿正文,SHA-256 **直接从 `package-summary.md`(草稿正文 / 资产 / job summary 三处同一份)复制,不要手抄**。核对无误后在网页上点发布。
-9. **发布后**:**不再前移任何分支** —— `staging` 与 `prod` 在推 tag 之前就已经到位(J184),发布后只按「每次发布的顺序」第 6 步再回读一次:`prod` 等于 tag 指向的提交,`staging` 是它的祖先且树相同。插件里的文档链接都指向 `prod`(见下「文档链接」),所以本版(rc 也一样)一发布,用户在插件里打开的就是本版的手册。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。官网下载页是否上线、何时上线**待定**(见下「分发渠道」);上线后它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致,同时同步官网下载页常量。
+9. **发布后**:**不再前移任何分支** —— `staging` 与 `prod` 在推 tag 之前就已经到位(J184),发布后只按「每次发布的顺序」第 6 步再回读一次:`prod` 等于 tag 指向的提交,`staging` 是它的祖先且树相同。插件里的文档链接都指向 `prod`(见下「文档链接」),所以本版(rc 也一样)一发布,用户在插件里打开的就是本版的手册。然后:若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。再更新官网下载页(见下「分发渠道」):它必须发布**同一份** zip 与 `.sha256`,并与 Release 正文里的 SHA-256 逐字一致。
 
 ## 里程碑合并:`feature/v1` → `dev`(J170 / J171)
 
@@ -213,7 +213,7 @@ git diff --quiet origin/feature/v1 HEAD; echo "diff-exit=$?"   # 必须是 0:一
 
 - 两个 PR 都用「Create a merge commit」合并(`gh pr merge --merge`),**不要 squash / rebase**:squash 之后 `staging` / `prod` 的历史里没有 `dev` 上的那些提交,下一次晋升会把已经发布过的改动再带一遍。合并提交只在 `staging` / `prod` 上,不在 `dev` 的历史里,这是有意的,`dev` 不回收它们(里程碑的前置检查只看 `dev` 与 `feature/v1`,不受影响)。所以 `prod` 与 tag 指向的是合并提交:sha 与里程碑提交不同,树逐字相同。
 - `branch-gate` 管这两个 PR 的来源:base = `staging` 只收本仓的 `dev`,base = `prod` 只收本仓的 `staging`;别的分支、fork、机器人开到这两个分支的 PR 一律红。DCO 与冻结契约守卫照常跑:DCO 跳过合并提交(上一次晋升留下的合并提交也会出现在提交列表里),其余提交逐个查签名;这批改动碰了冻结契约文件时,对应的变更文档已随 `feature/v1` 一起进来,守卫在 PR 的文件列表里看得到它(与里程碑 PR 同理),PR 照样挂 `status/frozen-contract`。
-- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。`claude-review` / `deepseek-review` 不挑 base,会照常跑(`pr-agent` 只在 PR → `dev` 时运行,这两个 PR 上不跑);它们不是必需检查,内容也已在子 PR 与里程碑 PR 上审过,但 `staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),bot 留下的讨论要逐条处理、解决之后才能合。
+- 这两个 PR 上**不跑** `build-vst3` / `format` / `compliance`(它们的 PR 触发面只有 `dev` 与 `feature/**`):同一棵树进 `dev` 时都跑过,`staging` 上的全量构建由下面第 3 步的 dispatch 补,打 tag 之后 `release.yml` 还会完整构建一次。这两个 PR 上也不跑任何 AI review:中央 `claude-review` 跳过晋升 PR(`dev` → `staging`、`staging` → `prod`),`pr-agent` 只在 PR → `dev` 时运行,`deepseek-review` 只能手动触发;内容已在子 PR 与里程碑 PR 上审过。`staging` / `prod` 都开着「合并前必须解决所有讨论」(`required_conversation_resolution`),PR 上若有人留了讨论,要逐条处理、解决之后才能合。
 - `staging` / `prod` 的分支保护(要求走 PR、0 个审批、`enforce_admins`、禁止 force push 与删除、合并前解决讨论)**原样不动**。两个分支目前都没有必需检查,`branch-gate` 红了 GitHub 也不会拦下合并,所以合并之前自己确认它是绿的。
 
 ### 每次发布的顺序
@@ -395,6 +395,6 @@ SHA-256(直接从 `package-summary.md` 复制,不要手抄):
 ## 分发渠道
 
 - **权威产物来源**:GitHub Releases —— 单个 zip(三个 `.vst3`:Input / Output / 可选的 Monitor + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256` + `package-summary.md`。三者都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。README 与用户手册目前只把用户指向 GitHub Releases。
-- **官网下载页**:是否作为用户入口**待定**。若上线,官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 否则用户会被引到一条只验传输、不验来源的弱路径上;上线时同步改 README 的安装小节。
+- **官网下载页**:是用户入口之一。官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 否则用户会被引到一条只验传输、不验来源的弱路径上。更新步骤见 `synchain-oss/release-kit` 的 `release-scvb` 手册。README 的安装小节目前只指向 GitHub Release,要不要加官网另议。
 
 **为什么合并成一个 zip**:Input 与 Output 本来就配对使用,分开下载最常见的用户故障就是「只装了一个」;Monitor 跟它们同版本同一次发布,放进同一个 zip 也免得版本对不上。

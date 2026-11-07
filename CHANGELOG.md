@@ -8,12 +8,76 @@
 
 ## [Unreleased]
 
+## [0.11.0-beta.1] - 2026-11-05
+
+本版 GitHub Release 只放 Windows x64。
+
+### ⚠️ 契约变更
+
+- **pan 曲线只在播放时叠加,不再进分析**:分析不再把 pan 曲线算进左右平衡,写进宿主的 `V1/V2 Txx Pan/Vol` 车道也就不再随曲线变;
+  用户在宿主里画的自动化和曲线互不覆盖,改曲线不用重新分析,插件也不提示。全局 Width 与每轨 width 同样只在播放时起作用、不触发重新平衡提示。
+  播放侧不变,实时与离线同路。行为变化只在重新分析后可闻:画过非平坦曲线的旧工程,重新分析之后(包括拖分段滑杆松手、单轨恢复自动、范围分析)
+  音量会变,声像有时也会变;范围分析只写回选区,选区边界可能出现音量台阶,做一次全量分析即可。不重新分析的旧工程、从没画过曲线的工程逐位不变。
+  分析也不再补偿曲线造成的左右差,比如只压右半边,混音就会偏左。state 布局与 abi 不变;冻结文档桥面契约 §1.37 改了一句说明(变更文档
+  `docs/contract-changes/20261101-pan-curve-playback-only.md`)(#427)
+- **IPC 契约和 ADR-002 补了离线交接的说明,不改布局和 abi**:#429、#430 改了离线导出时 Output 和 Input 怎么交接,原来的文字和实现对不上了。`docs/IPC_CONTRACT.md` §2、§4 加了离线一轮清环、
+  离线下谁置和撤 `connected_mask` 的说明,`docs/adr/0002-routing-architecture.md` 加了第一块交接补注。这次只改文字,不带来新的行为变化。宪法原件还没同步(变更文档
+  `docs/contract-changes/20261102-offline-first-block-handoff.md`)(#432)
+- **IPC 契约和 ADR-002 补了实时起播的说明,不改布局和 abi**:停着之后从停住的位置后面起播时 Input 的 `epoch` 一次加 2(从停住的位置或它前面起播、走带中的定位、循环回跳仍加 1);
+  Output 在起播第一块自己看 Input 的 muted 确认位,不等主线程下一拍。`docs/IPC_CONTRACT.md` §2 加「实时起播」,§4 加注入注,`docs/adr/0002-routing-architecture.md` 加 [J32] 补注。
+  宪法原件还没同步(变更文档 `docs/contract-changes/20261103-realtime-play-start.md`)(#435)
+
 ### 新增
+
+- **两层 SCVB(嵌套)在 REAPER 7.82 上实测通过,手册写了接法**:想让几组人声之间也平衡,可以把每组的总线再接进上一层。导出和同样位置的一层工程逐位相同。只在 REAPER 7.82 上测过,只测过两层。接法、分析顺序、推子和独奏的行为、接错的后果见用户手册「嵌套:两层 SCVB」,逐项结果见 `docs/DAW_COMPATIBILITY.md` §2.2。(#438)
+- **REAPER 有了成品插件的实测**:路由(实时、离线)、存工程重开,以及窗口开着时写入自动化。关 GUI 时写不写还没有复验。已知问题新增 KI-23 到 KI-26,KI-8 补了 REAPER 上静音和独奏的不同行为。(#438)
+- **已知问题新增 KI-27:从 REAPER 窗口离线导出,偶发整个文件无声**:一层工程上实测 68 次里有 1 次,原因还没查清。导出之后看一眼波形,无声就再导出一次。(#440)
 
 ### 变更
 
+- **写自动化的三处判据和界面对齐**:手动范围和 DAW 循环范围之外不再写自动化,以前打印只看段包络,界面显示没在写,车道却照写;循环档跟的是宿主当前的循环区,插件窗口关着时挪循环区也算数;
+  被 DAW 旁路的 Output 不写,旁路时播放头照常更新,停走带之后不再卡在写入状态;同组第二个 Output(只读观察)不写,以前它确认过就会和主实例抢着写同一组车道。
+  手册同时改正:切回 Read 之后要关输出才跟随车道;确认每个 Output 各一次;确认之后试听会改写参数并存进工程;车道最多 30 条,值没动的维度在 REAPER 上不出车道。
+  打印面不变,声音不变。(#431)
+- **手册写明立体声轨在分析里按一个点算,不读每轨 width**:算法没有变,这里钉住现状并写明已知限制:单声道轨和左右内容不同的宽立体声轨混用时,
+  分析后的混音默认宽度下可能偏向一侧约 2–3 dB(KI-20)。(#428)
+- **review bot 从 DeepSeek 直连迁到 OpenCode Go 网关**(`deepseek-review` / `pr-agent`):
+  端点由 `https://api.deepseek.com/anthropic` 改为 `https://opencode.ai/zen/go`,模型改用 `deepseek-v4.1-flash`
+  —— 该网关只认裸 id,`[1M]` 后缀会返回 `Model is unavailable`,而裸 id 本身就是 1M 上下文(实测约 96 万
+  token 输入通过、约 107 万被拒)。secret 由 `DEEPSEEK_KEY` 改为仓库级 `OPENCODE_GO_API_KEY_FOR_REVIEW`。
+  网关强制要求会话头:claude-code-action 侧用 job 级 `ANTHROPIC_CUSTOM_HEADERS`,pr-agent 侧用
+  `LITELLM.EXTRA_HEADERS`。pr-agent 的输出上限改用真正生效的 `DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS`
+  (v0.39.0 并未实现 `config.max_output_tokens`,不抬高则 litellm 默认只发 4096,带推理的模型会把额度
+  全花在 reasoning 上、审查空跑而 job 报绿)。**触发面不变**:`pr-agent` 仍只在 PR → `dev` 时运行,
+  `claude-review` / `deepseek-review` 仍覆盖所有 base 分支。(#412)
+- **review bot 改为调用 `Synchain-oss/ci-workflows` 的中央可复用 workflow**(`claude-review` / `deepseek-review` / `pr-agent`):
+  三个文件缩成薄调用方,只留本仓专属的 `focus` / `extra_prompt` / `ignore_globs`;模型、工具边界、符号链接拒审、超时、
+  pr-agent 镜像(按 digest 钉住、无备用模型)统一在中央维护,调用方按 commit SHA 引用。`deepseek-review` 改为只能
+  `workflow_dispatch` 手动触发。检查名随之变为 `pr-agent / pr-agent`、`claude-pr-review / review`,
+  `feature/v1` 的必需检查要同步改名。`review-dispatch`(`/review`)不迁移,但不再用 yq 从 `claude-review.yml` 读 prompt,改为自带一份。(#413)
+- **中央 review workflow 升级到 v1.3.1,workflow 名标出模型**:三个调用方改钉中央 `v1.3.1`(commit SHA)。v1.3.0 的安全修复:
+  `workflow_dispatch` 下中央 workflow 会把 `CLAUDE.md` / `.claude/` / `.mcp.json` 还原成 base 版本。另订正文档:`dev` → `staging`、`staging` → `prod` 的晋升 PR 不跑任何 AI review。
+  触发面以本条为准:`claude-review` 覆盖所有非晋升 PR 的 base;#412 条目里「`deepseek-review` 仍覆盖所有 base 分支」的说法已过时(它现在只能手动触发)。(#415)
+- **中央 review workflow 升级到 v1.3.2**:三个调用方改钉中央 `v1.3.2`(commit SHA)。调用方无输入与行为变化;中央侧变化:`claude-review` / `deepseek-review` 的模型工具拒绝清单新增 `Read(//github/**)`,`claude-review` 与 `pr-agent` 在 step summary 里记录实际运行的中央 commit。(#417)
+- **中央 review workflow 升级到 v1.3.3**:三个调用方改钉中央 `v1.3.3`(commit SHA)。调用方无输入与行为变化;中央侧变化:`pr-agent` 的输入预算 `max_model_tokens` 随 provider 取默认值(`anthropic` 为 500000,原 800000;`opencode-go` / `deepseek-api` 仍为 800000),因为 pr-agent 用 OpenAI 分词器计数、会低估 Claude token,大 PR 上 800000 预算的 prompt 实测 1001327 个 Haiku token、超出 1M 窗口而无审查产出;step summary 同时列出输入预算。本仓 `pr-agent` 调用方用 `opencode-go`,行为不变。(#419)
+
 ### 修复
 
+- **停走带不久再按播放,开头不再缺约 0.3 秒**:走带停着不到约 5.5 秒再按播放时,之前 Output 要等主线程下一拍才接上,而 Input 这时已经静音,开头约 0.3 秒全零,一层、两层嵌套都一样;
+  Output 装在主轨上时,起播之后还可能再断一段(实测 0.63 秒)。现在 Output 从按下播放的第一块起就混音(80 毫秒淡入)。停得更久(Input 已经回到原声)、刚定位不到一拍就按播放、从窗口实时渲染时,
+  开头照旧是一小段原声再交叉到混音,和之前一样(KI-21);这段交接时宿主主线程恰好卡住的话,中间会有一段无声,长度等于卡住的时间,v0.10.0 也一样(KI-22)。离线导出不变。(#435)
+- **离线导出时,Input 把声音交给 Output 的那一刻不再有一段约 80 毫秒的淡入**:之前 Input 同一块就静音,Output 这边却还在走 80 毫秒淡入,
+  那个位置的声音会掉到零再淡回来。宿主不 release 就重新 prepare 时它在导出文件的最开头(第一个音压在文件开头才听得出,比如只导出中间一段);宿主先 release(比如 REAPER 从窗口渲染)、
+  刚打开工程就立刻导出、批量渲染时,它落在文件中段。现在 Output 接手的那一块就整块到位,过了交接点的声音逐样本不变。实时播放不变,仍走 80 毫秒交叉。(#429)
+- **从 DAW 窗口导出时,开头不再有一段没平衡的原声**:在 REAPER 里从窗口点渲染,文件开头实测有 0.25–3.8 秒是没经过平衡的原声,长度随机器快慢变;工程嵌套时每个 Output
+  还各切各的。现在 Output 从导出的第一块起就混音,从窗口导出和命令行导出的结果逐样本相同。例外是有一条 Input 第一块还判不了(比如宿主先全部 release、Output 又先于 Input 重新 prepare):所有轨都留在原声,等 Output 主线程下一次判定才接上,开头仍可能有一小段原声。
+  整条总线一起导出时,Input 要等 Output 真读到这一轨才静音。启用的轨一条都读不到时,总线上还是这些轨的原声(面板关掉的轨照旧没声);读到了别的轨、唯独读不到这一条时,这条轨不在导出文件里。单轨渲染仍然得到静音文件(KI-4),不变。
+  同一处还修了三种情况:导出之前 Output 被宿主停调过,轨被逐条接回,第 k 轨在文件开头缺约 (k-1)×11 秒(按约 57 倍速算);导出中主线程卡一下,健康的轨被撤掉;
+  渲染采样率和工程不同时开头是原声。实时播放不变。(#430)
+- **Windows 上开窗时,占位之后不再闪一下白(Cubase 上看得到的那一下)**:页面开始加载之前,WebView 的窗口就已经摆进了可视区,而遮挡要等加载开始才动,中间这一段窗口在屏上却没有内容。
+  现在加载开始之前就先把它挪开,界面画好再放回来。开窗的占位也改成和界面外壳一样的圆角(四角是外圈的深色,随缩放),从占位切到界面时轮廓不再跳。macOS 不变。
+  诊断日志多了一行:关窗时记这次加载到关窗用了多久、当时停在哪一档。(#436)
+- **开窗诊断日志的 `navigation started` 那行带上了毫秒数**:从这次加载开始算,读得出开窗时 WebView 被挡住了多久。(#437)
 <!-- ===========================================================================
 待合并 PR 的预写条目。写在注释里而不是正文里:未合并的东西不该出现在渲染后的 CHANGELOG 上,
 否则发版清单第 1 步「每条带 PR 号」检查不出它们其实还没进主线。
@@ -1188,6 +1252,7 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 
 - 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。直接提交,无 PR:[`ae61f5f`](https://github.com/synchain-oss/scvb/commit/ae61f5f)
 
-[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.10.0-beta.1...HEAD
+[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.11.0-beta.1...HEAD
+[0.11.0-beta.1]: https://github.com/synchain-oss/scvb/compare/v0.10.0-beta.1...v0.11.0-beta.1
 [0.10.0-beta.1]: https://github.com/synchain-oss/scvb/compare/v0.9.0-rc.1...v0.10.0-beta.1
 [0.9.0-rc.1]: https://github.com/synchain-oss/scvb/compare/ae61f5f...v0.9.0-rc.1

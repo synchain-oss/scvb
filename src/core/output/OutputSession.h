@@ -10,7 +10,8 @@
 //
 // per-channel 子状态(§4.2,[M] 25Hz 评估):CH_OFFLINE / CH_SR_MISMATCH / CH_SUSPENDED /
 // CH_MISALIGNED / CH_ONLINE。CH_ONLINE 才置 connected_mask 位;注入经 [J32] 延迟 ——
-// 置位后等该轨 muted 确认位或延迟 ≥200ms(先到者)才置 injectMask 位([A] 只读 injectMask 混音)。
+// 置位后等该轨 muted 确认位或延迟 ≥200ms(先到者)才置 injectMask 位([A] 按 injectMask 混音;
+// 走带刚起、[M] 还没看到的那几块 [A] 自己看 muted 确认位,见 noteBlockTransport)。
 // 停摆看门狗的 hold 掩码(KI-6,CtrlPlane::watchdogHoldMask)里的轨一律不算 CH_ONLINE:不置位、不注入。
 // [A-8] E2「挂起 ≠ 掉线」:走带在跑时,CH_SUSPENDED(写头冻结)不再让轨掉线 —— 其余在线条件
 // (槽活跃 ∧ 心跳新鲜 ∧ 采样率一致 ∧ 已绑定 ∧ ¬失准 ∧ 不在 hold 里)都成立就保留 connected_mask 位与
@@ -18,7 +19,7 @@
 // 是否全部停滞」(U3(b)-ii:全部停滞时总线回到原声,见 OutputProcessor::renderSpan)。
 //
 // 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调);音频线程只经
-// mixSource()/injectMask() 拿裸指针做原子读写。
+// mixSource() / realtimeInjectMask() / offlineInjectMask() 拿裸指针做原子读写。
 
 #include <array>
 #include <atomic>
@@ -156,6 +157,30 @@ public:
     ShmRingMixSource& mixSource(u32 channel);
     const ShmRingMixSource& mixSource(u32 channel) const;
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
+    // [A] 每块开头调一次(旁路路径也调):看走带是不是刚起。t0 < 0 = 这一块没有时间线。判据见 OutputSession.cpp
+    // 的实现注释。
+    void noteBlockTransport(bool playing, int64_t t0) noexcept;
+    // [A] 实时这一块该读哪些轨(inject):[M] 发布的 injectMask,加上走带刚起、[M] 还没看到时的起播判定。
+    // 起播判定再和 [M] 最新的可达判定求交:改组、看门狗清位当拍就生效,不用等 [A] 下一个判定。
+    // startOnly = 其中只由起播判定带进来、[M] 还没判的轨。两样从同一次读算出来:分两次读的话,中间 [M] 发布了新的
+    // injectMask,两处判断用的就不是同一刻的状态。一块里要用到两样的,取一次快照。
+    struct RealtimeInject
+    {
+        u32 inject;
+        u32 startOnly;
+    };
+    RealtimeInject realtimeInject() const noexcept
+    {
+        const u32 published = injectMask();
+        const u32 start = startReachable();
+        return {published | start, start & ~published};
+    }
+    u32 realtimeInjectMask() const noexcept { return realtimeInject().inject; }
+    u32 startOnlyMask() const noexcept { return realtimeInject().startOnly; }
+    // [A] 离线导出这一块该读哪些轨。判据与时机见 OutputSession.cpp 的实现注释。实时路径不调它。
+    u32 offlineInjectMask() noexcept;
+    // [A] 离线:这些轨这一块确实读到了,置 connected_mask 位,Input 下一块跟着静音。从没读到过的轨不置:它还直通。
+    void offlineConfirmInjected(u32 mask) noexcept;
     // [A-8] 保持在线的挂起轨(写头冻结 ≥ kSuspendStallMs,但按 E2 规则仍在线;bit{N-1})。只含在线轨,
     // 与 injectMask 同一次评估里发布。[A] 用它判「注入轨是否全部停滞」(U3(b)-ii),不用它决定读不读环。
     // ⚠ 它与 injectMask 是**两个**原子量,不是同一次快照:[A] 可能读到跨过一次 [M] 更新的旧新组合,最坏让「全部停滞」
@@ -167,6 +192,8 @@ public:
     // 只用于停流判定:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
     // [A-8] 同时是 E2 保持在线的守卫:只有走带在跑时写头冻结才不掉线;停住时沿用 500ms 规则。
     void setTransportPlaying(bool on) noexcept { transportPlaying_ = on; }
+    // Output 此刻的时间线位置(同上,< 0 = 没有)。起播判定用它看 Input 停着时是不是在重写这个位置。
+    void setTransportPosition(int64_t samples) noexcept { transportPosition_ = samples; }
     void setCaptureEnabled(bool on) noexcept { captureEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
     void setOutputEnabled(bool on) noexcept { outputEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
     bool captureEnabled() const noexcept { return captureEnabled_.load(std::memory_order_relaxed) != 0; }
@@ -223,10 +250,18 @@ public:
     void resetChannelStale(u32 channel) { fpWatch_.resetChannel(channel); }
 
     // [SL-254 / J95①] 宿主宣告的离线(非实时)渲染态。由 ScvbOutputAudioProcessor 从
-    // `isNonRealtime()` 同步下来;为真时 evaluateChannels 跳过 [J32] 的 200ms 注入延迟,
-    // 让 connected_mask 与 injectMask 在**同一次评估**里一起置位 —— Input 侧逐块读前者,
-    // 于是两边同块交接。理由与禁止「仅样本闸」的实测见宪法 ADR.md [J32→ADR-002] J95① 补注。
-    void setNonRealtime(bool on) noexcept { nonRealtime_.store(on, std::memory_order_relaxed); }
+    // `isNonRealtime()` 同步下来;为真时交接不走 [M] 的墙钟:[A] 自己判定、读到就注入、读到才让 Input 静音,
+    // Output 读到的那一块整块替换总线,Input 在它自己的下一块静音(offlineInjectMask / offlineConfirmInjected)。
+    // 理由与禁止「仅样本闸」的实测见宪法 ADR.md [J32→ADR-002] J95① 补注,交接的现行说法见 IPC_CONTRACT §4。
+    // [M] 和 [A] 都可能调(宿主可以在 prepare 之后才切离线标志):只动原子量,不分配。
+    void setNonRealtime(bool on) noexcept
+    {
+        nonRealtime_.store(on, std::memory_order_relaxed);
+        for (auto& source : sources_)
+        {
+            source.setLeadUnbounded(on);
+        }
+    }
     bool nonRealtime() const noexcept { return nonRealtime_.load(std::memory_order_relaxed); }
 
     // [M] 布防的**时间维**(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
@@ -298,6 +333,16 @@ private:
     void evaluateChannels(u64 nowMs);
     // [A-6] 失准恢复的正向在场判据(evaluateChannels 每拍每轨调一次;wasInjected = 上一拍发布的 injectMask 里有它)。
     bool positivePresence(std::size_t idx, bool wasInjected, u64 nowMs) noexcept;
+    // [A] 第一块的判定,见 offlineInjectMask。
+    u32 offlineStartVerdict(const InputSlot* inputs) const noexcept;
+    // [M] 占槽成功后把本实例的 OutputSlot / InputSlot 表发布给 [A](offlineInjectMask 用);release / changeGroup 时清空。
+    void noteClaimedForOffline() noexcept;
+    // [A] 走带刚起时这一块就能接上哪些轨(见 noteBlockTransport)。
+    u32 realtimeStartVerdict(int64_t t0) const noexcept;
+    u32 startReachable() const noexcept
+    {
+        return startMask_.load(std::memory_order_relaxed) & reachableMask_.load(std::memory_order_acquire);
+    }
     void refreshGlobalInfo(u64 nowMs);
     void consumeCommands(u64 nowMs);
 
@@ -334,6 +379,45 @@ private:
     std::atomic<u32> injectMask_{0};
     // [A-8] 保持在线的挂起轨(见 stalledMask());[M] 25Hz 写,与 injectMask_ 同拍。
     std::atomic<u32> stalledMask_{0};
+    // 离线路径读哪些轨(见 offlineInjectMask)。0 = 这次 prepare 之后还没判过,由 [A] 在第一块自己判;
+    // 判过之后恒带 kOfflineJudged:[A] 判的那一次,或者 Output 跑起来之后 [M] 每拍发布的那一份。
+    static constexpr u32 kOfflineJudged = 1u << 31;
+    std::atomic<u32> offlineReadyMask_{0};
+    // [M] 上一拍判定为可达的轨(不看走带,也不看挂起);带 kOfflineJudged = 这次 prepare 之后判过。起播判定用。
+    std::atomic<u32> reachableMask_{0};
+    // [M] 上一拍走带在跑,injectMask_ 已经按「在跑」发布过。起播判定到这里就交还给 injectMask_。
+    std::atomic<u32> tickSawPlaying_{0};
+    // [M] 上一拍看到的:走带停着,这些轨的写头正好领先 Output 停的位置不到一块(或者上一拍是这样、这一拍写方已经
+    // 从这里起播先走了,见 evaluateChannels)。在 reachableMask_ 之前发布。
+    // 停的位置和这份轨掩码装在同一个原子量里,[A] 一次读出来的两样一定是 [M] 同一拍的。分开存的话,停着时挪了位置
+    // 那一拍 [A] 可能拿到新位置配旧位置的证据。高 48 位 = 位置 + 1(0 = 没有位置),低 16 位 = 轨掩码。
+    static_assert(kMaxChannels <= 16);
+    static_assert(std::atomic<u64>::is_always_lock_free);
+    std::atomic<u64> stoppedAt_{0};
+    // 位置到 2^47(384 kHz 下十一年多)就当没有证据:起播判定照旧等 [M],写方先走一步的那条也不留。
+    static constexpr u64 packStoppedAt(int64_t pos, u32 mask) noexcept
+    {
+        return pos < 0 || pos >= (int64_t{1} << 47) ? 0 : (static_cast<u64>(pos + 1) << 16) | (mask & 0xFFFFu);
+    }
+    static constexpr int64_t stoppedAtPos(u64 packed) noexcept { return static_cast<int64_t>(packed >> 16) - 1; }
+    static constexpr u32 stoppedAtMask(u64 packed) noexcept { return static_cast<u32>(packed & 0xFFFFu); }
+    // [A] 读写;[M] 只在 prepare 里清(setStateInformation 会在音频运行时走到 prepare,所以是原子量)。清和 [A] 撞了也无妨:
+    // prepare 先清了 reachableMask_,[M] 判过之前 startReachable 都是 0。
+    std::atomic<bool> blockWasPlaying_{false};
+    std::atomic<u32> startMask_{0};
+    bool startWindowOpen_ = false; // 只有 [A]:mixSource 的起播窗口现在开着
+    // [A] 第一块判定用:这次 prepare 的时刻(音频线程没有时钟,心跳新鲜度按它算)与采样率。
+    std::atomic<u64> preparedAtMs_{0};
+    std::atomic<u32> preparedSampleRate_{0};
+    // 本实例已占用的 OutputSlot 与同一段里的 InputSlot 表,给音频线程用(Registry 的访问器不是给 [A] 调的)。
+    // [M] 发布,未占用时为空。旧映射有 500ms 宽限期,音频线程块内用完不跨块持有。
+    std::atomic<OutputSlot*> claimedSlot_{nullptr};
+    std::atomic<InputSlot*> claimedInputSlots_{nullptr};
+    static_assert(decltype(claimedSlot_)::is_always_lock_free && decltype(claimedInputSlots_)::is_always_lock_free,
+                  "离线路径的槽指针必须 lock-free(§8)");
+    // 最近一次 prepare 时的 blockCounter_:相等 = 这次 prepare 之后 Output 一块都还没跑。
+    // prepare 写,evaluateChannels 读,两边都在 [M]:和 sampleRate_ 同一口径(REAPER 开始渲染时也在主线程调 prepare,实测)。
+    u64 blockCounterAtPrepare_ = 0;
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
     std::atomic<u64> blockCounter_{0};
 
@@ -345,6 +429,7 @@ private:
 
     // [M] per-channel 状态。
     std::array<bool, kMaxChannels> onlinePrev_{};
+    std::array<bool, kMaxChannels> hbStalePrevTick_{}; // 离线:上一拍这一轨心跳已陈旧,见 evaluateChannels
     std::array<u64, kMaxChannels> onlineSinceMs_{};
     std::array<u64, kMaxChannels> misalignedSinceMs_{};
     std::array<u32, kMaxChannels> lastGapCount_{};
@@ -373,6 +458,7 @@ private:
     // 再要求它就等于让警告在故障持续期间自己到期(v4 实测 P0-2 的假恢复正是这个形状)。
     std::array<bool, kMaxChannels> stallEpisode_{};
     bool transportPlaying_ = false;
+    int64_t transportPosition_ = -1;
 
     u64 lastGlobalInfoMs_ = 0;
 
