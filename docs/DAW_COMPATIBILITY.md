@@ -1,5 +1,5 @@
 > 状态: 演进中
-> 最后更新: 2026-11-03(REAPER 成品实测,两层 SCVB);2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
+> 最后更新: 2026-11-07(LUNA 只在系统目录找 VST3);2026-11-03(REAPER 成品实测,两层 SCVB);2026-10-11(macOS beta 文档:新增 LUNA、Logic 两节;首个公开发布前;版本号以 `CMakeLists.txt` 的 `project(SCVB VERSION …)` 为准,本文不写死)
 > 真源: 本文件
 
 # SCVB DAW 兼容矩阵与支持等级表
@@ -10,7 +10,7 @@
 > - 证据分两层。**spike 层**:**S1 路由可靠性 spike(T02)** 2026-08-16/17 的真机实测(Cubase 14 / 15,REAPER 7 兜底;证据见 [S1-daw-checklist.md](spikes/S1-daw-checklist.md) 完成列与 [S1-routing.md](spikes/S1-routing.md) §6 收口报告)。**成品层**:**T37 成品测试包**(Input / Output / Monitor 成品插件)在 **Cubase 15 Pro** 上的多轮真机实测,2026-08 下旬的 v5.6 测试包起,到 2026-09-28 的 v5.6.19 测试包(测试包编号是内部轮次号,不是发布版本号)。
 > - **自动化 Write 录制**列:**S2 自动化写入 spike(T03)** 的逐宿主落点回填**没有做**([S2-automation.md](spikes/S2-automation.md) §6、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) §4 汇总格仍空);**Cubase 这一格的证据来自成品测试包**(见矩阵脚注 7),**REAPER 这一格来自成品矩阵**(见矩阵脚注 9),其余宿主仍为「未验证」,并标注已知风险(RD-04/RD-02)。
 > - **成品层只覆盖 Cubase 15 和 REAPER 7.82。** REAPER 那一轮是 2026-11-03 的自动化矩阵(见矩阵脚注 9);Ableton Live 与 Studio One 两层都没有(U27)。spike 结论是架构级验证,不替代成品复测。
-> - **macOS(Apple Silicon,beta)的两个宿主 LUNA、Logic Pro 都还没有上机**,下面 §2.5、§2.6 里每一条宿主说法都是「设计上预期 / 未实测」,不是实测结论;验收之后由统筹逐条回填。
+> - **macOS(Apple Silicon,beta)的两个宿主 LUNA、Logic Pro 都还没有上机**,下面 §2.5、§2.6 里每一条宿主说法都是「设计上预期 / 未实测」,不是实测结论(唯一的例外是 §2.5 里「LUNA 只在系统目录找 VST3」那一条,见该条);验收之后由统筹逐条回填。
 > - 状态图例:✅ 已验证 / ⚠️ 未验证或部分验证(原因见单元格)/ ➖ 不适用。
 
 ## 1. 总矩阵
@@ -230,11 +230,12 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 
 ### 2.5 LUNA(macOS,Apple Silicon;beta,未上机)
 
-> **本节每一条都是「设计上预期 / 未实测」**:LUNA 的真机验收([validation/luna-acceptance.md](validation/luna-acceptance.md))还没做,下面写的是按插件设计和 LUNA 的已知行为推出来的预期,不是实测结论。验收后由统筹回填;回填之前不要把它们当成保证。
+> **本节每一条都是「设计上预期 / 未实测」**:LUNA 的真机验收([validation/luna-acceptance.md](validation/luna-acceptance.md))还没做,下面写的是按插件设计和 LUNA 的已知行为推出来的预期,不是实测结论。验收后由统筹回填;回填之前不要把它们当成保证。唯一的例外是「LUNA 只在系统目录找 VST3」那一条,它是用户用 Synchain 的另一个插件实测的。
 
 #### 装与扫描
 
-- LUNA 默认启用 Audio Unit,macOS 上默认**不**启用 VST3。用 AU:装好后在 Plug-In Manager 里 Scan New(或 Rescan All),三个 SCVB 的状态应是 scanned,不是 rejected;用 VST3:先在 Plug-In Manager 里启用 VST3 再扫描。安装步骤见 macOS zip 里的 `INSTALL.txt`。
+- LUNA 默认启用 Audio Unit,macOS 上默认**不**启用 VST3。用 AU:装好后在 Plug-In Manager 里 Scan New(或 Rescan All),三个 SCVB 的状态应是 scanned,不是 rejected;用 VST3:要先装到系统目录(见下一条),再在 Plug-In Manager 里启用 VST3、重新扫描。安装步骤见 macOS zip 里的 `INSTALL.txt`。
+- LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,装在 `~/Library/Audio/Plug-Ins/VST3`(`INSTALL.txt` 第 3–5 步的默认位置)的扫不出来;AU 装在 `~/Library/Audio/Plug-Ins/Components` 能用。这一条是实测:用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件测出,`~/Library` 下的 Synchain VST3 都扫不出,系统目录里的能扫出;SCVB 本身还没在 LUNA 上测过。所以在 LUNA 里用 AU;一定要用 VST3,按 `INSTALL.txt` 的「给这台 Mac 的所有用户安装」装到系统目录。
 - 用 Apollo 接口时,设计上预期要把 Apollo 切到 Core Audio 模式,或关掉 ARM(见 [validation/luna-acceptance.md](validation/luna-acceptance.md) 的「工程设置」);未实测。
 
 #### 放 Input / Output

@@ -11,6 +11,8 @@
 ### 修复
 
 - **mac 版插件不再受环境变量 `SCVB_IPC_LOCK_DIR` 影响**:这个变量原本只是测试用来隔离共享内存锁目录的开关,但发布版里同样会读它,宿主和进程外的 AU 托管服务只有一边设了它,就可能互相把对方的活段清掉。现在插件一律用固定的默认锁目录,不再读任何环境变量;测试仍能隔离锁目录。段名、布局和 abi 不变。(#448)
+- **macOS 安装说明补上 LUNA 找 VST3 的位置**:LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,按默认步骤装到 `~/Library/Audio/Plug-Ins/VST3` 的 `.vst3` 它扫不出来;AU 装在 `~/Library` 能用(用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件实测)。
+  macOS zip 的 `INSTALL.txt`、两份 README、用户手册 FAQ、DAW_COMPATIBILITY 的 LUNA 节与 LUNA 验收包都改成:在 LUNA 里用 AU,一定要用 VST3 就给这台 Mac 的所有用户安装到系统目录,并删掉 `~/Library` 下的旧副本。安装命令本身不变(#447)
 
 ## [0.11.0-beta.1] - 2026-11-05
 

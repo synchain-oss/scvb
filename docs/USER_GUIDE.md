@@ -1,7 +1,7 @@
 **English** | [简体中文](USER_GUIDE.zh-CN.md)
 
 > Status: evolving
-> Last updated: 2026-11-03
+> Last updated: 2026-11-07
 > Source of truth: the Chinese guide. Chinese is the semantic authority for the hard rules; see below.
 
 # SCVB User Guide
@@ -380,7 +380,7 @@ To remove the preferences and the browser cache, close your DAW and delete the t
 
 **Where do I find the diagnostic logs on a Mac, and what do I do about them?** In `~/Library/Logs/Synchain/SCVB/` (see "Privacy and files on disk"). When you report a macOS problem, attach the relevant file after removing your user name from it.
 
-**Why does my Mac host not list SCVB, or refuse to load it?** The usual causes, in order: the quarantine flag was not cleared (run the two `xattr` lines of `INSTALL.txt`); the Audio Unit registry still holds an old entry (`killall -9 AudioComponentRegistrar`, then rescan); the host runs under Rosetta (the plugins are arm64 only; untick "Open using Rosetta" in the host's Get Info); the host has VST3 or Audio Units switched off (in LUNA, VST3 is off by default). Known macOS limits are KI-12 onward in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+**Why does my Mac host not list SCVB, or refuse to load it?** The usual causes, in order: the quarantine flag was not cleared (run the two `xattr` lines of `INSTALL.txt`); the Audio Unit registry still holds an old entry (`killall -9 AudioComponentRegistrar`, then rescan); the host runs under Rosetta (the plugins are arm64 only; untick "Open using Rosetta" in the host's Get Info); the host has VST3 or Audio Units switched off (in LUNA, VST3 is off by default); the host does not look in the folder you installed to (LUNA only looks for VST3 plugins in `/Library/Audio/Plug-Ins/VST3`, so use the Audio Units in LUNA, or install the VST3s for every user as `INSTALL.txt` describes). Known macOS limits are KI-12 onward in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 **Can I edit the analysis result if I don't like it?** Yes, see "Manual touch-ups"; automatic re-analysis will not overwrite what you edited.
 
