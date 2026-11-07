@@ -102,6 +102,10 @@ export function eventToLocal(clientX, clientY, rect, zoom = 1) {
 // zoom=1 时两种语义逐字相同,命中测试按构造就是对的。不做换算的理由:旧 WebKit 下
 // 事件坐标与 rect 的确切关系在 CI 上验证不了,盲做换算没法保证对。
 //
+// [Z1] mac 上的插件窗口已经不走这条降级:缩放交给原生 `WKWebView.pageZoom`,CSS zoom 恒为 1,
+// 本探测在那条路上根本不跑(见 shell-fit.js 文件头 [Z1])。本探测与上面的降级留给没有 `nativeZoom`
+// seed 的环境;pageZoom 没生效的回退路上 CSS zoom 会回来,那时的命中偏移也写在 [Z1] 里。
+//
 // 判据只认**量到的**语义,不读 UA、不读版本号:一个 zoom:2、宽 100px 的不可见探针,
 //   新语义:rect 宽 = 200(含 zoom),offsetWidth = 100;
 //   旧语义:rect 宽 = 100(不含 zoom),offsetWidth = 100。

@@ -36,6 +36,7 @@ import {
     backingFitFactor,
     enforceZoomLock,
     installShellFit,
+    noteNativeScale,
     scalePresets,
     zoomLocked,
 } from "../shared/shell-fit.js";
@@ -489,6 +490,8 @@ function applyScale(f) {
     if (!Number.isFinite(f) || f <= 0) return;
     store.scale = f;
     if (scaleUi.select) scaleUi.select.setValue(f);
+    // [Z1] 原生 pageZoom 下档位要算进后备存储倍率(轨迹图靠 installShellFit 的 onChange 重建)。
+    noteNativeScale(f);
     // [M09] 锁定时宿主若按别的档位开了窗(用户存过 1.5),经 setUiScale 请回 1,
     // 回执不是拒绝(`{ok:false}`)就就地记 1 —— 与 previewScale 同一口径(state 回推 1Hz,
     // 不等它)。桥缺席或抛错时 call() 回 null,同样记 1:目标本来就是 1,记早了无害。

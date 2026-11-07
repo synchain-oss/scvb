@@ -31,6 +31,11 @@ target_sources(scvb_plugin_common INTERFACE
   PlatformLog.cpp
 )
 
+# [Z1] mac 上缩放走 WKWebView.pageZoom(WebKit framework 由 juce_gui_extra 带进来)。
+if(APPLE)
+  target_sources(scvb_plugin_common INTERFACE PlatformWebViewZoom_mac.mm)
+endif()
+
 target_include_directories(scvb_plugin_common INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/src/core   # DesignBox.h(由 scripts/gen-design-box.py 生成)

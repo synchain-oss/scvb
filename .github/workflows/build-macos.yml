@@ -211,6 +211,36 @@ jobs:
             echo "| pluginval | $PLUGINVAL_TAG |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # 1b) [Z1] 真 WebKit 探针:mac 上缩放走 WKWebView.pageZoom,「rect 和事件坐标在同一个坐标系」这件事只有系统
+      #     WKWebView 答得了(web-preview 跑在 Chromium 上)。不依赖 JUCE 和插件构建,所以放在构建前面:一分钟就出结论,
+      #     `!cancelled()` 让它不被前面的步骤挡。页面里跑的是产品的 hit.js / shell-fit.js。判据与退出码见
+      #     tests/macos/pagezoom-probe/README.md。退出码 2 = 页面没起来(环境问题),记 warning,不算通过也不判红。
+      #     负对照:不设 pageZoom 再跑一遍,必须退 1,否则这个探针没有牙。
+      - name: WKWebView pageZoom probe (real WebKit)
+        id: pagezoom_probe
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          cmake -S tests/macos/pagezoom-probe -B build-pagezoom -DCMAKE_BUILD_TYPE=Release || { echo "::error::pagezoom probe: configure failed"; exit 1; }
+          cmake --build build-pagezoom --parallel || { echo "::error::pagezoom probe: build failed"; exit 1; }
+          probe=build-pagezoom/scvb_pagezoom_probe
+          summary="$RUNNER_TEMP/pagezoom-summary.md"
+          rc=0
+          "$probe" --web-root web --summary "$summary" || rc=$?
+          if [ -f "$summary" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+          case "$rc" in
+            0) ;;
+            2) echo "::warning::pagezoom probe could not start the page (exit 2); this is not a pass"; exit 0 ;;
+            *) echo "::error::pagezoom probe failed (exit $rc)"; exit 1 ;;
+          esac
+          neg=0
+          "$probe" --web-root web --negative-control > "$RUNNER_TEMP/pagezoom-negative.log" 2>&1 || neg=$?
+          tail -n 12 "$RUNNER_TEMP/pagezoom-negative.log"
+          if [ "$neg" != "1" ]; then echo "::error::pagezoom probe negative control must exit 1, got $neg"; exit 1; fi
+
       # 2) JUCE:浅克隆锁 tag;缓存只是加速,身份断言才是正确性前提(与 macos-oop.yml 同一段,
       #    逻辑逐条照抄 bridge 仓 ci.yml 的 bash 版)。三个插件与 params / plugin_common / input_bridge
       #    三套测试都链接 JUCE 模块。
