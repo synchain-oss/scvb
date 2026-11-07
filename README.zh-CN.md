@@ -106,7 +106,7 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SCVB\ *.compo
 killall -9 AudioComponentRegistrar
 ```
 
-`shasum` 必须输出 `OK`。升级时先删掉旧的 `SCVB *.vst3` 与 `SCVB *.component` bundle(`INSTALL.txt` 里有完整的 `rm` 命令)。`killall` 提示 No matching processes 可以忽略。然后在宿主里重新扫描插件。LUNA 默认启用 Audio Unit:打开 Plug-In Manager,执行 Scan New(或 Rescan All),三个 SCVB Audio Unit 的状态必须是 scanned,不能是 rejected;在 LUNA 里请用 Audio Unit:macOS 上的 LUNA 默认不启用 VST3,而且只在 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,不看上面命令装到的 `~/Library/Audio/Plug-Ins/VST3`。一定要在 LUNA 里用 `.vst3` 的话,按 `INSTALL.txt` 的说明给这台 Mac 的所有用户安装,再在 Plug-In Manager 里启用 VST3。复制 bundle 请用 `ditto`,不要用 `cp -r`。
+`shasum` 必须输出 `OK`。升级时先删掉旧的 `SCVB *.vst3` 与 `SCVB *.component` bundle(`INSTALL.txt` 里有完整的 `rm` 命令)。`killall` 提示 No matching processes 可以忽略。然后在宿主里重新扫描插件。LUNA 默认启用 Audio Unit:打开 Plug-In Manager,执行 Scan New(或 Rescan All),三个 SCVB Audio Unit 的状态必须是 scanned,不能是 rejected。LUNA 里请用 Audio Unit:macOS 上的 LUNA 默认不启用 VST3,而且只在 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,不看上面命令装到的 `~/Library/Audio/Plug-Ins/VST3`。一定要在 LUNA 里用 `.vst3` 的话,按 `INSTALL.txt` 的说明给这台 Mac 的所有用户安装,再在 Plug-In Manager 里启用 VST3。复制 bundle 请用 `ditto`,不要用 `cp -r`。
 
 **Input 与 Output 都要装。** 这两个插件是一对,共用同一个版本号。**升级时所有 SCVB 插件一起升**:两侧的共享内存协议版本不同时,它们会**拒绝连接**,这是刻意的;即便能连上,混装不同版本也不受支持(新 Output 配旧 Input 时,离线渲染的人声可能被叠加两次)。
 

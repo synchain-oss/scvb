@@ -3,7 +3,7 @@
 > 状态:演进中(验收前的模板;结果由统筹脱敏后另存为 `docs/validation/luna-acceptance-<日期>.md`)
 > 最后更新:2026-11-07
 > 适用:SCVB macOS beta(Apple Silicon、arm64、VST3 + Audio Unit,最低 macOS 11)在 LUNA 里的一次真机验收。
-> 口径:本文里所有关于 LUNA 行为的话都是**设计上的预期**,验收之前没有一条是实测结论。Logic Pro 不在本次验收范围内(beta / 未在 Logic 实测,Tier 3)。
+> 口径:本文里所有关于 LUNA 行为的话都是**设计上的预期**,验收之前没有一条是实测结论。唯一的例外是第 3 步里「LUNA 只在系统目录找 VST3」那一句:那是用户 2026-11-07 用 Synchain 的另一个插件实测的,不是 SCVB 的实测。Logic Pro 不在本次验收范围内(beta / 未在 Logic 实测,Tier 3)。
 
 ## 0. 这份包是什么、不是什么
 
