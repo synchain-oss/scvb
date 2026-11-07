@@ -387,7 +387,15 @@ std::string SegmentBackendPosix::lockDirOverrideForTests()
 
 SegmentBackendPosix::SegmentBackendPosix()
 {
-    const std::string overrideDir = lockDirOverrideForTests();
+    std::string overrideDir = lockDirOverrideForTests();
+    if (overrideDir.empty())
+    {
+        const char* e = std::getenv(kLockDirEnvVar);
+        if (e != nullptr)
+        {
+            overrideDir = e;
+        }
+    }
     if (!overrideDir.empty())
     {
         lockDir_ = overrideDir;
