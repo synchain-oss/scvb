@@ -85,7 +85,7 @@
 
 - [x] **D2 PANLAW-1..5 绿**
   - 怎么查:`ctest` 里对应用例(含在 B1 / B3 的 `100% tests passed` 内)。
-  - 证据:PANLAW 用例(`tests/core/test_panlaw.cpp`)在 `scvb_tests` 里,含在 B3 那次 gate 6 的 ctest 全部通过之内;本 PR 的 CI `build-and-validate` 也绿。tag 那一跑回读:`test_panlaw.cpp` 编进 `scvb_tests`,ctest 9 个目标全部通过(见 B1)。
+  - 证据:PANLAW 用例(`tests/core/test_panlaw.cpp`)在 `scvb_tests` 里,含在 B3 那次 gate 6 的 ctest 全部通过之内;里程碑 PR #442 的 CI `build-and-validate` 也绿。tag 那一跑回读:`test_panlaw.cpp` 编进 `scvb_tests`,ctest 9 个目标全部通过(见 B1)。
   - 状态:✅ 已核
 
 - [x] **D3 结果追加到 `audio/nulltest-log.md`**
