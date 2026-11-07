@@ -21,8 +21,10 @@
 //   · 锁目录 = 真实 home(getpwuid,不看可能被容器化的 HOME)下的
 //     "Library/Application Support/Synchain/SCVB/ipc"。不放 Caches(会被系统清理),也**不放 TMPDIR**
 //     (M01 实测:进程外的 AUHostingService 里 TMPDIR 是服务专属子目录,与宿主进程看到的不是同一处)。
-//   · 测试钩子:环境变量 SCVB_IPC_LOCK_DIR 覆盖锁目录(构造后端时读一次)。它在发布版里同样生效,所以
-//     **同一组段的所有进程必须看到同一个值** —— 宿主与进程外的 AUHostingService 若只有一边设了它,
+//   · 测试钩子:静态入口 setLockDirOverrideForTests(path) 覆盖锁目录(构造后端时读一次)。**生产代码不读任何
+//     环境变量**:发布版插件里没有调用它的地方,所以用户机器上的环境变量改不了锁目录。测试二进制自己读
+//     环境变量 SCVB_IPC_LOCK_DIR 再调这个入口(tests/support/lock_dir_env.h;Catch2 用例里由 TempLockDir 直接
+//     调),父子进程继承环境的隔离方式不变。**同一组段的所有进程必须看到同一个值** —— 只有一边设了它,
 //     两边的锁就不是同一把,后来的创建者会把对方的活段当残段清掉。为了让这种错配在日志里看得见,
 //     用到覆盖的后端实例在第一次打开段时经 IpcDiag 上报一次 kLockDirOverride(带覆盖路径)。
 //   · **所有生命周期转换**(建、附着、离开)都在全局 <锁目录>/lifecycle.lock 的 flock(LOCK_EX) 下做:
@@ -97,7 +99,7 @@ class SegmentBackendPosix final : public ISegmentBackend
 public:
     // POSIX 段名(含开头的 '/')的最大长度:xnu 的 PSHMNAMLEN。
     static constexpr std::size_t kMaxShmNameLength = 31;
-    // 测试用锁目录覆盖(构造时读一次;见头注「测试钩子」)。
+    // 测试二进制用来传递锁目录覆盖的环境变量名。生产代码**不读**它(只有测试入口读,见头注「测试钩子」)。
     static constexpr const char* kLockDirEnvVar = "SCVB_IPC_LOCK_DIR";
     // 全局生命周期锁文件名(在锁目录下)。
     static constexpr const char* kLifecycleLockName = "lifecycle.lock";
@@ -134,12 +136,18 @@ public:
     // 只供诊断用。
     static NameStatus toPosixName(const std::wstring& name, std::string& posixName);
 
+    // 仅供测试:设置进程级的锁目录覆盖,之后构造的后端实例使用它(已构造的不受影响);空串 = 清除覆盖。
+    // 发布版代码不调用。线程安全(内部有锁),只在后端构造路径上读,不碰实时线程。
+    static void setLockDirOverrideForTests(const std::string& path);
+    // 仅供测试:当前的覆盖值(空 = 没有),用来在作用域结束时还原。
+    static std::string lockDirOverrideForTests();
+
     // 默认锁目录:<真实 home>/kHomeRelativeLockDir。home 解析不出来时返回空串。
     static std::string defaultLockDir();
 
     // 本实例使用的锁目录(构造时定下,之后不变;空 = 解析失败,所有打开都会 kFailed)。
     const std::string& lockDir() const noexcept { return lockDir_; }
-    // 锁目录是否来自 SCVB_IPC_LOCK_DIR。
+    // 锁目录是否来自测试覆盖(setLockDirOverrideForTests)。
     bool lockDirOverridden() const noexcept { return lockDirOverridden_; }
 
 private:
