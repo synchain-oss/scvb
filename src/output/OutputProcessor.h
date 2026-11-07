@@ -306,7 +306,7 @@ public:
     // 优先级不变:工程 state > 全局默认(uidefaults)> 本常量。Windows 仍是 100。
     // OutputStateCodec 的默认值不跟着改:那是「解不出来时」的默认,golden 依赖它。
 #if JUCE_MAC
-    static constexpr int kFactoryUiScalePercent = 80;
+    static constexpr int kFactoryUiScalePercent = 100;
 #else
     static constexpr int kFactoryUiScalePercent = 100;
 #endif
