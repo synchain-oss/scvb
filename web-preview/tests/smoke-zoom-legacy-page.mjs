@@ -50,7 +50,8 @@
 //     (z5) 视口比设计盒少 3px ⇒ f 吸附成 1,CSS zoom 恒 1(没有 seed 时这里是 0.99xx);
 //     (z6)(Output / Monitor,Input 没有读这个倍率的画布)档位算进后备存储:backingFitFactor() = 1 × 档位;
 //     (z7)(仅 Output)宿主改到 1.25 ⇒ 页面经 state 回推把新档位报给 shell-fit;
-//     (z8)(仅 Monitor)本页选 125% ⇒ 轨迹图失效一次(pageZoom 变的时候页面里没有别的信号);
+//     (z8)(仅 Monitor)iframe 钉住不动(模拟 pageZoom:窗口变、视口不变),本页选 125% ⇒ 轨迹图失效一次、
+//          后备存储跟到 1.25(pageZoom 变的时候页面里没有别的信号);
 //     (z9)(仅 Output)吸附之后按曲线点的真实位置 ⇒ 命中该点(旧语义模拟下,CSS zoom = 1 才对得上)。
 //   每页零 console.error、零未捕获异常。
 //
@@ -1135,8 +1136,25 @@ try {
         }
 
         // (z8) Monitor:本页选 125%,轨迹图必须失效一次。pageZoom 变的时候视口与 dpr 都不动,
-        // 这是页面里唯一的信号。
+        // 这是页面里唯一的信号。Chromium 没有 pageZoom,壳页改 iframe 尺寸视口就跟着变,失效会从
+        // 视口那条路来,测不到上面那条 —— 所以先用外层样式表的 !important 把 iframe 钉在设计盒
+        // (盖过壳页写的内联尺寸),模拟「窗口变了、布局视口不变」。
         if (role === "monitor") {
+            await evaluate(
+                OUT(`const s = document.createElement("style");
+                    s.id = "z8-pin";
+                    s.textContent = "iframe{width:${box.w}px !important;height:${box.h}px !important}";
+                    document.head.appendChild(s);
+                    return true;`),
+            );
+            check(
+                await waitFor(
+                    IN(`return d.documentElement.clientWidth === ${box.w};`),
+                ),
+                `${tag}(z8)iframe 钉在设计盒 ${box.w}×${box.h}`,
+            );
+            await twoFrames();
+            await twoFrames();
             const readCount = () =>
                 evaluate(
                     IN(
@@ -1144,12 +1162,15 @@ try {
                     ),
                 );
             const before = await readCount();
-            await evaluate(
-                IN(`const t = gb("monitor-scale-trigger");
-                    if (t) t.click();
-                    const o = gb("monitor-scale-panel").querySelector('[data-scale="1.25"]');
-                    if (o) o.click();
-                    return !!o;`),
+            check(
+                await evaluate(
+                    IN(`const t = gb("monitor-scale-trigger");
+                        if (t) t.click();
+                        const o = gb("monitor-scale-panel").querySelector('[data-scale="1.25"]');
+                        if (o) o.click();
+                        return !!o;`),
+                ),
+                `${tag}(z8)档位面板里有 125%`,
             );
             check(
                 await waitFor(
@@ -1160,10 +1181,25 @@ try {
                 ),
                 `${tag}(z8)选 125% ⇒ 轨迹图失效(计数 ${before} 之后涨了)`,
             );
+            eq(
+                await evaluate(IN(`return d.documentElement.clientWidth;`)),
+                box.w,
+                `${tag}(z8)前提:这期间视口没动(失效只能来自档位通知)`,
+            );
+            eq(
+                await backing(),
+                1.25,
+                `${tag}(z8)backingFitFactor() 跟到 1 × 1.25`,
+            );
             // 倒计时回退会再动一次档位;这里撤掉预览,别把确认框带进收尾。
             await evaluate(
                 IN(`const r = gb("monitor-scale-confirm-revert");
                     if (r) r.click();
+                    return true;`),
+            );
+            await evaluate(
+                OUT(`const s = document.getElementById("z8-pin");
+                    if (s) s.remove();
                     return true;`),
             );
         }
