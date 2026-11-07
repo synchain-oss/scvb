@@ -6,8 +6,8 @@
 // 探测)与 web/shared/shell-fit.js 的降级三件事(倍率锁 1 / 档位只留 1 档并经 setUiScale
 // 请回 1 / 页面一行提示),以及轨迹图 Cmd(metaKey)+滚轮 = 横向缩放。
 //
-// 为什么必须页面级:「旧语义」只在 WebKit 26.4 之前的系统 WKWebView 上出现,CI 与本机
-// 都没有那个引擎。这里用 CDP 的 `Page.addScriptToEvaluateOnNewDocument` 在**每个 frame**
+// 为什么必须页面级:「旧语义」只在系统 WKWebView 上出现(哪些版本见 hit.js 头注),本机与 CI 的
+// Chromium 都没有那个引擎(真 WebKit 那一半在 tests/macos/pagezoom-probe)。这里用 CDP 的 `Page.addScriptToEvaluateOnNewDocument` 在**每个 frame**
 // 的脚本运行之前把 `Element.prototype.getBoundingClientRect` 换成旧语义(按元素的有效
 // zoom 除回去,宽高与位置都不含缩放),于是真源页面从第一行起就活在旧语义里 —— 探测、
 // 降级、命中测试走的都是产品代码本身,node 侧一个环节都执行不到。
@@ -410,7 +410,7 @@ const IN_ASYNC = (js) => `(async () => {${IN_BODY(js)}
 })()`;
 
 // ---------------------------------------------------------------- 旧语义模拟
-// WebKit 26.4 之前:getBoundingClientRect 按元素的**有效** zoom(自身 × 祖先)除回去,
+// 旧语义:getBoundingClientRect 按元素的**有效** zoom(自身 × 祖先)除回去,
 // 宽高与位置都不含缩放。有效 zoom 优先读 `currentCSSZoom`(Chromium 128+),没有时沿祖先链
 // 把 computed zoom 连乘(旧 Chromium 的 computed zoom 是元素自身那一层)。
 // 原函数挂在 `__scvbTrueRect` 上(不可枚举),断言侧用它取**真实**屏幕位置。
@@ -846,9 +846,7 @@ try {
     }
 
     // =========================================================================
-    log(
-        "=== 【旧语义】模拟 WebKit 26.4 之前的 rect:缩放锁 1、提示可见、命中正确 ===",
-    );
+    log("=== 【旧语义】模拟旧 WebKit 的 rect:缩放锁 1、提示可见、命中正确 ===");
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
         source: LEGACY_RECT_SCRIPT,
     });

@@ -24,7 +24,7 @@
 // (web/output/canvas/hidpi.js)全套按 CSS zoom 的语义写的,换成 transform 会让
 // getBoundingClientRect 与布局坐标脱钩。
 //
-// [M09] **旧 rect 语义下缩放锁 1**(WebKit 26.4 之前的系统 WKWebView;判据与理由见
+// [M09] **旧 rect 语义下缩放锁 1**(量到旧语义的系统 WKWebView,不按版本号;判据与理由见
 // hit.js 的 zoomRectMode 头注):安装时量一次语义,判出旧语义就
 //   ① 画面倍率恒为 1,不再从视口反算 —— zoom=1 时两种语义逐字相同,命中按构造正确;
 //   ② 档位只留 1 档(`scalePresets`),宿主带着别的档位开窗时请回 1(`enforceZoomLock`,

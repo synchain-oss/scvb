@@ -57,5 +57,5 @@ stdout 上 `PAGEZOOM-PROBE <key>=<value>` 打版本(`macos` / `safari` / `webkit
 
 ## 局限
 
-- 测的是 runner 这一台的 WebKit。旧语义(WebKit 26.4 之前)是否测到,看日志里的 `zoomRectMode`。
+- 测的是 runner 这一台的 WebKit。它是新语义还是旧语义看日志里的 `zoomRectMode`(2026-11 的 macos-15 runner:Safari 27.2,旧语义)。新语义的 WKWebView 还没有在真 WebKit 上测过;pageZoom 下 CSS zoom 恒为 1,按构造两种语义都不受影响。
 - 用独立窗口,不是插件编辑器也不在 LUNA 里。宿主里的表现以 [LUNA 验收](../../../docs/validation/luna-acceptance.md)为准。

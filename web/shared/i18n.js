@@ -860,10 +860,11 @@ export const T = {
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
         "scale.overflow": "超出当前屏幕",
-        // [M09] 旧 WebKit(26.4 之前 getBoundingClientRect 不含 CSS zoom)下缩放锁 100% 的一行提示。
-        // 判据是**量到的** rect 语义(web/shared/hit.js zoomRectMode),26.4 是那条语义改动的版本号。
+        // [M09] 量到旧 rect 语义(getBoundingClientRect 不含 CSS zoom)时缩放锁 100% 的一行提示。
+        // 判据是**量到的** rect 语义(web/shared/hit.js zoomRectMode),不按版本号。[Z1] 起 mac 插件
+        // 走原生 pageZoom、不再锁;本条留给没有 nativeZoom seed 的环境。
         // 落笔前已对 web/fonts/*.woff2 核过字形(gate 3h);改字先核字,别重跑 fetch_fonts.py。
-        "scale.lockedLegacy": "WebKit 低于 26.4,缩放固定为 100%",
+        "scale.lockedLegacy": "WebKit 坐标语义较旧,缩放固定为 100%",
 
         // ---- T31 Wave 2 新增(统筹裁定「§E 九处 + Wave 2 增补」;zh 逐字取 05 §2.0/§2.1 正文)----
         // 建议 05 §5 收录;EN/FR 为 T31 自译,已入待审校清单(scratchpad/t31/deviations.md)。
@@ -1841,7 +1842,7 @@ export const T = {
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
         "scale.overflow": "Exceeds current screen",
-        "scale.lockedLegacy": "WebKit older than 26.4: zoom fixed at 100%",
+        "scale.lockedLegacy": "Older WebKit coordinates: zoom fixed at 100%",
 
         // ---- T31 Wave 2 新增(EN 自译,待人工审校)----
         "banner.misaligned":
@@ -2718,7 +2719,7 @@ export const T = {
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
         "scale.overflow": "Dépasse l'écran actuel",
-        "scale.lockedLegacy": "WebKit antérieur à 26.4 : zoom fixé à 100 %",
+        "scale.lockedLegacy": "Ancien modèle WebKit : zoom fixé à 100 %",
 
         // ---- T31 Wave 2 新增(FR 自译,**发布前必须人工审校**,05 §5)----
         "banner.misaligned":

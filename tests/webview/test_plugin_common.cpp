@@ -1500,6 +1500,12 @@ TEST_CASE("[Z1] WebViewHost applies the native zoom on every resize and seeds na
     CHECK(resize.find("applyNativeZoom(scale);") != std::string::npos);
     CHECK(countOf(src.code, "PlatformWebView::applyNativePageZoom(") == 1);
     CHECK(countOf(src.code, "bridge::buildInitOnlySeedPairs(PlatformWebView::kNativePageZoom)") == 1);
+
+    // .mm 只在 mac 上编,而 CI 上没有一个测试实例化真 WebView:设 pageZoom 那一句删了,mac 上照样全绿,
+    // 只有用户会发现「窗口变了内容没缩放」。所以连同 WKWebView 的类型核对一起钉住。
+    const auto mm = lexSource("src/plugin-common/PlatformWebViewZoom_mac.mm");
+    CHECK(countOf(mm.code, "view.pageZoom=static_cast<CGFloat>(scale);") == 1);
+    CHECK(mm.code.find("isKindOfClass:[WKWebViewclass]") != std::string::npos);
 }
 
 TEST_CASE("[M07] plugin entry points install the platform log before the first processor", "[M07][source]")

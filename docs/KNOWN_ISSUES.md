@@ -133,7 +133,7 @@
 ## KI-16:macOS 上插件窗口的缩放改走 WebKit 原生页面缩放(CI 探针已验,待 LUNA 真机确认)
 
 - **适用范围**:macOS beta。
-- **现象(改前)**:插件窗口的缩放档位只剩 100%,其它档位被隐藏,界面上有一条说明。在笔记本这类小屏幕上 Output 的窗口偏大,也改不小(用户在 macOS 15.6.1 + LUNA 上实测)。原先以为只有 Safari / WebKit 低于 26.4 的系统才会这样;CI 探针在 macOS 15.8.2 / Safari 27.2 的 WKWebView 里量到的仍是旧语义,所以 Safari 的版本号推不出插件里的语义。
+- **现象(改前)**:插件窗口的缩放档位只剩 100%,其它档位被隐藏,界面上有一条说明。在笔记本这类小屏幕上 Output 的窗口偏大,也改不小(用户在 macOS 15.6.1 + LUNA 上实测)。原先以为只有 Safari / WebKit 低于 26.4 的系统才会这样;CI 探针在 macOS 15.8.2 / Safari 27.2 的 WKWebView 里量到的仍是旧语义,所以「Safari 低于 26.4」这条分界不成立;嵌在宿主里的 WKWebView 实际用哪种语义,以探针实测为准。
 - **原因**:插件界面用系统 WebKit(WKWebView)绘制,以前用 CSS zoom 缩放。旧语义下,CSS zoom 之后元素位置按未缩放的坐标报,鼠标坐标却是缩放后的,点击和拖拽会落偏;为了不落偏,前端在旧语义下锁在 100%。
 - **现在的做法**:mac 上缩放改走 WKWebView 的原生页面缩放(`pageZoom`),页面里的 CSS zoom 恒为 1。元素位置和鼠标坐标落在同一个坐标系里,不分新旧语义都对得上,所以三个插件的档位全部开放;Output 在 mac 上新开时默认 80%(全局默认档位与工程里存的档位仍然优先)。档位高于 100% 时,Output 母带页 / 波形页的画布和 Monitor 的轨迹图按档位提高分辨率;Output 曲线编辑器和引导页的画布只按屏幕像素比,档位高于 100% 时略软(Windows 上一直如此)。
 - **验证到哪一步**:CI 上的真 WebKit 探针(`tests/macos/pagezoom-probe`,在 macOS 15.8.2、Safari 27.2、旧语义、1x 屏幕上跑)跑的是产品自己的页面脚本,对七个档位逐档核对视口大小、元素位置、`elementFromPoint` 和真实鼠标点击,点击全部落在该落的元素上;实测 pageZoom 不改 `devicePixelRatio`,重新导航后 pageZoom 也还在。**还没在 LUNA 或其它真实宿主里确认**,也没有在 Retina 屏上量过,由 [LUNA 验收](validation/luna-acceptance.md) 的 UI 一项核对。
