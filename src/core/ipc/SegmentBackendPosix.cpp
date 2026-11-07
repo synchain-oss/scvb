@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -357,10 +358,37 @@ std::string SegmentBackendPosix::defaultLockDir()
     return home + "/" + kHomeRelativeLockDir;
 }
 
+namespace
+{
+// 测试覆盖的进程级存放处。只由 setLockDirOverrideForTests 写;生产代码从不写,所以恒为空。
+std::mutex& overrideMutex()
+{
+    static std::mutex m;
+    return m;
+}
+std::string& overrideStorage()
+{
+    static std::string s;
+    return s;
+}
+} // namespace
+
+void SegmentBackendPosix::setLockDirOverrideForTests(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(overrideMutex());
+    overrideStorage() = path;
+}
+
+std::string SegmentBackendPosix::lockDirOverrideForTests()
+{
+    std::lock_guard<std::mutex> lock(overrideMutex());
+    return overrideStorage();
+}
+
 SegmentBackendPosix::SegmentBackendPosix()
 {
-    const char* overrideDir = std::getenv(kLockDirEnvVar);
-    if (overrideDir != nullptr && overrideDir[0] != '\0')
+    const std::string overrideDir = lockDirOverrideForTests();
+    if (!overrideDir.empty())
     {
         lockDir_ = overrideDir;
         lockDirOverridden_ = true;
@@ -502,8 +530,8 @@ InitResult SegmentBackendPosix::openSegment(const std::wstring& name, std::size_
     if (lockDirOverridden_ && !overrideReported_.exchange(true, std::memory_order_acq_rel))
     {
         report(IpcDiagOp::kLockDirOverride, 0, shm, lockDir_,
-               "lock directory taken from SCVB_IPC_LOCK_DIR (test hook); every process sharing these segments "
-               "must use the same value");
+               "lock directory taken from the test override (setLockDirOverrideForTests); every process sharing "
+               "these segments must use the same value");
     }
     if (lockDir_.empty())
     {

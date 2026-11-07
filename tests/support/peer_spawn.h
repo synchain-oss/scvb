@@ -382,8 +382,9 @@ inline std::string peerExe(const std::string& exeName)
     return "";
 }
 
-// 按绝对路径拉起一个进程(环境原样继承 —— 锁目录覆盖 SCVB_IPC_LOCK_DIR 必须两边一致,
-// 见 SegmentBackendPosix.h「测试钩子」)。spawnErr:0 = 成功;否则是 posix_spawn 的错误码。
+// 按绝对路径拉起一个进程(环境原样继承 —— 锁目录覆盖 SCVB_IPC_LOCK_DIR 必须两边一致:子进程在入口读它
+// 再调 setLockDirOverrideForTests,见 tests/support/lock_dir_env.h 与 SegmentBackendPosix.h「测试钩子」)。
+// spawnErr:0 = 成功;否则是 posix_spawn 的错误码。
 inline PeerProcess spawnProcess(const std::string& exe, const std::vector<std::string>& args, int* spawnErr)
 {
     PeerProcess p;

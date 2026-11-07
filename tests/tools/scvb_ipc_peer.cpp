@@ -47,6 +47,7 @@
 #include "ipc/VizPlane.h"
 #include "output/VizPublisher.h"
 #include "ipc_contract_harness.h"
+#include "support/lock_dir_env.h"
 
 using namespace scvb;
 using scvb::ipctest::AudioGeometry;
@@ -1146,6 +1147,8 @@ int runVizReader(const Args& a)
 
 int main(int argc, char** argv)
 {
+    // 父进程用 SCVB_IPC_LOCK_DIR 隔离锁目录;生产代码不读它,对端在入口转成测试覆盖(必须先于任何后端构造)。
+    scvb::testsupport::applyLockDirOverrideFromEnv();
     const Args a = parse(argc, argv);
     if (a.role == "writer")
     {

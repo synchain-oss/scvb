@@ -37,7 +37,8 @@ if(WIN32 OR APPLE)
   )
 
   target_link_libraries(scvb_ipc_peer PRIVATE scvb_core)
-  target_include_directories(scvb_ipc_peer PRIVATE ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/tests/ipc)
+  target_include_directories(scvb_ipc_peer PRIVATE ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/tests/ipc
+    ${CMAKE_SOURCE_DIR}/tests) # tests: support/lock_dir_env.h
 
   if(MSVC)
     target_compile_options(scvb_ipc_peer PRIVATE /W4 /utf-8 /EHsc)
