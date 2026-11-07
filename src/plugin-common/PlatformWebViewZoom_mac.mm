@@ -36,7 +36,6 @@ bool PlatformWebView::applyNativePageZoom(juce::WebBrowserComponent& browser, fl
     WKWebView* view = findWkWebView(browser);
     if (view == nil)
         return false;
-    view.pageZoom = static_cast<CGFloat>(scale);
     return true;
 }
 
