@@ -65,8 +65,7 @@ if (-not (Test-Path $logFile)) {
   Set-Content -Path $logFile -Encoding UTF8 -Value @(
     '# null test 日志',
     '',
-    '每次 null test 的结果与素材指纹(10-validation §4.2)。由 scripts/nulltest.ps1 追加。',
-    ''
+    '每次 null test 的结果与素材指纹(10-validation §4.2)。由 scripts/nulltest.ps1 追加。'
   )
 }
 
@@ -75,6 +74,8 @@ $shaTest = (Get-FileHash -Path $Test -Algorithm SHA256).Hash.ToLowerInvariant()
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
 
 $lines = [System.Collections.Generic.List[string]]::new()
+# 空行放在每节开头而不是结尾:编辑器会删掉文件末尾的空行,放在结尾时下一节的标题会贴上一节。
+$lines.Add('')
 $lines.Add("## $stamp")
 $lines.Add('')
 $lines.Add("- ref: $Ref (sha256 $shaRef)")
@@ -83,7 +84,6 @@ $lines.Add("- 宿主 pan law: $PanLawDb dB(补偿 --gain-db $gainDb;对齐: $Ali
 $lines.Add('')
 $lines.Add('结果:')
 foreach ($ln in @($out)) { $lines.Add("    $ln") }
-$lines.Add('')
 
 Add-Content -Path $logFile -Encoding UTF8 -Value $lines
 Write-Host ("已追加日志: {0}" -f $logFile)
