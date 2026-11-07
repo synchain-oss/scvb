@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **macOS 安装说明补上 LUNA 找 VST3 的位置**:LUNA 只在系统目录 `/Library/Audio/Plug-Ins/VST3` 里找 VST3,按默认步骤装到 `~/Library/Audio/Plug-Ins/VST3` 的 `.vst3` 它扫不出来;AU 装在 `~/Library` 能用(用户 2026-11-07 在 LUNA 上用 Synchain 的另一个插件实测)。
+  macOS zip 的 `INSTALL.txt`、两份 README、用户手册 FAQ、DAW_COMPATIBILITY 的 LUNA 节与 LUNA 验收包都改成:在 LUNA 里用 AU,一定要用 VST3 就给这台 Mac 的所有用户安装到系统目录,并删掉 `~/Library` 下的旧副本。安装命令本身不变(#447)
+
 ## [0.11.0-beta.1] - 2026-11-05
 
 本版 GitHub Release 只放 Windows x64。

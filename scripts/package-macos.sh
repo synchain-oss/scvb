@@ -362,17 +362,21 @@ Install (in Terminal)
      update as well: the AU version number stays the same between betas, so a host may otherwise keep
      its cached entry.
      LUNA: Audio Units are enabled by default. Open the Plug-In Manager and run Scan New (or Rescan
-     All); SCVB Input, Output and Monitor must show as "scanned", not "rejected". VST3 is not enabled
-     by default in LUNA on macOS: to use the .vst3 bundles, enable VST3 in the Plug-In Manager first,
-     then rescan.
+     All); SCVB Input, Output and Monitor must show as "scanned", not "rejected". In LUNA, use the
+     Audio Units. VST3 is not enabled by default in LUNA on macOS, and LUNA only looks for VST3
+     plugins in /Library/Audio/Plug-Ins/VST3, not in ~/Library/Audio/Plug-Ins/VST3 where steps 3-5
+     put them. To use the .vst3 bundles in LUNA anyway, install them for every user (see below),
+     enable VST3 in the Plug-In Manager, then rescan.
   7. (Optional) Validate the Audio Units (Input, Output, Monitor). Each run must end with
      "AU VALIDATION SUCCEEDED":
 $AUVAL_BLOCK
      If you did not install Monitor, skip the last line (Scvm): without it that check can only fail.
 
-Installing for every user of this Mac: in steps 3-5 use /Library/Audio/Plug-Ins/VST3 and
-/Library/Audio/Plug-Ins/Components instead of the ~/Library/... folders, and put sudo in front of
-each rm, ditto and xattr command (administrator password required).
+Installing for every user of this Mac (LUNA needs this for the .vst3 bundles): in steps 3-5 use
+/Library/Audio/Plug-Ins/VST3 and /Library/Audio/Plug-Ins/Components instead of the ~/Library/...
+folders, and put sudo in front of each rm, ditto and xattr command (administrator password
+required). If SCVB is already installed under ~/Library/..., delete that copy with the two step 3
+commands as written, so your hosts do not see two copies.
 
 Read before first use - the first 3 of the nine usage rules (the plugin shows all nine on first
 launch; breaking any of them gives silence, wrong panning or failed analysis):
@@ -434,14 +438,17 @@ Input 与 Output 是一对,共用一个版本号,请从同一个 zip 里一起�
      提示 No matching processes 说明它本来就没在运行,可以忽略。每次升级后也要做这一步:各个 beta 之间
      AU 的版本号不变,不做的话宿主可能继续用缓存里的旧条目。
      LUNA:Audio Unit 默认启用。打开 Plug-In Manager,执行 Scan New(或 Rescan All);SCVB Input、
-     Output、Monitor 的状态必须是 scanned,不能是 rejected。macOS 上的 LUNA 默认不启用 VST3:要用 .vst3,
-     先在 Plug-In Manager 里启用 VST3,再重新扫描。
+     Output、Monitor 的状态必须是 scanned,不能是 rejected。在 LUNA 里请用 Audio Unit。macOS 上的 LUNA
+     默认不启用 VST3,而且只在 /Library/Audio/Plug-Ins/VST3 里找 VST3,不看第 3-5 步装到的
+     ~/Library/Audio/Plug-Ins/VST3。一定要在 LUNA 里用 .vst3 的话,按下面「给这台 Mac 的所有用户安装」装,
+     再在 Plug-In Manager 里启用 VST3、重新扫描。
   7. (可选)验证三个 Audio Unit(依次是 Input、Output、Monitor),每条都应以 AU VALIDATION SUCCEEDED 结尾:
 $AUVAL_BLOCK
      没装 Monitor 的话跳过最后一条(Scvm):没装它,那一条只会报错。
 
-给这台 Mac 的所有用户安装:第 3-5 步里的 ~/Library/... 换成 /Library/Audio/Plug-Ins/VST3 与
-/Library/Audio/Plug-Ins/Components,并在每条 rm、ditto、xattr 命令前加 sudo(需要输入管理员密码)。
+给这台 Mac 的所有用户安装(LUNA 要用 .vst3 时必须这样装):第 3-5 步里的 ~/Library/... 换成
+/Library/Audio/Plug-Ins/VST3 与 /Library/Audio/Plug-Ins/Components,并在每条 rm、ditto、xattr 命令前加
+sudo(需要输入管理员密码)。之前已经装在 ~/Library/... 的,用第 3 步原样的那两条命令删掉,免得宿主看到两份。
 
 首次使用前必读 —— 九条使用规则的前 3 条(插件首次启动会完整弹出九条;违反任何一条都会导致静音、
 声像位置错误或分析失效):
